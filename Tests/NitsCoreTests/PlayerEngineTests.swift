@@ -473,4 +473,57 @@ struct PlayerEngineTests {
         engine.resetPlaybackRate()
         #expect(engine.playbackRate == 1.0)
     }
+
+    @Test("Switching media preserves and restores saved playback position")
+    @MainActor
+    func testSwitchingMediaPreservesAndRestoresPlaybackPosition() async {
+        guard let path1 = SyntheticTestMediaFactory.ensureMedia(preset: .wideGOPH264),
+            let path2 = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264)
+        else { return }
+
+        let defaults = UserDefaults(suiteName: "PlayerEngineResumeTests.\(UUID().uuidString)")!
+        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let config = PlayerConfiguration(
+            resumePlayback: true,
+            resumeStartThreshold: 15.0,
+            resumeEndThresholdRatio: 0.95
+        )
+        let engine = PlayerEngine(configuration: config, historyStore: historyStore)
+
+        // 1. Load first file (60s) and seek past resume threshold (to 25.0s)
+        engine.load(path: path1)
+        #expect(engine.isLoaded == true)
+        engine.seek(to: 25.0)
+        #expect(engine.currentTime == 25.0)
+
+        // Give settle loop a moment
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // 2. Switch to second file (30s)
+        engine.load(path: path2)
+        #expect(engine.isLoaded == true)
+        #expect(engine.currentTime == 0.0)
+
+        // Verify history was saved for file 1
+        let saved1 = historyStore.savedPosition(for: path1)
+        #expect(saved1 != nil)
+        #expect(abs((saved1 ?? 0.0) - 25.0) < 1.0)
+
+        // Seek in file 2 to 18.0s
+        engine.seek(to: 18.0)
+        #expect(engine.currentTime == 18.0)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // 3. Switch back to file 1 -> should restore to ~25.0s
+        engine.load(path: path1)
+        #expect(engine.isLoaded == true)
+        #expect(abs(engine.currentTime - 25.0) < 1.0)
+
+        // 4. Switch back to file 2 -> should restore to ~18.0s
+        engine.load(path: path2)
+        #expect(engine.isLoaded == true)
+        #expect(abs(engine.currentTime - 18.0) < 1.0)
+
+        engine.stop()
+    }
 }

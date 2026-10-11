@@ -59,6 +59,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether On-Screen Display (OSD) notifications are enabled (default true).
     public var enableOSD: Bool
 
+    /// Whether to automatically discover and add sibling media files in the folder to the playlist (default true).
+    public var autoLoadFolderMedia: Bool
+
     /// Explicit start time in seconds requested on launch (if provided, overrides resume history).
     public var startTime: Double?
 
@@ -90,6 +93,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleBgColorHex: String = "#000000",
         subtitleBgOpacity: Double = 0.65,
         enableOSD: Bool = true,
+        autoLoadFolderMedia: Bool = true,
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil
@@ -114,6 +118,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleBgColorHex = subtitleBgColorHex
         self.subtitleBgOpacity = subtitleBgOpacity
         self.enableOSD = enableOSD
+        self.autoLoadFolderMedia = autoLoadFolderMedia
         self.startTime = startTime
         self.audioTrack = audioTrack
         self.subtitleTrack = subtitleTrack
@@ -133,6 +138,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleBgColorHex = "Nits.subtitleBgColorHex"
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
     public static let keyEnableOSD = "Nits.enableOSD"
+    public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -178,6 +184,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyEnableOSD) != nil {
             config.enableOSD = userDefaults.bool(forKey: keyEnableOSD)
         }
+        if userDefaults.object(forKey: keyAutoLoadFolderMedia) != nil {
+            config.autoLoadFolderMedia = userDefaults.bool(forKey: keyAutoLoadFolderMedia)
+        }
         return config
     }
 
@@ -197,6 +206,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleBgColorHex, forKey: Self.keySubtitleBgColorHex)
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
         userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
+        userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
     }
 
     private static func nonEmpty(_ value: String) -> String? {
@@ -274,6 +284,13 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.enableOSD = false
             } else if arg == "--enable-osd" || arg == "--osd" {
                 config.enableOSD = true
+            } else if arg == "--auto-load-folder" {
+                config.autoLoadFolderMedia = true
+            } else if arg == "--no-auto-load-folder" || arg == "--disable-auto-load-folder" {
+                config.autoLoadFolderMedia = false
+            } else if arg.starts(with: "--auto-load-folder=") {
+                let val = String(arg.dropFirst("--auto-load-folder=".count)).lowercased()
+                config.autoLoadFolderMedia = (val == "true" || val == "1" || val == "yes")
             } else if arg.starts(with: "--subtitle-font=") {
                 config.subtitleFontName = String(arg.dropFirst("--subtitle-font=".count))
             } else if arg.starts(with: "--subtitle-weight=") {

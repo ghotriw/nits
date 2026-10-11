@@ -74,24 +74,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openStream(url: url, headers: [:], startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
     }
 
+    @discardableResult
+    private func ensurePlayerWindowController() -> PlayerWindowController {
+        if let controller = playerWindowController {
+            return controller
+        }
+        let controller = PlayerWindowController(configuration: configuration)
+        controller.onClose = { [weak self] _, _ in
+            self?.isPlayerActive = false
+            self?.activePlayer = nil
+            self?.playerWindowController = nil
+        }
+        controller.onKeyStatusChanged = { [weak self] isKey in
+            if isKey {
+                self?.activePlayer = self?.playerWindowController
+            }
+        }
+        playerWindowController = controller
+        return controller
+    }
+
     func openStream(
         url: URL, headers: [String: String], startTime: Double? = nil, audioTrack: String? = nil,
         subtitleTrack: String? = nil
     ) {
-        if playerWindowController == nil {
-            let controller = PlayerWindowController(configuration: configuration)
-            controller.onClose = { [weak self] _, _ in
-                self?.isPlayerActive = false
-                self?.activePlayer = nil
-                self?.playerWindowController = nil
-            }
-            controller.onKeyStatusChanged = { [weak self] isKey in
-                if isKey {
-                    self?.activePlayer = self?.playerWindowController
-                }
-            }
-            playerWindowController = controller
-        }
+        ensurePlayerWindowController()
 
         // Close/hide welcome window
         welcomeWindowController?.window?.orderOut(nil)
@@ -183,6 +190,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppLog.info(
                 .engine, "Received \(urls.count) media URLs to open. Opening first: \(firstURL.lastPathComponent)")
         }
+
+        // If multiple URLs are explicitly provided (e.g. multi-selection in Finder),
+        // populate the playlist beforehand so initial media loading does not scan the folder.
+        if urls.count > 1 {
+            ensurePlayerWindowController()
+            if let playlist = playerWindowController?.engine.playlist {
+                playlist.clear()
+                playlist.append(urls: urls)
+            }
+        }
+
         if firstURL.isFileURL {
             openMediaFile(at: firstURL)
         } else {

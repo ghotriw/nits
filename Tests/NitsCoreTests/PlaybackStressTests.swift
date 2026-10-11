@@ -13,13 +13,19 @@ struct PlaybackStressTests {
         return SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264)
     }
 
+    @MainActor
+    private static func makeEngine() -> PlayerEngine {
+        let config = PlayerConfiguration(resumePlayback: false)
+        return PlayerEngine(configuration: config)
+    }
+
     // MARK: - 1. Rapid Scrubbing Chaos Test
     @Test("Rapid scrub chaos test does not hang or deadlock the engine")
     @MainActor
     func testRapidScrubbingBurst() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.duration > 0.0)
@@ -68,7 +74,7 @@ struct PlaybackStressTests {
     func testRapidRelativeSeeksDuringActivePlayback() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.duration > 20.0)
@@ -101,7 +107,7 @@ struct PlaybackStressTests {
     func testRapidBackwardRelativeSeeksDuringActivePlayback() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.duration > 20.0)
@@ -139,7 +145,7 @@ struct PlaybackStressTests {
     func testRapidChaseSeekBurstWhileInFlightDoesNotDeadlock() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.duration > 20.0)
@@ -223,7 +229,7 @@ struct PlaybackStressTests {
     func testConcurrentPlaybackControlsRace() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
@@ -253,7 +259,7 @@ struct PlaybackStressTests {
     func testAudioTrackSwitchingUnderPlayback() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
@@ -289,7 +295,7 @@ extension PlaybackStressTests {
     func testExoticAudioCodecSwitching() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .exoticAudioTracks) else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.audioTracks.count == 3)
@@ -314,7 +320,7 @@ extension PlaybackStressTests {
     func testSustainedBackwardSeekMonotonicity() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .wideGOPH264) else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
         #expect(engine.duration >= 50.0)
@@ -394,7 +400,7 @@ extension PlaybackStressTests {
     func testKeyframeAlignedRelativeSeek() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .wideGOPH264) else { return }
 
-        let engine = PlayerEngine()
+        let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 

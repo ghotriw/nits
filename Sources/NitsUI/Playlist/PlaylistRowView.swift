@@ -1,0 +1,140 @@
+import AppKit
+import NitsCore
+import SwiftUI
+
+/// Renders a single row in the playlist drawer with playback status, metadata,
+/// and context menu actions (reveal in Finder, copy URL, remove).
+public struct PlaylistRowView: View {
+    public let item: PlaylistItem
+    public let index: Int
+    public let isCurrent: Bool
+    public let isPlaying: Bool
+    public var onSelect: () -> Void
+    public var onRemove: () -> Void
+
+    @State private var isHovered: Bool = false
+
+    public init(
+        item: PlaylistItem,
+        index: Int,
+        isCurrent: Bool,
+        isPlaying: Bool,
+        onSelect: @escaping () -> Void,
+        onRemove: @escaping () -> Void
+    ) {
+        self.item = item
+        self.index = index
+        self.isCurrent = isCurrent
+        self.isPlaying = isPlaying
+        self.onSelect = onSelect
+        self.onRemove = onRemove
+    }
+
+    public var body: some View {
+        HStack(spacing: 10) {
+            // Index or Play/Pause Status Indicator
+            ZStack {
+                if isCurrent {
+                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "pause.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("\(index + 1)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            .frame(minWidth: 20, alignment: .trailing)
+
+            // Title & Subtitle / Duration
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Color.accentColor : Color.white.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 6) {
+                    if let duration = item.formattedDuration {
+                        Text(duration)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.5))
+                    } else if item.isNetworkStream {
+                        Text("Stream")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.4))
+                    } else {
+                        Text(item.url.pathExtension.uppercased())
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+
+                    if isCurrent {
+                        Text("• Playing")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.accentColor.opacity(0.8))
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Remove Button on Hover
+            if isHovered {
+                Button {
+                    onRemove()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(4)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .help("Remove from playlist")
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(
+                    isCurrent
+                        ? Color.white.opacity(0.12)
+                        : (isHovered ? Color.white.opacity(0.06) : Color.clear)
+                )
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onTapGesture {
+            onSelect()
+        }
+        .contextMenu {
+            Button("Play") {
+                onSelect()
+            }
+
+            if item.url.isFileURL {
+                Button("Reveal in Finder") {
+                    let targetURL = item.url.standardizedFileURL.resolvingSymlinksInPath()
+                    NSWorkspace.shared.activateFileViewerSelecting([targetURL])
+                }
+            }
+
+            Button("Copy Path / URL") {
+                let pboard = NSPasteboard.general
+                pboard.clearContents()
+                pboard.setString(item.url.isFileURL ? item.url.path : item.url.absoluteString, forType: .string)
+            }
+
+            Divider()
+
+            Button("Remove from Playlist", role: .destructive) {
+                onRemove()
+            }
+        }
+    }
+}

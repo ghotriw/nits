@@ -13,6 +13,9 @@ public protocol PlayerActions: AnyObject {
     var canJumpToTime: Bool { get }
     var isJumpToPresented: Bool { get }
     var isQuickSettingsPresented: Bool { get }
+    var isPlaylistPresented: Bool { get }
+    var hasNextTrack: Bool { get }
+    var hasPreviousTrack: Bool { get }
 
     func togglePlayPause()
     func play()
@@ -28,6 +31,9 @@ public protocol PlayerActions: AnyObject {
     func resetPlaybackRate()
     func toggleDebugHUD()
     func toggleQuickSettings()
+    func togglePlaylist()
+    func playNextTrack()
+    func playPreviousTrack()
     func toggleFullscreen()
     func exitFullscreen()
     func promptJumpToTime()
@@ -42,9 +48,15 @@ extension PlayerActions {
     public var canJumpToTime: Bool { true }
     public var isJumpToPresented: Bool { false }
     public var isQuickSettingsPresented: Bool { false }
+    public var isPlaylistPresented: Bool { false }
+    public var hasNextTrack: Bool { false }
+    public var hasPreviousTrack: Bool { false }
     public func promptJumpToTime() {}
     public func dismissJumpToTime() {}
     public func toggleQuickSettings() {}
+    public func togglePlaylist() {}
+    public func playNextTrack() {}
+    public func playPreviousTrack() {}
     public func play() {}
     public func pause() {}
     public func seek(to seconds: Double) {}

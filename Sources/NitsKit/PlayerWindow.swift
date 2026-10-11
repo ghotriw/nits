@@ -72,6 +72,9 @@ public final class PlayerWindow: NSWindow {
         case 0x03:  // Physical 'F' (ANSI F) -> Toggle Fullscreen on any layout
             actionHandler.toggleFullscreen()
             return true
+        case 0x23:  // Physical 'P' (ANSI P) -> Toggle Playlist on any layout
+            actionHandler.togglePlaylist()
+            return true
         case 0x21:  // Physical '[' (ANSI LeftBracket, 0x21 / 33) -> Decrease Speed by 0.1x
             actionHandler.stepPlaybackRate(by: -0.1)
             return true
@@ -84,6 +87,10 @@ public final class PlayerWindow: NSWindow {
         case 0x35:  // Escape -> Dismiss dialogs/sidebars if active, or Exit Fullscreen if active
             if actionHandler.isJumpToPresented {
                 actionHandler.dismissJumpToTime()
+                return true
+            }
+            if actionHandler.isPlaylistPresented {
+                actionHandler.togglePlaylist()
                 return true
             }
             if actionHandler.isQuickSettingsPresented {

@@ -23,6 +23,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyEnableOSD)
     private var enableOSD: Bool = true
 
+    @AppStorage(PlayerConfiguration.keyAutoLoadFolderMedia)
+    private var autoLoadFolderMedia: Bool = true
+
     @State private var showHistoryClearedAlert: Bool = false
     @State private var selectedTab: SettingsTab = .general
 
@@ -135,6 +138,21 @@ public struct SettingsView: View {
             } header: {
                 Text("On-Screen Display (OSD)")
             }
+
+            Section {
+                Toggle("Automatically add folder media to playlist", isOn: $autoLoadFolderMedia)
+                    .onChange(of: autoLoadFolderMedia) { _, _ in
+                        notifyChange()
+                    }
+
+                Text(
+                    "When opening a media file, automatically scan the parent directory and populate the playlist with sibling files in natural alphanumeric order."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Playlist & Folders")
+            }
         }
         .formStyle(.grouped)
     }
@@ -217,7 +235,8 @@ public struct SettingsView: View {
             subtitleTextColorHex: savedConfig.subtitleTextColorHex,
             subtitleBgColorHex: savedConfig.subtitleBgColorHex,
             subtitleBgOpacity: savedConfig.subtitleBgOpacity,
-            enableOSD: enableOSD
+            enableOSD: enableOSD,
+            autoLoadFolderMedia: autoLoadFolderMedia
         )
         onConfigurationChanged?(current)
     }

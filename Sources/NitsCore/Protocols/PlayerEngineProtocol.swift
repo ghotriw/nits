@@ -123,6 +123,11 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor func toggleDebugHUD()
     @MainActor func renderCurrentFrame()
     @MainActor func selectAudioTrack(id: Int)
+    @MainActor var playlist: PlaylistManager { get }
+    @MainActor func playNext()
+    @MainActor func playPrevious()
+    @MainActor func playPlaylistItem(id: UUID)
+    @MainActor func removePlaylistItem(id: UUID)
 }
 
 extension PlayerEngineProtocol {

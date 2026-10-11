@@ -192,7 +192,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         subtitleTrack: String? = nil
     ) {
         let isNetwork = MediaDemuxer.isNetworkURL(url.absoluteString)
-        let pathString = isNetwork ? url.absoluteString : url.path
+        let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
 
         engine.load(
             path: pathString,
@@ -448,9 +448,41 @@ extension PlayerWindowController: PlayerActions {
         uiState.isQuickSettingsPresented
     }
 
+    public var isPlaylistPresented: Bool {
+        uiState.isPlaylistPresented
+    }
+
+    public var hasNextTrack: Bool {
+        engine.playlist.hasNext
+    }
+
+    public var hasPreviousTrack: Bool {
+        engine.playlist.hasPrevious
+    }
+
     public func toggleQuickSettings() {
         withAnimation(.spring(duration: 0.25)) {
             uiState.toggleQuickSettings()
+        }
+    }
+
+    public func togglePlaylist() {
+        withAnimation(.spring(duration: 0.25)) {
+            uiState.togglePlaylist()
+        }
+    }
+
+    public func playNextTrack() {
+        engine.playNext()
+        if let title = engine.playlist.currentItem?.title {
+            uiState.osd.show(.custom(symbol: "forward.end.fill", text: title))
+        }
+    }
+
+    public func playPreviousTrack() {
+        engine.playPrevious()
+        if let title = engine.playlist.currentItem?.title {
+            uiState.osd.show(.custom(symbol: "backward.end.fill", text: title))
         }
     }
 

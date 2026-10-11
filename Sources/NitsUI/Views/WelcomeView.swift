@@ -80,16 +80,12 @@ public struct WelcomeView: View {
             }
         }
         .frame(width: 520, height: 350)
-        .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url = url {
-                    DispatchQueue.main.async {
-                        onFileDropped(url.path)
-                    }
-                }
-            }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let firstUrl = urls.first else { return false }
+            onFileDropped(firstUrl.path)
             return true
+        } isTargeted: { targeted in
+            isTargetedForDrop = targeted
         }
     }
 }

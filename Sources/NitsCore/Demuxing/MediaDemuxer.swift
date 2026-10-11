@@ -424,6 +424,29 @@ public final class MediaDemuxer: @unchecked Sendable {
         return scheme == "http" || scheme == "https"
     }
 
+    /// Checks if a path points to a remote streaming resource or a mounted remote volume (e.g. NFS, SMB, AFP under /Volumes/).
+    /// Opening such resources can incur network latency and must be performed asynchronously.
+    public static func isRemoteOrMountedVolume(_ path: String) -> Bool {
+        if isNetworkURL(path) {
+            return true
+        }
+        // Network schemes
+        if path.hasPrefix("nfs://") || path.hasPrefix("smb://") || path.hasPrefix("afp://") || path.hasPrefix("rtsp://")
+        {
+            return true
+        }
+        // Mounted volumes outside boot drive (e.g. /Volumes/Drive/...)
+        if path.hasPrefix("/Volumes/") {
+            let url = URL(fileURLWithPath: path)
+            if let values = try? url.resourceValues(forKeys: [.volumeIsLocalKey]), let isLocal = values.volumeIsLocal {
+                return !isLocal
+            }
+            // If resourceValues cannot determine or path is under /Volumes/, treat as potentially remote
+            return true
+        }
+        return false
+    }
+
     public convenience init?(url: String) {
         self.init(url: url, headers: [:], interruptContext: nil)
     }

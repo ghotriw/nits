@@ -67,11 +67,13 @@ public struct LogCategory: RawRepresentable, Hashable, Sendable, Codable, Expres
     public static let subtitles = LogCategory("Subtitles")
     public static let ui = LogCategory("UI")
     public static let performance = LogCategory("Performance")
+    /// Dedicated category for playlist management and media discovery
+    public static let playlist = LogCategory("Playlist")
     /// Dedicated category for integrating host applications (such as EmbyPlayer, CLI tools, etc.)
     public static let host = LogCategory("Host")
 
     public static let allBuiltin: [LogCategory] = [
-        .general, .engine, .demuxer, .audio, .video, .renderer, .subtitles, .ui, .performance, .host,
+        .general, .engine, .demuxer, .audio, .video, .renderer, .subtitles, .ui, .performance, .playlist, .host,
     ]
 }
 
@@ -257,6 +259,7 @@ public enum AppLog {
         .subtitles: os.Logger(subsystem: subsystem, category: LogCategory.subtitles.rawValue),
         .ui: os.Logger(subsystem: subsystem, category: LogCategory.ui.rawValue),
         .performance: os.Logger(subsystem: subsystem, category: LogCategory.performance.rawValue),
+        .playlist: os.Logger(subsystem: subsystem, category: LogCategory.playlist.rawValue),
         .host: os.Logger(subsystem: subsystem, category: LogCategory.host.rawValue),
     ]
 

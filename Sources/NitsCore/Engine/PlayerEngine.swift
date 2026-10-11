@@ -305,6 +305,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     private var configuration: PlayerConfiguration
     private var currentPath: String?
     public let historyStore: PlaybackHistoryStore
+    public let playlist = PlaylistManager()
     @ObservationIgnored
     private let isFeeding = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored
@@ -408,6 +409,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                         self.stopPlaybackPipeline()
                         self.playbackState = .completed
                         self.saveCurrentPlaybackProgress()
+                        self.handlePlaybackCompleted()
                     }
                     // Throttled periodic progress auto-save every 15 seconds
                     if abs(seconds - self.lastSavedProgressSeconds) >= 15.0 {
@@ -416,6 +418,19 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     }
                 }
             }
+        }
+    }
+
+    private func handlePlaybackCompleted() {
+        if playlist.repeatMode == .one {
+            AppLog.info(.engine, "Repeating current item (repeatMode: .one)")
+            seek(to: 0)
+            play()
+        } else if playlist.autoPlayNext, let nextItem = playlist.playNext() {
+            AppLog.info(.engine, "Auto-advancing to next playlist item: '\(nextItem.title)'")
+            load(item: nextItem)
+        } else {
+            AppLog.info(.engine, "Playback completed naturally (end of playlist)")
         }
     }
 
@@ -858,11 +873,51 @@ public final class PlayerEngine: PlayerEngineProtocol {
         audioTrack: String? = nil,
         subtitleTrack: String? = nil
     ) {
+        // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
+        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let isRemoteOrMounted = MediaDemuxer.isRemoteOrMountedVolume(path)
+        if PlaylistParser.isPlaylistFile(path: path),
+            let playlistURL = isNetwork ? URL(string: path) : URL(fileURLWithPath: path)
+        {
+            // Parse playlist asynchronously without blocking the MainActor
+            loadingTask?.cancel()
+            loadingTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                let parsedItems = await PlaylistParser.parseAsync(url: playlistURL)
+                if !parsedItems.isEmpty {
+                    AppLog.info(
+                        .playlist,
+                        "Opening playlist '\(playlistURL.lastPathComponent)' with \(parsedItems.count) track(s)"
+                    )
+                    self.playlist.clear()
+                    self.playlist.append(items: parsedItems)
+                    if let firstItem = self.playlist.currentItem {
+                        self.load(item: firstItem)
+                    }
+                } else if isNetwork {
+                    // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
+                    await self.loadAsync(
+                        path: path,
+                        title: title,
+                        artworkData: artworkData,
+                        artworkURL: artworkURL,
+                        headers: headers,
+                        startTime: startTime,
+                        audioTrack: audioTrack,
+                        subtitleTrack: subtitleTrack
+                    )
+                }
+            }
+            return
+        }
+
+        // Save playback progress of previously active media before loading new track
+        saveCurrentPlaybackProgress()
+
         self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: title)
         self.artworkData = artworkData
         self.artworkURL = artworkURL
-        let isNetwork = MediaDemuxer.isNetworkURL(path)
-        if isNetwork {
+        if isRemoteOrMounted {
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
                 await self?.loadAsync(
@@ -887,6 +942,72 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 audioTrack: audioTrack,
                 subtitleTrack: subtitleTrack
             )
+        }
+    }
+
+    /// Loads and begins playback of a playlist item.
+    public func load(item: PlaylistItem) {
+        let pathString = item.url.isFileURL ? item.url.standardizedFileURL.path : item.url.absoluteString
+        self.load(
+            path: pathString,
+            title: item.title,
+            artworkData: nil,
+            artworkURL: nil,
+            headers: item.customHeaders,
+            startTime: item.startTime,
+            audioTrack: nil,
+            subtitleTrack: nil
+        )
+    }
+
+    /// Advances to and loads the next item in the playlist.
+    public func playNext() {
+        if let item = playlist.playNext(isUserAction: true) {
+            load(item: item)
+        }
+    }
+
+    /// Returns to previous playlist item or restarts current track if played past 3 seconds.
+    public func playPrevious() {
+        let (item, shouldRestart) = playlist.playPrevious(
+            restartThresholdSeconds: 3.0,
+            currentPlaybackTime: currentTime
+        )
+        if shouldRestart {
+            seek(to: 0)
+            play()
+        } else if let item {
+            load(item: item)
+        }
+    }
+
+    /// Selects and plays a specific item from the playlist by UUID.
+    public func playPlaylistItem(id: UUID) {
+        // If clicking on the currently active item, just ensure it plays without restarting
+        if let currentItem = playlist.currentItem, currentItem.id == id, isLoaded {
+            if !isPlaying {
+                play()
+            }
+            return
+        }
+
+        if let item = playlist.selectItem(id: id) {
+            load(item: item)
+        }
+    }
+
+    /// Removes an item from the playlist. If the removed item was currently playing,
+    /// stops playback or advances to the next remaining item.
+    public func removePlaylistItem(id: UUID) {
+        let isRemovingCurrent = (playlist.currentItem?.id == id)
+        playlist.remove(id: id)
+
+        if isRemovingCurrent {
+            if let nextItem = playlist.currentItem {
+                load(item: nextItem)
+            } else {
+                stop()
+            }
         }
     }
 
@@ -939,6 +1060,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
         // Save progress for previously active media if present
         saveCurrentPlaybackProgress()
 
+        // Reset playback tracking state so stale values from previous media do not leak
+        self.currentPath = nil
+        self.currentTime = 0
+        self.duration = 0
+        self.isLoaded = false
+        self.isLoading = true
+
+        let seekId = currentSeekId + 1
+        currentSeekId = seekId
+        activeSeekId.withLock { $0 = seekId }
+        isSeeking = false
+        chaseTargetTime = nil
+        chaseSettleTask?.cancel()
+        chaseSettleTask = nil
+        resumePlaybackAfterChase = false
+
         // Generate a new load ID and cancel any in-flight requests immediately
         let loadID = UUID()
         self.currentLoadID = loadID
@@ -957,8 +1094,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displayLink?.isPaused = true
         synchronizer.setRate(0.0, time: synchronizer.currentTime())
         isPlaying = false
-        isLoaded = false
-        isLoading = true
         loadError = nil
         hasVideo = false
         playbackState = .loading
@@ -1015,6 +1150,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
         // Save progress for previously active media if present
         saveCurrentPlaybackProgress()
 
+        // Reset playback tracking state so stale values from previous media do not leak
+        self.currentPath = nil
+        self.currentTime = 0
+        self.duration = 0
+        self.isLoaded = false
+        self.isLoading = true
+
+        let seekId = currentSeekId + 1
+        currentSeekId = seekId
+        activeSeekId.withLock { $0 = seekId }
+        isSeeking = false
+        chaseTargetTime = nil
+        chaseSettleTask?.cancel()
+        chaseSettleTask = nil
+        resumePlaybackAfterChase = false
+
         let loadID = UUID()
         self.currentLoadID = loadID
 
@@ -1032,8 +1183,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displayLink?.isPaused = true
         synchronizer.setRate(0.0, time: synchronizer.currentTime())
         isPlaying = false
-        isLoaded = false
-        isLoading = false
         loadError = nil
         hasVideo = false
         playbackState = .loading
@@ -1042,6 +1191,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             AppLog.error(.engine, "Failed to open file: \(path)")
             let err = "Failed to open media file."
             self.loadError = err
+            self.isLoading = false
             self.playbackState = .failed(err)
             return
         }
@@ -1091,17 +1241,20 @@ public final class PlayerEngine: PlayerEngineProtocol {
         artworkData = nil
         artworkURL = nil
         isLoaded = false
+        currentPath = nil
         currentTime = 0
         duration = 0
         playbackState = .idle
     }
 
     public func saveCurrentPlaybackProgress() {
-        guard let path = currentPath, duration > 0 else { return }
-        if currentTime > 0 {
+        guard isLoaded, !isLoading, let path = currentPath, duration > 0 else { return }
+        let progressTime = chaseTargetTime ?? currentTime
+        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(duration)s")
+        if progressTime > 0 {
             historyStore.savePosition(
                 for: path,
-                position: currentTime,
+                position: progressTime,
                 duration: duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
@@ -1268,6 +1421,28 @@ public final class PlayerEngine: PlayerEngineProtocol {
         if self.mediaTitle.isEmpty {
             self.mediaTitle = Self.resolveTitle(from: path)
         }
+
+        // Synchronize playlist with current media
+        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let mediaURL = isNetwork ? URL(string: path) : URL(fileURLWithPath: path)
+        if let mediaURL {
+            let matchesCurrent: Bool = {
+                guard let currentURL = playlist.currentItem?.url else { return false }
+                if currentURL.isFileURL && mediaURL.isFileURL {
+                    return currentURL.standardizedFileURL.path == mediaURL.standardizedFileURL.path
+                }
+                return currentURL.absoluteString == mediaURL.absoluteString
+            }()
+
+            if !matchesCurrent {
+                playlist.setInitialMedia(
+                    url: mediaURL,
+                    title: self.mediaTitle,
+                    autoLoadFolder: configuration.autoLoadFolderMedia
+                )
+            }
+            playlist.updateCurrentItemDuration(demuxer.durationSeconds)
+        }
         // Fall back to embedded container artwork if no explicit artwork data was provided
         if self.artworkData == nil, let embedded = demuxer.embeddedArtworkData {
             self.artworkData = embedded
@@ -1301,8 +1476,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.currentSubtitleCues.removeAll()
         self.loadedSubtitleDocuments.removeAll()
         self.lastObservedLiveSubtitleVersion = -1
-        self.isLoading = false
-        self.isLoaded = true
         self.loadError = nil
 
         if let spec = requestedSubtitleTrack,
@@ -1310,17 +1483,17 @@ public final class PlayerEngine: PlayerEngineProtocol {
         {
             switch preference {
             case .disable:
-                selectSubtitleTrack(id: nil)
+                selectSubtitleTrack(id: nil, persistHistory: false)
                 AppLog.info(.subtitles, "Explicit subtitle selection: disabled")
             case .select(let trackId):
-                selectSubtitleTrack(id: trackId)
+                selectSubtitleTrack(id: trackId, persistHistory: false)
                 AppLog.info(.subtitles, "Using explicit subtitle track: \(trackId)")
             }
         } else if let saved = savedTracks?.subtitleTrackId {
             if saved == PlaybackRecord.subtitlesOff {
-                selectSubtitleTrack(id: nil)
+                selectSubtitleTrack(id: nil, persistHistory: false)
             } else if demuxer.subtitleTracks.contains(where: { $0.id == saved }) {
-                selectSubtitleTrack(id: saved)
+                selectSubtitleTrack(id: saved, persistHistory: false)
                 AppLog.info(.subtitles, "Restored subtitle track from saved history: \(saved)")
             }
         }
@@ -1516,19 +1689,28 @@ public final class PlayerEngine: PlayerEngineProtocol {
             demuxer.purgeAudio(beforeSeconds: effectiveStartTime)
         }
 
+        self.currentTime = effectiveStartTime
+        self.isLoaded = true
+        self.isLoading = false
+
         let decoder = self.decoder
         let hasVideo = demuxer.hasVideo
+        let loadID = self.currentLoadID
+        let seekId = self.currentSeekId
         self.feedQueue.async { [weak self] in
             if hasVideo {
                 decoder.flush()
             }
             guard let self else { return }
             DispatchQueue.main.async {
+                guard self.currentLoadID == loadID else { return }
                 self.frameQueue.clear(resetDroppedFrames: true)
                 self.startFeeding()
-                let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
-                self.currentTime = effectiveStartTime
-                self.synchronizer.setRate(Float(self.playbackRate), time: targetCMTime)
+                if self.currentSeekId == seekId && self.chaseTargetTime == nil {
+                    let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
+                    self.currentTime = effectiveStartTime
+                    self.synchronizer.setRate(Float(self.playbackRate), time: targetCMTime)
+                }
                 self.displayLink?.isPaused = !hasVideo
                 self.isPlaying = true
                 self.playbackState = .playing
@@ -1717,6 +1899,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func selectSubtitleTrack(id: Int?) {
+        selectSubtitleTrack(id: id, persistHistory: true)
+    }
+
+    private func selectSubtitleTrack(id: Int?, persistHistory: Bool) {
         guard let id else {
             // Disable subtitles
             self.selectedSubtitleTrackId = nil
@@ -1724,14 +1910,18 @@ public final class PlayerEngine: PlayerEngineProtocol {
             self.currentSubtitleCues.removeAll()
             self.lastObservedLiveSubtitleVersion = -1
             demuxer?.selectSubtitleTrack(trackId: nil)
-            saveCurrentPlaybackProgress()
+            if persistHistory {
+                saveCurrentPlaybackProgress()
+            }
             return
         }
 
         guard let track = subtitleTracks.first(where: { $0.id == id }) else { return }
         self.selectedSubtitleTrackId = id
         demuxer?.selectSubtitleTrack(trackId: id)
-        saveCurrentPlaybackProgress()
+        if persistHistory {
+            saveCurrentPlaybackProgress()
+        }
 
         if track.isExternal {
             self.activeSubtitleDocument = loadedSubtitleDocuments[id]

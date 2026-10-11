@@ -177,6 +177,8 @@ public struct NowPlayingThrottler: Sendable {
         public var onPause: (() -> Void)?
         public var onSeekToPosition: ((Double) -> Void)?
         public var onSkip: ((Double) -> Void)?
+        public var onNext: (() -> Void)?
+        public var onPrevious: (() -> Void)?
 
         public init(id: String = UUID().uuidString) {
             self.id = id
@@ -243,6 +245,12 @@ public struct NowPlayingThrottler: Sendable {
                     let delta = interval > 0 ? interval : 10
                     self?.onSkip?(-delta)
                 },
+                .next { [weak self] in
+                    self?.onNext?()
+                },
+                .previous { [weak self] in
+                    self?.onPrevious?()
+                },
             ]
         }
     }
@@ -306,6 +314,30 @@ public struct NowPlayingThrottler: Sendable {
                         isPlaying: self.model.isPlaying
                     )
                 }
+            }
+
+            model.onNext = { [weak self] in
+                self?.executeNextTrack()
+            }
+
+            model.onPrevious = { [weak self] in
+                self?.executePreviousTrack()
+            }
+        }
+
+        private func executeNextTrack() {
+            if let actions {
+                actions.playNextTrack()
+            } else {
+                engine?.playNext()
+            }
+        }
+
+        private func executePreviousTrack() {
+            if let actions {
+                actions.playPreviousTrack()
+            } else {
+                engine?.playPrevious()
             }
         }
 
@@ -570,6 +602,44 @@ public final class LegacyMediaPlayerController: NowPlayingController {
             return .success
         }
         targets.append((center.skipBackwardCommand, skipBwdTarget))
+
+        // 7. Next track
+        center.nextTrackCommand.isEnabled = true
+        let nextTarget = center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, self.isActive else { return .noActionableNowPlayingItem }
+            return self.executeNextTrack() ? .success : .noActionableNowPlayingItem
+        }
+        targets.append((center.nextTrackCommand, nextTarget))
+
+        // 8. Previous track
+        center.previousTrackCommand.isEnabled = true
+        let prevTarget = center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self, self.isActive else { return .noActionableNowPlayingItem }
+            return self.executePreviousTrack() ? .success : .noActionableNowPlayingItem
+        }
+        targets.append((center.previousTrackCommand, prevTarget))
+    }
+
+    private func executeNextTrack() -> Bool {
+        if let actions {
+            actions.playNextTrack()
+            return true
+        } else if let engine {
+            engine.playNext()
+            return true
+        }
+        return false
+    }
+
+    private func executePreviousTrack() -> Bool {
+        if let actions {
+            actions.playPreviousTrack()
+            return true
+        } else if let engine {
+            engine.playPrevious()
+            return true
+        }
+        return false
     }
 
     private func executeTogglePlayPause() -> Bool {

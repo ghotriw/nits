@@ -55,6 +55,18 @@ public struct ControlsOverlay: View {
             // Bottom Player Control Panel (Single row)
             HStack(spacing: 14) {
 
+                // Previous Track
+                Button {
+                    engine.playPrevious()
+                } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(engine.playlist.hasPrevious ? .white.opacity(0.85) : .white.opacity(0.3))
+                }
+                .buttonStyle(.plain)
+                .disabled(!engine.playlist.hasPrevious)
+                .help("Previous Track (⌘←)")
+
                 // Seek 10s backward
                 Button {
                     engine.seekRelative(by: -10)
@@ -84,6 +96,18 @@ public struct ControlsOverlay: View {
                         .foregroundStyle(.white.opacity(0.85))
                 }
                 .buttonStyle(.plain)
+
+                // Next Track
+                Button {
+                    engine.playNext()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(engine.playlist.hasNext ? .white.opacity(0.85) : .white.opacity(0.3))
+                }
+                .buttonStyle(.plain)
+                .disabled(!engine.playlist.hasNext)
+                .help("Next Track (⌘→)")
 
                 // Current time (clickable to jump to time)
                 Text(formatTime(isDragging ? dragPosition : engine.currentTime))
@@ -207,6 +231,23 @@ public struct ControlsOverlay: View {
                 }
                 .buttonStyle(.plain)
                 .help("Select Subtitles")
+
+                // Playlist Toggle Button
+                Button {
+                    withAnimation(.spring(duration: 0.25)) {
+                        uiState?.togglePlaylist()
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 16))
+                        .foregroundStyle(
+                            uiState?.isPlaylistPresented == true
+                                ? Color.accentColor
+                                : Color.white.opacity(0.85)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Playlist (⌥⌘P / P)")
 
                 // Quick Settings Toggle Button
                 Button {

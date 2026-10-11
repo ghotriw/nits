@@ -9,6 +9,7 @@ public final class PlayerUIState {
     public var isJumpToPresented: Bool = false
     public var wasPlayingBeforeJumpTo: Bool = false
     public var isQuickSettingsPresented: Bool = false
+    public var isPlaylistPresented: Bool = false
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     public let osd: OSDManager
 
@@ -18,7 +19,17 @@ public final class PlayerUIState {
     }
 
     public func toggleQuickSettings() {
+        if !isQuickSettingsPresented {
+            isPlaylistPresented = false
+        }
         isQuickSettingsPresented.toggle()
+    }
+
+    public func togglePlaylist() {
+        if !isPlaylistPresented {
+            isQuickSettingsPresented = false
+        }
+        isPlaylistPresented.toggle()
     }
 
     public func showControlsTemporarily() {

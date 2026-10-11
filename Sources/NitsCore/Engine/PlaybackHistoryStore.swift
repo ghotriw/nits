@@ -76,9 +76,10 @@ public final class PlaybackHistoryStore: Sendable {
     ) {
         guard duration > 0 else { return }
 
-        // If watched past end threshold (e.g. credits at 95% or last 30s), mark as finished (clear)
+        // If watched past end threshold (e.g. credits at 95% or last 30s for media > 60s), mark as finished (clear)
         let endThresholdSeconds = duration * endThresholdRatio
-        if position >= endThresholdSeconds || (duration - position) <= 30.0 {
+        let isPastCompletion = position >= endThresholdSeconds || (duration > 60.0 && (duration - position) <= 30.0)
+        if isPastCompletion {
             clearPosition(for: path)
             return
         }
@@ -197,7 +198,10 @@ public final class PlaybackHistoryStore: Sendable {
             guard record.position >= startThreshold else { return nil }
 
             let endThresholdSeconds = record.duration * endThresholdRatio
-            guard record.position < endThresholdSeconds && (record.duration - record.position) > 30.0 else {
+            let isPastCompletion =
+                record.position >= endThresholdSeconds
+                || (record.duration > 60.0 && (record.duration - record.position) <= 30.0)
+            guard !isPastCompletion else {
                 return nil
             }
 

@@ -21,6 +21,8 @@ public enum MediaOpenPanel {
             "mkv", "webm", "flv", "wmv", "ts", "m4v", "mov", "mp4", "ogv",
             // Audio
             "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "alac", "aif", "aiff", "wma", "ape",
+            // Playlists
+            "m3u", "m3u8", "pls", "xspf", "cue",
         ]
         for ext in extensions {
             if let type = UTType(filenameExtension: ext), !types.contains(type) {
@@ -39,5 +41,32 @@ public enum MediaOpenPanel {
 
         let response = panel.runModal()
         return response == .OK ? panel.url : nil
+    }
+
+    public static func promptForMediaFiles() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = supportedContentTypes
+
+        let response = panel.runModal()
+        return response == .OK ? panel.urls : []
+    }
+
+    public static func promptForMediaFolders() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add to Playlist"
+        panel.message = "Choose folders containing media files to add to playlist"
+
+        let response = panel.runModal()
+        return response == .OK ? panel.urls : []
+    }
+
+    public static func promptForMediaFolder() -> URL? {
+        promptForMediaFolders().first
     }
 }

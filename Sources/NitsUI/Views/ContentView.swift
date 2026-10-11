@@ -251,6 +251,33 @@ public struct ContentView: View {
                 .ignoresSafeArea()
                 .zIndex(90)
             }
+
+            // Playlist Overlay Drawer - Trailing Side
+            if uiState.isPlaylistPresented {
+                ZStack(alignment: .trailing) {
+                    // Transparent backdrop covering the rest of the window
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.spring(duration: 0.25)) {
+                                uiState.isPlaylistPresented = false
+                            }
+                        }
+
+                    PlaylistOverlayView(
+                        engine: engine,
+                        uiState: uiState,
+                        onClose: {
+                            withAnimation(.spring(duration: 0.25)) {
+                                uiState.isPlaylistPresented = false
+                            }
+                        }
+                    )
+                    .transition(.move(edge: .trailing))
+                }
+                .ignoresSafeArea()
+                .zIndex(90)
+            }
         }
         .frame(minWidth: 700, minHeight: 450)
         .onContinuousHover { phase in
@@ -283,6 +310,13 @@ public struct ContentView: View {
                 scheduleControlsHide()
             }
         }
+        .onChange(of: uiState.isPlaylistPresented) { _, presented in
+            if presented {
+                hideTimer?.cancel()
+            } else {
+                scheduleControlsHide()
+            }
+        }
         .onChange(of: isControlsVisible) { _, visible in
             onControlsVisibilityChanged?(visible)
         }
@@ -294,6 +328,12 @@ public struct ContentView: View {
         .focused($isFocused)
         .defaultFocus($isFocused, true)
         .onKeyPress(.escape) {
+            if uiState.isPlaylistPresented {
+                withAnimation(.spring(duration: 0.25)) {
+                    uiState.isPlaylistPresented = false
+                }
+                return .handled
+            }
             if uiState.isQuickSettingsPresented {
                 withAnimation(.spring(duration: 0.25)) {
                     uiState.isQuickSettingsPresented = false
@@ -315,14 +355,16 @@ public struct ContentView: View {
     }
 
     private func scheduleControlsHide() {
-        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, !uiState.isQuickSettingsPresented else {
+        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, !uiState.isQuickSettingsPresented,
+            !uiState.isPlaylistPresented
+        else {
             return
         }
         hideTimer?.cancel()
         hideTimer = Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented
-                && !uiState.isQuickSettingsPresented
+                && !uiState.isQuickSettingsPresented && !uiState.isPlaylistPresented
             {
                 withAnimation {
                     isControlsVisible = false

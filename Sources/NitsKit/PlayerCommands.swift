@@ -21,6 +21,18 @@ public struct PlayerCommands: Commands {
             }
             .disabled(playerActions == nil)
 
+            Button("Next Track") {
+                playerActions?.playNextTrack()
+            }
+            .keyboardShortcut(.rightArrow, modifiers: .command)
+            .disabled(playerActions == nil || !(playerActions?.hasNextTrack ?? false))
+
+            Button("Previous Track") {
+                playerActions?.playPreviousTrack()
+            }
+            .keyboardShortcut(.leftArrow, modifiers: .command)
+            .disabled(playerActions == nil || !(playerActions?.hasPreviousTrack ?? false))
+
             Divider()
 
             Button("Step Forward (1 Frame)") {
@@ -127,6 +139,16 @@ public struct PlayerCommands: Commands {
         }
 
         CommandMenu("View") {
+            Toggle(
+                "Playlist",
+                isOn: Binding(
+                    get: { playerActions?.isPlaylistPresented ?? false },
+                    set: { _ in playerActions?.togglePlaylist() }
+                )
+            )
+            .keyboardShortcut("p", modifiers: [.option, .command])
+            .disabled(playerActions == nil)
+
             Toggle(
                 "Quick Settings",
                 isOn: Binding(
