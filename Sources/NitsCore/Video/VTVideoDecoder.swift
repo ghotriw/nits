@@ -3,7 +3,7 @@ import Foundation
 import VideoToolbox
 import os
 
-public final class VTVideoDecoder: @unchecked Sendable {
+public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var session: VTDecompressionSession?
     private var currentFormatDescription: CMFormatDescription?
@@ -43,27 +43,7 @@ public final class VTVideoDecoder: @unchecked Sendable {
         return lastCreationStatus
     }
 
-    public struct DecodedFrame: @unchecked Sendable {
-        public let pixelBuffer: CVPixelBuffer
-        public let pts: CMTime
-        public let duration: CMTime
-        public let doNotDisplay: Bool
-        public let doviMetadata: DolbyVisionFrameMetadata?
-
-        public init(
-            pixelBuffer: CVPixelBuffer,
-            pts: CMTime,
-            duration: CMTime,
-            doNotDisplay: Bool = false,
-            doviMetadata: DolbyVisionFrameMetadata? = nil
-        ) {
-            self.pixelBuffer = pixelBuffer
-            self.pts = pts
-            self.duration = duration
-            self.doNotDisplay = doNotDisplay
-            self.doviMetadata = doviMetadata
-        }
-    }
+    public typealias DecodedFrame = NitsCore.DecodedFrame
 
     public typealias OutputHandler = @Sendable (DecodedFrame) -> Void
     private var outputHandler: OutputHandler?
@@ -241,6 +221,15 @@ public final class VTVideoDecoder: @unchecked Sendable {
         lock.lock()
         inFlightFrames.removeAll(keepingCapacity: true)
         lock.unlock()
+    }
+
+    public func drain() {
+        lock.lock()
+        let s = session
+        lock.unlock()
+        if let s {
+            VTDecompressionSessionWaitForAsynchronousFrames(s)
+        }
     }
 
     /// Explicitly resets and invalidates the decompression session.

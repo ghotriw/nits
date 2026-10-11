@@ -277,7 +277,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     private var audioFeedingTask: Task<Void, Never>?
     private var seekTask: Task<Void, Never>?
 
-    private let decoder = VTVideoDecoder()
+    private var decoder: any VideoDecoderProtocol = VTVideoDecoder()
     private var audioDecoder: FFAudioDecoder?
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private var demuxer: MediaDemuxer?
@@ -1641,6 +1641,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
             "Loaded successfully. Duration: \(self.duration)s, peakNits: \(demuxer.maxPeakNits), formatDesc: \(String(describing: demuxer.formatDescription))"
         )
 
+        // Initialize video decoder if video stream is present
+        if demuxer.hasVideo {
+            guard let videoDecoder = VideoDecoderFactory.makeDecoder(for: demuxer.codec, demuxer: demuxer) else {
+                let err = "Failed to initialize video decoder for \(demuxer.codec)."
+                AppLog.error(.engine, err)
+                self.loadError = err
+                self.isLoading = false
+                self.playbackState = .failed(err)
+                return
+            }
+            self.decoder = videoDecoder
+            let queue = self.frameQueue
+            self.decoder.setOutputHandler { frame in
+                queue.push(frame)
+            }
+        }
+
         // Initialize audio decoder if audio stream is present
         if demuxer.hasAudio, let audioParams = demuxer.getAudioCodecParameters() {
             let decoder = FFAudioDecoder(codecParameters: audioParams, timebase: demuxer.audioTimebase)
@@ -1777,7 +1794,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     private nonisolated static func runVideoFeeding(
         demuxer: MediaDemuxer,
-        decoder: VTVideoDecoder,
+        decoder: any VideoDecoderProtocol,
         queue: FrameQueue,
         feedingLock: OSAllocatedUnfairLock<Bool>,
         drainPausedLock: OSAllocatedUnfairLock<Bool>
@@ -1796,7 +1813,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
             guard let sample = demuxer.nextVideoSample() else {
                 if demuxer.isEOF {
-                    AppLog.debug(.engine, "Demuxer reached EOF for video.")
+                    AppLog.debug(.engine, "Demuxer reached EOF for video. Draining decoder...")
+                    decoder.drain()
                     break
                 }
                 try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
@@ -2263,7 +2281,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     private nonisolated static func seekPreview(
         demuxer: MediaDemuxer,
-        decoder: VTVideoDecoder,
+        decoder: any VideoDecoderProtocol,
         frameQueue: FrameQueue,
         seconds: Double,
         exact: Bool,

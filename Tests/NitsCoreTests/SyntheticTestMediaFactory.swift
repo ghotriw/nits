@@ -20,6 +20,8 @@ public enum SyntheticTestMediaFactory {
         case audioCodecMatrix
         /// H.264 video (60s) with strictly spaced keyframes every 5.0 seconds (GOP=120 @ 24fps, no scenecut)
         case wideGOPH264
+        /// AV1 video (3s) encoded with libsvtav1 (640x360 @ 24fps) with AAC audio
+        case av1SDR
 
         public var filename: String {
             switch self {
@@ -37,6 +39,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_uhd_hdr_5subs.mkv"
             case .wideGOPH264:
                 return "synth_wide_gop_h264_5s.mp4"
+            case .av1SDR:
+                return "synth_av1_sdr.mkv"
             }
         }
     }
@@ -230,6 +234,16 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=60",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-g", "120", "-keyint_min", "120", "-sc_threshold", "0",
+                "-c:a", "aac", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .av1SDR:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "libsvtav1", "-preset", "10", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
                 outputPath,
             ]

@@ -5,7 +5,16 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
 echo "==> Building Nits with swift build..."
-swift build -c debug --disable-sandbox
+CONFIG="release"
+for arg in "$@"; do
+    case "$arg" in
+        --debug) CONFIG="debug" ;;
+        --release) CONFIG="release" ;;
+        *) echo "Usage: $0 [--debug|--release]" >&2; exit 1 ;;
+    esac
+done
+CONFIG_DIR="$(echo "${CONFIG:0:1}" | tr "[:lower:]" "[:upper:]")${CONFIG:1}"
+swift build -c "$CONFIG" --disable-sandbox
 
 APP_DIR="$DIR/build/Nits.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -17,17 +26,17 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
-BIN_PATH="$DIR/.build/out/Products/Debug/Nits"
+BIN_PATH="$DIR/.build/out/Products/$CONFIG_DIR/Nits"
 if [ ! -f "$BIN_PATH" ]; then
-    # Fallback to standard swiftpm debug path if custom out path is absent
-    BIN_PATH="$(swift build --show-bin-path)/Nits"
+    # Fallback to standard swiftpm path if custom out path is absent
+    BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/Nits"
 fi
 
 cp "$BIN_PATH" "$MACOS_DIR/Nits"
 chmod +x "$MACOS_DIR/Nits"
 
 # Copy any resource bundles
-for b in "$DIR/.build/out/Products/Debug/"*.bundle; do
+for b in "$DIR/.build/out/Products/$CONFIG_DIR/"*.bundle; do
     if [ -d "$b" ]; then
         cp -R "$b" "$RESOURCES_DIR/"
     fi

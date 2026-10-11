@@ -28,7 +28,7 @@ flowchart TD
     M4 --> M5["Stage 5: WKWebView Bridge"]
     M5 --> M6["Stage 6: Desktop UI & UX Controls ✅"]
     M6 --> M7["Stage 7: Standalone App Bundling & Release"]
-    M2 -.-> M25["Stage 2.5: AV1 Hybrid Engine M3+ HW / Dav1d SW"]
+    M2 -.-> M25["Stage 2.6: AV1 Hybrid Engine ✅"]
 ```
 
 ---
@@ -103,17 +103,17 @@ flowchart TD
 
 ---
 
-### Stage 2.6: AV1 Hybrid Engine (AOMedia Video 1)
+### Stage 2.6: AV1 Hybrid Engine (AOMedia Video 1) — [COMPLETED] ✅
 > Apple Silicon M1/M2 chips lack hardware AV1 decoders (introduced in M3/M4+), necessitating a hybrid fallback.
 
-- **2.6.1. Decoder Protocol Abstraction (`VideoDecoderProtocol`):**
+- [x] **2.6.1. Decoder Protocol Abstraction (`VideoDecoderProtocol`):**
   - Common decoder interface enabling transparent switching between hardware `VTVideoDecoder` and software backends.
-- **2.6.2. M3/M4+ Hardware Path (VideoToolbox):**
+- [x] **2.6.2. M3/M4+ Hardware Path (VideoToolbox):**
   - Check `VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)`.
   - Parse `av1C` config atoms and OBUs (Open Bitstream Units).
-- **2.6.3. M1/M2 Software Path (`libdav1d`):**
-  - Integrate high-performance SIMD/NEON assembly decoder `dav1d` (VideoLAN).
-  - Direct zero-copy or fast mapping of `dav1d_data` YUV420P buffers into `CVPixelBuffer` for Metal / DisplayLayer rendering.
+- [x] **2.6.3. M1/M2 Software Path (`libdav1d`):**
+  - Integrate high-performance SIMD/NEON assembly decoder `dav1d` (VideoLAN via FFmpeg libavcodec).
+  - Fast mapping of decoded planar YUV420P / YUV420P10 buffers into `CVPixelBuffer` via `CVPixelBufferPool` for Metal / DisplayLayer rendering.
 
 ---
 

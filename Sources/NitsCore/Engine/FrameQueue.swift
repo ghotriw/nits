@@ -17,7 +17,7 @@ public final class FrameQueue: @unchecked Sendable {
 
     private let lock = OSAllocatedUnfairLock()
     private let capacity: Int
-    private var buffer: [VTVideoDecoder.DecodedFrame?]
+    private var buffer: [DecodedFrame?]
     private var head: Int = 0
     private var countInternal: Int = 0
     private var lastRenderedBuffer: CVPixelBuffer?
@@ -27,7 +27,7 @@ public final class FrameQueue: @unchecked Sendable {
     public init(capacity: Int = defaultCapacity) {
         precondition(capacity > 0, "Capacity must be positive")
         self.capacity = capacity
-        self.buffer = [VTVideoDecoder.DecodedFrame?](repeating: nil, count: capacity)
+        self.buffer = [DecodedFrame?](repeating: nil, count: capacity)
     }
 
     /// The total number of frames discarded or dropped (late / expired).
@@ -46,7 +46,7 @@ public final class FrameQueue: @unchecked Sendable {
 
     /// Pushes a decoded frame into the queue, maintaining strict ascending PTS order.
     /// If the buffer is full, the furthest future frame at the tail is discarded to preserve imminent playback frames.
-    public func push(_ frame: VTVideoDecoder.DecodedFrame) {
+    public func push(_ frame: DecodedFrame) {
         lock.lock()
         defer { lock.unlock() }
 

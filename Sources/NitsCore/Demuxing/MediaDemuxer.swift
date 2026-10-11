@@ -10,7 +10,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     private var formatCtx: UnsafeMutablePointer<AVFormatContext>?
     private var videoStreamIndex: Int = -1
     private var audioStreamIndex: Int = -1
-    private var timebase: AVRational = AVRational(num: 1, den: 1000)
+    public private(set) var timebase: AVRational = AVRational(num: 1, den: 1000)
     public private(set) var audioTimebase: AVRational = AVRational(num: 1, den: 1000)
     public private(set) var codec: VideoCodec = .hevc
     public private(set) var hasVideo: Bool = false
@@ -62,6 +62,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { lock.unlock() }
         guard let ctx = formatCtx, audioStreamIndex >= 0 else { return nil }
         return UnsafePointer(ctx.pointee.streams[audioStreamIndex]!.pointee.codecpar)
+    }
+
+    public func getVideoCodecParameters() -> UnsafePointer<AVCodecParameters>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ctx = formatCtx, videoStreamIndex >= 0 else { return nil }
+        return UnsafePointer(ctx.pointee.streams[videoStreamIndex]!.pointee.codecpar)
     }
 
     public func selectAudioTrack(trackId: Int) {
@@ -530,12 +537,18 @@ public final class MediaDemuxer: @unchecked Sendable {
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
                 && !isAttachedPic
-                && (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264)
+                && (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264 || codecId == AV_CODEC_ID_AV1)
                 && self.videoStreamIndex < 0
             {
                 self.videoStreamIndex = i
                 self.timebase = stream.pointee.time_base
-                self.codec = (codecId == AV_CODEC_ID_HEVC) ? .hevc : .h264
+                if codecId == AV_CODEC_ID_HEVC {
+                    self.codec = .hevc
+                } else if codecId == AV_CODEC_ID_H264 {
+                    self.codec = .h264
+                } else if codecId == AV_CODEC_ID_AV1 {
+                    self.codec = .av1
+                }
                 self.width = Int(stream.pointee.codecpar.pointee.width)
                 self.height = Int(stream.pointee.codecpar.pointee.height)
                 if stream.pointee.duration > 0 {
@@ -615,7 +628,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 let pixFmt = stream.pointee.codecpar.pointee.format
                 if pixFmt == AV_PIX_FMT_YUV420P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV420P10BE.rawValue
                     || pixFmt == AV_PIX_FMT_YUV422P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV444P10LE.rawValue
-                    || (codecId == AV_CODEC_ID_HEVC
+                    || ((codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_AV1)
                         && (self.transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
                             || self.transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG))
                 {
@@ -693,6 +706,12 @@ public final class MediaDemuxer: @unchecked Sendable {
                             if clm.pointee.MaxFALL > 0 {
                                 self.maxFallNits = Float(clm.pointee.MaxFALL)
                             }
+                            var cllBytes = [UInt8](repeating: 0, count: 4)
+                            cllBytes[0] = UInt8((clm.pointee.MaxCLL >> 8) & 0xFF)
+                            cllBytes[1] = UInt8(clm.pointee.MaxCLL & 0xFF)
+                            cllBytes[2] = UInt8((clm.pointee.MaxFALL >> 8) & 0xFF)
+                            cllBytes[3] = UInt8(clm.pointee.MaxFALL & 0xFF)
+                            self.contentLightLevel = Data(cllBytes)
                             AppLog.info(
                                 .video,
                                 "Extracted ContentLightLevel from side data: MaxCLL=\(clm.pointee.MaxCLL), MaxFALL=\(clm.pointee.MaxFALL)"
@@ -707,6 +726,64 @@ public final class MediaDemuxer: @unchecked Sendable {
                                 if self.maxPeakNits == 1000.0 && maxLum > 0 {
                                     self.maxPeakNits = maxLum
                                 }
+                            }
+                            if mdm.pointee.has_primaries != 0 && mdm.pointee.has_luminance != 0 {
+                                var mdBytes = [UInt8](repeating: 0, count: 24)
+                                let rx = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.0.0.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.0.0.den)))
+                                let ry = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.0.1.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.0.1.den)))
+                                let gx = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.1.0.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.1.0.den)))
+                                let gy = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.1.1.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.1.1.den)))
+                                let bx = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.2.0.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.2.0.den)))
+                                let by = UInt16(
+                                    clamping: Int(mdm.pointee.display_primaries.2.1.num) * 50000
+                                        / Int(max(1, mdm.pointee.display_primaries.2.1.den)))
+                                let wx = UInt16(
+                                    clamping: Int(mdm.pointee.white_point.0.num) * 50000
+                                        / Int(max(1, mdm.pointee.white_point.0.den)))
+                                let wy = UInt16(
+                                    clamping: Int(mdm.pointee.white_point.1.num) * 50000
+                                        / Int(max(1, mdm.pointee.white_point.1.den)))
+                                let maxL = UInt32(
+                                    clamping: Int64(mdm.pointee.max_luminance.num) * 10000
+                                        / Int64(max(1, mdm.pointee.max_luminance.den)))
+                                let minL = UInt32(
+                                    clamping: Int64(mdm.pointee.min_luminance.num) * 10000
+                                        / Int64(max(1, mdm.pointee.min_luminance.den)))
+                                mdBytes[0] = UInt8(rx >> 8)
+                                mdBytes[1] = UInt8(rx & 0xFF)
+                                mdBytes[2] = UInt8(ry >> 8)
+                                mdBytes[3] = UInt8(ry & 0xFF)
+                                mdBytes[4] = UInt8(gx >> 8)
+                                mdBytes[5] = UInt8(gx & 0xFF)
+                                mdBytes[6] = UInt8(gy >> 8)
+                                mdBytes[7] = UInt8(gy & 0xFF)
+                                mdBytes[8] = UInt8(bx >> 8)
+                                mdBytes[9] = UInt8(bx & 0xFF)
+                                mdBytes[10] = UInt8(by >> 8)
+                                mdBytes[11] = UInt8(by & 0xFF)
+                                mdBytes[12] = UInt8(wx >> 8)
+                                mdBytes[13] = UInt8(wx & 0xFF)
+                                mdBytes[14] = UInt8(wy >> 8)
+                                mdBytes[15] = UInt8(wy & 0xFF)
+                                mdBytes[16] = UInt8((maxL >> 24) & 0xFF)
+                                mdBytes[17] = UInt8((maxL >> 16) & 0xFF)
+                                mdBytes[18] = UInt8((maxL >> 8) & 0xFF)
+                                mdBytes[19] = UInt8(maxL & 0xFF)
+                                mdBytes[20] = UInt8((minL >> 24) & 0xFF)
+                                mdBytes[21] = UInt8((minL >> 16) & 0xFF)
+                                mdBytes[22] = UInt8((minL >> 8) & 0xFF)
+                                mdBytes[23] = UInt8(minL & 0xFF)
+                                self.masteringDisplay = Data(mdBytes)
                             }
                         }
                     }
@@ -1010,8 +1087,10 @@ public final class MediaDemuxer: @unchecked Sendable {
                 let hasParameters: Bool
                 if codec == .hevc {
                     hasParameters = (vps != nil && sps != nil && pps != nil)
-                } else {
+                } else if codec == .h264 {
                     hasParameters = (sps != nil && pps != nil)
+                } else {
+                    hasParameters = true
                 }
 
                 if hasParameters && (masteringDisplay != nil || packetsScanned > 20) {
@@ -1027,8 +1106,6 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
-
-        guard let spsData = sps, let ppsData = pps else { return nil }
 
         var extensionsDict: [String: Any] = [
             kCVImageBufferColorPrimariesKey as String: colorPrimaries as String,
@@ -1047,49 +1124,78 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var formatDesc: CMVideoFormatDescription?
-        if codec == .hevc, let vpsData = vps {
-            vpsData.withUnsafeBytes { vpsBytes in
+        if codec == .av1 {
+            if videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex],
+                let extradata = stream.pointee.codecpar.pointee.extradata,
+                stream.pointee.codecpar.pointee.extradata_size > 0
+            {
+                let extraSize = Int(stream.pointee.codecpar.pointee.extradata_size)
+                let extraData = Data(bytes: extradata, count: extraSize)
+                var atoms =
+                    (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
+                        as? [String: Any])
+                    ?? [:]
+                atoms["av1C"] = extraData
+                extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
+            }
+
+            var desc: CMVideoFormatDescription?
+            let status = CMVideoFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault,
+                codecType: kCMVideoCodecType_AV1,
+                width: Int32(width),
+                height: Int32(height),
+                extensions: extensionsDict as CFDictionary,
+                formatDescriptionOut: &desc
+            )
+            if status == noErr {
+                formatDesc = desc
+            }
+        } else if let spsData = sps, let ppsData = pps {
+            if codec == .hevc, let vpsData = vps {
+                vpsData.withUnsafeBytes { vpsBytes in
+                    spsData.withUnsafeBytes { spsBytes in
+                        ppsData.withUnsafeBytes { ppsBytes in
+                            let pointers: [UnsafePointer<UInt8>] = [
+                                vpsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                spsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                ppsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            ]
+                            let sizes: [Int] = [vpsData.count, spsData.count, ppsData.count]
+
+                            var baseFormatDesc: CMVideoFormatDescription?
+                            _ = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                                allocator: kCFAllocatorDefault,
+                                parameterSetCount: 3,
+                                parameterSetPointers: pointers,
+                                parameterSetSizes: sizes,
+                                nalUnitHeaderLength: 4,
+                                extensions: extensionsDict as CFDictionary,
+                                formatDescriptionOut: &baseFormatDesc
+                            )
+
+                            formatDesc = baseFormatDesc
+                        }
+                    }
+                }
+            } else if codec == .h264 {
                 spsData.withUnsafeBytes { spsBytes in
                     ppsData.withUnsafeBytes { ppsBytes in
                         let pointers: [UnsafePointer<UInt8>] = [
-                            vpsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
                             spsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
                             ppsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
                         ]
-                        let sizes: [Int] = [vpsData.count, spsData.count, ppsData.count]
+                        let sizes: [Int] = [spsData.count, ppsData.count]
 
-                        var baseFormatDesc: CMVideoFormatDescription?
-                        _ = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        _ = CMVideoFormatDescriptionCreateFromH264ParameterSets(
                             allocator: kCFAllocatorDefault,
-                            parameterSetCount: 3,
+                            parameterSetCount: 2,
                             parameterSetPointers: pointers,
                             parameterSetSizes: sizes,
                             nalUnitHeaderLength: 4,
-                            extensions: extensionsDict as CFDictionary,
-                            formatDescriptionOut: &baseFormatDesc
+                            formatDescriptionOut: &formatDesc
                         )
-
-                        formatDesc = baseFormatDesc
                     }
-                }
-            }
-        } else if codec == .h264 {
-            spsData.withUnsafeBytes { spsBytes in
-                ppsData.withUnsafeBytes { ppsBytes in
-                    let pointers: [UnsafePointer<UInt8>] = [
-                        spsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        ppsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                    ]
-                    let sizes: [Int] = [spsData.count, ppsData.count]
-
-                    _ = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                        allocator: kCFAllocatorDefault,
-                        parameterSetCount: 2,
-                        parameterSetPointers: pointers,
-                        parameterSetSizes: sizes,
-                        nalUnitHeaderLength: 4,
-                        formatDescriptionOut: &formatDesc
-                    )
                 }
             }
         }
@@ -1216,12 +1322,19 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        let (hvccData, hvccSize) = rawData.withUnsafeBytes { raw in
-            Self.packetDataToHVCC(
-                pktData: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                count: rawData.count,
-                isAnnexBStream: self.isAnnexBStream
-            )
+        let hvccData: Data
+        let hvccSize: Int
+        if codec == .av1 {
+            hvccData = rawData
+            hvccSize = rawData.count
+        } else {
+            (hvccData, hvccSize) = rawData.withUnsafeBytes { raw in
+                Self.packetDataToHVCC(
+                    pktData: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                    count: rawData.count,
+                    isAnnexBStream: self.isAnnexBStream
+                )
+            }
         }
         guard hvccSize > 0, let mem = malloc(hvccSize) else {
             return nil
