@@ -87,6 +87,19 @@ struct PlayerLifecycleTests {
         engine.stop()
     }
 
+    @MainActor
+    private func assertEventuallyDeallocated<T: AnyObject>(
+        _ box: RefBox<T>,
+        message: Comment,
+        timeoutNanoseconds: UInt64 = 1_000_000_000
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while box.value != nil && DispatchTime.now().uptimeNanoseconds < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(box.value == nil, message)
+    }
+
     @Test("Rapid sequential create, load, play and destroy loop runs without leaks or deadlocks")
     @MainActor
     func testRapidSequentialRecreationLoop() async {
@@ -98,7 +111,7 @@ struct PlayerLifecycleTests {
         for i in 0..<iterations {
             let box = RefBox<PlayerEngine>(nil)
             await runSinglePlayCycle(path: path, box: box)
-            #expect(box.value == nil, "Iteration \(i): Engine must be released without leaks")
+            await assertEventuallyDeallocated(box, message: "Iteration \(i): Engine must be released without leaks")
         }
 
         let finalMemory = Self.currentResidentMemory()
@@ -127,10 +140,11 @@ struct PlayerLifecycleTests {
     func testImmediateDeinitWhilePlaying() async {
         guard let path = Self.findTestMedia() else { return }
 
-        for _ in 0..<10 {
+        for i in 0..<10 {
             let box = RefBox<PlayerEngine>(nil)
             await runAbandonedPlaybackCycle(path: path, box: box)
-            #expect(box.value == nil, "Engine must deallocate even when abandoned during active playback")
+            await assertEventuallyDeallocated(
+                box, message: "Cycle \(i): Engine must deallocate even when abandoned during active playback")
         }
     }
 

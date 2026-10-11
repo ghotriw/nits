@@ -5,6 +5,7 @@ import SwiftUI
 import Testing
 
 @Suite("Subtitle Proportional Layout and Sizing Tests")
+@MainActor
 struct SubtitleLayoutTests {
 
     @Test("computeVideoFrame aspect-fit calculations for wider and taller containers")
