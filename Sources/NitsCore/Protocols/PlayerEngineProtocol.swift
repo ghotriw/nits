@@ -57,6 +57,7 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
 
     @MainActor var volume: Float { get set }
     @MainActor var isMuted: Bool { get set }
+    @MainActor var playbackRate: Double { get set }
     @MainActor var enableOSD: Bool { get set }
     @MainActor var showDebugHUD: Bool { get set }
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
@@ -116,6 +117,9 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor func stepFrameBackward()
     @MainActor func stepVolume(by delta: Float)
     @MainActor func toggleMute()
+    @MainActor func setPlaybackRate(_ rate: Double)
+    @MainActor func stepPlaybackRate(by delta: Double)
+    @MainActor func resetPlaybackRate()
     @MainActor func toggleDebugHUD()
     @MainActor func renderCurrentFrame()
     @MainActor func selectAudioTrack(id: Int)
@@ -131,6 +135,15 @@ extension PlayerEngineProtocol {
     public func seekRelative(by seconds: Double) {
         seekRelative(by: seconds, exact: false)
     }
+
+    @MainActor
+    public func setPlaybackRate(_ rate: Double) {}
+
+    @MainActor
+    public func stepPlaybackRate(by delta: Double) {}
+
+    @MainActor
+    public func resetPlaybackRate() {}
 }
 
 extension PlayerEngineProtocol {

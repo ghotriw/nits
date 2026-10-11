@@ -183,6 +183,19 @@ public final class PlayerEngine: PlayerEngineProtocol {
             audioRenderer.volume = isMuted ? 0.0 : volume
         }
     }
+    public var playbackRate: Double = 1.0 {
+        didSet {
+            let rounded = (playbackRate * 100).rounded() / 100.0
+            let clamped = max(0.5, min(rounded, 4.0))
+            if clamped != playbackRate {
+                playbackRate = clamped
+                return
+            }
+            if isPlaying {
+                synchronizer.setRate(Float(playbackRate), time: synchronizer.currentTime())
+            }
+        }
+    }
     public var audioTracks: [MediaDemuxer.AudioTrack] = []
     public var selectedAudioTrackId: Int = -1
 
@@ -359,6 +372,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         // Synchronizer manages audio receiver and master clock timeline
         self.audioReceiver = synchronizer.sampleBufferReceiver(adding: audioRenderer)
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
+        audioRenderer.audioTimePitchAlgorithm = .timeDomain
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         displayLayer.videoGravity = .resizeAspect
 
         let queue = self.frameQueue
@@ -419,6 +434,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         // Explicitly update target output device UID to trigger CoreAudio re-binding
         audioRenderer.audioOutputDeviceUniqueID = newUID
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
+        audioRenderer.audioTimePitchAlgorithm = .timeDomain
 
         if isPlaying {
             audioReceiver.flush()
@@ -1512,7 +1528,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 self.startFeeding()
                 let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
                 self.currentTime = effectiveStartTime
-                self.synchronizer.setRate(1.0, time: targetCMTime)
+                self.synchronizer.setRate(Float(self.playbackRate), time: targetCMTime)
                 self.displayLink?.isPaused = !hasVideo
                 self.isPlaying = true
                 self.playbackState = .playing
@@ -1808,7 +1824,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         if !feedingActive {
             startFeeding()
         }
-        synchronizer.setRate(1.0, time: synchronizer.currentTime())
+        synchronizer.setRate(Float(playbackRate), time: synchronizer.currentTime())
         displayLink?.isPaused = !hasVideo
         isPlaying = true
         playbackState = .playing
@@ -2036,7 +2052,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             self.chaseTargetTime = nil
             self.currentTime = completedSeconds
             self.startFeeding()
-            self.synchronizer.setRate(1.0, time: targetTime)
+            self.synchronizer.setRate(Float(self.playbackRate), time: targetTime)
             self.displayLink?.isPaused = !self.hasVideo
             self.isPlaying = true
             self.playbackState = .playing
@@ -2150,6 +2166,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     public func toggleMute() {
         isMuted.toggle()
+    }
+
+    public func setPlaybackRate(_ rate: Double) {
+        let rounded = (rate * 100).rounded() / 100.0
+        let clamped = max(0.5, min(rounded, 4.0))
+        guard clamped != playbackRate else { return }
+        playbackRate = clamped
+        AppLog.info(.engine, "Playback rate changed to \(playbackRate)x")
+    }
+
+    public func stepPlaybackRate(by delta: Double) {
+        let target = ((playbackRate + delta) * 10).rounded() / 10.0
+        setPlaybackRate(target)
+    }
+
+    public func resetPlaybackRate() {
+        setPlaybackRate(1.0)
     }
 
     public func toggleDebugHUD() {

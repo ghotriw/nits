@@ -400,6 +400,32 @@ extension PlayerWindowController: PlayerActions {
         }
     }
 
+    public var playbackRate: Double {
+        get { engine.playbackRate }
+        set { setPlaybackRate(newValue) }
+    }
+
+    public func setPlaybackRate(_ rate: Double) {
+        engine.setPlaybackRate(rate)
+        if engine.enableOSD {
+            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
+        }
+    }
+
+    public func stepPlaybackRate(by delta: Double) {
+        engine.stepPlaybackRate(by: delta)
+        if engine.enableOSD {
+            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
+        }
+    }
+
+    public func resetPlaybackRate() {
+        engine.resetPlaybackRate()
+        if engine.enableOSD {
+            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
+        }
+    }
+
     public func toggleDebugHUD() {
         withAnimation {
             engine.toggleDebugHUD()

@@ -94,6 +94,7 @@ public struct NowPlayingThrottler: Sendable {
     public private(set) var lastReportedTime: Double = -1
     public private(set) var lastReportedTitle: String = ""
     public private(set) var lastReportedIsPlaying: Bool? = nil
+    public private(set) var lastReportedPlaybackRate: Double = 1.0
     public private(set) var lastReportedDate: Date = .distantPast
 
     public init() {}
@@ -105,15 +106,19 @@ public struct NowPlayingThrottler: Sendable {
         currentTime: Double,
         duration: Double,
         isPlaying: Bool,
+        playbackRate: Double = 1.0,
         now: Date = Date()
     ) -> Bool {
         guard !title.isEmpty else { return false }
 
-        let isStateChange = (isPlaying != lastReportedIsPlaying) || (title != lastReportedTitle)
+        let isStateChange =
+            (isPlaying != lastReportedIsPlaying) || (title != lastReportedTitle)
+            || (abs(playbackRate - lastReportedPlaybackRate) > 0.01)
         let elapsed = now.timeIntervalSince(lastReportedDate)
+        let rateFactor = (lastReportedIsPlaying == true ? lastReportedPlaybackRate : 0.0)
         let expectedTime =
             lastReportedTime >= 0
-            ? lastReportedTime + (lastReportedIsPlaying == true ? elapsed : 0)
+            ? lastReportedTime + (elapsed * rateFactor)
             : currentTime
         let isSeeking = abs(currentTime - expectedTime) > 1.5
         let isHeartbeat = elapsed >= 5.0
@@ -122,7 +127,7 @@ public struct NowPlayingThrottler: Sendable {
             return false
         }
 
-        forceRecord(title: title, currentTime: currentTime, isPlaying: isPlaying, now: now)
+        forceRecord(title: title, currentTime: currentTime, isPlaying: isPlaying, playbackRate: playbackRate, now: now)
         return true
     }
 
@@ -131,11 +136,13 @@ public struct NowPlayingThrottler: Sendable {
         title: String,
         currentTime: Double,
         isPlaying: Bool,
+        playbackRate: Double = 1.0,
         now: Date = Date()
     ) {
         lastReportedTitle = title
         lastReportedTime = currentTime
         lastReportedIsPlaying = isPlaying
+        lastReportedPlaybackRate = playbackRate
         lastReportedDate = now
     }
 
@@ -162,6 +169,7 @@ public struct NowPlayingThrottler: Sendable {
         public var currentTime: Double = 0
         public var duration: Double = 0
         public var isPlaying: Bool = false
+        public var playbackRate: Double = 1.0
         public var rawArtworkData: Data? = nil
 
         public var onTogglePlayPause: (() -> Void)?
@@ -207,7 +215,7 @@ public struct NowPlayingThrottler: Sendable {
         public var playbackSnapshot: MediaPlaybackSnapshot? {
             guard !title.isEmpty else { return nil }
             return MediaPlaybackSnapshot(
-                state: isPlaying ? .playing(rate: 1.0) : .paused,
+                state: isPlaying ? .playing(rate: Float(playbackRate)) : .paused,
                 elapsedTime: max(0, currentTime),
                 timestamp: .now
             )
@@ -356,12 +364,14 @@ public struct NowPlayingThrottler: Sendable {
 
             resolveArtwork(data: artworkData, url: artworkURL)
 
+            let currentRate = engine?.playbackRate ?? 1.0
             guard
                 throttler.shouldUpdate(
                     title: title,
                     currentTime: currentTime,
                     duration: duration,
-                    isPlaying: isPlaying
+                    isPlaying: isPlaying,
+                    playbackRate: currentRate
                 )
             else {
                 return
@@ -371,6 +381,7 @@ public struct NowPlayingThrottler: Sendable {
             model.currentTime = currentTime
             model.duration = duration
             model.isPlaying = isPlaying
+            model.playbackRate = currentRate
 
             ensureActiveSession()
         }
@@ -641,12 +652,14 @@ public final class LegacyMediaPlayerController: NowPlayingController {
 
         resolveArtwork(data: artworkData, url: artworkURL)
 
+        let currentRate = engine?.playbackRate ?? 1.0
         guard
             throttler.shouldUpdate(
                 title: title,
                 currentTime: currentTime,
                 duration: duration,
-                isPlaying: isPlaying
+                isPlaying: isPlaying,
+                playbackRate: currentRate
             )
         else {
             return
@@ -714,10 +727,12 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         isPlaying: Bool
     ) {
         isActive = true
+        let currentRate = engine?.playbackRate ?? 1.0
         throttler.forceRecord(
             title: title,
             currentTime: currentTime,
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            playbackRate: currentRate
         )
 
         var info = [String: Any]()
@@ -726,8 +741,8 @@ public final class LegacyMediaPlayerController: NowPlayingController {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = max(0, currentTime)
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? currentRate : 0.0
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = currentRate
 
         if let rawArtworkData, let image = NSImage(data: rawArtworkData) {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in

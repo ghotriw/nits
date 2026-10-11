@@ -7,6 +7,7 @@ public protocol PlayerActions: AnyObject {
     var renderMode: RenderMode { get set }
     var metalSharpness: Float { get set }
     var isMuted: Bool { get }
+    var playbackRate: Double { get set }
     var showDebugHUD: Bool { get }
 
     var canJumpToTime: Bool { get }
@@ -22,6 +23,9 @@ public protocol PlayerActions: AnyObject {
     func seekRelative(by seconds: Double)
     func stepVolume(by delta: Float)
     func toggleMute()
+    func setPlaybackRate(_ rate: Double)
+    func stepPlaybackRate(by delta: Double)
+    func resetPlaybackRate()
     func toggleDebugHUD()
     func toggleQuickSettings()
     func toggleFullscreen()
@@ -31,6 +35,10 @@ public protocol PlayerActions: AnyObject {
 }
 
 extension PlayerActions {
+    public var playbackRate: Double {
+        get { 1.0 }
+        set {}
+    }
     public var canJumpToTime: Bool { true }
     public var isJumpToPresented: Bool { false }
     public var isQuickSettingsPresented: Bool { false }
@@ -40,6 +48,9 @@ extension PlayerActions {
     public func play() {}
     public func pause() {}
     public func seek(to seconds: Double) {}
+    public func setPlaybackRate(_ rate: Double) {}
+    public func stepPlaybackRate(by delta: Double) {}
+    public func resetPlaybackRate() {}
 }
 
 public struct PlayerActionsKey: FocusedValueKey {

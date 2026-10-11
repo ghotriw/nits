@@ -14,6 +14,68 @@ public struct QuickVideoPane: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            // Playback Speed Section (First Item)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Playback Speed", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    if engine.playbackRate != 1.0 {
+                        Button("Reset") {
+                            withAnimation {
+                                engine.resetPlaybackRate()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    let formattedRate: String = {
+                        let rate = engine.playbackRate
+                        let isTenth = abs((rate * 10).rounded() - (rate * 10)) < 1e-4
+                        return isTenth ? String(format: "%.1f×", rate) : String(format: "%.2f×", rate)
+                    }()
+                    Text(formattedRate)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(engine.playbackRate == 1.0 ? .white.opacity(0.7) : Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { engine.playbackRate },
+                        set: { engine.setPlaybackRate($0) }
+                    ),
+                    in: 0.5...2.5,
+                    step: 0.1
+                )
+
+                // Visual tick marks: 0.5×, 1.0×, 1.5×, 2.0×, 2.5×
+                HStack {
+                    Text("0.5×")
+                    Spacer()
+                    Text("1.0×")
+                    Spacer()
+                    Text("1.5×")
+                    Spacer()
+                    Text("2.0×")
+                    Spacer()
+                    Text("2.5×")
+                }
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.4))
+                .padding(.horizontal, 2)
+            }
+
+            Divider()
+                .overlay(Color.white.opacity(0.12))
+
             // Render Mode Section
             VStack(alignment: .leading, spacing: 8) {
                 Label("Render Mode", systemImage: "display")

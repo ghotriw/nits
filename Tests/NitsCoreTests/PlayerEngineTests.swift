@@ -437,4 +437,40 @@ struct PlayerEngineTests {
         #expect(PlayerEngine.resolveSubtitleSelection("stream:99", in: tracks) == nil)
         #expect(PlayerEngine.resolveSubtitleSelection("", in: tracks) == nil)
     }
+
+    @Test("Playback rate controls change speed, clamp bounds, and reset")
+    @MainActor
+    func testPlaybackRateControls() {
+        let engine = PlayerEngine()
+
+        #expect(engine.playbackRate == 1.0)
+
+        engine.setPlaybackRate(1.5)
+        #expect(engine.playbackRate == 1.5)
+
+        engine.stepPlaybackRate(by: 0.1)
+        #expect(abs(engine.playbackRate - 1.6) < 0.001)
+
+        engine.stepPlaybackRate(by: -0.2)
+        #expect(abs(engine.playbackRate - 1.4) < 0.001)
+
+        // Precision for 0.75x and 1.25x presets
+        engine.setPlaybackRate(0.75)
+        #expect(engine.playbackRate == 0.75)
+
+        engine.setPlaybackRate(1.25)
+        #expect(engine.playbackRate == 1.25)
+
+        // Upper clamp
+        engine.setPlaybackRate(10.0)
+        #expect(engine.playbackRate == 4.0)
+
+        // Lower clamp
+        engine.setPlaybackRate(0.0)
+        #expect(engine.playbackRate == 0.5)
+
+        // Reset
+        engine.resetPlaybackRate()
+        #expect(engine.playbackRate == 1.0)
+    }
 }

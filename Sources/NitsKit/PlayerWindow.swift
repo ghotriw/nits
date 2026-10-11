@@ -72,6 +72,15 @@ public final class PlayerWindow: NSWindow {
         case 0x03:  // Physical 'F' (ANSI F) -> Toggle Fullscreen on any layout
             actionHandler.toggleFullscreen()
             return true
+        case 0x21:  // Physical '[' (ANSI LeftBracket, 0x21 / 33) -> Decrease Speed by 0.1x
+            actionHandler.stepPlaybackRate(by: -0.1)
+            return true
+        case 0x1E:  // Physical ']' (ANSI RightBracket, 0x1E / 30) -> Increase Speed by 0.1x
+            actionHandler.stepPlaybackRate(by: 0.1)
+            return true
+        case 0x2A, 0x33:  // Physical '\' (0x2A / 42) or Backspace (0x33 / 51) -> Reset Speed to 1.0x
+            actionHandler.resetPlaybackRate()
+            return true
         case 0x35:  // Escape -> Dismiss dialogs/sidebars if active, or Exit Fullscreen if active
             if actionHandler.isJumpToPresented {
                 actionHandler.dismissJumpToTime()

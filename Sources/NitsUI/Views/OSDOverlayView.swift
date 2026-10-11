@@ -92,6 +92,8 @@ public struct OSDOverlayView: View {
             return "display"
         case .sharpness:
             return "wand.and.stars"
+        case .playbackRate:
+            return "gauge.with.dots.needle.bottom.50percent"
         case .custom(let symbol, _, _, _):
             return symbol
         }
@@ -127,6 +129,9 @@ public struct OSDOverlayView: View {
             return modeName
         case .sharpness(let value):
             return "Sharpness: \(Int(round(value * 100)))%"
+        case .playbackRate(let rate):
+            let isTenth = abs((rate * 10).rounded() - (rate * 10)) < 1e-4
+            return isTenth ? String(format: "%.1f×", rate) : String(format: "%.2f×", rate)
         case .custom(_, let text, _, _):
             return text
         }
@@ -146,6 +151,8 @@ public struct OSDOverlayView: View {
             return "Subtitles"
         case .renderMode:
             return "Render Pipeline"
+        case .playbackRate:
+            return "Speed"
         case .custom(_, _, let subtext, _):
             return subtext
         default:
@@ -161,6 +168,9 @@ public struct OSDOverlayView: View {
         case .sharpness(let value):
             guard value.isFinite else { return 0.0 }
             return max(0.0, min(1.0, value))
+        case .playbackRate(let rate):
+            guard rate.isFinite else { return 0.25 }
+            return max(0.0, min(1.0, Float((rate - 0.5) / 2.0)))
         case .custom(_, _, _, let progress):
             guard let progress, progress.isFinite else { return nil }
             return max(0.0, min(1.0, progress))

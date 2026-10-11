@@ -54,6 +54,25 @@ public struct PlayerCommands: Commands {
             }
             .keyboardShortcut("j", modifiers: .command)
             .disabled(playerActions == nil || !(playerActions?.canJumpToTime ?? false))
+
+            Divider()
+
+            Menu("Playback Speed") {
+                Button("0.5×") { playerActions?.setPlaybackRate(0.5) }
+                Button("0.75×") { playerActions?.setPlaybackRate(0.75) }
+                Button("1.0× (Normal)") { playerActions?.setPlaybackRate(1.0) }
+                Button("1.25×") { playerActions?.setPlaybackRate(1.25) }
+                Button("1.5×") { playerActions?.setPlaybackRate(1.5) }
+                Button("2.0×") { playerActions?.setPlaybackRate(2.0) }
+                Divider()
+                Button("Slower (-0.1×)") { playerActions?.stepPlaybackRate(by: -0.1) }
+                    .keyboardShortcut("[", modifiers: [.option])
+                Button("Faster (+0.1×)") { playerActions?.stepPlaybackRate(by: 0.1) }
+                    .keyboardShortcut("]", modifiers: [.option])
+                Button("Reset to Normal (1.0×)") { playerActions?.resetPlaybackRate() }
+                    .keyboardShortcut("\\", modifiers: [.option])
+            }
+            .disabled(playerActions == nil)
         }
 
         CommandMenu("Audio") {

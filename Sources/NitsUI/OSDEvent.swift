@@ -11,5 +11,6 @@ public enum OSDEvent: Equatable, Sendable {
     case subtitleTrack(title: String)
     case renderMode(modeName: String)
     case sharpness(value: Float)
+    case playbackRate(rate: Double)
     case custom(symbol: String, text: String, subtext: String? = nil, progress: Float? = nil)
 }
