@@ -21,7 +21,7 @@ AppLog.warning("Network", "Retrying range request")  // ad-hoc category
 
 ```swift
 extension LogCategory {
-    static let emby = LogCategory("Emby")
+    static let emby = LogCategory("YourCategoryName")
 }
 ```
 

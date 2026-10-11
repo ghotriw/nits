@@ -20,36 +20,17 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio)
     private var resumeEndThresholdRatio: Double = 0.95
 
-    @AppStorage(PlayerConfiguration.keySubtitleFontSize)
-    private var subtitleFontSize: Double = 24.0
-
-    @AppStorage(PlayerConfiguration.keySubtitleFontName)
-    private var subtitleFontName: String = "System Rounded"
-
-    @AppStorage(PlayerConfiguration.keySubtitleFontWeight)
-    private var subtitleFontWeight: String = "Semibold"
-
-    @AppStorage(PlayerConfiguration.keySubtitleTextColorHex)
-    private var subtitleTextColorHex: String = "#FFFFFF"
-
-    @AppStorage(PlayerConfiguration.keySubtitleBgColorHex)
-    private var subtitleBgColorHex: String = "#000000"
-
-    @AppStorage(PlayerConfiguration.keySubtitleBgOpacity)
-    private var subtitleBgOpacity: Double = 0.65
-
     @AppStorage(PlayerConfiguration.keyEnableOSD)
     private var enableOSD: Bool = true
 
     @State private var showHistoryClearedAlert: Bool = false
-    @State private var selectedTab: SettingsTab = .subtitles
+    @State private var selectedTab: SettingsTab = .general
 
     var onConfigurationChanged: ((PlayerConfiguration) -> Void)?
 
     public enum SettingsTab: String, CaseIterable, Identifiable {
         case general = "General"
         case video = "Video & HDR"
-        case subtitles = "Subtitles"
 
         public var id: String { rawValue }
 
@@ -59,8 +40,6 @@ public struct SettingsView: View {
                 return "gearshape"
             case .video:
                 return "tv"
-            case .subtitles:
-                return "captions.bubble"
             }
         }
     }
@@ -82,14 +61,8 @@ public struct SettingsView: View {
                     Label(SettingsTab.video.rawValue, systemImage: SettingsTab.video.iconName)
                 }
                 .tag(SettingsTab.video)
-
-            subtitlesTab
-                .tabItem {
-                    Label(SettingsTab.subtitles.rawValue, systemImage: SettingsTab.subtitles.iconName)
-                }
-                .tag(SettingsTab.subtitles)
         }
-        .frame(width: 620, height: 490)
+        .frame(width: 580, height: 440)
     }
 
     // MARK: - General Tab
@@ -104,34 +77,31 @@ public struct SettingsView: View {
                 if resumePlayback {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("Start threshold:")
+                            Text("Minimum watch time before saving:")
                             Spacer()
                             Text("\(Int(resumeStartThreshold))s")
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }
-                        Slider(value: $resumeStartThreshold, in: 0...60, step: 5)
+                        Slider(value: $resumeStartThreshold, in: 5...60, step: 5)
                             .onChange(of: resumeStartThreshold) { _, _ in
                                 notifyChange()
                             }
-                        Text("Positions played for less than this duration start from 00:00.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("End completion threshold:")
+                            Text("Completion threshold:")
                             Spacer()
                             Text("\(Int(resumeEndThresholdRatio * 100))%")
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }
-                        Slider(value: $resumeEndThresholdRatio, in: 0.80...0.99, step: 0.01)
+                        Slider(value: $resumeEndThresholdRatio, in: 0.8...0.99, step: 0.01)
                             .onChange(of: resumeEndThresholdRatio) { _, _ in
                                 notifyChange()
                             }
-                        Text("Videos watched past this point are considered completed.")
+                        Text("Playback past this point is considered finished and will not be resumed.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -231,199 +201,8 @@ public struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    // MARK: - Subtitles Tab
-    private var subtitlesTab: some View {
-        Form {
-            Section {
-                // Live Preview Box
-                VStack(spacing: 8) {
-                    HStack {
-                        Text("Preview")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    ZStack {
-                        // Background gradient mimicking a movie scene
-                        LinearGradient(
-                            colors: [Color(hex: "#1e293b") ?? .gray, Color(hex: "#0f172a") ?? .black],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        .frame(height: 100)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                        let previewText = "The quick brown fox jumps over the lazy dog."
-
-                        Text(previewText)
-                            .font(
-                                SubtitleOverlayView.resolveFont(
-                                    name: subtitleFontName, size: subtitleFontSize, weightName: subtitleFontWeight)
-                            )
-                            .foregroundStyle(Color(hex: subtitleTextColorHex) ?? .white)
-                            .multilineTextAlignment(.center)
-                            .subtitleOutline(radius: 1.5, color: .black.opacity(0.95))
-                            .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: 1.5)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill((Color(hex: subtitleBgColorHex) ?? .black).opacity(subtitleBgOpacity))
-                            )
-                            .padding(.horizontal, 20)
-                    }
-                }
-                .padding(.vertical, 4)
-            } header: {
-                Text("Appearance Preview")
-            }
-
-            Section {
-                // Font Family Picker
-                HStack {
-                    Text("Font:")
-                    Spacer()
-                    Picker("", selection: $subtitleFontName) {
-                        Section("System Designs") {
-                            Text("Rounded").tag("System Rounded")
-                            Text("Standard (SF Pro)").tag("System")
-                            Text("Serif (New York)").tag("System Serif")
-                            Text("Monospaced (SF Mono)").tag("System Monospaced")
-                        }
-                        Section("Standard Fonts") {
-                            ForEach(
-                                [
-                                    "Helvetica Neue", "Arial", "Avenir Next", "Futura", "Trebuchet MS", "Verdana",
-                                    "Menlo", "Georgia",
-                                ], id: \.self
-                            ) { name in
-                                Text(name).tag(name)
-                            }
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 200)
-                    .onChange(of: subtitleFontName) { _, _ in
-                        notifyChange()
-                    }
-                }
-
-                // Font Weight Picker
-                HStack {
-                    Text("Weight:")
-                    Spacer()
-                    Picker("", selection: $subtitleFontWeight) {
-                        Text("Regular").tag("Regular")
-                        Text("Medium").tag("Medium")
-                        Text("Semibold").tag("Semibold")
-                        Text("Bold").tag("Bold")
-                        Text("Heavy").tag("Heavy")
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 200)
-                    .onChange(of: subtitleFontWeight) { _, _ in
-                        notifyChange()
-                    }
-                }
-
-                // Font Size
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Base Font Size:")
-                        Spacer()
-                        Text("\(Int(subtitleFontSize)) pt")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $subtitleFontSize, in: 16...54, step: 2)
-                        .onChange(of: subtitleFontSize) { _, _ in
-                            notifyChange()
-                        }
-                    Text("Auto-scales proportionally with window and fullscreen size.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Text Color Picker
-                HStack {
-                    Text("Text Color:")
-                    Spacer()
-                    ColorPicker(
-                        "",
-                        selection: Binding(
-                            get: { Color(hex: subtitleTextColorHex) ?? .white },
-                            set: { newColor in
-                                if let hex = newColor.toHex() {
-                                    subtitleTextColorHex = hex
-                                    notifyChange()
-                                }
-                            }
-                        ),
-                        supportsOpacity: false
-                    )
-                    .labelsHidden()
-                }
-
-                // Background Color Picker
-                HStack {
-                    Text("Background Box Color:")
-                    Spacer()
-                    ColorPicker(
-                        "",
-                        selection: Binding(
-                            get: { Color(hex: subtitleBgColorHex) ?? .black },
-                            set: { newColor in
-                                if let hex = newColor.toHex() {
-                                    subtitleBgColorHex = hex
-                                    notifyChange()
-                                }
-                            }
-                        ),
-                        supportsOpacity: false
-                    )
-                    .labelsHidden()
-                }
-
-                // Background Opacity Slider
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Background Opacity:")
-                        Spacer()
-                        Text("\(Int(subtitleBgOpacity * 100))%")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $subtitleBgOpacity, in: 0.0...1.0, step: 0.05)
-                        .onChange(of: subtitleBgOpacity) { _, _ in
-                            notifyChange()
-                        }
-                    Text("Set to 0% to completely hide the background box and display text with shadow only.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Reset button
-                HStack {
-                    Spacer()
-                    Button("Reset to Defaults") {
-                        subtitleFontSize = 24.0
-                        subtitleFontName = "System Rounded"
-                        subtitleFontWeight = "Semibold"
-                        subtitleTextColorHex = "#FFFFFF"
-                        subtitleBgColorHex = "#000000"
-                        subtitleBgOpacity = 0.65
-                        notifyChange()
-                    }
-                }
-            } header: {
-                Text("Typography & Style")
-            }
-        }
-        .formStyle(.grouped)
-    }
-
     private func notifyChange() {
+        let savedConfig = PlayerConfiguration.loadFromUserDefaults()
         let current = PlayerConfiguration(
             enableToneMapping: enableToneMapping,
             defaultRenderMode: .auto,
@@ -432,12 +211,12 @@ public struct SettingsView: View {
             resumePlayback: resumePlayback,
             resumeStartThreshold: resumeStartThreshold,
             resumeEndThresholdRatio: resumeEndThresholdRatio,
-            subtitleFontSize: subtitleFontSize,
-            subtitleFontName: subtitleFontName,
-            subtitleFontWeight: subtitleFontWeight,
-            subtitleTextColorHex: subtitleTextColorHex,
-            subtitleBgColorHex: subtitleBgColorHex,
-            subtitleBgOpacity: subtitleBgOpacity,
+            subtitleFontSize: savedConfig.subtitleFontSize,
+            subtitleFontName: savedConfig.subtitleFontName,
+            subtitleFontWeight: savedConfig.subtitleFontWeight,
+            subtitleTextColorHex: savedConfig.subtitleTextColorHex,
+            subtitleBgColorHex: savedConfig.subtitleBgColorHex,
+            subtitleBgOpacity: savedConfig.subtitleBgOpacity,
             enableOSD: enableOSD
         )
         onConfigurationChanged?(current)

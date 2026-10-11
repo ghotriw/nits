@@ -40,6 +40,10 @@ public struct ControlsOverlay: View {
                         .fill(Color(NSColor.separatorColor))
                         .frame(height: 1)
                 }
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    NSApp.keyWindow?.zoom(nil)
+                }
                 .onHover { hovering in
                     isTopHovered = hovering
                     updateInteractionState()
@@ -203,6 +207,23 @@ public struct ControlsOverlay: View {
                 }
                 .buttonStyle(.plain)
                 .help("Select Subtitles")
+
+                // Quick Settings Toggle Button
+                Button {
+                    withAnimation(.spring(duration: 0.25)) {
+                        uiState?.toggleQuickSettings()
+                    }
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 17))
+                        .foregroundStyle(
+                            uiState?.isQuickSettingsPresented == true
+                                ? Color.accentColor
+                                : Color.white.opacity(0.85)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Quick Settings (⌥⌘S)")
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)

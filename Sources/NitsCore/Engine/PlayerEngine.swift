@@ -50,6 +50,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     public var videoWidth: Int = 0
     public var videoHeight: Int = 0
+    public var videoCodecName: String = ""
+    public var videoBitDepth: Int = 8
+    public var videoColorPrimaries: String = ""
+    public var videoTransferFunction: String = ""
+    public var videoDolbyVisionProfile: String? = nil
+    public var videoSourcePeakNits: Float = 0
     public var isHDRContent: Bool = false {
         didSet {
             if oldValue != isHDRContent {
@@ -1046,6 +1052,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
         stopPlaybackPipeline()
         clearVideoSurface()
         hasVideo = false
+        videoWidth = 0
+        videoHeight = 0
+        videoCodecName = ""
+        videoBitDepth = 8
+        videoColorPrimaries = ""
+        videoTransferFunction = ""
+        videoDolbyVisionProfile = nil
+        videoSourcePeakNits = 0
+        currentMetrics = PlayerPerformanceMonitor.Metrics()
         dynamicToneMapLock.withLock {
             $0.basePeakNits = 1000.0
             $0.baseTargetNits = 203.0
@@ -1387,9 +1402,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 return nil
             }()
 
+            let codecDisplay: String =
+                switch demuxer.codec {
+                case .hevc: "HEVC"
+                case .h264: "H.264"
+                case .av1: "AV1"
+                case .unknown: "Unknown"
+                }
+            self.videoCodecName = codecDisplay
+            self.videoBitDepth = demuxer.bitDepth
+            self.videoColorPrimaries = primariesStr
+            self.videoTransferFunction = transferStr
+            self.videoDolbyVisionProfile = dvProfileStr
+            self.videoSourcePeakNits = demuxer.maxPeakNits
+
             self.performanceMonitor.updateStreamMetadata(
                 resolution: "\(demuxer.width)x\(demuxer.height)",
-                codecName: demuxer.codec == .hevc ? "HEVC" : "H.264",
+                codecName: codecDisplay,
                 bitDepth: demuxer.bitDepth,
                 colorPrimaries: primariesStr,
                 transferFunction: transferStr,
@@ -1415,9 +1444,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     targetNits: effectiveTargetNits
                 )
             )
-            if self.showDebugHUD {
-                self.currentMetrics = self.performanceMonitor.currentMetrics
-            }
+            self.currentMetrics = self.performanceMonitor.currentMetrics
         }
 
         AppLog.info(

@@ -109,6 +109,16 @@ public struct PlayerCommands: Commands {
 
         CommandMenu("View") {
             Toggle(
+                "Quick Settings",
+                isOn: Binding(
+                    get: { playerActions?.isQuickSettingsPresented ?? false },
+                    set: { _ in playerActions?.toggleQuickSettings() }
+                )
+            )
+            .keyboardShortcut("s", modifiers: [.option, .command])
+            .disabled(playerActions == nil)
+
+            Toggle(
                 "Performance HUD",
                 isOn: Binding(
                     get: { playerActions?.showDebugHUD ?? false },

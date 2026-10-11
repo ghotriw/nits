@@ -224,6 +224,33 @@ public struct ContentView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 .zIndex(100)
             }
+
+            // Quick Settings Overlay Drawer - Trailing Side
+            if uiState.isQuickSettingsPresented {
+                ZStack(alignment: .trailing) {
+                    // Transparent backdrop covering the rest of the window
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.spring(duration: 0.25)) {
+                                uiState.isQuickSettingsPresented = false
+                            }
+                        }
+
+                    QuickSettingsOverlayView(
+                        engine: engine,
+                        uiState: uiState,
+                        onClose: {
+                            withAnimation(.spring(duration: 0.25)) {
+                                uiState.isQuickSettingsPresented = false
+                            }
+                        }
+                    )
+                    .transition(.move(edge: .trailing))
+                }
+                .ignoresSafeArea()
+                .zIndex(90)
+            }
         }
         .frame(minWidth: 700, minHeight: 450)
         .onContinuousHover { phase in
@@ -249,6 +276,13 @@ public struct ContentView: View {
                 scheduleControlsHide()
             }
         }
+        .onChange(of: uiState.isQuickSettingsPresented) { _, presented in
+            if presented {
+                hideTimer?.cancel()
+            } else {
+                scheduleControlsHide()
+            }
+        }
         .onChange(of: isControlsVisible) { _, visible in
             onControlsVisibilityChanged?(visible)
         }
@@ -259,6 +293,15 @@ public struct ContentView: View {
         .focusEffectDisabled()
         .focused($isFocused)
         .defaultFocus($isFocused, true)
+        .onKeyPress(.escape) {
+            if uiState.isQuickSettingsPresented {
+                withAnimation(.spring(duration: 0.25)) {
+                    uiState.isQuickSettingsPresented = false
+                }
+                return .handled
+            }
+            return .ignored
+        }
         .onAppear {
             onControlsVisibilityChanged?(isControlsVisible)
         }
@@ -272,11 +315,15 @@ public struct ContentView: View {
     }
 
     private func scheduleControlsHide() {
-        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented else { return }
+        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, !uiState.isQuickSettingsPresented else {
+            return
+        }
         hideTimer?.cancel()
         hideTimer = Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented {
+            if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented
+                && !uiState.isQuickSettingsPresented
+            {
                 withAnimation {
                     isControlsVisible = false
                 }

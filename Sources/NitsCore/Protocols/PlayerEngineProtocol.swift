@@ -35,6 +35,12 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var hasVideo: Bool { get }
     @MainActor var videoWidth: Int { get }
     @MainActor var videoHeight: Int { get }
+    @MainActor var videoCodecName: String { get }
+    @MainActor var videoBitDepth: Int { get }
+    @MainActor var videoColorPrimaries: String { get }
+    @MainActor var videoTransferFunction: String { get }
+    @MainActor var videoDolbyVisionProfile: String? { get }
+    @MainActor var videoSourcePeakNits: Float { get }
 
     @MainActor var renderMode: RenderMode { get set }
     @MainActor var isHDRDisplay: Bool { get set }

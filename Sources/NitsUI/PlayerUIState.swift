@@ -8,11 +8,17 @@ public final class PlayerUIState {
     public var controlsVisibilityTrigger: Int = 0
     public var isJumpToPresented: Bool = false
     public var wasPlayingBeforeJumpTo: Bool = false
+    public var isQuickSettingsPresented: Bool = false
+    public var selectedQuickSettingsTab: QuickSettingsTab = .video
     public let osd: OSDManager
 
     public init(isFullscreen: Bool = false, osd: OSDManager = OSDManager()) {
         self.isFullscreen = isFullscreen
         self.osd = osd
+    }
+
+    public func toggleQuickSettings() {
+        isQuickSettingsPresented.toggle()
     }
 
     public func showControlsTemporarily() {

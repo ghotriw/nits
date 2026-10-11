@@ -418,6 +418,16 @@ extension PlayerWindowController: PlayerActions {
         uiState.isJumpToPresented
     }
 
+    public var isQuickSettingsPresented: Bool {
+        uiState.isQuickSettingsPresented
+    }
+
+    public func toggleQuickSettings() {
+        withAnimation(.spring(duration: 0.25)) {
+            uiState.toggleQuickSettings()
+        }
+    }
+
     public func promptJumpToTime() {
         guard canJumpToTime else { return }
         if uiState.isJumpToPresented {

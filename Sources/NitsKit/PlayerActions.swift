@@ -11,6 +11,7 @@ public protocol PlayerActions: AnyObject {
 
     var canJumpToTime: Bool { get }
     var isJumpToPresented: Bool { get }
+    var isQuickSettingsPresented: Bool { get }
 
     func togglePlayPause()
     func play()
@@ -22,6 +23,7 @@ public protocol PlayerActions: AnyObject {
     func stepVolume(by delta: Float)
     func toggleMute()
     func toggleDebugHUD()
+    func toggleQuickSettings()
     func toggleFullscreen()
     func exitFullscreen()
     func promptJumpToTime()
@@ -31,8 +33,10 @@ public protocol PlayerActions: AnyObject {
 extension PlayerActions {
     public var canJumpToTime: Bool { true }
     public var isJumpToPresented: Bool { false }
+    public var isQuickSettingsPresented: Bool { false }
     public func promptJumpToTime() {}
     public func dismissJumpToTime() {}
+    public func toggleQuickSettings() {}
     public func play() {}
     public func pause() {}
     public func seek(to seconds: Double) {}
