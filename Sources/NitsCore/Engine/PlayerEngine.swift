@@ -280,8 +280,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     private var chaseSettleTask: Task<Void, Never>? = nil
     @ObservationIgnored
     private var lastRelativeSeekTimestamp: CFAbsoluteTime = 0
-    private var audioConfigObserver: (any NSObjectProtocol)?
-    private var audioAutoFlushObserver: (any NSObjectProtocol)?
+    private let audioRouteMonitor = AudioDeviceRouteMonitor()
     private var timeObserver: Any?
     private var lastSavedProgressSeconds: Double = 0.0
     private var configuration: PlayerConfiguration
@@ -400,19 +399,25 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     private func setupAudioObservers() {
-        // macOS 27.0+: Spatial Audio reconfiguration and route changes are signaled
-        // via AVSampleBufferAudioRenderer.Receiver enqueue(_:) result (.enqueuedWithSuggestedFlush),
-        // which automatically triggers flush and reload where needed.
+        // Monitor system-wide default audio device changes (e.g. connecting AirPods, Bluetooth, or HDMI)
+        audioRouteMonitor.startMonitoring { [weak self] newUID in
+            self?.handleAudioDeviceRouteChange(newUID: newUID)
+        }
     }
 
-    private func handleAudioConfigurationChange() {
-        guard isPlaying else { return }
+    private func handleAudioDeviceRouteChange(newUID: String?) {
         AppLog.info(
             .audio,
-            "Audio configuration changed (Spatial Audio toggle or route change)"
+            "Default audio output device route changed (UID: \(newUID ?? "nil [system default]"))"
         )
-        audioReceiver.flush()
-        audioDecoder?.flush()
+        // Explicitly update target output device UID to trigger CoreAudio re-binding
+        audioRenderer.audioOutputDeviceUniqueID = newUID
+        audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
+
+        if isPlaying {
+            audioReceiver.flush()
+            audioDecoder?.flush()
+        }
     }
 
     private func setupMetricsMonitoring() {
@@ -2132,12 +2137,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         if let observer = timeObserver {
             synchronizer.removeTimeObserver(observer)
         }
-        if let obs = audioConfigObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
-        if let obs = audioAutoFlushObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
+        audioRouteMonitor.stopMonitoring()
         displayLink?.invalidate()
         displayLink = nil
         metricsTimer?.cancel()

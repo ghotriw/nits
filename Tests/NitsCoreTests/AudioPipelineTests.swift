@@ -2,6 +2,7 @@ import AudioToolbox
 import CFFmpeg
 import CoreMedia
 import Testing
+import os
 
 @testable import NitsCore
 
@@ -135,5 +136,23 @@ struct AudioPipelineTests {
                 count += 1
             }
         }
+    }
+
+    @Test("AudioDeviceRouteMonitor fetches default output device and manages lifecycle cleanly")
+    @MainActor
+    func testAudioDeviceRouteMonitorLifecycle() {
+        let monitor = AudioDeviceRouteMonitor()
+        let initialUID = AudioDeviceRouteMonitor.fetchDefaultOutputDeviceUID()
+        if let initialUID {
+            #expect(!initialUID.isEmpty)
+        }
+
+        let routeUpdateCount = OSAllocatedUnfairLock(initialState: 0)
+        monitor.startMonitoring { _ in
+            routeUpdateCount.withLock { $0 += 1 }
+        }
+        #expect(routeUpdateCount.withLock { $0 } == 0)
+
+        monitor.stopMonitoring()
     }
 }
