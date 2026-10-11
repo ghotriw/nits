@@ -41,9 +41,13 @@ public struct ControlsOverlay: View {
                         .frame(height: 1)
                 }
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2) {
-                    NSApp.keyWindow?.zoom(nil)
-                }
+                .gesture(WindowDragGesture())
+                .simultaneousGesture(
+                    TapGesture(count: 2).onEnded {
+                        (NSApp.keyWindow ?? NSApp.mainWindow)?.zoom(nil)
+                    }
+                )
+                .allowsWindowActivationEvents()
                 .onHover { hovering in
                     isTopHovered = hovering
                     updateInteractionState()
