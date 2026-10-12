@@ -69,10 +69,19 @@ extension PlayerEngine {
             let playlistURL = isNetwork ? URL(string: path) : URL(fileURLWithPath: path)
         {
             // Parse playlist asynchronously without blocking the MainActor
+            self.isLoading = true
+            self.playlist.setIsLoading(true)
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
                 guard let self else { return }
+                defer {
+                    self.playlist.setIsLoading(false)
+                    if Task.isCancelled {
+                        self.isLoading = false
+                    }
+                }
                 let parsedItems = await PlaylistParser.parseAsync(url: playlistURL)
+                guard !Task.isCancelled else { return }
                 if !parsedItems.isEmpty {
                     AppLog.info(
                         .playlist,
@@ -82,6 +91,8 @@ extension PlayerEngine {
                     self.playlist.append(items: parsedItems)
                     if let firstItem = self.playlist.currentItem {
                         self.load(item: firstItem)
+                    } else {
+                        self.isLoading = false
                     }
                 } else if isNetwork {
                     // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
@@ -95,6 +106,8 @@ extension PlayerEngine {
                         audioTrack: audioTrack,
                         subtitleTrack: subtitleTrack
                     )
+                } else {
+                    self.isLoading = false
                 }
             }
             return
@@ -369,6 +382,7 @@ extension PlayerEngine {
         currentPath = nil
         currentTime = 0
         duration = 0
+        isLoading = false
         playbackState = .idle
     }
 

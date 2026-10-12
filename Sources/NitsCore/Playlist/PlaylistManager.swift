@@ -21,6 +21,9 @@ public final class PlaylistManager: Sendable {
         }
     }
 
+    /// Whether the playlist is currently loading/parsing media tracks asynchronously.
+    public private(set) var isLoading: Bool = false
+
     /// Items filtered by the current `searchQuery` (cached for performance).
     public private(set) var filteredItems: [PlaylistItem] = []
 
@@ -71,6 +74,11 @@ public final class PlaylistManager: Sendable {
                     || item.filename.localizedCaseInsensitiveContains(trimmed)
             }
         }
+    }
+
+    /// Sets whether the playlist is currently performing an asynchronous load or network fetch.
+    package func setIsLoading(_ loading: Bool) {
+        self.isLoading = loading
     }
 
     // MARK: - Current Item & Status
@@ -250,10 +258,12 @@ public final class PlaylistManager: Sendable {
         guard !newItems.isEmpty else { return }
 
         let startOriginalIndex = items.count
-        for (offset, var item) in newItems.enumerated() {
-            item.originalIndex = startOriginalIndex + offset
-            items.append(item)
+        let preparedItems = newItems.enumerated().map { offset, item in
+            var copy = item
+            copy.originalIndex = startOriginalIndex + offset
+            return copy
         }
+        items.append(contentsOf: preparedItems)
         AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
         if currentIndex == nil && !items.isEmpty {
             currentIndex = 0
@@ -263,10 +273,14 @@ public final class PlaylistManager: Sendable {
 
     /// Asynchronously appends multiple URLs to the playlist, fetching remote playlists without blocking.
     public func appendAsync(urls: [URL]) async {
+        self.isLoading = true
+        defer { self.isLoading = false }
+
         let fm = FileManager.default
         var newItems: [PlaylistItem] = []
 
         for url in urls {
+            if Task.isCancelled { break }
             var isDir: ObjCBool = false
             if url.isFileURL && fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue {
                 let folderMedia = Self.findPlayableMedia(in: url, recursive: false)
@@ -283,13 +297,15 @@ public final class PlaylistManager: Sendable {
             }
         }
 
-        guard !newItems.isEmpty else { return }
+        guard !Task.isCancelled, !newItems.isEmpty else { return }
 
         let startOriginalIndex = items.count
-        for (offset, var item) in newItems.enumerated() {
-            item.originalIndex = startOriginalIndex + offset
-            items.append(item)
+        let preparedItems = newItems.enumerated().map { offset, item in
+            var copy = item
+            copy.originalIndex = startOriginalIndex + offset
+            return copy
         }
+        items.append(contentsOf: preparedItems)
         AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
         if currentIndex == nil && !items.isEmpty {
             currentIndex = 0
@@ -322,10 +338,12 @@ public final class PlaylistManager: Sendable {
     public func append(items newItems: [PlaylistItem]) {
         guard !newItems.isEmpty else { return }
         let startOriginalIndex = items.count
-        for (offset, var item) in newItems.enumerated() {
-            item.originalIndex = startOriginalIndex + offset
-            items.append(item)
+        let preparedItems = newItems.enumerated().map { offset, item in
+            var copy = item
+            copy.originalIndex = startOriginalIndex + offset
+            return copy
         }
+        items.append(contentsOf: preparedItems)
         AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
         if currentIndex == nil && !items.isEmpty {
             currentIndex = 0
@@ -351,36 +369,40 @@ public final class PlaylistManager: Sendable {
         let newItems = urls.enumerated().map { offset, url in
             PlaylistItem(url: url, originalIndex: clampedIndex + offset)
         }
-        items.insert(contentsOf: newItems, at: clampedIndex)
+        var updatedItems = items
+        updatedItems.insert(contentsOf: newItems, at: clampedIndex)
+
+        // Re-index originalIndex so unshuffle restores current sequential order
+        if !isShuffled {
+            for idx in updatedItems.indices {
+                updatedItems[idx].originalIndex = idx
+            }
+        }
+        self.items = updatedItems
 
         // Adjust current index if insertion happens before or at current
         if let current = currentIndex, clampedIndex <= current {
             currentIndex = current + urls.count
-        }
-
-        // Re-index originalIndex so unshuffle restores current sequential order
-        if !isShuffled {
-            for (idx, _) in items.enumerated() {
-                items[idx].originalIndex = idx
-            }
         }
     }
 
     /// Removes items at specified offsets.
     public func remove(at offsets: IndexSet) {
         let currentId = currentItem?.id
+        var updatedItems = items
         for index in offsets.sorted(by: >) {
-            if items.indices.contains(index) {
-                items.remove(at: index)
+            if updatedItems.indices.contains(index) {
+                updatedItems.remove(at: index)
             }
         }
 
         // Re-index originalIndex if not shuffled
         if !isShuffled {
-            for (idx, _) in items.enumerated() {
-                items[idx].originalIndex = idx
+            for idx in updatedItems.indices {
+                updatedItems[idx].originalIndex = idx
             }
         }
+        self.items = updatedItems
 
         // Re-locate current item
         if let currentId, let newIndex = items.firstIndex(where: { $0.id == currentId }) {
@@ -411,24 +433,26 @@ public final class PlaylistManager: Sendable {
         let sourceIndices = source.filter { items.indices.contains($0) }.sorted()
         guard !sourceIndices.isEmpty else { return }
 
-        let movingItems = sourceIndices.map { items[$0] }
+        var updatedItems = items
+        let movingItems = sourceIndices.map { updatedItems[$0] }
         for index in sourceIndices.reversed() {
-            items.remove(at: index)
+            updatedItems.remove(at: index)
         }
 
         let adjustedDestination = destination - sourceIndices.filter { $0 < destination }.count
-        let clampedDestination = max(0, min(adjustedDestination, items.count))
-        items.insert(contentsOf: movingItems, at: clampedDestination)
-
-        if let currentId, let newIndex = items.firstIndex(where: { $0.id == currentId }) {
-            currentIndex = newIndex
-        }
+        let clampedDestination = max(0, min(adjustedDestination, updatedItems.count))
+        updatedItems.insert(contentsOf: movingItems, at: clampedDestination)
 
         // Re-index originalIndex so user-reordered items are preserved on unshuffle
         if !isShuffled {
-            for (idx, _) in items.enumerated() {
-                items[idx].originalIndex = idx
+            for idx in updatedItems.indices {
+                updatedItems[idx].originalIndex = idx
             }
+        }
+        self.items = updatedItems
+
+        if let currentId, let newIndex = items.firstIndex(where: { $0.id == currentId }) {
+            currentIndex = newIndex
         }
     }
 
@@ -513,23 +537,26 @@ public final class PlaylistManager: Sendable {
 
     /// Sorts the playlist items according to the requested order.
     public func sort(by order: PlaylistSortOrder) {
+        guard items.count > 1 else { return }
         let currentId = currentItem?.id
+        var updatedItems = items
 
         switch order {
         case .titleAscending:
-            items.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            updatedItems.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         case .titleDescending:
-            items.sort { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
+            updatedItems.sort { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
         case .filenameAscending:
-            items.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            updatedItems.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
         case .filenameDescending:
-            items.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedDescending }
+            updatedItems.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedDescending }
         }
 
         isShuffled = false
-        for (idx, _) in items.enumerated() {
-            items[idx].originalIndex = idx
+        for idx in updatedItems.indices {
+            updatedItems[idx].originalIndex = idx
         }
+        self.items = updatedItems
 
         if let currentId, let newIndex = items.firstIndex(where: { $0.id == currentId }) {
             currentIndex = newIndex

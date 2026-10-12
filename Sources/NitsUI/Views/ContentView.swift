@@ -327,7 +327,9 @@ public struct ContentView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($isFocused)
-        .defaultFocus($isFocused, true)
+        .defaultFocus(
+            $isFocused, !uiState.isPlaylistPresented && !uiState.isQuickSettingsPresented && !uiState.isJumpToPresented
+        )
         .onKeyPress(.escape) {
             if uiState.isPlaylistPresented {
                 withAnimation(.spring(duration: 0.25)) {

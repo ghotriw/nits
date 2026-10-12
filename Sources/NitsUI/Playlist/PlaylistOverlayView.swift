@@ -37,7 +37,9 @@ public struct PlaylistOverlayView: View {
                 .overlay(Color.white.opacity(0.08))
 
             // MARK: - Body / List
-            if engine.playlist.items.isEmpty {
+            if engine.playlist.isLoading && engine.playlist.items.isEmpty {
+                loadingStateView
+            } else if engine.playlist.items.isEmpty {
                 emptyStateView
             } else if engine.playlist.filteredItems.isEmpty {
                 noMatchStateView
@@ -112,7 +114,10 @@ public struct PlaylistOverlayView: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white)
 
-            if !engine.playlist.items.isEmpty {
+            if engine.playlist.isLoading {
+                ProgressView()
+                    .controlSize(.mini)
+            } else if !engine.playlist.items.isEmpty {
                 Text("\(engine.playlist.items.count)")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.7))
@@ -261,40 +266,177 @@ public struct PlaylistOverlayView: View {
 
     // MARK: - Filter Bar View
 
-    private var filterBarView: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.4))
+    @MainActor
+    fileprivate struct SearchBarView: NSViewRepresentable {
+        @Binding var text: String
+        var prompt: String = "Filter playlist…"
 
-            TextField(
-                "Filter playlist…",
+        func makeNSView(context: Context) -> SearchBarContainerView {
+            let view = SearchBarContainerView(prompt: prompt)
+            view.onTextChanged = { newText in
+                text = newText
+            }
+            return view
+        }
+
+        func updateNSView(_ nsView: SearchBarContainerView, context: Context) {
+            nsView.onTextChanged = { newText in
+                text = newText
+            }
+            nsView.updateText(text)
+            nsView.updatePrompt(prompt)
+        }
+    }
+
+    @MainActor
+    fileprivate final class SearchBarContainerView: NSView, NSTextFieldDelegate {
+        private let iconView = NSImageView()
+        private let textField = NSTextField()
+        private let clearButton = NSButton()
+        var onTextChanged: ((String) -> Void)?
+
+        init(prompt: String) {
+            super.init(frame: .zero)
+            setupViews(prompt: prompt)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            window?.makeFirstResponder(textField)
+        }
+
+        private func setupViews(prompt: String) {
+            wantsLayer = true
+
+            // Magnifying glass icon
+            iconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
+            iconView.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+            iconView.imageScaling = .scaleProportionallyDown
+            addSubview(iconView)
+
+            // Left-aligned NSTextField
+            textField.isBordered = false
+            textField.drawsBackground = false
+            textField.focusRingType = .none
+            textField.font = .systemFont(ofSize: 12)
+            textField.textColor = .white
+            textField.placeholderString = prompt
+            textField.delegate = self
+            textField.maximumNumberOfLines = 1
+            textField.cell?.isScrollable = true
+            textField.cell?.wraps = false
+            textField.lineBreakMode = .byClipping
+            addSubview(textField)
+
+            // Clear button (xmark)
+            clearButton.bezelStyle = .regularSquare
+            clearButton.isBordered = false
+            clearButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Clear")
+            clearButton.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+            clearButton.target = self
+            clearButton.action = #selector(clearClicked)
+            clearButton.isHidden = true
+            addSubview(clearButton)
+        }
+
+        override var isFlipped: Bool { true }
+
+        override func layout() {
+            super.layout()
+            let h = bounds.height
+            let iconSize: CGFloat = 12
+            iconView.frame = NSRect(x: 9, y: round((h - iconSize) / 2), width: iconSize, height: iconSize)
+
+            let clearButtonSize: CGFloat = 20
+            let clearX = bounds.width - clearButtonSize - 4
+            clearButton.frame = NSRect(
+                x: clearX, y: round((h - clearButtonSize) / 2), width: clearButtonSize, height: clearButtonSize)
+
+            let textX: CGFloat = 27
+            let textRight = clearButton.isHidden ? (bounds.width - 8) : (clearX - 2)
+            let textW = max(0, textRight - textX)
+            let textH: CGFloat = 16
+            let textY = round((h - textH) / 2) + 0.5
+            textField.frame = NSRect(x: textX, y: textY, width: textW, height: textH)
+        }
+
+        @objc private func clearClicked() {
+            textField.stringValue = ""
+            clearButton.isHidden = true
+            needsLayout = true
+            onTextChanged?("")
+            window?.makeFirstResponder(textField)
+        }
+
+        func updateText(_ text: String) {
+            if textField.stringValue != text {
+                textField.stringValue = text
+            }
+            let shouldHide = text.isEmpty
+            if clearButton.isHidden != shouldHide {
+                clearButton.isHidden = shouldHide
+                needsLayout = true
+            }
+        }
+
+        func updatePrompt(_ prompt: String) {
+            if textField.placeholderString != prompt {
+                textField.placeholderString = prompt
+            }
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            let text = textField.stringValue
+            let shouldHide = text.isEmpty
+            if clearButton.isHidden != shouldHide {
+                clearButton.isHidden = shouldHide
+                needsLayout = true
+            }
+            onTextChanged?(text)
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                if !textField.stringValue.isEmpty {
+                    clearClicked()
+                    return true
+                } else {
+                    window?.makeFirstResponder(nil)
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    private var filterBarView: some View {
+        HStack(spacing: 6) {
+            SearchBarView(
                 text: Binding(
                     get: { engine.playlist.searchQuery },
                     set: { engine.playlist.searchQuery = $0 }
                 )
             )
-            .textFieldStyle(.plain)
-            .font(.system(size: 12))
-            .foregroundStyle(.white)
+            .frame(height: 28)
 
             if !engine.playlist.searchQuery.isEmpty {
                 Text("\(engine.playlist.filteredItems.count) of \(engine.playlist.items.count)")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.4))
-
-                Button {
-                    engine.playlist.searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .buttonStyle(.plain)
+                    .padding(.trailing, 6)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .padding(.horizontal, 12)
@@ -306,33 +448,27 @@ public struct PlaylistOverlayView: View {
 
     private var playlistListView: some View {
         ScrollViewReader { proxy in
-            List {
-                ForEach(Array(engine.playlist.filteredItems.enumerated()), id: \.element.id) { index, item in
-                    PlaylistRowView(
-                        item: item,
-                        index: index,
-                        isCurrent: engine.playlist.currentItem?.id == item.id,
-                        isPlaying: engine.isPlaying && engine.playlist.currentItem?.id == item.id,
-                        onSelect: {
-                            engine.playPlaylistItem(id: item.id)
-                        },
-                        onRemove: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                engine.removePlaylistItem(id: item.id)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(engine.playlist.filteredItems.enumerated()), id: \.element.id) { index, item in
+                        PlaylistRowView(
+                            item: item,
+                            index: index,
+                            isCurrent: engine.playlist.currentItem?.id == item.id,
+                            isPlaying: engine.isPlaying && engine.playlist.currentItem?.id == item.id,
+                            onSelect: {
+                                engine.playPlaylistItem(id: item.id)
+                            },
+                            onRemove: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    engine.removePlaylistItem(id: item.id)
+                                }
                             }
-                        }
-                    )
-                    .id(item.id)
-                    .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
+                        )
+                        .id(item.id)
+                    }
                 }
-                .onMove { source, destination in
-                    engine.playlist.move(from: source, to: destination)
-                }
-                .moveDisabled(!engine.playlist.searchQuery.isEmpty)
             }
-            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .onAppear {
                 scrollToActiveItem(using: proxy, animated: false)
@@ -356,7 +492,29 @@ public struct PlaylistOverlayView: View {
         }
     }
 
-    // MARK: - Empty States
+    // MARK: - Empty & Loading States
+
+    private var loadingStateView: some View {
+        VStack(spacing: 12) {
+            Spacer()
+
+            ProgressView()
+                .controlSize(.regular)
+
+            Text("Loading Playlist…")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+
+            Text("Fetching and parsing media tracks…")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.45))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
     private var emptyStateView: some View {
         VStack(spacing: 12) {
@@ -438,10 +596,22 @@ public struct PlaylistOverlayView: View {
 
     private var footerSummaryView: some View {
         HStack {
-            let totalItems = engine.playlist.items.count
-            Text("\(totalItems) \(totalItems == 1 ? "item" : "items")")
-                .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(.white.opacity(0.5))
+            if engine.playlist.isLoading {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    let totalItems = engine.playlist.items.count
+                    let itemLabel = totalItems == 1 ? "item" : "items"
+                    Text(totalItems > 0 ? "\(totalItems) \(itemLabel) (loading…)" : "Loading…")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            } else {
+                let totalItems = engine.playlist.items.count
+                Text("\(totalItems) \(totalItems == 1 ? "item" : "items")")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
 
             Spacer()
 

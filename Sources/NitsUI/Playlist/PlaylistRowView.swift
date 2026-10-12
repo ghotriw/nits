@@ -44,7 +44,7 @@ public struct PlaylistRowView: View {
                         .foregroundStyle(.white.opacity(0.4))
                 }
             }
-            .frame(minWidth: 20, alignment: .trailing)
+            .frame(minWidth: 17, alignment: .trailing)
 
             // Title & Subtitle / Duration
             VStack(alignment: .leading, spacing: 2) {
@@ -89,15 +89,12 @@ public struct PlaylistRowView: View {
                 .transition(.opacity)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(
-                    isCurrent
-                        ? Color.white.opacity(0.12)
-                        : (isHovered ? Color.white.opacity(0.06) : Color.clear)
-                )
+            isCurrent
+                ? Color.white.opacity(0.12)
+                : (isHovered ? Color.white.opacity(0.06) : Color.clear)
         )
         .contentShape(Rectangle())
         .onHover { hovering in

@@ -582,4 +582,22 @@ struct PlaylistManagerTests {
         isolatedManager.toggleShuffle()
         #expect(testDefaults.bool(forKey: PlayerConfiguration.keyPlaylistIsShuffled) == false)
     }
+
+    @Test("PlaylistManager isLoading state tracking")
+    func testIsLoadingState() async {
+        let manager = PlaylistManager()
+        #expect(manager.isLoading == false)
+
+        manager.setIsLoading(true)
+        #expect(manager.isLoading == true)
+
+        manager.setIsLoading(false)
+        #expect(manager.isLoading == false)
+
+        // Verifying appendAsync sets and resets isLoading
+        let testURL = URL(fileURLWithPath: "/tmp/test_item.mp4")
+        await manager.appendAsync(urls: [testURL])
+        #expect(manager.isLoading == false)
+        #expect(manager.items.count == 1)
+    }
 }
