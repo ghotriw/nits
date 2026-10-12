@@ -25,6 +25,36 @@ struct TimeParserTests {
         #expect(TimeParser.formatDiff(from: 0, to: 3661) == "+01:01:01")
     }
 
+    @Test("Format seek offset (seconds <= 60s, minutes and seconds > 60s)")
+    func testFormatSeekOffset() {
+        #expect(TimeParser.formatSeekOffset(0) == "+0s")
+        #expect(TimeParser.formatSeekOffset(5) == "+5s")
+        #expect(TimeParser.formatSeekOffset(-5) == "-5s")
+        #expect(TimeParser.formatSeekOffset(10) == "+10s")
+        #expect(TimeParser.formatSeekOffset(-10) == "-10s")
+        #expect(TimeParser.formatSeekOffset(5.0416) == "+5s")
+        #expect(TimeParser.formatSeekOffset(4.98) == "+5s")
+        #expect(TimeParser.formatSeekOffset(-2.4) == "-2s")
+        #expect(TimeParser.formatSeekOffset(0.2) == "+0s")
+        #expect(TimeParser.formatSeekOffset(55) == "+55s")
+        #expect(TimeParser.formatSeekOffset(60) == "+60s")
+        #expect(TimeParser.formatSeekOffset(-60) == "-60s")
+        #expect(TimeParser.formatSeekOffset(65) == "+1m 05s")
+        #expect(TimeParser.formatSeekOffset(-65) == "-1m 05s")
+        #expect(TimeParser.formatSeekOffset(70) == "+1m 10s")
+        #expect(TimeParser.formatSeekOffset(90) == "+1m 30s")
+        #expect(TimeParser.formatSeekOffset(120) == "+2m 00s")
+        #expect(TimeParser.formatSeekOffset(125) == "+2m 05s")
+        #expect(TimeParser.formatSeekOffset(3599) == "+59m 59s")
+        #expect(TimeParser.formatSeekOffset(3600) == "+1h 00m 00s")
+        #expect(TimeParser.formatSeekOffset(3665) == "+1h 01m 05s")
+        #expect(TimeParser.formatSeekOffset(-0.02) == "+0s")
+        #expect(TimeParser.formatSeekOffset(-0.0) == "+0s")
+        #expect(TimeParser.formatSeekOffset(Double.nan) == "+0s")
+        #expect(TimeParser.formatSeekOffset(Double.infinity) == "+0s")
+        #expect(TimeParser.formatSeekOffset(-Double.infinity) == "+0s")
+    }
+
     @Test("Parse colon-separated timestamps")
     func testParseColonSeparated() {
         let dur = 7200.0  // 2 hours

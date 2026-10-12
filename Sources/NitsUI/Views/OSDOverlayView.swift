@@ -106,13 +106,7 @@ public struct OSDOverlayView: View {
         case .pause:
             return "Pause"
         case .seek(let offset, _, _):
-            let formattedOffset = abs(offset)
-            let sign = offset >= 0 ? "+" : "-"
-            if formattedOffset.truncatingRemainder(dividingBy: 1) == 0 || formattedOffset >= 10.0 {
-                return "\(sign)\(Int(round(formattedOffset)))s"
-            } else {
-                return String(format: "%@%.1fs", sign, formattedOffset)
-            }
+            return TimeParser.formatSeekOffset(offset)
         case .volume(let level, let isMuted):
             if isMuted {
                 return "Muted"
@@ -160,8 +154,11 @@ public struct OSDOverlayView: View {
         }
     }
 
-    private var progressValue: Float? {
+    public var progressValue: Float? {
         switch event {
+        case .seek(_, let current, let duration):
+            guard duration.isFinite && duration > 0 && current.isFinite else { return nil }
+            return max(0.0, min(1.0, Float(current / duration)))
         case .volume(let level, let isMuted):
             guard level.isFinite else { return 0.0 }
             return isMuted ? 0.0 : max(0.0, min(1.0, level))

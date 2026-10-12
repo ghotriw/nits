@@ -22,6 +22,28 @@ public enum TimeParser: Sendable {
         return "\(sign)\(format(seconds: abs(diff)))"
     }
 
+    /// Formats a seek offset for display (e.g. "+5s", "+60s", "+1m 05s", "-2m 30s", "+1h 01m 05s").
+    /// Offsets up to 60s are displayed in whole seconds, while offsets exceeding 60s are formatted in minutes and seconds.
+    public static func formatSeekOffset(_ offset: Double) -> String {
+        guard !offset.isNaN && !offset.isInfinite else { return "+0s" }
+        let totalSeconds = Int(round(abs(offset)))
+        guard totalSeconds > 0 else { return "+0s" }
+        let sign = offset >= 0 ? "+" : "-"
+
+        if totalSeconds > 60 {
+            let s = totalSeconds % 60
+            let m = (totalSeconds / 60) % 60
+            let h = totalSeconds / 3600
+            if h > 0 {
+                return "\(sign)\(h)h \(String(format: "%02dm %02ds", m, s))"
+            } else {
+                return "\(sign)\(m)m \(String(format: "%02ds", s))"
+            }
+        } else {
+            return "\(sign)\(totalSeconds)s"
+        }
+    }
+
     /// Parses a string representation of time into target seconds, clamped between 0 and duration.
     /// Supports:
     /// - `hh:mm:ss` (e.g. `1:23:45`, `01:23:45`) with strict validation (m < 60, s < 60)
