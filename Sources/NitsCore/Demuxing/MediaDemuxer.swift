@@ -14,6 +14,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var audioTimebase: AVRational = AVRational(num: 1, den: 1000)
     public private(set) var codec: VideoCodec = .hevc
     public private(set) var hasVideo: Bool = false
+    public private(set) var nominalFrameDuration: Double = 1.0 / 24.0
     public private(set) var hasAudio: Bool = false
     public private(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
     public private(set) var audioChannels: Int = 0
@@ -556,6 +557,20 @@ public final class MediaDemuxer: @unchecked Sendable {
                 } else if formatCtx.pointee.duration > 0 {
                     self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
                 }
+
+                // Compute nominal frame duration from stream frame rate with sanity clamp (1 to 240 fps)
+                let avg = stream.pointee.avg_frame_rate
+                let r = stream.pointee.r_frame_rate
+                let rawDuration: Double =
+                    if avg.num > 0 && avg.den > 0 {
+                        Double(avg.den) / Double(avg.num)
+                    } else if r.num > 0 && r.den > 0 {
+                        Double(r.den) / Double(r.num)
+                    } else {
+                        1.0 / 24.0
+                    }
+                self.nominalFrameDuration =
+                    (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
 
                 // Dynamically map color primaries
                 if let primaries = CVColorPrimariesGetStringForIntegerCodePoint(

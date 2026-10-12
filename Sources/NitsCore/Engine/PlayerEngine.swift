@@ -2263,13 +2263,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     }
                     return
                 }
-                let resolvedSeconds = (!isExact && previewFrame != nil) ? previewFrame!.pts : targetSeconds
+                let resolvedSeconds = previewFrame?.pts ?? targetSeconds
                 let resolvedTime = CMTime(seconds: resolvedSeconds, preferredTimescale: 1000)
+                let didRenderPreview = previewFrame != nil
                 self.completeChaseSeek(
                     targetSeconds: targetSeconds,
                     completedSeconds: resolvedSeconds,
                     targetTime: resolvedTime,
-                    seekId: seekId
+                    seekId: seekId,
+                    didRenderPreview: didRenderPreview
                 )
             }
         }
@@ -2279,7 +2281,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         targetSeconds: Double,
         completedSeconds: Double,
         targetTime: CMTime,
-        seekId: Int
+        seekId: Int,
+        didRenderPreview: Bool
     ) {
         guard currentSeekId == seekId else {
             if chaseTargetTime != nil {
@@ -2301,7 +2304,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
         // Settled decoding for this position. Mark seek background work as done.
         isSeeking = false
 
-        if hasVideo {
+        // If a preview frame was already rendered directly via renderDirect, do NOT overwrite it
+        // by popping from frameQueue.getLatestFrame (which may drop preroll frames tagged doNotDisplay).
+        if hasVideo && !didRenderPreview {
             renderCurrentFrame(at: targetTime)
         }
 
@@ -2373,7 +2378,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let box = SeekPreviewBox()
         decoder.setOutputHandler { frame in
             frameQueue.push(frame)
-            if !frame.doNotDisplay && frame.pts.isValid {
+            if (exact || !frame.doNotDisplay) && frame.pts.isValid {
                 lock.lock()
                 let framePts = frame.pts.seconds
                 let shouldUpdate: Bool
@@ -2443,15 +2448,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     }
                     if reachedTargetPacket {
                         decoder.waitForPendingFrames()
-                        if hasPreview() {
+                        // Ensure we feed at least 6 packets past reachedTargetPacket so that
+                        // any trailing B-frames or reordered pictures in display order are decoded.
+                        extraPipelineAttempts += 1
+                        if hasPreview() && extraPipelineAttempts >= 6 {
                             foundTarget = true
-                        } else {
-                            // Dav1d / multi-threaded decoders hold frames in pipeline until
-                            // enough subsequent packets push them out. Feed a few more packets.
-                            extraPipelineAttempts += 1
-                            if extraPipelineAttempts >= 12 {
-                                foundTarget = true
-                            }
+                        } else if extraPipelineAttempts >= 16 {
+                            foundTarget = true
                         }
                     }
                 } else {
@@ -2472,8 +2475,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
         lock.unlock()
 
         if let finalBuf, finalPts >= 0 {
+            AppLog.debug(
+                .engine,
+                "seekPreview settled: pts=\(finalPts)s for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
             return SeekPreviewResult(pixelBuffer: finalBuf, pts: finalPts)
         }
+        AppLog.debug(
+            .engine, "seekPreview found no frame for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
         return nil
     }
 
@@ -2514,21 +2522,21 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func stepFrameForward() {
-        if isPlaying { pause() }
-        let stepDuration = hasVideo ? (1.0 / 23.976) : 1.0
-        resumePlaybackAfterChase = false
-        let baseTime = chaseTargetTime ?? currentTime
-        let target = max(0, duration > 0 ? min(baseTime + stepDuration, duration) : baseTime + stepDuration)
-        seek(to: target)
+        stepFrame(forward: true)
     }
 
     public func stepFrameBackward() {
+        stepFrame(forward: false)
+    }
+
+    private func stepFrame(forward: Bool) {
         if isPlaying { pause() }
-        let stepDuration = hasVideo ? (1.0 / 23.976) : 1.0
+        let stepDuration = demuxer?.nominalFrameDuration ?? (hasVideo ? (1.0 / 24.0) : 1.0)
         resumePlaybackAfterChase = false
-        let baseTime = chaseTargetTime ?? currentTime
-        let target = max(0, baseTime - stepDuration)
-        seek(to: target)
+        let baseTime = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
+        let targetTime = forward ? (baseTime + stepDuration) : (baseTime - stepDuration * 1.05)
+        let clampedTarget = max(0, duration > 0 ? min(targetTime, duration) : targetTime)
+        seek(to: clampedTarget)
     }
 
     public func stepVolume(by delta: Float) {
