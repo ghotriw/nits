@@ -346,12 +346,18 @@ public enum PlaylistParser {
 
         // Check file:// URL scheme
         if clean.lowercased().hasPrefix("file://") {
-            return URL(string: clean)
+            if let parsedURL = URL(string: clean) {
+                return parsedURL.standardizedFileURL
+            }
+            let stripped = String(clean.dropFirst("file://".count))
+            let decoded = stripped.removingPercentEncoding ?? stripped
+            return URL(fileURLWithPath: decoded).standardizedFileURL
         }
 
         // Check absolute file path
         if clean.hasPrefix("/") {
-            return URL(fileURLWithPath: clean)
+            let decoded = clean.removingPercentEncoding ?? clean
+            return URL(fileURLWithPath: decoded).standardizedFileURL
         }
 
         // Relative path: resolve against baseURL
@@ -359,7 +365,8 @@ public enum PlaylistParser {
             if baseURL.isFileURL {
                 let isFileWithExtension = !baseURL.pathExtension.isEmpty
                 let dirURL = isFileWithExtension ? baseURL.deletingLastPathComponent() : baseURL
-                return dirURL.appendingPathComponent(clean).standardizedFileURL
+                let decoded = clean.removingPercentEncoding ?? clean
+                return dirURL.appendingPathComponent(decoded).standardizedFileURL
             } else {
                 // For remote network URLs, strip query/fragment to accurately determine directory path
                 let rawPath = baseURL.path
@@ -377,7 +384,8 @@ public enum PlaylistParser {
             }
         }
 
-        return URL(fileURLWithPath: clean)
+        let decoded = clean.removingPercentEncoding ?? clean
+        return URL(fileURLWithPath: decoded).standardizedFileURL
     }
 
     private static func parseCUEFileName(from line: String, baseURL: URL?) -> URL? {

@@ -600,4 +600,25 @@ struct PlaylistManagerTests {
         #expect(manager.isLoading == false)
         #expect(manager.items.count == 1)
     }
+
+    @Test("PlaylistParser correctly decodes percent-encoded file paths")
+    func testPercentEncodedFilePathsInPlaylists() {
+        let base = URL(fileURLWithPath: "/Users/test/Music")
+        let m3u = """
+            #EXTM3U
+            #EXTINF:120,Episode 131
+            file:///Users/test/Music/%23131_Track.mp4
+            #EXTINF:180,Relative Episode
+            %23131_Relative.mp4
+            """
+
+        let items = PlaylistParser.parse(content: m3u, format: "m3u", baseURL: base)
+        #expect(items.count == 2)
+        #expect(items[0].url.isFileURL == true)
+        #expect(items[0].url.path == "/Users/test/Music/#131_Track.mp4")
+        #expect(items[0].filename == "#131_Track.mp4")
+        #expect(items[1].url.isFileURL == true)
+        #expect(items[1].url.path == "/Users/test/Music/#131_Relative.mp4")
+        #expect(items[1].filename == "#131_Relative.mp4")
+    }
 }

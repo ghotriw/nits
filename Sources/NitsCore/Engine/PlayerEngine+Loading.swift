@@ -15,9 +15,30 @@ extension PlayerEngine {
             if last.isEmpty || last == "/" {
                 return url.host ?? path
             }
-            return last
+            return last.removingPercentEncoding ?? last
         }
-        return URL(fileURLWithPath: path).lastPathComponent
+        let localPath: String
+        if path.lowercased().hasPrefix("file://") {
+            localPath = URL(string: path)?.path ?? String(path.dropFirst("file://".count))
+        } else {
+            localPath = path
+        }
+        let decoded = localPath.removingPercentEncoding ?? localPath
+        return URL(fileURLWithPath: decoded).lastPathComponent
+    }
+
+    /// Normalizes an input path: strips file:// scheme if present and decodes percent-encoded characters for local files.
+    nonisolated public static func normalizeMediaPath(_ path: String) -> String {
+        if MediaDemuxer.isNetworkURL(path) {
+            return path
+        }
+        let localPath: String
+        if path.lowercased().hasPrefix("file://") {
+            localPath = URL(string: path)?.path ?? String(path.dropFirst("file://".count))
+        } else {
+            localPath = path
+        }
+        return localPath.removingPercentEncoding ?? localPath
     }
 
     public func load(path: String) {
@@ -63,10 +84,11 @@ extension PlayerEngine {
         subtitleTrack: String? = nil
     ) {
         // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
-        let isNetwork = MediaDemuxer.isNetworkURL(path)
-        let isRemoteOrMounted = MediaDemuxer.isRemoteOrMountedVolume(path)
-        if PlaylistParser.isPlaylistFile(path: path),
-            let playlistURL = isNetwork ? URL(string: path) : URL(fileURLWithPath: path)
+        let normalizedPath = Self.normalizeMediaPath(path)
+        let isNetwork = MediaDemuxer.isNetworkURL(normalizedPath)
+        let isRemoteOrMounted = MediaDemuxer.isRemoteOrMountedVolume(normalizedPath)
+        if PlaylistParser.isPlaylistFile(path: normalizedPath),
+            let playlistURL = isNetwork ? URL(string: normalizedPath) : URL(fileURLWithPath: normalizedPath)
         {
             // Parse playlist asynchronously without blocking the MainActor
             self.isLoading = true
@@ -116,14 +138,14 @@ extension PlayerEngine {
         // Save playback progress of previously active media before loading new track
         saveCurrentPlaybackProgress()
 
-        self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: title)
+        self.mediaTitle = Self.resolveTitle(from: normalizedPath, explicitTitle: title)
         self.artworkData = artworkData
         self.artworkURL = artworkURL
         if isRemoteOrMounted {
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
                 await self?.loadAsync(
-                    path: path,
+                    path: normalizedPath,
                     title: title,
                     artworkData: artworkData,
                     artworkURL: artworkURL,
@@ -135,7 +157,7 @@ extension PlayerEngine {
             }
         } else {
             loadSync(
-                path: path,
+                path: normalizedPath,
                 title: title,
                 artworkData: artworkData,
                 artworkURL: artworkURL,

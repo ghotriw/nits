@@ -22,7 +22,14 @@ public struct PlaylistItem: Sendable, Identifiable, Equatable, Hashable {
     ) {
         self.id = id
         self.url = url
-        self.title = title ?? (url.isFileURL ? url.deletingPathExtension().lastPathComponent : url.absoluteString)
+        if let title, !title.isEmpty {
+            self.title = title
+        } else if url.isFileURL {
+            let name = url.deletingPathExtension().lastPathComponent
+            self.title = name.removingPercentEncoding ?? name
+        } else {
+            self.title = url.absoluteString
+        }
         self.duration = duration
         self.startTime = startTime
         self.customHeaders = customHeaders
@@ -31,7 +38,8 @@ public struct PlaylistItem: Sendable, Identifiable, Equatable, Hashable {
 
     /// Display filename or url last path component.
     public var filename: String {
-        url.lastPathComponent
+        let last = url.lastPathComponent
+        return url.isFileURL ? (last.removingPercentEncoding ?? last) : last
     }
 
     /// Whether this item represents a remote streaming resource.
