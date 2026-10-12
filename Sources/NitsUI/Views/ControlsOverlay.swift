@@ -57,7 +57,7 @@ public struct ControlsOverlay: View {
             Spacer()
 
             // Bottom Player Control Panel (Single row)
-            HStack(spacing: 14) {
+            HStack(spacing: 0) {
 
                 // Previous Track
                 Button {
@@ -66,6 +66,8 @@ public struct ControlsOverlay: View {
                     Image(systemName: "backward.end.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(engine.playlist.hasPrevious ? .white.opacity(0.85) : .white.opacity(0.3))
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!engine.playlist.hasPrevious)
@@ -73,11 +75,13 @@ public struct ControlsOverlay: View {
 
                 // Seek backward
                 Button {
-                    performSeek(by: -engine.seekStepSeconds)
+                    engine.seekRelative(by: -engine.seekStepSeconds)
                 } label: {
                     Image(systemName: "gobackward")
                         .font(.system(size: 17))
                         .foregroundStyle(.white.opacity(0.85))
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Seek Backward (←)")
@@ -89,16 +93,20 @@ public struct ControlsOverlay: View {
                     Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 21))
                         .foregroundStyle(.white)
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
                 // Seek forward
                 Button {
-                    performSeek(by: engine.seekStepSeconds)
+                    engine.seekRelative(by: engine.seekStepSeconds)
                 } label: {
                     Image(systemName: "goforward")
                         .font(.system(size: 17))
                         .foregroundStyle(.white.opacity(0.85))
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Seek Forward (→)")
@@ -110,6 +118,8 @@ public struct ControlsOverlay: View {
                     Image(systemName: "forward.end.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(engine.playlist.hasNext ? .white.opacity(0.85) : .white.opacity(0.3))
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!engine.playlist.hasNext)
@@ -120,6 +130,9 @@ public struct ControlsOverlay: View {
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.9))
                     .frame(minWidth: 48, alignment: .trailing)
+                    .padding(.trailing, 7)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
                     .onTapGesture {
                         guard engine.isLoaded && engine.duration > 0, let uiState else { return }
                         if uiState.isJumpToPresented {
@@ -179,12 +192,14 @@ public struct ControlsOverlay: View {
                             }
                     )
                 }
+                .padding(.horizontal, 7)
                 .frame(height: 18)
 
                 // Total duration
                 Text(formatTime(engine.duration))
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.75))
+                    .padding(.all, 7)
                     .frame(minWidth: 48, alignment: .leading)
 
                 // Volume Control
@@ -201,10 +216,12 @@ public struct ControlsOverlay: View {
                         .foregroundStyle(.white.opacity(0.85))
                     }
                     .buttonStyle(.plain)
+                    .frame(minWidth: 20, alignment: .leading)
 
                     Slider(value: $engine.volume, in: 0.0...1.0)
                         .frame(width: 75)
                 }
+                .padding(.all, 7)
 
                 // Audio Track Selector
                 if !engine.audioTracks.isEmpty {
@@ -214,6 +231,8 @@ public struct ControlsOverlay: View {
                         Image(systemName: "waveform.circle")
                             .font(.system(size: 19))
                             .foregroundStyle(.white.opacity(0.85))
+                            .padding(.all, 7)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("Select Audio Track")
@@ -234,6 +253,8 @@ public struct ControlsOverlay: View {
                             ? Color.accentColor
                             : Color.white.opacity(0.85)
                     )
+                    .padding(.all, 7)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Select Subtitles")
@@ -251,6 +272,8 @@ public struct ControlsOverlay: View {
                                 ? Color.accentColor
                                 : Color.white.opacity(0.85)
                         )
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Playlist (⌥⌘P / P)")
@@ -268,12 +291,14 @@ public struct ControlsOverlay: View {
                                 ? Color.accentColor
                                 : Color.white.opacity(0.85)
                         )
+                        .padding(.all, 7)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Quick Settings (⌥⌘S)")
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
             .background(.ultraThinMaterial)
             .overlay(alignment: .top) {
                 Rectangle()
@@ -416,16 +441,6 @@ public struct ControlsOverlay: View {
             return track.language.uppercased()
         }
         return "Track \(track.id + 1)"
-    }
-
-    private func performSeek(by delta: Double) {
-        let honestOffset = engine.seekRelative(by: delta)
-        if engine.enableOSD, let uiState {
-            let targetPos = engine.pendingSeekTime ?? engine.currentTime
-            uiState.osd.show(
-                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.duration)
-            )
-        }
     }
 }
 

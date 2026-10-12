@@ -19,7 +19,9 @@ A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and 
 - [ ] Subtitles: advanced stylized ASS/SSA typesetting (`libass`) & bitmap formats (PGS/VOBSUB)
 - [x] Dolby Vision: Profile 8 (8.1, 8.4) playback
 - [x] Dolby Vision: dynamic metadata (RPU L1 and L2) scene-adaptive tone mapping
-- [ ] AV1 (VideoToolbox on M3 and later, `dav1d` on M1/M2)
+- [x] AV1 (`dav1d` on M1/M2)
+- [ ] AV1 (VideoToolbox on M3 and later)
+- [x] Playlist management
 - [ ] Embedding the video view in a WKWebView-based client
 - [ ] Bundling FFmpeg dylibs into the app
 
