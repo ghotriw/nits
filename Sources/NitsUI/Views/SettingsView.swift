@@ -26,6 +26,14 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyAutoLoadFolderMedia)
     private var autoLoadFolderMedia: Bool = true
 
+    @AppStorage(PlayerConfiguration.keySeekStepSeconds)
+    private var seekStepSeconds: Double = 5.0
+
+    @AppStorage(PlayerConfiguration.keyExactSeekOnSinglePress)
+    private var exactSeekOnSinglePress: Bool = true
+
+    private static let standardSeekSteps: [Double] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
+
     @State private var showHistoryClearedAlert: Bool = false
     @State private var selectedTab: SettingsTab = .general
 
@@ -153,6 +161,33 @@ public struct SettingsView: View {
             } header: {
                 Text("Playlist & Folders")
             }
+
+            Section {
+                Picker("Arrow seek step", selection: $seekStepSeconds) {
+                    ForEach(Self.standardSeekSteps, id: \.self) { step in
+                        Text("\(Int(step)) \(step == 1.0 ? "second" : "seconds")").tag(step)
+                    }
+                    if !Self.standardSeekSteps.contains(seekStepSeconds) {
+                        Text("Custom (\(Int(round(seekStepSeconds)))s)").tag(seekStepSeconds)
+                    }
+                }
+                .onChange(of: seekStepSeconds) { _, _ in
+                    notifyChange()
+                }
+
+                Toggle("Exact video seek on single press", isOn: $exactSeekOnSinglePress)
+                    .onChange(of: exactSeekOnSinglePress) { _, _ in
+                        notifyChange()
+                    }
+            } header: {
+                Text("Seeking & Navigation")
+            } footer: {
+                Text(
+                    exactSeekOnSinglePress
+                        ? "Arrow keys step by the selected interval. For video, a single press seeks to the exact frame; rapid bursts navigate quickly by keyframes. Audio always seeks accurately."
+                        : "For video, seeking always jumps to keyframes (fastest, recommended for software decoders like AV1). For audio, seeking uses the selected step interval."
+                )
+            }
         }
         .formStyle(.grouped)
     }
@@ -236,7 +271,9 @@ public struct SettingsView: View {
             subtitleBgColorHex: savedConfig.subtitleBgColorHex,
             subtitleBgOpacity: savedConfig.subtitleBgOpacity,
             enableOSD: enableOSD,
-            autoLoadFolderMedia: autoLoadFolderMedia
+            autoLoadFolderMedia: autoLoadFolderMedia,
+            seekStepSeconds: seekStepSeconds,
+            exactSeekOnSinglePress: exactSeekOnSinglePress
         )
         onConfigurationChanged?(current)
     }

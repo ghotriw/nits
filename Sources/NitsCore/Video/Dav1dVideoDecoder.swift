@@ -181,6 +181,12 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         }
     }
 
+    /// Frames are emitted synchronously from `decode(sampleBuffer:)`. Frames still held by dav1d's
+    /// frame-threading pipeline are delivered by subsequent `decode` calls, so this is a no-op.
+    /// Must NOT call `avcodec_flush_buffers`: that drops reference frames and dav1d would then
+    /// discard every inter frame until the next keyframe (video freeze after seek).
+    public func waitForPendingFrames() {}
+
     public func drain() {
         var drainedFrames: [DecodedFrame] = []
         var currentGen: UInt64 = 0

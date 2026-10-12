@@ -154,6 +154,12 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 break
             }
         }
+        engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
+            guard let self, self.engine.enableOSD, self.uiState.osd.isVisible else { return }
+            self.uiState.osd.show(
+                .seek(offsetSeconds: actualOffset, currentTime: completedTime, duration: self.engine.duration)
+            )
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -335,6 +341,10 @@ extension PlayerWindowController: PlayerActions {
         engine.showDebugHUD
     }
 
+    public var seekStepSeconds: Double {
+        engine.seekStepSeconds
+    }
+
     public func togglePlayPause() {
         engine.togglePlayPause()
         // uiState.showControlsTemporarily()
@@ -380,9 +390,12 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public func seekRelative(by seconds: Double) {
-        engine.seekRelative(by: seconds)
+        let honestOffset = engine.seekRelative(by: seconds)
         if engine.enableOSD {
-            uiState.osd.show(.seek(offsetSeconds: seconds, currentTime: engine.currentTime, duration: engine.duration))
+            let targetPos = engine.pendingSeekTime ?? engine.currentTime
+            uiState.osd.show(
+                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.duration)
+            )
         }
     }
 

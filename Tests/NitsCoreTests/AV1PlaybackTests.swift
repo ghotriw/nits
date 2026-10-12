@@ -109,6 +109,23 @@ struct AV1PlaybackTests {
         engine.pause()
         #expect(engine.isPlaying == false)
 
+        // Test exact seek on pause for AV1
+        let initialPTS = engine.currentFramePTS
+        engine.seekRelative(by: 1.0, exact: true)
+
+        // Poll for seek & decode to settle up to 1 second
+        var settled = false
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms intervals
+            if engine.currentFramePTS != initialPTS && engine.getLastRenderedBuffer() != nil {
+                settled = true
+                break
+            }
+        }
+        #expect(settled == true)
+        #expect(engine.getLastRenderedBuffer() != nil)
+        #expect(engine.currentFramePTS != initialPTS)
+
         engine.stop()
         #expect(engine.isLoaded == false)
     }

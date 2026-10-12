@@ -1559,7 +1559,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         return nil
     }
 
-    public func seek(to seconds: Double, exact: Bool = true) {
+    /// - Parameter forward: Keyframe (non-exact) seeks only. When `true`, lands on the first keyframe at or
+    ///   after `seconds` instead of the one before it. Required for sparse-GOP streams (e.g. AV1 with 10 s+
+    ///   keyframe intervals) where a backward search would snap a +5 s step back to the same keyframe.
+    public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false) {
         lock.lock()
         defer { lock.unlock() }
         guard let ctx = formatCtx else { return }
@@ -1577,10 +1580,18 @@ public final class MediaDemuxer: @unchecked Sendable {
         // If not exact (keyframe seek), don't set targetPts threshold so that the keyframe sample is displayed immediately
         self.targetPts = exact ? target : -1
         let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
-        let ret = av_seek_frame(ctx, Int32(streamIdx), target, AVSEEK_FLAG_BACKWARD)
+        let useForward = forward && !exact
+        var ret: Int32 = -1
+        if useForward {
+            ret = av_seek_frame(ctx, Int32(streamIdx), target, 0)
+        }
+        if ret < 0 {
+            // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
+            ret = av_seek_frame(ctx, Int32(streamIdx), target, AVSEEK_FLAG_BACKWARD)
+        }
         AppLog.debug(
             .demuxer,
-            "av_seek_frame to targetPts: \(target) (exact: \(exact)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
+            "av_seek_frame to targetPts: \(target) (exact: \(exact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
     }
 

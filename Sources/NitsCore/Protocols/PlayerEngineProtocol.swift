@@ -23,7 +23,9 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var playbackState: PlaybackState { get }
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
+    @MainActor var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)? { get set }
     @MainActor var currentTime: Double { get }
+    @MainActor var pendingSeekTime: Double? { get }
     @MainActor var duration: Double { get }
     @MainActor var isPlaying: Bool { get }
     @MainActor var isLoaded: Bool { get }
@@ -58,6 +60,8 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var volume: Float { get set }
     @MainActor var isMuted: Bool { get set }
     @MainActor var playbackRate: Double { get set }
+    @MainActor var seekStepSeconds: Double { get set }
+    @MainActor var exactSeekOnSinglePress: Bool { get set }
     @MainActor var enableOSD: Bool { get set }
     @MainActor var showDebugHUD: Bool { get set }
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
@@ -111,7 +115,7 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor func togglePlayPause()
     @MainActor func seek(to seconds: Double)
     @MainActor func seek(to seconds: Double, exact: Bool)
-    @MainActor func seekRelative(by seconds: Double)
+    @MainActor @discardableResult func seekRelative(by seconds: Double) -> Double
     @MainActor func seekRelative(by seconds: Double, exact: Bool)
     @MainActor func stepFrameForward()
     @MainActor func stepFrameBackward()
@@ -137,8 +141,10 @@ extension PlayerEngineProtocol {
     }
 
     @MainActor
-    public func seekRelative(by seconds: Double) {
+    @discardableResult
+    public func seekRelative(by seconds: Double) -> Double {
         seekRelative(by: seconds, exact: false)
+        return seconds
     }
 
     @MainActor

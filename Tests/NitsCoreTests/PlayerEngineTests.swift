@@ -17,7 +17,9 @@ struct PlayerEngineTests {
             defaultRenderMode: .auto,
             targetNits: 250.0,
             sharpness: 0.7,
-            initialVolume: 0.8
+            initialVolume: 0.8,
+            seekStepSeconds: 10.0,
+            exactSeekOnSinglePress: false
         )
         let engine = PlayerEngine(configuration: config)
 
@@ -32,6 +34,8 @@ struct PlayerEngineTests {
         #expect(engine.isToneMappingPermitted == true)
         #expect(engine.renderMode == .auto)
         #expect(engine.displayLayer.videoGravity == .resizeAspect)
+        #expect(engine.seekStepSeconds == 10.0)
+        #expect(engine.exactSeekOnSinglePress == false)
     }
 
     @Test("Active render mode dynamically computes based on display HDR and permission")

@@ -52,10 +52,10 @@ public final class PlayerWindow: NSWindow {
             actionHandler.stepFrameForward()
             return true
         case 0x7B:  // Left Arrow
-            actionHandler.seekRelative(by: -5.0)
+            actionHandler.seekBackward()
             return true
         case 0x7C:  // Right Arrow
-            actionHandler.seekRelative(by: 5.0)
+            actionHandler.seekForward()
             return true
         case 0x7E:  // Up Arrow
             actionHandler.stepVolume(by: 0.05)

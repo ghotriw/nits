@@ -11,6 +11,7 @@ import os
 @MainActor
 public final class PlayerEngine: PlayerEngineProtocol {
     public var currentTime: Double = 0
+    public var pendingSeekTime: Double? { chaseTargetTime }
     public var duration: Double = 0
     public var isPlaying: Bool = false {
         didSet {
@@ -32,6 +33,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)?
     /// State change callback for external clients
     public var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)?
+    /// Callback fired when an in-flight relative seek settles onto its final keyframe or exact PTS
+    public var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)?
 
     private var loadingTask: Task<Void, Never>?
     private var currentInterruptContext: MediaDemuxer.InterruptContext?
@@ -168,9 +171,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleBgColorHex = config.subtitleBgColorHex
         self.subtitleBgOpacity = config.subtitleBgOpacity
         self.enableOSD = config.enableOSD
+        self.seekStepSeconds = config.seekStepSeconds
+        self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
     }
 
     public var enableOSD: Bool = true
+    public var seekStepSeconds: Double = 5.0
+    public var exactSeekOnSinglePress: Bool = true
 
     // Audio properties
     public var volume: Float = 1.0 {
@@ -293,12 +300,25 @@ public final class PlayerEngine: PlayerEngineProtocol {
     private var chaseTargetTime: Double? = nil
     @ObservationIgnored
     private var chaseExactSeek: Bool = true
+    /// Keyframe-seek direction: forward seeks land on the next keyframe at/after the target.
+    @ObservationIgnored
+    private var chaseForwardSeek: Bool = false
     @ObservationIgnored
     private var resumePlaybackAfterChase: Bool = false
     @ObservationIgnored
     private var chaseSettleTask: Task<Void, Never>? = nil
+    private static let relativeSeekBurstTimeout: Duration = .milliseconds(300)
+    private static let relativeSeekBurstWatchdogTimeout: Duration = .seconds(3)
+    private static let chaseSettleDebounceDuration: Duration = .milliseconds(300)
+    /// Tracks whether a rapid relative seek burst sequence is currently active.
     @ObservationIgnored
-    private var lastRelativeSeekTimestamp: CFAbsoluteTime = 0
+    private var isRelativeSeekBurstActive: Bool = false
+    @ObservationIgnored
+    private var isRelativeSeekInFlight: Bool = false
+    @ObservationIgnored
+    private var relativeSeekBurstResetTask: Task<Void, Never>? = nil
+    @ObservationIgnored
+    private var relativeSeekSessionStartTime: Double? = nil
     private let audioRouteMonitor = AudioDeviceRouteMonitor()
     private var timeObserver: Any?
     private var lastSavedProgressSeconds: Double = 0.0
@@ -326,6 +346,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
     private let frameQueue = FrameQueue()
     public var currentFramePTS: Double {
         frameQueue.getLastRenderedPTS()
+    }
+    /// Returns the most recently presented pixel buffer.
+    /// Internal for test verification and debugging inspection.
+    func getLastRenderedBuffer() -> CVPixelBuffer? {
+        frameQueue.getLastRenderedBuffer()
     }
     private var displayLink: CADisplayLink?
     private var displayLinkTarget: DisplayLinkTarget?
@@ -366,6 +391,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleBgColorHex = configuration.subtitleBgColorHex
         self.subtitleBgOpacity = configuration.subtitleBgOpacity
         self.enableOSD = configuration.enableOSD
+        self.seekStepSeconds = configuration.seekStepSeconds
+        self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress
 
         metalRenderer?.uniforms.targetNits = effectiveNits
         metalRenderer?.uniforms.outputSharpness = configuration.sharpness
@@ -1202,6 +1229,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func stop() {
+        resetRelativeSeekBurst()
         let seekId = currentSeekId + 1
         currentSeekId = seekId
         activeSeekId.withLock { $0 = seekId }
@@ -1410,6 +1438,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         _ demuxer: MediaDemuxer, path: String, headers: [String: String], requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?
     ) {
+        resetRelativeSeekBurst()
         self.demuxer = demuxer
         self.currentPath = path
         self.currentHeaders = headers
@@ -2015,6 +2044,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func play() {
+        resetRelativeSeekBurst()
         guard isLoaded else { return }
 
         // If video reached the end or is in completed state, restart from the beginning
@@ -2040,6 +2070,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func pause() {
+        resetRelativeSeekBurst()
         if isSeeking || chaseTargetTime != nil {
             resumePlaybackAfterChase = false
         }
@@ -2081,8 +2112,39 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func seek(to seconds: Double, exact: Bool) {
+        resetRelativeSeekBurst()
+        seek(to: seconds, exact: exact, forward: false)
+    }
+
+    private func resetRelativeSeekBurst() {
+        relativeSeekBurstResetTask?.cancel()
+        relativeSeekBurstResetTask = nil
+        isRelativeSeekBurstActive = false
+        isRelativeSeekInFlight = false
+        relativeSeekSessionStartTime = nil
+    }
+
+    private func armRelativeSeekBurstTimer() {
+        relativeSeekBurstResetTask?.cancel()
+        relativeSeekBurstResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.relativeSeekBurstTimeout)
+            guard !Task.isCancelled, let self else { return }
+            if !self.isSeeking && self.chaseTargetTime == nil {
+                self.resetRelativeSeekBurst()
+            } else if !self.isRelativeSeekInFlight {
+                self.resetRelativeSeekBurst()
+            } else {
+                // Safety watchdog: if in-flight seek hangs or takes unusually long, reset unconditionally
+                try? await Task.sleep(for: Self.relativeSeekBurstWatchdogTimeout)
+                guard !Task.isCancelled else { return }
+                self.resetRelativeSeekBurst()
+            }
+        }
+    }
+
+    private func seek(to seconds: Double, exact: Bool, forward: Bool) {
         let target = max(0, duration > 0 ? min(seconds, duration) : seconds)
-        AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact)")
+        AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
 
         // Cancel any pending settle debounce from an earlier seek in the burst
@@ -2098,11 +2160,14 @@ public final class PlayerEngine: PlayerEngineProtocol {
             }
         }
 
-        // 2. Immediate responsive UI update (0ms latency)
+        // 2. Immediate responsive UI update (0ms latency for exact seek)
         chaseTargetTime = target
         chaseExactSeek = exact
-        currentTime = target
-        updateActiveSubtitles(at: target)
+        chaseForwardSeek = forward
+        if exact {
+            currentTime = target
+            updateActiveSubtitles(at: target)
+        }
 
         // 3. Increment generation token
         currentSeekId += 1
@@ -2122,6 +2187,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
         isSeeking = true
         let isExact = self.chaseExactSeek
+        let isForward = self.chaseForwardSeek
         let seekId = currentSeekId
 
         let shouldResume = self.resumePlaybackAfterChase
@@ -2150,7 +2216,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 if hasVideo {
                     decoder.flush()
                 }
-                demuxer.seek(to: targetSeconds, exact: isExact)
+                demuxer.seek(to: targetSeconds, exact: isExact, forward: isForward)
             }
 
             var previewFrame: SeekPreviewResult? = nil
@@ -2193,6 +2259,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                         self.executeDemuxerSeek()
                     } else {
                         self.isSeeking = false
+                        self.isRelativeSeekInFlight = false
                     }
                     return
                 }
@@ -2219,6 +2286,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 executeDemuxerSeek()
             } else {
                 self.isSeeking = false
+                self.isRelativeSeekInFlight = false
             }
             return
         }
@@ -2237,11 +2305,25 @@ public final class PlayerEngine: PlayerEngineProtocol {
             renderCurrentFrame(at: targetTime)
         }
 
+        // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
+        self.currentTime = completedSeconds
+        updateActiveSubtitles(at: completedSeconds)
+        onTimeUpdate?(completedSeconds, duration)
+
+        if isRelativeSeekInFlight {
+            isRelativeSeekInFlight = false
+            armRelativeSeekBurstTimer()
+        }
+
+        if let sessionStart = relativeSeekSessionStartTime {
+            let actualOffset = completedSeconds - sessionStart
+            onRelativeSeekResolved?(actualOffset, completedSeconds)
+        }
+
         let shouldResume = resumePlaybackAfterChase
         if !shouldResume {
             // Paused mode: settle immediately
             chaseTargetTime = nil
-            self.currentTime = completedSeconds
             synchronizer.setRate(0.0, time: targetTime)
             isPlaying = false
             playbackState = .paused
@@ -2250,15 +2332,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
             return
         }
 
-        // Playing mode: debounce resumption slightly (120ms) so that sustained key-hold repeat
+        // Playing mode: debounce resumption slightly (300ms) so that sustained key-hold repeat
         // events (which fire every 40-70ms) don't repeatedly unpause and roll the clock forward.
+        chaseTargetTime = completedSeconds
         chaseSettleTask?.cancel()
         chaseSettleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)  // 120ms debounce
+            try? await Task.sleep(for: Self.chaseSettleDebounceDuration)
             guard !Task.isCancelled, let self, self.currentSeekId == seekId else { return }
 
             self.chaseTargetTime = nil
-            self.currentTime = completedSeconds
             self.startFeeding()
             self.synchronizer.setRate(Float(self.playbackRate), time: targetTime)
             self.displayLink?.isPaused = !self.hasVideo
@@ -2293,8 +2375,24 @@ public final class PlayerEngine: PlayerEngineProtocol {
             frameQueue.push(frame)
             if !frame.doNotDisplay && frame.pts.isValid {
                 lock.lock()
-                box.buffer = frame.pixelBuffer
-                box.pts = frame.pts.seconds
+                let framePts = frame.pts.seconds
+                let shouldUpdate: Bool
+                if box.buffer == nil {
+                    shouldUpdate = true
+                } else if exact {
+                    // Exact seek: select the decoded frame closest to the requested target time,
+                    // handling out-of-order B-frames and trailing pipeline flushes accurately.
+                    shouldUpdate = abs(framePts - seconds) <= abs(box.pts - seconds)
+                } else {
+                    // Keyframe seek: keep the earliest displayable frame (frame-threaded decoders
+                    // may emit several frames once their pipeline fills).
+                    shouldUpdate = framePts < box.pts
+                }
+
+                if shouldUpdate {
+                    box.buffer = frame.pixelBuffer
+                    box.pts = framePts
+                }
                 lock.unlock()
             }
         }
@@ -2305,26 +2403,68 @@ public final class PlayerEngine: PlayerEngineProtocol {
             }
         }
 
+        let hasPreview: () -> Bool = {
+            lock.lock()
+            defer { lock.unlock() }
+            return box.buffer != nil
+        }
+
         var attempts = 0
+        var reachedTargetPacket = false
+        var extraPipelineAttempts = 0
         var foundTarget = false
         var decodedAtLeastOne = false
-        // For non-exact (keyframe) seeks (IINA / mpv style), decode exactly 1 keyframe and return immediately.
-        // For exact seeks, decode from keyframe up to target seconds.
-        let maxAttempts = exact ? 120 : 1
+        var hasCalculatedMaxAttempts = false
+        // For non-exact (keyframe) seeks (IINA / mpv style), decode from the keyframe until the decoder
+        // emits its first frame (1 packet for VideoToolbox; a few for frame-threaded libdav1d).
+        // For exact seeks, decode from keyframe up to target seconds, dynamically sizing the attempt limit
+        // based on the distance between the landing keyframe and the requested target position.
+        var maxAttempts = exact ? 120 : 24
         while attempts < maxAttempts && !foundTarget && (isCurrent() || !decodedAtLeastOne) {
             if let sample = demuxer.nextVideoSample() {
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                let ptsSeconds = CMTimeGetSeconds(pts)
+
+                if exact && !hasCalculatedMaxAttempts && ptsSeconds.isFinite {
+                    hasCalculatedMaxAttempts = true
+                    // Dynamic ceiling: estimate needed packets from keyframe to target position.
+                    // Generous 60fps * 1.5 multiplier + buffer accommodates 60fps streams, VFR, and B-frame reordering.
+                    let distance = max(seconds - ptsSeconds, 1.0)
+                    let estimatedPackets = Int(distance * 90.0) + 64
+                    maxAttempts = min(max(estimatedPackets, 120), 1200)
+                }
+
                 decoder.decode(sampleBuffer: sample)
                 decodedAtLeastOne = true
                 attempts += 1
-                if !exact || CMTimeGetSeconds(pts) >= seconds {
-                    foundTarget = true
+                if exact {
+                    if ptsSeconds >= seconds {
+                        reachedTargetPacket = true
+                    }
+                    if reachedTargetPacket {
+                        decoder.waitForPendingFrames()
+                        if hasPreview() {
+                            foundTarget = true
+                        } else {
+                            // Dav1d / multi-threaded decoders hold frames in pipeline until
+                            // enough subsequent packets push them out. Feed a few more packets.
+                            extraPipelineAttempts += 1
+                            if extraPipelineAttempts >= 12 {
+                                foundTarget = true
+                            }
+                        }
+                    }
+                } else {
+                    decoder.waitForPendingFrames()
+                    if hasPreview() { foundTarget = true }
                 }
             } else {
                 break
             }
         }
-        decoder.flush()
+        // Non-destructive: decoding continues from the next packet in runVideoFeeding, so the
+        // decoder's reference frames must be preserved (a destructive flush breaks AV1/dav1d).
+        decoder.waitForPendingFrames()
 
         lock.lock()
         let finalBuf = box.buffer
@@ -2337,17 +2477,40 @@ public final class PlayerEngine: PlayerEngineProtocol {
         return nil
     }
 
-    public func seekRelative(by seconds: Double) {
-        let now = CFAbsoluteTimeGetCurrent()
-        let isBurst = (now - lastRelativeSeekTimestamp) <= 0.5 || isSeeking || chaseTargetTime != nil
-        lastRelativeSeekTimestamp = now
-        seekRelative(by: seconds, exact: !isBurst)
+    @discardableResult
+    public func seekRelative(by seconds: Double) -> Double {
+        guard isLoaded, demuxer != nil else { return 0.0 }
+        armRelativeSeekBurstTimer()
+
+        let isFirstInBurst = !isRelativeSeekBurstActive && !isRelativeSeekInFlight
+        isRelativeSeekBurstActive = true
+        isRelativeSeekInFlight = true
+
+        // While a seek is in flight, baseTime steps from the pending target (mpv queue_seek model).
+        // On slow frame-threaded streams (e.g. software AV1), rapid keypresses advance the goal,
+        // while the demuxer chases the latest target to prevent stale frame freezes.
+        let baseTime = chaseTargetTime ?? currentTime
+        if isFirstInBurst || relativeSeekSessionStartTime == nil {
+            relativeSeekSessionStartTime = baseTime
+        }
+
+        let isExact = !hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
+        let isForward = seconds > 0 && !isExact
+
+        // In burst mode (keyframe seek), always step from the latest targeted or settled frame
+        // so every press advances past the current GOP to the next/prev keyframe without freezing.
+        seek(to: baseTime + seconds, exact: isExact, forward: isForward)
+
+        let startPos = relativeSeekSessionStartTime ?? baseTime
+        return (chaseTargetTime ?? currentTime) - startPos
     }
 
     public func seekRelative(by seconds: Double, exact: Bool) {
+        resetRelativeSeekBurst()
         let baseTime = chaseTargetTime ?? currentTime
-        let target = max(0, duration > 0 ? min(baseTime + seconds, duration) : baseTime + seconds)
-        seek(to: target, exact: exact)
+        // Forward keyframe steps must land on the next keyframe; a backward search on sparse-GOP
+        // streams (AV1) would snap back to the current keyframe and the position would never advance.
+        seek(to: baseTime + seconds, exact: exact, forward: seconds > 0 && !exact)
     }
 
     public func stepFrameForward() {

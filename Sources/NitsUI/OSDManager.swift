@@ -16,20 +16,7 @@ public final class OSDManager {
     public func show(_ event: OSDEvent, duration: Double = 1.3) {
         hideTask?.cancel()
 
-        // Accumulate seek offset if user is rapidly seeking
-        let resolvedEvent: OSDEvent
-        if case .seek(let newOffset, _, let durationTime) = event,
-            case .seek(let prevOffset, let prevTime, _) = currentEvent,
-            isVisible
-        {
-            let combinedOffset = prevOffset + newOffset
-            let targetTime = prevTime + newOffset
-            resolvedEvent = .seek(offsetSeconds: combinedOffset, currentTime: targetTime, duration: durationTime)
-        } else {
-            resolvedEvent = event
-        }
-
-        currentEvent = resolvedEvent
+        currentEvent = event
 
         if !isVisible {
             withAnimation(.easeOut(duration: 0.15)) {

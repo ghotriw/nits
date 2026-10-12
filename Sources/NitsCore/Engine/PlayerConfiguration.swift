@@ -62,6 +62,13 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether to automatically discover and add sibling media files in the folder to the playlist (default true).
     public var autoLoadFolderMedia: Bool
 
+    /// Seek step in seconds for arrow key navigation (default 5.0).
+    public var seekStepSeconds: Double
+
+    /// Whether a single arrow key press seeks to the exact target time (default true).
+    /// When disabled, all seeks navigate strictly by keyframes.
+    public var exactSeekOnSinglePress: Bool
+
     /// Explicit start time in seconds requested on launch (if provided, overrides resume history).
     public var startTime: Double?
 
@@ -94,6 +101,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleBgOpacity: Double = 0.65,
         enableOSD: Bool = true,
         autoLoadFolderMedia: Bool = true,
+        seekStepSeconds: Double = 5.0,
+        exactSeekOnSinglePress: Bool = true,
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil
@@ -119,6 +128,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleBgOpacity = subtitleBgOpacity
         self.enableOSD = enableOSD
         self.autoLoadFolderMedia = autoLoadFolderMedia
+        self.seekStepSeconds = seekStepSeconds
+        self.exactSeekOnSinglePress = exactSeekOnSinglePress
         self.startTime = startTime
         self.audioTrack = audioTrack
         self.subtitleTrack = subtitleTrack
@@ -139,6 +150,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
     public static let keyEnableOSD = "Nits.enableOSD"
     public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
+    public static let keySeekStepSeconds = "Nits.seekStepSeconds"
+    public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -187,6 +200,15 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyAutoLoadFolderMedia) != nil {
             config.autoLoadFolderMedia = userDefaults.bool(forKey: keyAutoLoadFolderMedia)
         }
+        if let seekStep = userDefaults.object(forKey: keySeekStepSeconds) as? NSNumber {
+            let val = seekStep.doubleValue
+            if val.isFinite && val > 0 {
+                config.seekStepSeconds = max(1.0, min(300.0, val))
+            }
+        }
+        if userDefaults.object(forKey: keyExactSeekOnSinglePress) != nil {
+            config.exactSeekOnSinglePress = userDefaults.bool(forKey: keyExactSeekOnSinglePress)
+        }
         return config
     }
 
@@ -207,6 +229,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
         userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
         userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
+        userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
+        userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
     }
 
     private static func nonEmpty(_ value: String) -> String? {

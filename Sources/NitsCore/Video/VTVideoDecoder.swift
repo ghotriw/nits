@@ -223,6 +223,10 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         lock.unlock()
     }
 
+    public func waitForPendingFrames() {
+        drain()
+    }
+
     public func drain() {
         lock.lock()
         let s = session

@@ -17,6 +17,8 @@ public protocol PlayerActions: AnyObject {
     var hasNextTrack: Bool { get }
     var hasPreviousTrack: Bool { get }
 
+    var seekStepSeconds: Double { get }
+
     func togglePlayPause()
     func play()
     func pause()
@@ -24,6 +26,8 @@ public protocol PlayerActions: AnyObject {
     func stepFrameForward()
     func stepFrameBackward()
     func seekRelative(by seconds: Double)
+    func seekForward()
+    func seekBackward()
     func stepVolume(by delta: Float)
     func toggleMute()
     func setPlaybackRate(_ rate: Double)
@@ -51,6 +55,12 @@ extension PlayerActions {
     public var isPlaylistPresented: Bool { false }
     public var hasNextTrack: Bool { false }
     public var hasPreviousTrack: Bool { false }
+    public func seekForward() {
+        seekRelative(by: seekStepSeconds)
+    }
+    public func seekBackward() {
+        seekRelative(by: -seekStepSeconds)
+    }
     public func promptJumpToTime() {}
     public func dismissJumpToTime() {}
     public func toggleQuickSettings() {}

@@ -49,13 +49,14 @@ public struct PlayerCommands: Commands {
 
             Divider()
 
-            Button("Jump Forward (5s)") {
-                playerActions?.seekRelative(by: 5.0)
+            let stepText = "\(Int(playerActions?.seekStepSeconds ?? 5))s"
+            Button("Jump Forward (\(stepText))") {
+                playerActions?.seekForward()
             }
             .disabled(playerActions == nil)
 
-            Button("Jump Backward (5s)") {
-                playerActions?.seekRelative(by: -5.0)
+            Button("Jump Backward (\(stepText))") {
+                playerActions?.seekBackward()
             }
             .disabled(playerActions == nil)
 

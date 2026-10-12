@@ -12,7 +12,12 @@ public protocol VideoDecoderProtocol: AnyObject, Sendable {
     func decode(sampleBuffer: CMSampleBuffer)
 
     /// Flushes any pending or in-flight frames.
+    /// May be destructive (e.g. libdav1d drops reference frames): only call before a demuxer seek.
     func flush()
+
+    /// Non-destructive: blocks until asynchronously emitted frames have been delivered.
+    /// Decoder reference state is preserved so decoding can continue with the next packet.
+    func waitForPendingFrames()
 
     /// Drains any buffered frames at end-of-stream (EOF).
     func drain()

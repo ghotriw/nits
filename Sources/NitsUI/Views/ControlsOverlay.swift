@@ -71,15 +71,16 @@ public struct ControlsOverlay: View {
                 .disabled(!engine.playlist.hasPrevious)
                 .help("Previous Track (⌘←)")
 
-                // Seek 10s backward
+                // Seek backward
                 Button {
-                    engine.seekRelative(by: -10)
+                    performSeek(by: -engine.seekStepSeconds)
                 } label: {
-                    Image(systemName: "gobackward.10")
+                    Image(systemName: "gobackward")
                         .font(.system(size: 17))
                         .foregroundStyle(.white.opacity(0.85))
                 }
                 .buttonStyle(.plain)
+                .help("Seek Backward (←)")
 
                 // Play / Pause
                 Button {
@@ -91,15 +92,16 @@ public struct ControlsOverlay: View {
                 }
                 .buttonStyle(.plain)
 
-                // Seek 10s forward
+                // Seek forward
                 Button {
-                    engine.seekRelative(by: 10)
+                    performSeek(by: engine.seekStepSeconds)
                 } label: {
-                    Image(systemName: "goforward.10")
+                    Image(systemName: "goforward")
                         .font(.system(size: 17))
                         .foregroundStyle(.white.opacity(0.85))
                 }
                 .buttonStyle(.plain)
+                .help("Seek Forward (→)")
 
                 // Next Track
                 Button {
@@ -414,6 +416,16 @@ public struct ControlsOverlay: View {
             return track.language.uppercased()
         }
         return "Track \(track.id + 1)"
+    }
+
+    private func performSeek(by delta: Double) {
+        let honestOffset = engine.seekRelative(by: delta)
+        if engine.enableOSD, let uiState {
+            let targetPos = engine.pendingSeekTime ?? engine.currentTime
+            uiState.osd.show(
+                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.duration)
+            )
+        }
     }
 }
 
