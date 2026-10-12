@@ -346,6 +346,12 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var durationSeconds: Double = 0
     public private(set) var width: Int = 0
     public private(set) var height: Int = 0
+    /// Sample Aspect Ratio (Pixel Aspect Ratio) from stream metadata (e.g. 720:959 or 1:1)
+    public private(set) var sampleAspectRatio: RationalAspectRatio = .square
+    /// Effective Display Aspect Ratio (DAR) taking SAR into account: (width * sar.multiplier) / height
+    public var displayAspectRatio: Double {
+        RationalAspectRatio.computeDisplayAspectRatio(width: width, height: height, sar: sampleAspectRatio)
+    }
     public private(set) var maxPeakNits: Float = 1000.0
     public private(set) var maxFallNits: Float = 0.0
     public private(set) var colorPrimaries: CFString = kCVImageBufferColorPrimaries_ITU_R_709_2
@@ -552,6 +558,28 @@ public final class MediaDemuxer: @unchecked Sendable {
                 }
                 self.width = Int(stream.pointee.codecpar.pointee.width)
                 self.height = Int(stream.pointee.codecpar.pointee.height)
+
+                // Guess or extract Sample Aspect Ratio (SAR / PAR)
+                let guessedSAR = av_guess_sample_aspect_ratio(formatCtx, stream, nil)
+                if guessedSAR.num > 0 && guessedSAR.den > 0 {
+                    self.sampleAspectRatio = RationalAspectRatio(
+                        numerator: Int(guessedSAR.num), denominator: Int(guessedSAR.den))
+                } else if stream.pointee.sample_aspect_ratio.num > 0 && stream.pointee.sample_aspect_ratio.den > 0 {
+                    self.sampleAspectRatio = RationalAspectRatio(
+                        numerator: Int(stream.pointee.sample_aspect_ratio.num),
+                        denominator: Int(stream.pointee.sample_aspect_ratio.den)
+                    )
+                } else if stream.pointee.codecpar.pointee.sample_aspect_ratio.num > 0
+                    && stream.pointee.codecpar.pointee.sample_aspect_ratio.den > 0
+                {
+                    self.sampleAspectRatio = RationalAspectRatio(
+                        numerator: Int(stream.pointee.codecpar.pointee.sample_aspect_ratio.num),
+                        denominator: Int(stream.pointee.codecpar.pointee.sample_aspect_ratio.den)
+                    )
+                } else {
+                    self.sampleAspectRatio = .square
+                }
+
                 if stream.pointee.duration > 0 {
                     self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
                 } else if formatCtx.pointee.duration > 0 {
@@ -1131,6 +1159,14 @@ public final class MediaDemuxer: @unchecked Sendable {
             kCVImageBufferChromaLocationBottomFieldKey as String: kCVImageBufferChromaLocation_Left as String,
         ]
 
+        if !sampleAspectRatio.isSquare {
+            let parDict: [String: Int] = [
+                kCVImageBufferPixelAspectRatioHorizontalSpacingKey as String: sampleAspectRatio.numerator,
+                kCVImageBufferPixelAspectRatioVerticalSpacingKey as String: sampleAspectRatio.denominator,
+            ]
+            extensionsDict[kCVImageBufferPixelAspectRatioKey as String] = parDict
+        }
+
         if let masteringDisplay {
             extensionsDict[kCVImageBufferMasteringDisplayColorVolumeKey as String] = masteringDisplay
         }
@@ -1417,6 +1453,15 @@ public final class MediaDemuxer: @unchecked Sendable {
             CMSetAttachment(
                 sb, key: kCVImageBufferYCbCrMatrixKey, value: yCbCrMatrix,
                 attachmentMode: kCMAttachmentMode_ShouldPropagate)
+            if !sampleAspectRatio.isSquare {
+                let parDict: NSDictionary = [
+                    kCVImageBufferPixelAspectRatioHorizontalSpacingKey: sampleAspectRatio.numerator,
+                    kCVImageBufferPixelAspectRatioVerticalSpacingKey: sampleAspectRatio.denominator,
+                ]
+                CMSetAttachment(
+                    sb, key: kCVImageBufferPixelAspectRatioKey, value: parDict,
+                    attachmentMode: kCMAttachmentMode_ShouldPropagate)
+            }
             if let masteringDisplay {
                 CMSetAttachment(
                     sb, key: kCVImageBufferMasteringDisplayColorVolumeKey, value: masteringDisplay as CFData,

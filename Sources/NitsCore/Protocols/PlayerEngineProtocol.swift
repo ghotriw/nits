@@ -37,6 +37,8 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var hasVideo: Bool { get }
     @MainActor var videoWidth: Int { get }
     @MainActor var videoHeight: Int { get }
+    @MainActor var sampleAspectRatio: RationalAspectRatio { get }
+    @MainActor var displayAspectRatio: Double { get }
     @MainActor var videoCodecName: String { get }
     @MainActor var videoBitDepth: Int { get }
     @MainActor var videoColorPrimaries: String { get }

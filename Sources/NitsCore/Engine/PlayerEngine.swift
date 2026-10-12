@@ -53,6 +53,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     public var videoWidth: Int = 0
     public var videoHeight: Int = 0
+    public var sampleAspectRatio: RationalAspectRatio = .square
+    public var displayAspectRatio: Double {
+        RationalAspectRatio.computeDisplayAspectRatio(width: videoWidth, height: videoHeight, sar: sampleAspectRatio)
+    }
     public var videoCodecName: String = ""
     public var videoBitDepth: Int = 8
     public var videoColorPrimaries: String = ""
@@ -1248,6 +1252,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         hasVideo = false
         videoWidth = 0
         videoHeight = 0
+        sampleAspectRatio = .square
         videoCodecName = ""
         videoBitDepth = 8
         videoColorPrimaries = ""
@@ -1446,6 +1451,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.duration = demuxer.durationSeconds
         self.videoWidth = demuxer.width
         self.videoHeight = demuxer.height
+        self.sampleAspectRatio = demuxer.sampleAspectRatio
         self.isHDRContent = demuxer.isHDR
         if self.mediaTitle.isEmpty {
             self.mediaTitle = Self.resolveTitle(from: path)

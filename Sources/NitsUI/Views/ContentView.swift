@@ -130,7 +130,8 @@ public struct ContentView: View {
                 fontName: engine.subtitleFontName,
                 fontWeight: engine.subtitleFontWeight,
                 videoWidth: engine.videoWidth,
-                videoHeight: engine.videoHeight
+                videoHeight: engine.videoHeight,
+                displayAspectRatio: engine.displayAspectRatio
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)

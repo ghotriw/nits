@@ -14,10 +14,12 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     private struct FrameContext: Sendable {
         let doNotDisplay: Bool
         let doviMetadata: DolbyVisionFrameMetadata?
+        let pixelAspectRatio: RationalAspectRatio?
     }
 
     private var nextFrameId: UInt64 = 1
     private var inFlightFrames: [UInt64: FrameContext] = [:]
+    private var cachedPixelAspectRatio: RationalAspectRatio?
 
     public var lastDecodeStatus: OSStatus {
         lock.lock()
@@ -88,12 +90,28 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
             CMRemoveAttachment(sampleBuffer, key: doviKey)
         }
 
+        var parRational: RationalAspectRatio? = nil
+        let rawPar =
+            CMGetAttachment(sampleBuffer, key: kCVImageBufferPixelAspectRatioKey, attachmentModeOut: nil)
+            ?? (CMFormatDescriptionGetExtensions(formatDesc) as? [CFString: Any])?[kCVImageBufferPixelAspectRatioKey]
+        if let dict = rawPar as? NSDictionary,
+            let h = (dict[kCVImageBufferPixelAspectRatioHorizontalSpacingKey] as? NSNumber)?.intValue,
+            let v = (dict[kCVImageBufferPixelAspectRatioVerticalSpacingKey] as? NSNumber)?.intValue,
+            h > 0, v > 0
+        {
+            parRational = RationalAspectRatio(numerator: h, denominator: v)
+            cachedPixelAspectRatio = parRational
+        } else {
+            parRational = cachedPixelAspectRatio
+        }
+
         let frameId = nextFrameId
         nextFrameId &+= 1
         if nextFrameId == 0 {
             nextFrameId = 1
         }
-        inFlightFrames[frameId] = FrameContext(doNotDisplay: doNotDisplay, doviMetadata: dovi)
+        inFlightFrames[frameId] = FrameContext(
+            doNotDisplay: doNotDisplay, doviMetadata: dovi, pixelAspectRatio: parRational)
         lock.unlock()
 
         let refCon = UnsafeMutableRawPointer(bitPattern: UInt(frameId))
@@ -177,6 +195,15 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
                 decoder.lock.unlock()
 
                 guard status == noErr, let imageBuffer else { return }
+                if let par = frameCtx?.pixelAspectRatio, !par.isSquare,
+                    CVBufferCopyAttachment(imageBuffer, kCVImageBufferPixelAspectRatioKey, nil) == nil
+                {
+                    let dict: NSDictionary = [
+                        kCVImageBufferPixelAspectRatioHorizontalSpacingKey: par.numerator,
+                        kCVImageBufferPixelAspectRatioVerticalSpacingKey: par.denominator,
+                    ]
+                    CVBufferSetAttachment(imageBuffer, kCVImageBufferPixelAspectRatioKey, dict, .shouldPropagate)
+                }
                 let frame = DecodedFrame(
                     pixelBuffer: imageBuffer,
                     pts: presentationTimeStamp,

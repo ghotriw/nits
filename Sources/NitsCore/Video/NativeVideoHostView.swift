@@ -98,10 +98,8 @@ public final class NativeVideoHostView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         metalLayer.contentsScale = scale
 
-        // Calculate aspect-fit frame matching AVSampleBufferDisplayLayer resizeAspect
-        let vw = CGFloat(engine.videoWidth > 0 ? engine.videoWidth : 3840)
-        let vh = CGFloat(engine.videoHeight > 0 ? engine.videoHeight : 2160)
-        let videoAspect = vw / vh
+        // Calculate aspect-fit frame matching AVSampleBufferDisplayLayer resizeAspect (respecting SAR / DAR)
+        let videoAspect = CGFloat(engine.displayAspectRatio > 0 ? engine.displayAspectRatio : 16.0 / 9.0)
         let viewAspect = bounds.width / max(bounds.height, 1)
 
         var targetFrame = bounds

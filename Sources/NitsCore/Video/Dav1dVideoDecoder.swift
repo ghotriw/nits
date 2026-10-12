@@ -544,6 +544,7 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         cacheAttachment(key: kCVImageBufferColorPrimariesKey)
         cacheAttachment(key: kCVImageBufferTransferFunctionKey)
         cacheAttachment(key: kCVImageBufferYCbCrMatrixKey)
+        cacheAttachment(key: kCVImageBufferPixelAspectRatioKey)
         cacheAttachment(key: kCVImageBufferMasteringDisplayColorVolumeKey)
         cacheAttachment(key: kCVImageBufferContentLightLevelInfoKey)
     }

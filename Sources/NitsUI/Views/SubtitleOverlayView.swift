@@ -11,6 +11,7 @@ public struct SubtitleOverlayView: View {
     public let fontWeight: String
     public let videoWidth: Int
     public let videoHeight: Int
+    public let displayAspectRatio: Double
 
     public init(
         cues: [SubtitleCue],
@@ -21,7 +22,8 @@ public struct SubtitleOverlayView: View {
         fontName: String = "System Rounded",
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
-        videoHeight: Int = 0
+        videoHeight: Int = 0,
+        displayAspectRatio: Double = 0.0
     ) {
         self.cues = cues
         self.fontSize = fontSize
@@ -32,6 +34,7 @@ public struct SubtitleOverlayView: View {
         self.fontWeight = fontWeight
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
+        self.displayAspectRatio = displayAspectRatio
     }
 
     public init(
@@ -43,7 +46,8 @@ public struct SubtitleOverlayView: View {
         fontName: String = "System Rounded",
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
-        videoHeight: Int = 0
+        videoHeight: Int = 0,
+        displayAspectRatio: Double = 0.0
     ) {
         self.init(
             cues: cue.map { [$0] } ?? [],
@@ -54,7 +58,8 @@ public struct SubtitleOverlayView: View {
             fontName: fontName,
             fontWeight: fontWeight,
             videoWidth: videoWidth,
-            videoHeight: videoHeight
+            videoHeight: videoHeight,
+            displayAspectRatio: displayAspectRatio
         )
     }
 
@@ -79,7 +84,11 @@ public struct SubtitleOverlayView: View {
             GeometryReader { geometry in
                 let containerSize = geometry.size
                 let videoFrame = Self.computeVideoFrame(
-                    containerSize: containerSize, videoWidth: videoWidth, videoHeight: videoHeight)
+                    containerSize: containerSize,
+                    videoWidth: videoWidth,
+                    videoHeight: videoHeight,
+                    displayAspectRatio: displayAspectRatio
+                )
                 let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
                 let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
                 let verticalEdgePadding = max(20.0, 40.0 * scale)
@@ -137,26 +146,30 @@ public struct SubtitleOverlayView: View {
 
     /// Calculates the aspect-fit frame of the video inside the container,
     /// matching the placement of NativeVideoHostView / MetalVideoRenderer.
-    nonisolated public static func computeVideoFrame(containerSize: CGSize, videoWidth: Int, videoHeight: Int) -> CGRect
-    {
+    nonisolated public static func computeVideoFrame(
+        containerSize: CGSize,
+        videoWidth: Int,
+        videoHeight: Int,
+        displayAspectRatio: Double = 0.0
+    ) -> CGRect {
         guard containerSize.width > 0, containerSize.height > 0 else {
             return CGRect(origin: .zero, size: containerSize)
         }
         guard videoWidth > 0, videoHeight > 0 else {
             return CGRect(origin: .zero, size: containerSize)
         }
+        let aspect: Double = displayAspectRatio > 0 ? displayAspectRatio : (Double(videoWidth) / Double(videoHeight))
 
-        let videoAspect = Double(videoWidth) / Double(videoHeight)
         let containerAspect = Double(containerSize.width) / Double(containerSize.height)
 
-        if containerAspect > videoAspect {
+        if containerAspect > aspect {
             // Container is wider than video: pillarbox on sides
-            let targetWidth = Double(containerSize.height) * videoAspect
+            let targetWidth = Double(containerSize.height) * aspect
             let offsetX = (Double(containerSize.width) - targetWidth) / 2.0
             return CGRect(x: offsetX, y: 0, width: targetWidth, height: Double(containerSize.height))
         } else {
             // Container is taller than video: letterbox on top/bottom
-            let targetHeight = Double(containerSize.width) / videoAspect
+            let targetHeight = Double(containerSize.width) / aspect
             let offsetY = (Double(containerSize.height) - targetHeight) / 2.0
             return CGRect(x: 0, y: offsetY, width: Double(containerSize.width), height: targetHeight)
         }
