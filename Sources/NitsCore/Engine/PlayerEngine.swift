@@ -2376,8 +2376,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
     ) -> SeekPreviewResult? {
         let lock = OSAllocatedUnfairLock()
         let box = SeekPreviewBox()
+        if exact {
+            decoder.setDiscardNonReferenceFrames(true)
+        }
         decoder.setOutputHandler { frame in
-            frameQueue.push(frame)
+            if !frame.doNotDisplay {
+                frameQueue.push(frame)
+            }
             if (exact || !frame.doNotDisplay) && frame.pts.isValid {
                 lock.lock()
                 let framePts = frame.pts.seconds
@@ -2403,8 +2408,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
 
         defer {
+            decoder.setDiscardNonReferenceFrames(false)
             decoder.setOutputHandler { [weak frameQueue] frame in
-                frameQueue?.push(frame)
+                if !frame.doNotDisplay {
+                    frameQueue?.push(frame)
+                }
             }
         }
 
@@ -2437,6 +2445,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     let distance = max(seconds - ptsSeconds, 1.0)
                     let estimatedPackets = Int(distance * 90.0) + 64
                     maxAttempts = min(max(estimatedPackets, 120), 1200)
+                }
+
+                if exact && ptsSeconds.isFinite && ptsSeconds >= (seconds - 0.5) {
+                    // Near target window: restore all frames (including non-reference B-frames)
+                    decoder.setDiscardNonReferenceFrames(false)
                 }
 
                 decoder.decode(sampleBuffer: sample)

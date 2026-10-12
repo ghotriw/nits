@@ -24,4 +24,11 @@ public protocol VideoDecoderProtocol: AnyObject, Sendable {
 
     /// Resets or invalidates the internal decoder session.
     func resetSession()
+
+    /// Dynamically instructs the decoder to skip non-reference frames (e.g. during exact seek preroll).
+    func setDiscardNonReferenceFrames(_ discard: Bool)
+}
+
+extension VideoDecoderProtocol {
+    public func setDiscardNonReferenceFrames(_ discard: Bool) {}
 }
