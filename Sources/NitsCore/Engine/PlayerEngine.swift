@@ -177,6 +177,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
+        self.playlist.setRepeatMode(config.playlistRepeatMode)
+        self.playlist.setShuffle(config.playlistIsShuffled)
     }
 
     public var enableOSD: Bool = true
@@ -301,7 +303,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var configuration: PlayerConfiguration
     var currentPath: String?
     public let historyStore: PlaybackHistoryStore
-    public let playlist = PlaylistManager()
+    public let playlist: PlaylistManager
     @ObservationIgnored
     let isFeeding = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored
@@ -369,6 +371,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.enableOSD = configuration.enableOSD
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress
+        self.playlist = PlaylistManager(
+            repeatMode: configuration.playlistRepeatMode,
+            isShuffled: configuration.playlistIsShuffled,
+            userDefaults: .standard
+        )
 
         metalRenderer?.uniforms.targetNits = effectiveNits
         metalRenderer?.uniforms.outputSharpness = configuration.sharpness

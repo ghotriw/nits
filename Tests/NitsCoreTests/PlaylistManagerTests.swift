@@ -169,9 +169,36 @@ struct PlaylistManagerTests {
 
         manager.searchQuery = "xyz"
         #expect(manager.filteredItems.isEmpty)
+        #expect(manager.hasNext == false)
+        #expect(manager.hasPrevious == false)
+        #expect(manager.playNext() == nil)
+
+        // Verifying code review point 2: playPrevious must restart track if over threshold even if search result is empty
+        let prevWhileEmptyFilter = manager.playPrevious(restartThresholdSeconds: 3.0, currentPlaybackTime: 10.0)
+        #expect(prevWhileEmptyFilter.shouldRestart == true)
+        #expect(prevWhileEmptyFilter.item?.title.contains("Inception") == true)
 
         manager.searchQuery = ""
         #expect(manager.filteredItems.count == 3)
+
+        // Filter navigation behavior like VLC:
+        // Current item is Inception (index 0). Filter for "Dark".
+        // Current item continues playing, but playNext() advances to the filtered result (The Dark Knight).
+        manager.searchQuery = "dark"
+        #expect(manager.currentItem?.title.contains("Inception") == true)
+        #expect(manager.hasNext == true)
+
+        let nextFromFilter = manager.playNext()
+        #expect(nextFromFilter?.title.contains("Dark") == true)
+        #expect(manager.currentItem?.id == nextFromFilter?.id)
+        #expect(manager.hasNext == false)
+
+        // Clear filter: navigation resumes within full list
+        manager.searchQuery = ""
+        #expect(manager.currentItem?.title.contains("Dark") == true)
+        #expect(manager.hasPrevious == true)
+        let prevFull = manager.playPrevious()
+        #expect(prevFull.item?.title.contains("Interstellar") == true)
     }
 
     @Test("Sorting by title and filename")
@@ -523,5 +550,36 @@ struct PlaylistManagerTests {
         #expect(items[0].url.path == "/Volumes/Drive/media_1.mp4")
         #expect(items[3999].title == "Remote Video 4000")
         #expect(items[3999].url.path == "/Volumes/Drive/media_4000.mp4")
+    }
+
+    @Test("Playlist repeat mode and shuffle persistence")
+    func testRepeatAndShufflePersistence() {
+        let testDefaults = UserDefaults(suiteName: "NitsTestPlaylistPersistence_\(UUID().uuidString)")!
+        defer { testDefaults.removePersistentDomain(forName: testDefaults.description) }
+
+        var config = PlayerConfiguration.loadFromUserDefaults(userDefaults: testDefaults)
+        #expect(config.playlistRepeatMode == .off)
+        #expect(config.playlistIsShuffled == false)
+
+        config.playlistRepeatMode = .all
+        config.playlistIsShuffled = true
+        config.saveToUserDefaults(userDefaults: testDefaults)
+
+        let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: testDefaults)
+        #expect(loaded.playlistRepeatMode == .all)
+        #expect(loaded.playlistIsShuffled == true)
+
+        // Verifying code review point 3: PlaylistManager uses injected userDefaults
+        let isolatedManager = PlaylistManager(
+            repeatMode: loaded.playlistRepeatMode,
+            isShuffled: loaded.playlistIsShuffled,
+            userDefaults: testDefaults
+        )
+        isolatedManager.cycleRepeatMode()
+        #expect(
+            testDefaults.string(forKey: PlayerConfiguration.keyPlaylistRepeatMode) == PlaylistRepeatMode.one.rawValue)
+
+        isolatedManager.toggleShuffle()
+        #expect(testDefaults.bool(forKey: PlayerConfiguration.keyPlaylistIsShuffled) == false)
     }
 }

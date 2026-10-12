@@ -305,33 +305,55 @@ public struct PlaylistOverlayView: View {
     // MARK: - Playlist List View
 
     private var playlistListView: some View {
-        List {
-            ForEach(Array(engine.playlist.filteredItems.enumerated()), id: \.element.id) { index, item in
-                PlaylistRowView(
-                    item: item,
-                    index: index,
-                    isCurrent: engine.playlist.currentItem?.id == item.id,
-                    isPlaying: engine.isPlaying && engine.playlist.currentItem?.id == item.id,
-                    onSelect: {
-                        engine.playPlaylistItem(id: item.id)
-                    },
-                    onRemove: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            engine.removePlaylistItem(id: item.id)
+        ScrollViewReader { proxy in
+            List {
+                ForEach(Array(engine.playlist.filteredItems.enumerated()), id: \.element.id) { index, item in
+                    PlaylistRowView(
+                        item: item,
+                        index: index,
+                        isCurrent: engine.playlist.currentItem?.id == item.id,
+                        isPlaying: engine.isPlaying && engine.playlist.currentItem?.id == item.id,
+                        onSelect: {
+                            engine.playPlaylistItem(id: item.id)
+                        },
+                        onRemove: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                engine.removePlaylistItem(id: item.id)
+                            }
                         }
-                    }
-                )
-                .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                    )
+                    .id(item.id)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+                .onMove { source, destination in
+                    engine.playlist.move(from: source, to: destination)
+                }
+                .moveDisabled(!engine.playlist.searchQuery.isEmpty)
             }
-            .onMove { source, destination in
-                engine.playlist.move(from: source, to: destination)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .onAppear {
+                scrollToActiveItem(using: proxy, animated: false)
             }
-            .moveDisabled(!engine.playlist.searchQuery.isEmpty)
+            .onChange(of: engine.playlist.currentItem?.id) { _, _ in
+                scrollToActiveItem(using: proxy, animated: true)
+            }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+    }
+
+    private func scrollToActiveItem(using proxy: ScrollViewProxy, animated: Bool = false) {
+        guard let currentID = engine.playlist.currentItem?.id else { return }
+        Task { @MainActor in
+            if animated {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(currentID, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(currentID, anchor: .center)
+            }
+        }
     }
 
     // MARK: - Empty States

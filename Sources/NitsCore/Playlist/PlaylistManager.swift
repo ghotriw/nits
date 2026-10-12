@@ -6,12 +6,27 @@ import Observation
 @Observable
 @MainActor
 public final class PlaylistManager: Sendable {
-    public private(set) var items: [PlaylistItem] = []
+    public private(set) var items: [PlaylistItem] = [] {
+        didSet {
+            recomputeFilteredItems()
+        }
+    }
     public private(set) var currentIndex: Int? = nil
     public var repeatMode: PlaylistRepeatMode = .off
     public private(set) var isShuffled: Bool = false
     public var autoPlayNext: Bool = true
-    public var searchQuery: String = ""
+    public var searchQuery: String = "" {
+        didSet {
+            recomputeFilteredItems()
+        }
+    }
+
+    /// Items filtered by the current `searchQuery` (cached for performance).
+    public private(set) var filteredItems: [PlaylistItem] = []
+
+    /// Optional persistence store for playlist repeat & shuffle preferences.
+    @ObservationIgnored
+    private let userDefaults: UserDefaults?
 
     /// Callback invoked when the active playlist item changes.
     public var onCurrentItemChanged: ((PlaylistItem?) -> Void)?
@@ -31,10 +46,31 @@ public final class PlaylistManager: Sendable {
     /// Supported extensions for media files and playlist files.
     public static let supportedExtensions: Set<String> = mediaExtensions.union(playlistExtensions)
 
-    public init(items: [PlaylistItem] = [], repeatMode: PlaylistRepeatMode = .off, autoPlayNext: Bool = true) {
+    public init(
+        items: [PlaylistItem] = [],
+        repeatMode: PlaylistRepeatMode = .off,
+        isShuffled: Bool = false,
+        autoPlayNext: Bool = true,
+        userDefaults: UserDefaults? = nil
+    ) {
         self.items = items
         self.repeatMode = repeatMode
+        self.isShuffled = isShuffled
         self.autoPlayNext = autoPlayNext
+        self.userDefaults = userDefaults
+        recomputeFilteredItems()
+    }
+
+    private func recomputeFilteredItems() {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            filteredItems = items
+        } else {
+            filteredItems = items.filter { item in
+                item.title.localizedCaseInsensitiveContains(trimmed)
+                    || item.filename.localizedCaseInsensitiveContains(trimmed)
+            }
+        }
     }
 
     // MARK: - Current Item & Status
@@ -45,68 +81,84 @@ public final class PlaylistManager: Sendable {
         return items[index]
     }
 
-    /// Whether there is a next track available to play.
+    /// The active sequence of items used for navigation (respects search filter if active).
+    public var activeSequence: [PlaylistItem] {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? items : filteredItems
+    }
+
+    /// Whether there is a next track available to play (respects current search filter).
     public var hasNext: Bool {
-        guard !items.isEmpty, let currentIndex else { return !items.isEmpty }
+        let sequence = activeSequence
+        guard !sequence.isEmpty else { return false }
+        guard let currentId = currentItem?.id,
+            let activeIdx = sequence.firstIndex(where: { $0.id == currentId })
+        else {
+            // Current item is not in the filtered sequence: next item will be the first one in the filtered list
+            return !sequence.isEmpty
+        }
+
         if repeatMode == .one || repeatMode == .all {
             return true
         }
-        return currentIndex < items.count - 1
+        return activeIdx < sequence.count - 1
     }
 
-    /// Whether there is a previous track available to play.
+    /// Whether there is a previous track available to play (respects current search filter).
     public var hasPrevious: Bool {
-        guard !items.isEmpty, let currentIndex else { return false }
+        let sequence = activeSequence
+        guard !sequence.isEmpty else { return false }
+        guard let currentId = currentItem?.id,
+            let activeIdx = sequence.firstIndex(where: { $0.id == currentId })
+        else {
+            // Current item is not in the filtered sequence: previous item will be the last one in the filtered list
+            return !sequence.isEmpty
+        }
+
         if repeatMode == .all {
             return true
         }
-        return currentIndex > 0
-    }
-
-    /// Items filtered by the current `searchQuery` (case-insensitive).
-    public var filteredItems: [PlaylistItem] {
-        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return items }
-        return items.filter { item in
-            item.title.localizedCaseInsensitiveContains(trimmed)
-                || item.filename.localizedCaseInsensitiveContains(trimmed)
-        }
+        return activeIdx > 0
     }
 
     // MARK: - Navigation
 
-    /// Advances to the next item based on current index and repeat mode.
+    /// Advances to the next item based on current index, search filter, and repeat mode.
     /// - Parameter isUserAction: If true (e.g. user pressed Next button or shortcut), advances to next item even if repeatMode is .one.
     @discardableResult
     public func playNext(isUserAction: Bool = false) -> PlaylistItem? {
-        guard !items.isEmpty else { return nil }
+        let sequence = activeSequence
+        guard !sequence.isEmpty else { return nil }
 
-        guard let current = currentIndex else {
-            currentIndex = 0
-            let next = items[0]
-            onCurrentItemChanged?(next)
-            return next
+        if repeatMode == .one && !isUserAction, let current = currentItem {
+            return current
         }
 
-        if repeatMode == .one && !isUserAction {
-            return items[current]
-        }
-
-        if current + 1 < items.count {
-            let nextIndex = current + 1
-            currentIndex = nextIndex
-            let item = items[nextIndex]
-            onCurrentItemChanged?(item)
-            return item
-        } else if repeatMode == .all {
-            currentIndex = 0
-            let item = items[0]
-            onCurrentItemChanged?(item)
-            return item
+        let targetItem: PlaylistItem?
+        if let currentId = currentItem?.id,
+            let activeIdx = sequence.firstIndex(where: { $0.id == currentId })
+        {
+            if activeIdx + 1 < sequence.count {
+                targetItem = sequence[activeIdx + 1]
+            } else if repeatMode == .all {
+                targetItem = sequence[0]
+            } else {
+                targetItem = nil
+            }
         } else {
-            // End of playlist reached
+            // Currently playing item is not in the filtered results: pick the first one from the filter
+            targetItem = sequence[0]
+        }
+
+        guard let targetItem else {
             return nil
         }
+
+        if let originalIndex = items.firstIndex(where: { $0.id == targetItem.id }) {
+            currentIndex = originalIndex
+        }
+        onCurrentItemChanged?(targetItem)
+        return targetItem
     }
 
     /// Moves to the previous item, or signals to restart the current track if played past threshold.
@@ -114,36 +166,43 @@ public final class PlaylistManager: Sendable {
         restartThresholdSeconds: Double = 3.0,
         currentPlaybackTime: Double = 0.0
     ) -> (item: PlaylistItem?, shouldRestart: Bool) {
-        guard !items.isEmpty else { return (nil, false) }
-
-        // If played for more than threshold seconds, restart current track
+        // If played for more than threshold seconds, restart current track regardless of search filter
         if currentPlaybackTime > restartThresholdSeconds, let currentItem {
             return (currentItem, true)
         }
 
-        guard let current = currentIndex else {
-            currentIndex = 0
-            let item = items[0]
-            onCurrentItemChanged?(item)
-            return (item, false)
+        let sequence = activeSequence
+        guard !sequence.isEmpty else { return (nil, false) }
+
+        let targetItem: PlaylistItem?
+        var shouldRestart = false
+
+        if let currentId = currentItem?.id,
+            let activeIdx = sequence.firstIndex(where: { $0.id == currentId })
+        {
+            if activeIdx > 0 {
+                targetItem = sequence[activeIdx - 1]
+            } else if repeatMode == .all {
+                targetItem = sequence[sequence.count - 1]
+            } else {
+                // At start of playlist/filter with repeat off: restart current track
+                targetItem = sequence[activeIdx]
+                shouldRestart = true
+            }
+        } else {
+            // Currently playing item is not in the filtered results: jump to the last filtered item
+            targetItem = sequence[sequence.count - 1]
         }
 
-        if current > 0 {
-            let prevIndex = current - 1
-            currentIndex = prevIndex
-            let item = items[prevIndex]
-            onCurrentItemChanged?(item)
-            return (item, false)
-        } else if repeatMode == .all {
-            let lastIndex = items.count - 1
-            currentIndex = lastIndex
-            let item = items[lastIndex]
-            onCurrentItemChanged?(item)
-            return (item, false)
-        } else {
-            // At start of playlist with repeat off: restart current track
-            return (items[current], true)
+        guard let targetItem else {
+            return (nil, false)
         }
+
+        if !shouldRestart, let originalIndex = items.firstIndex(where: { $0.id == targetItem.id }) {
+            currentIndex = originalIndex
+            onCurrentItemChanged?(targetItem)
+        }
+        return (targetItem, shouldRestart)
     }
 
     /// Selects and plays an item by its index.
@@ -398,15 +457,28 @@ public final class PlaylistManager: Sendable {
 
     // MARK: - Modes: Shuffle & Repeat
 
-    /// Cycles through repeat modes: off -> all -> one -> off.
-    public func cycleRepeatMode() {
-        repeatMode = repeatMode.next
+    /// Sets repeat mode and optionally persists it to the configured UserDefaults store.
+    public func setRepeatMode(_ mode: PlaylistRepeatMode) {
+        repeatMode = mode
+        userDefaults?.set(mode.rawValue, forKey: PlayerConfiguration.keyPlaylistRepeatMode)
     }
 
-    /// Toggles shuffle state, preserving original ordering for unshuffling.
+    /// Cycles through repeat modes: off -> all -> one -> off, persisting the change if configured.
+    public func cycleRepeatMode() {
+        setRepeatMode(repeatMode.next)
+    }
+
+    /// Explicitly sets or restores shuffle state, applying shuffle order if items exist and persisting to UserDefaults if configured.
+    public func setShuffle(_ enabled: Bool) {
+        guard isShuffled != enabled else { return }
+        toggleShuffle()
+    }
+
+    /// Toggles shuffle state, preserving original ordering for unshuffling, and persists the setting if configured.
     public func toggleShuffle() {
-        guard items.count > 1 else {
+        if items.count <= 1 {
             isShuffled.toggle()
+            userDefaults?.set(isShuffled, forKey: PlayerConfiguration.keyPlaylistIsShuffled)
             return
         }
 
@@ -433,6 +505,8 @@ public final class PlaylistManager: Sendable {
         if let currentId, let newIndex = items.firstIndex(where: { $0.id == currentId }) {
             currentIndex = newIndex
         }
+
+        userDefaults?.set(isShuffled, forKey: PlayerConfiguration.keyPlaylistIsShuffled)
     }
 
     // MARK: - Sorting
@@ -543,7 +617,6 @@ public final class PlaylistManager: Sendable {
         let initialItem = PlaylistItem(url: fileURL, originalIndex: 0)
         self.items = [initialItem]
         self.currentIndex = 0
-        self.isShuffled = false
 
         folderScanTask?.cancel()
         folderScanTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -586,9 +659,18 @@ public final class PlaylistManager: Sendable {
                 }
             }
 
-            self.items = newItems
-            self.currentIndex = activeIndex
-            self.isShuffled = false
+            if self.isShuffled && newItems.count > 1 {
+                // Keep the active item at the top, shuffle the remaining siblings
+                let active = newItems.remove(at: activeIndex)
+                newItems.shuffle()
+                newItems.insert(active, at: 0)
+                self.items = newItems
+                self.currentIndex = 0
+            } else {
+                self.items = newItems
+                self.currentIndex = activeIndex
+            }
+
             AppLog.info(
                 .playlist,
                 "Loaded \(newItems.count) sibling media file(s) from '\(directoryURL.lastPathComponent)'"
@@ -622,7 +704,6 @@ public final class PlaylistManager: Sendable {
             let item = PlaylistItem(url: url, title: title, originalIndex: 0)
             self.items = [item]
             self.currentIndex = 0
-            self.isShuffled = false
         }
     }
 }

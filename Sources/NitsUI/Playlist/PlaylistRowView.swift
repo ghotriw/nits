@@ -68,12 +68,6 @@ public struct PlaylistRowView: View {
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.white.opacity(0.4))
                     }
-
-                    if isCurrent {
-                        Text("• Playing")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color.accentColor.opacity(0.8))
-                    }
                 }
             }
 
