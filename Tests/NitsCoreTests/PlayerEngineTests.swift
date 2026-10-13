@@ -683,4 +683,58 @@ struct PlayerEngineTests {
         #expect(mock.loadedRequest?.path == "test.mkv")
         #expect(mock.loadedRequest?.title == "Test Title")
     }
+
+    @Test("Focused PlayerPlaybackControlling protocol can be mocked with minimal properties")
+    @MainActor
+    func testPlayerPlaybackControllingMock() {
+        @MainActor
+        final class MinimalPlaybackMock: PlayerPlaybackControlling {
+            var loadedRequest: MediaLoadRequest?
+            var playCalled = false
+            var pauseCalled = false
+
+            var playbackState: PlaybackState = .idle
+            var onTimeUpdate: ((Double, Double) -> Void)? = nil
+            var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
+            var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
+            var currentTime: Double = 0
+            var pendingSeekTime: Double? = nil
+            var isSeeking: Bool = false
+            var duration: Double = 0
+            var isPlaying: Bool = false
+            var isLoaded: Bool = false
+            var isLoading: Bool = false
+            var loadError: String? = nil
+            var mediaTitle: String = ""
+            var artworkData: Data? = nil
+            var artworkURL: URL? = nil
+            var volume: Float = 1.0
+            var isMuted: Bool = false
+            var playbackRate: Double = 1.0
+            var seekStepSeconds: Double = 5.0
+            var exactSeekOnSinglePress: Bool = false
+
+            init() {}
+
+            func load(_ request: MediaLoadRequest) { loadedRequest = request }
+            func loadAsync(_ request: MediaLoadRequest) async { loadedRequest = request }
+            func stop() {}
+            func play() { playCalled = true }
+            func pause() { pauseCalled = true }
+            func togglePlayPause() {}
+            func seek(to seconds: Double, exact: Bool) {}
+            func seekRelative(by seconds: Double, exact: Bool) {}
+            func stepFrameForward() {}
+            func stepFrameBackward() {}
+            func stepVolume(by delta: Float) {}
+            func toggleMute() {}
+        }
+
+        let mock = MinimalPlaybackMock()
+        mock.play()
+        #expect(mock.playCalled == true)
+
+        mock.load(path: "audio.flac")
+        #expect(mock.loadedRequest?.path == "audio.flac")
+    }
 }

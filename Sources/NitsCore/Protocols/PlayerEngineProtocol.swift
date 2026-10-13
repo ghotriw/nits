@@ -19,7 +19,10 @@ public enum PlaybackState: Sendable, Equatable {
     case failed(String)
 }
 
-public protocol PlayerEngineProtocol: AnyObject, Sendable {
+// MARK: - Granular Protocol Domains
+
+/// Controls media transport, rate, volume, and playback lifecycle.
+public protocol PlayerPlaybackControlling: AnyObject, Sendable {
     @MainActor var playbackState: PlaybackState { get }
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
@@ -35,6 +38,34 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var mediaTitle: String { get set }
     @MainActor var artworkData: Data? { get }
     @MainActor var artworkURL: URL? { get }
+
+    @MainActor var volume: Float { get set }
+    @MainActor var isMuted: Bool { get set }
+    @MainActor var playbackRate: Double { get set }
+    @MainActor var seekStepSeconds: Double { get set }
+    @MainActor var exactSeekOnSinglePress: Bool { get set }
+
+    @MainActor func load(_ request: MediaLoadRequest)
+    @MainActor func loadAsync(_ request: MediaLoadRequest) async
+    @MainActor func stop()
+    @MainActor func play()
+    @MainActor func pause()
+    @MainActor func togglePlayPause()
+    @MainActor func seek(to seconds: Double)
+    @MainActor func seek(to seconds: Double, exact: Bool)
+    @MainActor @discardableResult func seekRelative(by seconds: Double) -> Double
+    @MainActor func seekRelative(by seconds: Double, exact: Bool)
+    @MainActor func stepFrameForward()
+    @MainActor func stepFrameBackward()
+    @MainActor func stepVolume(by delta: Float)
+    @MainActor func toggleMute()
+    @MainActor func setPlaybackRate(_ rate: Double)
+    @MainActor func stepPlaybackRate(by delta: Double)
+    @MainActor func resetPlaybackRate()
+}
+
+/// Metadata, format properties, display tracking, and Metal tone-mapping rendering controls.
+public protocol PlayerVideoControlling: AnyObject, Sendable {
     @MainActor var hasVideo: Bool { get }
     @MainActor var videoWidth: Int { get }
     @MainActor var videoHeight: Int { get }
@@ -61,21 +92,28 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var baseAdaptiveTargetNits: Float { get }
     @MainActor var metalSharpness: Float { get set }
 
-    @MainActor var volume: Float { get set }
-    @MainActor var isMuted: Bool { get set }
-    @MainActor var playbackRate: Double { get set }
-    @MainActor var seekStepSeconds: Double { get set }
-    @MainActor var exactSeekOnSinglePress: Bool { get set }
-    @MainActor var enableOSD: Bool { get set }
-    @MainActor var showDebugHUD: Bool { get set }
     @MainActor var droppedFramesCount: Int { get }
     @MainActor var pipelineDroppedFramesCount: Int { get }
     @MainActor var speedSkippedFramesCount: Int { get }
     @MainActor var thumbnailManager: ThumbnailManager { get }
+
+    @MainActor func renderCurrentFrame()
+}
+
+/// Track selection and inspection for audio and subtitle streams.
+public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
     @MainActor var selectedAudioTrackId: Int { get }
+    @MainActor func selectAudioTrack(id: Int)
+
     @MainActor var subtitleTracks: [SubtitleTrack] { get }
     @MainActor var selectedSubtitleTrackId: Int? { get }
+    @MainActor func selectSubtitleTrack(id: Int?)
+    @MainActor func loadExternalSubtitle(url: URL)
+}
+
+/// Visual formatting, styling, and text state for subtitle rendering.
+public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var currentSubtitleText: String? { get }
     @MainActor var currentSubtitleCue: SubtitleCue? { get }
     @MainActor var currentSubtitleCues: [SubtitleCue] { get }
@@ -85,30 +123,10 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var subtitleTextColorHex: String { get set }
     @MainActor var subtitleBgColorHex: String { get set }
     @MainActor var subtitleBgOpacity: Double { get set }
+}
 
-    @MainActor func selectSubtitleTrack(id: Int?)
-    @MainActor func loadExternalSubtitle(url: URL)
-
-    @MainActor func load(_ request: MediaLoadRequest)
-    @MainActor func loadAsync(_ request: MediaLoadRequest) async
-    @MainActor func stop()
-    @MainActor func play()
-    @MainActor func pause()
-    @MainActor func togglePlayPause()
-    @MainActor func seek(to seconds: Double)
-    @MainActor func seek(to seconds: Double, exact: Bool)
-    @MainActor @discardableResult func seekRelative(by seconds: Double) -> Double
-    @MainActor func seekRelative(by seconds: Double, exact: Bool)
-    @MainActor func stepFrameForward()
-    @MainActor func stepFrameBackward()
-    @MainActor func stepVolume(by delta: Float)
-    @MainActor func toggleMute()
-    @MainActor func setPlaybackRate(_ rate: Double)
-    @MainActor func stepPlaybackRate(by delta: Double)
-    @MainActor func resetPlaybackRate()
-    @MainActor func toggleDebugHUD()
-    @MainActor func renderCurrentFrame()
-    @MainActor func selectAudioTrack(id: Int)
+/// Playlist management, queues, and sequential navigation.
+public protocol PlayerPlaylistControlling: AnyObject, Sendable {
     @MainActor var playlist: PlaylistManager { get }
     @MainActor func playNext()
     @MainActor func playPrevious()
@@ -116,7 +134,28 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor func removePlaylistItem(id: UUID)
 }
 
-extension PlayerEngineProtocol {
+/// UI diagnostic overlays and HUD display options.
+public protocol PlayerUIOverlayControlling: AnyObject, Sendable {
+    @MainActor var enableOSD: Bool { get set }
+    @MainActor var showDebugHUD: Bool { get set }
+    @MainActor func toggleDebugHUD()
+}
+
+// MARK: - Unified Engine Protocol
+
+/// Unified player engine contract composed of granular functional domains.
+public protocol PlayerEngineProtocol:
+    PlayerPlaybackControlling,
+    PlayerVideoControlling,
+    PlayerTrackControlling,
+    PlayerSubtitleStyling,
+    PlayerPlaylistControlling,
+    PlayerUIOverlayControlling
+{}
+
+// MARK: - Default Implementations & Convenience Extensions
+
+extension PlayerPlaybackControlling {
     @MainActor
     public func seek(to seconds: Double) {
         seek(to: seconds, exact: true)
@@ -137,9 +176,7 @@ extension PlayerEngineProtocol {
 
     @MainActor
     public func resetPlaybackRate() {}
-}
 
-extension PlayerEngineProtocol {
     @MainActor
     public func load(path: String) {
         load(MediaLoadRequest(path: path))
@@ -229,6 +266,6 @@ extension PlayerEngineProtocol {
     }
 }
 
-extension PlayerEngineProtocol {
+extension PlayerVideoControlling {
     public var isDisplaySleepDisabled: Bool { false }
 }
