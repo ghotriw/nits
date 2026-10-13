@@ -273,7 +273,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let activeSeekId = OSAllocatedUnfairLock(initialState: 0)
     @ObservationIgnored
-    var isSeeking: Bool = false
+    public package(set) var isSeeking: Bool = false
     @ObservationIgnored
     var chaseTargetTime: Double? = nil
     @ObservationIgnored

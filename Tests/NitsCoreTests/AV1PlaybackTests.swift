@@ -99,25 +99,50 @@ struct AV1PlaybackTests {
         engine.play()
         #expect(engine.isPlaying == true)
 
-        try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8s
+        // Wait for playback to start progressing
+        var played = false
+        for _ in 0..<30 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if engine.currentTime > 0 {
+                played = true
+                break
+            }
+        }
+        #expect(played == true)
         #expect(engine.currentTime > 0)
 
         // Test seek
         engine.seek(to: 1.0)
-        try? await Task.sleep(nanoseconds: 300_000_000)  // 0.3s
+        // Wait for seek to complete and settle
+        for _ in 0..<40 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if !engine.isSeeking && engine.pendingSeekTime == nil {
+                break
+            }
+        }
 
         engine.pause()
         #expect(engine.isPlaying == false)
+
+        // Ensure engine has a valid presented frame before relative seek
+        for _ in 0..<20 {
+            if engine.currentFramePTS >= 0 && engine.getLastRenderedBuffer() != nil {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
 
         // Test exact seek on pause for AV1
         let initialPTS = engine.currentFramePTS
         engine.seekRelative(by: 1.0, exact: true)
 
-        // Poll for seek & decode to settle up to 1 second
+        // Poll for seek & decode to settle up to 3 seconds (generous for busy CI runners)
         var settled = false
-        for _ in 0..<20 {
+        for _ in 0..<60 {
             try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms intervals
-            if engine.currentFramePTS != initialPTS && engine.getLastRenderedBuffer() != nil {
+            if !engine.isSeeking && engine.pendingSeekTime == nil
+                && engine.currentFramePTS != initialPTS && engine.getLastRenderedBuffer() != nil
+            {
                 settled = true
                 break
             }

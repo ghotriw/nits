@@ -26,6 +26,7 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)? { get set }
     @MainActor var currentTime: Double { get }
     @MainActor var pendingSeekTime: Double? { get }
+    @MainActor var isSeeking: Bool { get }
     @MainActor var duration: Double { get }
     @MainActor var isPlaying: Bool { get }
     @MainActor var isLoaded: Bool { get }
