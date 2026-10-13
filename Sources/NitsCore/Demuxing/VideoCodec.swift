@@ -88,6 +88,16 @@ public enum VideoCodec: String, Sendable {
         }
     }
 
+    /// Whether the video bitstream requires NAL unit parameter sets (SPS/PPS/VPS) for CMVideoFormatDescription.
+    public var requiresParameterSets: Bool {
+        switch self {
+        case .hevc, .h264:
+            return true
+        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .unknown:
+            return false
+        }
+    }
+
     /// Whether the video bitstream requires NAL unit rewriting to HVCC length-prefixed format for VideoToolbox.
     public var requiresHVCC: Bool {
         switch self {

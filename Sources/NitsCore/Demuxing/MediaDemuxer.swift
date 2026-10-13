@@ -1285,9 +1285,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var formatDesc: CMVideoFormatDescription?
-        if !codec.isHardwareAccelerated {
-            // Software codecs (AV1, WMV1, WMV2, WMV3, VC-1, etc.):
-            // Provide extradata in atoms if present, and create format description directly.
+        if !codec.requiresParameterSets {
+            // Codecs that construct format description via configuration atoms (av1C, vpcC, etc.)
+            // or directly via CMVideoFormatDescriptionCreate without SPS/PPS parameter sets:
             if codec == .av1, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex],
                 let extradata = stream.pointee.codecpar.pointee.extradata,
                 stream.pointee.codecpar.pointee.extradata_size > 0
