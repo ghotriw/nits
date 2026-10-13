@@ -48,13 +48,15 @@ extension PlayerEngine {
         // Cancel any pending settle debounce from an earlier seek in the burst
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
+        clockSettlingGuardLock.withLock { $0 = nil }
 
         // 1. Maintain play intent across seek bursts (Apple QA1820 / mpv)
         if !isSeeking && chaseTargetTime == nil {
             resumePlaybackAfterChase = isPlaying
             if isPlaying {
-                // Instantly pause playback clock during active seek burst to prevent clock jitter
+                // Instantly pause playback clock and CADisplayLink during seek burst to prevent clock jitter / drift
                 synchronizer.setRate(0.0, time: synchronizer.currentTime())
+                displayLink?.isPaused = true
             }
         }
 
@@ -227,6 +229,7 @@ extension PlayerEngine {
         if !shouldResume {
             // Paused mode: settle immediately
             chaseTargetTime = nil
+            clockSettlingGuardLock.withLock { $0 = nil }
             synchronizer.setRate(0.0, time: targetTime)
             isPlaying = false
             playbackState = .paused
@@ -245,7 +248,8 @@ extension PlayerEngine {
 
             self.chaseTargetTime = nil
             self.startFeeding()
-            self.synchronizer.setRate(Float(self.playbackRate), time: targetTime)
+            let currentRate = self.playbackRate
+            self.startSynchronizerClock(at: targetTime, rate: currentRate)
             self.displayLink?.isPaused = !self.hasVideo
             self.isPlaying = true
             self.playbackState = .playing

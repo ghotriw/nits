@@ -250,7 +250,8 @@ extension PlayerEngine {
         stopFeedingAudio()
         clearVideoSurface()
         displayLink?.isPaused = true
-        synchronizer.setRate(0.0, time: synchronizer.currentTime())
+        synchronizer.setRate(0.0, time: .zero)
+        clockSettlingGuardLock.withLock { $0 = nil }
         isPlaying = false
         loadError = nil
         hasVideo = false
@@ -339,7 +340,8 @@ extension PlayerEngine {
         stopFeedingAudio()
         clearVideoSurface()
         displayLink?.isPaused = true
-        synchronizer.setRate(0.0, time: synchronizer.currentTime())
+        synchronizer.setRate(0.0, time: .zero)
+        clockSettlingGuardLock.withLock { $0 = nil }
         isPlaying = false
         loadError = nil
         hasVideo = false
@@ -873,7 +875,12 @@ extension PlayerEngine {
                 if self.currentSeekId == seekId && self.chaseTargetTime == nil {
                     let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
                     self.currentTime = effectiveStartTime
-                    self.synchronizer.setRate(Float(self.playbackRate), time: targetCMTime)
+                    let currentRate = self.playbackRate
+                    AppLog.info(
+                        .engine,
+                        "Starting synchronizer clock: targetTime = \(String(format: "%.3f", effectiveStartTime))s, rate = \(currentRate)"
+                    )
+                    self.startSynchronizerClock(at: targetCMTime, rate: currentRate)
                 }
                 self.displayLink?.isPaused = !hasVideo
                 self.isPlaying = true

@@ -14,6 +14,7 @@ import os
 ///   binary search and minimal slot shifting within the ring.
 public final class FrameQueue: @unchecked Sendable {
     public static let defaultCapacity: Int = 60
+    static let droppedFramesWarningThreshold: Int = 1
 
     private let lock = OSAllocatedUnfairLock()
     private let capacity: Int
@@ -23,6 +24,7 @@ public final class FrameQueue: @unchecked Sendable {
     private var lastRenderedBuffer: CVPixelBuffer?
     private var lastRenderedPTS: Double = -1.0
     private var droppedFramesCountInternal: Int = 0
+    private var lastDropWarningInstant: ContinuousClock.Instant = .now - .seconds(10)
 
     public init(capacity: Int = defaultCapacity) {
         precondition(capacity > 0, "Capacity must be positive")
@@ -129,50 +131,82 @@ public final class FrameQueue: @unchecked Sendable {
     /// Pops the next frame whose PTS matches or precedes `syncTime + maxLeadTime`.
     /// Immediately releases the internal `DecodedFrame` reference and returns its `PoppedFrame`.
     public func popFrame(forSyncTime syncTime: CMTime) -> PoppedFrame? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard countInternal > 0 else { return nil }
+        struct DropWarningPayload {
+            let droppedCount: Int
+            let syncTimeSeconds: Double
+            let chosenPtsSeconds: Double
+            let remaining: Int
+        }
 
-        let maxLeadTime = CMTime(value: 50, timescale: 1000)
-        var chosen: CVPixelBuffer?
-        var chosenPts: CMTime = .invalid
-        var chosenDovi: DolbyVisionFrameMetadata? = nil
+        let (popped, warningPayload) = lock.withLock { () -> (PoppedFrame?, DropWarningPayload?) in
+            guard countInternal > 0 else { return (nil, nil) }
 
-        while countInternal > 0 {
-            guard let frame = buffer[head] else {
-                // Inconsistent slot guard
-                head = (head + 1) % capacity
-                countInternal -= 1
-                continue
-            }
+            let maxLeadTime = CMTime(value: 50, timescale: 1000)
+            var chosen: CVPixelBuffer?
+            var chosenPts: CMTime = .invalid
+            var chosenDovi: DolbyVisionFrameMetadata? = nil
+            var droppedInThisTick = 0
 
-            if frame.pts <= syncTime + maxLeadTime {
-                if !frame.doNotDisplay {
-                    if chosen != nil {
-                        // We skipped an older frame in this cycle because a fresher one was also eligible
-                        droppedFramesCountInternal += 1
-                    }
-                    chosen = frame.pixelBuffer
-                    chosenPts = frame.pts
-                    chosenDovi = frame.doviMetadata
+            while countInternal > 0 {
+                guard let frame = buffer[head] else {
+                    head = (head + 1) % capacity
+                    countInternal -= 1
+                    continue
                 }
-                // Zero out reference immediately to return IOSurface to hardware pool
-                buffer[head] = nil
-                head = (head + 1) % capacity
-                countInternal -= 1
-            } else {
-                break
+
+                if frame.pts <= syncTime + maxLeadTime {
+                    if !frame.doNotDisplay {
+                        if chosen != nil {
+                            droppedFramesCountInternal += 1
+                            droppedInThisTick += 1
+                        }
+                        chosen = frame.pixelBuffer
+                        chosenPts = frame.pts
+                        chosenDovi = frame.doviMetadata
+                    }
+                    buffer[head] = nil
+                    head = (head + 1) % capacity
+                    countInternal -= 1
+                } else {
+                    break
+                }
             }
+
+            if let chosen {
+                lastRenderedBuffer = chosen
+                if chosenPts.isValid {
+                    lastRenderedPTS = chosenPts.seconds
+                }
+            }
+
+            var payload: DropWarningPayload? = nil
+            if droppedInThisTick > Self.droppedFramesWarningThreshold {
+                let now = ContinuousClock.now
+                if (now - lastDropWarningInstant) >= .seconds(1) {
+                    lastDropWarningInstant = now
+                    payload = DropWarningPayload(
+                        droppedCount: droppedInThisTick,
+                        syncTimeSeconds: syncTime.seconds,
+                        chosenPtsSeconds: chosenPts.isValid ? chosenPts.seconds : -1.0,
+                        remaining: countInternal
+                    )
+                }
+            }
+
+            let result = chosen.map {
+                PoppedFrame(pixelBuffer: $0, pts: chosenPts, doviMetadata: chosenDovi)
+            }
+            return (result, payload)
         }
 
-        if let chosen {
-            lastRenderedBuffer = chosen
-            if chosenPts.isValid {
-                lastRenderedPTS = chosenPts.seconds
-            }
-            return PoppedFrame(pixelBuffer: chosen, pts: chosenPts, doviMetadata: chosenDovi)
+        if let payload = warningPayload {
+            AppLog.debug(
+                .video,
+                "FrameQueue popFrame dropped \(payload.droppedCount) frames in a single tick! syncTime: \(String(format: "%.3f", payload.syncTimeSeconds))s, chosenPts: \(payload.chosenPtsSeconds >= 0 ? String(format: "%.3f", payload.chosenPtsSeconds) : "invalid")s, remaining: \(payload.remaining)"
+            )
         }
-        return nil
+
+        return popped
     }
 
     /// Retrieves the latest displayable frame matching `syncTime + leadTime`, without popping from the queue.

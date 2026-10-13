@@ -23,7 +23,7 @@ extension PlayerEngine {
         if !feedingActive {
             startFeeding()
         }
-        synchronizer.setRate(Float(playbackRate), time: synchronizer.currentTime())
+        startSynchronizerClock(at: synchronizer.currentTime(), rate: playbackRate, armGuard: false)
         displayLink?.isPaused = !hasVideo
         isPlaying = true
         playbackState = .playing
@@ -51,6 +51,7 @@ extension PlayerEngine {
         seekTask = nil
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
+        clockSettlingGuardLock.withLock { $0 = nil }
     }
 
     /// Stops audio/video feeding and halts the clock, marking playback as paused.
@@ -58,6 +59,26 @@ extension PlayerEngine {
         haltPlaybackPipeline()
         isPlaying = false
         performanceMonitor.handlePlaybackStateChange(isPlaying: false)
+    }
+
+    /// Safely starts or re-anchors the synchronizer master clock.
+    ///
+    /// - Parameters:
+    ///   - targetTime: Target timeline position for CoreAudio synchronizer.
+    ///   - rate: Target playback rate.
+    ///   - armGuard: If `true`, arms `ClockSettlingGuard` to hold video frames while hardware clock settles to new target.
+    func startSynchronizerClock(at targetTime: CMTime, rate: Double, armGuard: Bool = true) {
+        if armGuard, targetTime.isNumeric {
+            let targetSec = targetTime.seconds
+            clockSettlingGuardLock.withLock {
+                $0 = ClockSettlingGuard(
+                    targetSeconds: targetSec,
+                    setHostTime: CACurrentMediaTime(),
+                    rate: rate
+                )
+            }
+        }
+        synchronizer.setRate(Float(rate), time: targetTime)
     }
 
     public func togglePlayPause() {

@@ -128,7 +128,34 @@ extension PlayerEngine {
 
     nonisolated func displayLinkTick() {
         let currentSyncTime = synchronizer.currentTime()
-        guard currentSyncTime.isValid else { return }
+        guard currentSyncTime.isNumeric else { return }
+
+        // Stale clock leap protection: if playback or seek just started, verify the hardware clock
+        // has settled into the active playback window before popping video frames.
+        let now = CACurrentMediaTime()
+        let shouldHoldFrame = clockSettlingGuardLock.withLock { guardState -> Bool in
+            guard let state = guardState else { return false }
+            let elapsedHost = now - state.setHostTime
+            // Safety timeout: after 0.35s unconditionally clear guard so video never hangs.
+            if elapsedHost >= Self.clockSettlingTimeoutSeconds {
+                guardState = nil
+                return false
+            }
+            let clockSeconds = currentSyncTime.seconds
+            let baseTolerance = Self.clockSettlingBaseToleranceSeconds
+            let minAllowedClock = state.targetSeconds - baseTolerance
+            let maxAllowedClock = state.targetSeconds + (state.rate * elapsedHost) + baseTolerance
+            if clockSeconds < minAllowedClock || clockSeconds > maxAllowedClock {
+                // Clock has not yet transitioned/settled to target window. Hold frame.
+                return true
+            }
+            // Clock is aligned with target start time. Clear transient guard atomically.
+            guardState = nil
+            return false
+        }
+        if shouldHoldFrame {
+            return
+        }
 
         let start = CACurrentMediaTime()
         if let popped = frameQueue.popFrame(forSyncTime: currentSyncTime) {
@@ -136,6 +163,22 @@ extension PlayerEngine {
             let qCount = frameQueue.count
             let isPaused = isVideoDrainPaused.withLock { $0 }
             let driftMs = popped.pts.isValid ? (popped.pts.seconds - currentSyncTime.seconds) * 1000.0 : 0.0
+            if abs(driftMs) > Self.syncDriftSpikeThresholdMs {
+                let shouldLog = lastSyncDriftSpikeInstant.withLock { lastInstant -> Bool in
+                    let nowInstant = ContinuousClock.now
+                    if (nowInstant - lastInstant) >= .seconds(1) {
+                        lastInstant = nowInstant
+                        return true
+                    }
+                    return false
+                }
+                if shouldLog {
+                    AppLog.warning(
+                        .video,
+                        "A/V sync drift spike: \(String(format: "%.1f", driftMs))ms! frame PTS: \(String(format: "%.3f", popped.pts.seconds))s, clock: \(String(format: "%.3f", currentSyncTime.seconds))s, queueCount: \(qCount)"
+                    )
+                }
+            }
             let dropped = frameQueue.droppedFramesCount
 
             let mode = activeRenderMode

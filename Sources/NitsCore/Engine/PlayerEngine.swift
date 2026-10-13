@@ -205,7 +205,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 return
             }
             if isPlaying {
-                synchronizer.setRate(Float(playbackRate), time: synchronizer.currentTime())
+                let currentRate = playbackRate
+                clockSettlingGuardLock.withLock { guardState in
+                    guard var state = guardState else { return }
+                    state.rate = currentRate
+                    guardState = state
+                }
+                startSynchronizerClock(at: synchronizer.currentTime(), rate: currentRate, armGuard: false)
             }
         }
     }
@@ -273,6 +279,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let activeSeekId = OSAllocatedUnfairLock(initialState: 0)
     @ObservationIgnored
+    let lastSyncDriftSpikeInstant = OSAllocatedUnfairLock<ContinuousClock.Instant>(initialState: .now - .seconds(10))
+    @ObservationIgnored
     public package(set) var isSeeking: Bool = false
     @ObservationIgnored
     var chaseTargetTime: Double? = nil
@@ -288,6 +296,36 @@ public final class PlayerEngine: PlayerEngineProtocol {
     static let relativeSeekBurstTimeout: Duration = .milliseconds(300)
     static let relativeSeekBurstWatchdogTimeout: Duration = .seconds(3)
     static let chaseSettleDebounceDuration: Duration = .milliseconds(300)
+
+    // MARK: - Clock Settling & Sync Guards
+
+    /// Transient guard protecting against `AVSampleBufferRenderSynchronizer` clock reporting staleness.
+    ///
+    /// Root cause: When `synchronizer.setRate(rate, time: targetTime)` is invoked (e.g. after loading a new
+    /// media track or completing an asynchronous demuxer seek), CoreAudio hardware timebase re-anchoring
+    /// happens asynchronously. For the first few milliseconds, `synchronizer.currentTime()` may still
+    /// report the prior playback position (e.g. from the previous track or before the seek).
+    ///
+    /// Without this guard, `CADisplayLinkTick` observes an apparent multi-second drift between the stale clock
+    /// and newly decoded frames starting at `targetTime`, causing `FrameQueue` to rapidly discard/drop all
+    /// pre-buffered frames in a burst.
+    struct ClockSettlingGuard: Sendable {
+        let targetSeconds: Double
+        let setHostTime: Double
+        var rate: Double
+    }
+    @ObservationIgnored
+    let clockSettlingGuardLock = OSAllocatedUnfairLock<ClockSettlingGuard?>(initialState: nil)
+
+    /// Safety timeout (0.35s): unconditionally unblocks frame popping if hardware clock fails to settle promptly.
+    nonisolated static let clockSettlingTimeoutSeconds: Double = 0.35
+
+    /// Base tolerance (0.15s): dynamic allowable clock window `(rate * elapsedHost) + 0.15s` around targetTime.
+    nonisolated static let clockSettlingBaseToleranceSeconds: Double = 0.15
+
+    /// Threshold in milliseconds to log anomalous A/V sync drift spikes (throttled to 1/sec).
+    nonisolated static let syncDriftSpikeThresholdMs: Double = 500.0
+
     /// Tracks whether a rapid relative seek burst sequence is currently active.
     @ObservationIgnored
     var isRelativeSeekBurstActive: Bool = false
@@ -324,6 +362,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let frameQueue = FrameQueue()
     public var currentFramePTS: Double {
         frameQueue.getLastRenderedPTS()
+    }
+    public var droppedFramesCount: Int {
+        frameQueue.droppedFramesCount
     }
     /// Returns the most recently presented pixel buffer.
     /// Internal for test verification and debugging inspection.
@@ -402,8 +443,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
         { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                // Do not overwrite currentTime while a seek is in flight or chasing a target
-                guard self.chaseTargetTime == nil && !self.isSeeking else { return }
+                // Do not overwrite currentTime while a seek is in flight, chasing a target, or before playback starts
+                guard
+                    self.chaseTargetTime == nil && !self.isSeeking && self.isLoaded && !self.isLoading
+                        && self.isPlaying
+                else { return }
                 // Re-read the clock NOW: the callback's `time` argument may be stale (captured before a
                 // seek settled), which would roll the UI position back to a pre-seek value.
                 let seconds = CMTimeGetSeconds(self.synchronizer.currentTime())

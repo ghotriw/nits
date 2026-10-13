@@ -137,6 +137,7 @@ extension PlayerEngine {
         feedingLock: OSAllocatedUnfairLock<Bool>,
         audioTimebase: AVRational
     ) async {
+        var hasLoggedFirstAudioBuffer = false
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
             guard let packet = demuxer.nextAudioPacket() else {
                 if demuxer.isEOF {
@@ -154,6 +155,14 @@ extension PlayerEngine {
                 if Task.isCancelled || !feedingLock.withLock({ $0 }) { break }
                 nonisolated(unsafe) let sBuf = buf
                 let ready: CMReadySampleBuffer<CMSampleBuffer.DynamicContent> = CMReadySampleBuffer(unsafeBuffer: sBuf)
+                if !hasLoggedFirstAudioBuffer {
+                    hasLoggedFirstAudioBuffer = true
+                    let pts = CMSampleBufferGetPresentationTimeStamp(buf)
+                    AppLog.debug(
+                        .audio,
+                        "First audio buffer enqueued to renderer: pts = \(pts.isValid ? String(format: "%.3f", pts.seconds) : "invalid")s"
+                    )
+                }
                 _ = try? await receiver.enqueue(ready)
             }
         }

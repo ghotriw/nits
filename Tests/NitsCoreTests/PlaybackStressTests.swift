@@ -444,4 +444,72 @@ extension PlaybackStressTests {
 
         engine.stop()
     }
+
+    // MARK: - 11. Stale Clock Settling & Reload Regression Test
+    @Test("Reloading media after active playback resets clock and does not drop initial video frames")
+    @MainActor
+    func testStaleClockSettlingOnReload() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        #expect(engine.isLoaded == true)
+
+        // Play for 1.5 seconds so synchronizer clock advances significantly past 0.0s
+        engine.play()
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        #expect(engine.currentTime >= 0.8)
+
+        // Reload the same media (simulating playlist track advancement or restart)
+        engine.load(path: path)
+        #expect(engine.isLoaded == true)
+
+        // Reset dropped frames and let playback resume from 0.0s
+        engine.play()
+        try? await Task.sleep(nanoseconds: 800_000_000)
+
+        // With ClockSettlingGuard in place, the engine must NOT discard a burst of frames.
+        // (At most 1-2 frames may be skipped during initial 800ms due to display VSYNC vs media cadence quantization).
+        #expect(engine.droppedFramesCount <= 2, "Stale clock caused frame drop burst: \(engine.droppedFramesCount)")
+        #expect(engine.isPlaying == true)
+        #expect(
+            engine.currentTime >= 0.2 && engine.currentTime <= 1.5,
+            "Expected currentTime progressing near 0.0s, got \(engine.currentTime)")
+
+        engine.stop()
+    }
+
+    // MARK: - 12. Backward Seek to Beginning Under Active Playback
+    @Test("Seeking to beginning from deep playback position settles cleanly without dropping frames")
+    @MainActor
+    func testBackwardSeekToBeginningUnderPlayback() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        #expect(engine.isLoaded == true)
+
+        // Seek forward deep into media
+        engine.seek(to: 10.0, exact: true)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        engine.play()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        #expect(engine.currentTime >= 9.0)
+
+        // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut)
+        engine.seek(to: 0.0, exact: true)
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+        // Must settle close to 0.0s and resume smoothly without frame bursts
+        #expect(
+            engine.droppedFramesCount <= 2,
+            "Stale clock caused frame drop burst on backward seek: \(engine.droppedFramesCount)")
+        #expect(
+            engine.currentTime >= 0.2 && engine.currentTime <= 2.0,
+            "Expected currentTime progressing near 0.0s, got \(engine.currentTime)")
+        #expect(engine.isPlaying == true)
+
+        engine.stop()
+    }
 }
