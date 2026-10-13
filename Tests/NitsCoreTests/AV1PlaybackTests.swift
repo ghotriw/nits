@@ -243,6 +243,9 @@ struct AV1PlaybackTests {
         let feedTask = Task {
             for sample in box.samples {
                 decoder.decode(sampleBuffer: sample)
+                // Yield after each sample so the cooperative scheduler can run flushTask
+                // between decode iterations, guaranteeing at least one flush occurs.
+                await Task.yield()
             }
             isDone.withValue { $0 = true }
         }

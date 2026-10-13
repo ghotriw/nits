@@ -9,8 +9,20 @@ public enum VideoDecoderFactory {
         demuxer: MediaDemuxer
     ) -> (any VideoDecoderProtocol)? {
         if codec.isHardwareAccelerated {
-            AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec.rawValue)")
-            return VTVideoDecoder()
+            // H.264 and HEVC have guaranteed VT hardware on Apple Silicon — no probe needed.
+            // AV1 and VP9 report hardware support via VTIsHardwareDecodeSupported, but on
+            // virtualised CI runners the hypervisor exposes the flag without the actual decoder
+            // block, causing VTDecompressionSessionCreate to fail silently. Probe first and
+            // fall through to FFmpeg when that happens.
+            let needsProbe = codec == .av1 || codec == .vp9
+            if !needsProbe || canCreateVTSession(for: codec, formatDescription: demuxer.formatDescription) {
+                AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec.rawValue)")
+                return VTVideoDecoder()
+            }
+            AppLog.warning(
+                .video,
+                "VTDecompressionSession probe failed for \(codec.rawValue) — falling back to software decoder"
+            )
         }
 
         if let params = demuxer.getVideoCodecParameters() {
@@ -24,5 +36,36 @@ public enum VideoDecoderFactory {
             AppLog.error(.video, "Cannot obtain video codec parameters for \(codec.rawValue) stream")
             return nil
         }
+    }
+
+    /// Probes whether a VTDecompressionSession can be created for the given codec.
+    /// Creates and immediately destroys a session — cheap, no frames decoded.
+    private static func canCreateVTSession(
+        for codec: VideoCodec,
+        formatDescription: CMVideoFormatDescription?
+    ) -> Bool {
+        guard let formatDescription else {
+            // No format description yet — optimistically allow VT; it will fail gracefully on first decode.
+            return true
+        }
+        let spec: [String: Any] = [
+            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
+        ]
+        var session: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            formatDescription: formatDescription,
+            decoderSpecification: spec as CFDictionary,
+            imageBufferAttributes: nil,
+            outputCallback: nil,
+            decompressionSessionOut: &session
+        )
+        if let session {
+            VTDecompressionSessionInvalidate(session)
+        }
+        if status != noErr {
+            AppLog.warning(.video, "VT probe session failed for \(codec.rawValue): \(status)")
+        }
+        return status == noErr
     }
 }
