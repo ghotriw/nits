@@ -23,7 +23,8 @@ public final class FrameQueue: @unchecked Sendable {
     private var countInternal: Int = 0
     private var lastRenderedBuffer: CVPixelBuffer?
     private var lastRenderedPTS: Double = -1.0
-    private var droppedFramesCountInternal: Int = 0
+    private var pipelineDroppedFramesCountInternal: Int = 0
+    private var speedSkippedFramesCountInternal: Int = 0
     private var lastDropWarningInstant: ContinuousClock.Instant = .now - .seconds(10)
 
     public init(capacity: Int = defaultCapacity) {
@@ -32,11 +33,25 @@ public final class FrameQueue: @unchecked Sendable {
         self.buffer = [DecodedFrame?](repeating: nil, count: capacity)
     }
 
-    /// The total number of frames discarded or dropped (late / expired).
+    /// The total number of frames dropped due to hardware/pipeline/decoder falling behind master clock.
+    public var pipelineDroppedFramesCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipelineDroppedFramesCountInternal
+    }
+
+    /// The total number of frames intentionally skipped because effective frame rate exceeded display refresh rate (speed > 1.0x).
+    public var speedSkippedFramesCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return speedSkippedFramesCountInternal
+    }
+
+    /// The total cumulative dropped and skipped frames count (pipeline drops + rate skips).
     public var droppedFramesCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return droppedFramesCountInternal
+        return pipelineDroppedFramesCountInternal + speedSkippedFramesCountInternal
     }
 
     /// The number of decoded frames currently held in the buffer.
@@ -131,13 +146,20 @@ public final class FrameQueue: @unchecked Sendable {
     /// Pops the next frame eligible for display at `syncTime`.
     ///
     /// Pacing and dropping invariants:
-    /// - `maxLeadTime`: A narrow lead window (clamped to `[0.008, 0.035]` seconds, defaulting to half of `nominalFrameDuration`)
+    /// - `maxLeadTime`: A narrow lead window in movie PTS (clamped to `[0.002, 0.035]` seconds, defaulting to half of `safeFrameDuration`)
     ///   allowing the imminent frame to be picked for the current VSYNC tick without grabbing future frames meant for subsequent ticks.
+    ///   Must NOT be scaled down by `playbackRate` because `syncTime` and PTS both advance in movie PTS.
     /// - `lateTolerance`: Frames whose PTS has fallen behind `syncTime - lateTolerance` (missed their presentation deadline due to
-    ///   decoding stall or system lag) are discarded and counted as dropped frames.
-    /// - Once an eligible frame matching `syncTime + maxLeadTime` is selected, any subsequent frame that is NOT late is held in the queue
-    ///   for the next VSYNC tick.
-    public func popFrame(forSyncTime syncTime: CMTime, nominalFrameDuration: Double = 1.0 / 24.0) -> PoppedFrame? {
+    ///   decoding stall or system lag) are discarded and counted as pipeline dropped frames.
+    ///   Scaled with `max(1.0, playbackRate)` because in movie PTS, real-world lag covers a wider range of media time when playing faster.
+    /// - `speedSkippedFrames`: When playing faster than 1.0x (e.g. 1.7x), effective video FPS ($50 \times 1.7 = 85\text{ fps}$) may exceed
+    ///   display refresh rate (60Hz). When lookahead replacement discards intermediate frames to keep up with the master clock at rate > 1.01,
+    ///   they are counted as `speedSkippedFrames` instead of `pipelineDroppedFrames`.
+    public func popFrame(
+        forSyncTime syncTime: CMTime,
+        nominalFrameDuration: Double = 1.0 / 24.0,
+        playbackRate: Double = 1.0
+    ) -> PoppedFrame? {
         struct DropWarningPayload {
             let droppedCount: Int
             let syncTimeSeconds: Double
@@ -154,14 +176,16 @@ public final class FrameQueue: @unchecked Sendable {
                 ? nominalFrameDuration
                 : (1.0 / 24.0)
 
-            // Dynamic lead window: half the frame interval so future frames wait for the next VSYNC tick.
+            let safePlaybackRate = (playbackRate.isFinite && playbackRate > 0) ? playbackRate : 1.0
+
+            // Dynamic lead window in movie PTS: half the frame interval so future frames wait for the next VSYNC tick.
             // Clamped between 2ms (supporting HFR up to 240fps) and 35ms (~28fps half-frame max).
             let leadSeconds = max(0.002, min(safeFrameDuration * 0.5, 0.035))
             let maxLeadTime = CMTime(seconds: leadSeconds, preferredTimescale: 1000)
 
-            // Late drop tolerance: if a frame is more than 1.5 frame intervals behind the hardware clock,
-            // it missed its deadline and must be discarded.
-            let lateToleranceSeconds = max(0.040, min(safeFrameDuration * 1.5, 0.100))
+            // Late drop tolerance: base host-time tolerance scaled to movie PTS by max(1.0, playbackRate)
+            let baseToleranceSeconds = max(0.040, min(safeFrameDuration * 1.5, 0.100))
+            let lateToleranceSeconds = baseToleranceSeconds * max(1.0, safePlaybackRate)
             let lateThreshold = syncTime - CMTime(seconds: lateToleranceSeconds, preferredTimescale: 1000)
 
             var chosen: CVPixelBuffer?
@@ -185,8 +209,8 @@ public final class FrameQueue: @unchecked Sendable {
                 if !frame.doNotDisplay {
                     // Check if this frame is already obsolete / late compared to another frame or the clock
                     if frame.pts < lateThreshold && countInternal > 1 {
-                        // Truly late frame: discard to catch up with audio / master clock
-                        droppedFramesCountInternal += 1
+                        // Truly late frame: decoder/pipeline fell behind master clock
+                        pipelineDroppedFramesCountInternal += 1
                         droppedInThisTick += 1
                         buffer[head] = nil
                         head = (head + 1) % capacity
@@ -221,10 +245,14 @@ public final class FrameQueue: @unchecked Sendable {
                             break
                         }
                     } else {
-                        // We previously picked a frame, but it was late and this newer frame is also eligible.
-                        // The older frame is dropped in favor of the fresh one.
-                        droppedFramesCountInternal += 1
-                        droppedInThisTick += 1
+                        // We previously picked a frame, but next frame was even closer to syncTime.
+                        // Classify: intentional rate skip (playbackRate > 1.01) vs micro-jitter pipeline drop (1.0x).
+                        if safePlaybackRate > 1.01 {
+                            speedSkippedFramesCountInternal += 1
+                        } else {
+                            pipelineDroppedFramesCountInternal += 1
+                            droppedInThisTick += 1
+                        }
                         chosen = frame.pixelBuffer
                         chosenPts = frame.pts
                         chosenDovi = frame.doviMetadata
@@ -343,11 +371,12 @@ public final class FrameQueue: @unchecked Sendable {
         return lastRenderedBuffer
     }
 
-    /// Resets the cumulative dropped frames counter (e.g. on new media load or manual seek).
+    /// Resets the cumulative dropped and skipped frames counters (e.g. on new media load or manual seek).
     public func resetDroppedFramesCount() {
         lock.lock()
         defer { lock.unlock() }
-        droppedFramesCountInternal = 0
+        pipelineDroppedFramesCountInternal = 0
+        speedSkippedFramesCountInternal = 0
     }
 
     /// Clears all frames and releases all `IOSurface` backing buffers immediately.
@@ -362,7 +391,8 @@ public final class FrameQueue: @unchecked Sendable {
         lastRenderedBuffer = nil
         lastRenderedPTS = -1.0
         if resetDroppedFrames {
-            droppedFramesCountInternal = 0
+            pipelineDroppedFramesCountInternal = 0
+            speedSkippedFramesCountInternal = 0
         }
     }
 }

@@ -207,6 +207,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 playbackRate = clamped
                 return
             }
+            playbackRateLock.withLock { $0 = clamped }
             if isPlaying {
                 let currentRate = playbackRate
                 clockSettlingGuardLock.withLock { guardState in
@@ -218,6 +219,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
             }
         }
     }
+    @ObservationIgnored
+    let playbackRateLock = OSAllocatedUnfairLock(initialState: Double(1.0))
     public var audioTracks: [MediaDemuxer.AudioTrack] = []
     public var selectedAudioTrackId: Int = -1
 
@@ -371,6 +374,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     public var droppedFramesCount: Int {
         frameQueue.droppedFramesCount
+    }
+    public var pipelineDroppedFramesCount: Int {
+        frameQueue.pipelineDroppedFramesCount
+    }
+    public var speedSkippedFramesCount: Int {
+        frameQueue.speedSkippedFramesCount
     }
     /// Returns the most recently presented pixel buffer.
     /// Internal for test verification and debugging inspection.

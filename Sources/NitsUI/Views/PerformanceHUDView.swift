@@ -226,11 +226,20 @@ public struct PerformanceHUDView: View {
                     ? .red : (abs(metrics.avSyncDriftMs) > 60 ? .orange : .white)
             )
 
-            if metrics.droppedFrames > 0 {
+            if metrics.pipelineDroppedFrames > 0 {
                 metricRow(
-                    label: "Dropped Frames:",
-                    value: "\(metrics.droppedFrames)",
+                    label: "Pipeline Drops:",
+                    value: "\(metrics.pipelineDroppedFrames)",
                     color: .orange
+                )
+            }
+
+            if metrics.speedSkippedFrames > 0 {
+                let rateStr = String(format: "%.1f× speed", metrics.playbackRate)
+                metricRow(
+                    label: "Speed Skips:",
+                    value: "\(metrics.speedSkippedFrames) (\(rateStr))",
+                    color: Color(red: 0.6, green: 0.75, blue: 0.9)
                 )
             }
 

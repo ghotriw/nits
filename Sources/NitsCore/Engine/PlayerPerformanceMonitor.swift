@@ -62,6 +62,9 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
         public var activeRenderModeName: String = "SDR"
         public var isDrainPaused: Bool = false
         public var droppedFrames: Int = 0
+        public var pipelineDroppedFrames: Int = 0
+        public var speedSkippedFrames: Int = 0
+        public var playbackRate: Double = 1.0
 
         // Native pipeline details
         public var nativeFeedRate: Double = 0.0
@@ -112,7 +115,10 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
         renderModeName: String,
         isDrainPaused: Bool,
         avSyncDriftMs: Double,
-        droppedFrames: Int
+        droppedFrames: Int,
+        pipelineDroppedFrames: Int = 0,
+        speedSkippedFrames: Int = 0,
+        playbackRate: Double = 1.0
     ) {
         let now = CACurrentMediaTime()
 
@@ -138,6 +144,9 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
             metrics.isDrainPaused = isDrainPaused
             metrics.avSyncDriftMs = avSyncDriftMs
             metrics.droppedFrames = droppedFrames
+            metrics.pipelineDroppedFrames = pipelineDroppedFrames
+            metrics.speedSkippedFrames = speedSkippedFrames
+            metrics.playbackRate = playbackRate
         }
     }
 

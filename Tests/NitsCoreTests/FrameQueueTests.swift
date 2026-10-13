@@ -308,4 +308,70 @@ struct FrameQueueTests {
         #expect(popNaN?.pixelBuffer === buf)
         #expect(queue.count == 0)
     }
+
+    @Test("Accelerated playback (1.7x) lookahead skips are classified as speedSkippedFrames, not pipeline drops")
+    func testAcceleratedPlaybackSkipsClassifiedCorrectly() {
+        let queue = FrameQueue()
+        let buf1 = createDummyPixelBuffer()
+        let buf2 = createDummyPixelBuffer()
+
+        // 50 fps stream: frame 1 at 0ms, frame 2 at 20ms
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf1, pts: CMTime(value: 0, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf2, pts: CMTime(value: 20, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+
+        // At 1.7x speed on 60Hz display (tick interval 16.67ms host = 28.33ms PTS).
+        // Tick at 21ms: buf1 distance |0 - 21| = 21ms. buf2 distance |20 - 21| = 1ms.
+        // buf2 is strictly closer, so buf1 is skipped in favor of buf2.
+        // Because playbackRate is 1.7 (> 1.01), this MUST be counted as speedSkippedFrames, NOT pipeline drops!
+        let popped = queue.popFrame(
+            forSyncTime: CMTime(value: 21, timescale: 1000),
+            nominalFrameDuration: 0.020,
+            playbackRate: 1.7
+        )
+        #expect(popped?.pixelBuffer === buf2)
+        #expect(queue.speedSkippedFramesCount == 1)
+        #expect(queue.pipelineDroppedFramesCount == 0)
+        #expect(queue.droppedFramesCount == 1)
+    }
+
+    @Test("Late tolerance scales with playbackRate to avoid false pipeline drops at high speed")
+    func testLateToleranceScalesWithPlaybackRate() {
+        let queue = FrameQueue()
+        let buf1 = createDummyPixelBuffer()
+        let buf2 = createDummyPixelBuffer()
+
+        // At 2.0x speed, 60ms of media time is only 30ms of real-world time.
+        // With base tolerance 40ms, unscaled tolerance would drop a frame 60ms behind clock.
+        // With scaled tolerance (40ms * 2.0 = 80ms), frame at 940ms when clock is 1000ms is within tolerance!
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf1, pts: CMTime(value: 940, timescale: 1000),
+                duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf2, pts: CMTime(value: 1000, timescale: 1000),
+                duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+
+        let popped = queue.popFrame(
+            forSyncTime: CMTime(value: 1000, timescale: 1000),
+            nominalFrameDuration: 0.020,
+            playbackRate: 2.0
+        )
+        #expect(popped?.pixelBuffer === buf2)
+        // Lookahead replaced buf1 with buf2 due to closer distance at 2.0x:
+        #expect(queue.speedSkippedFramesCount == 1)
+        #expect(queue.pipelineDroppedFramesCount == 0)
+    }
 }

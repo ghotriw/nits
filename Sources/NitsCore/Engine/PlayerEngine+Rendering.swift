@@ -159,7 +159,12 @@ extension PlayerEngine {
 
         let start = CACurrentMediaTime()
         let frameDuration = nominalFrameDurationLock.withLock { $0 }
-        if let popped = frameQueue.popFrame(forSyncTime: currentSyncTime, nominalFrameDuration: frameDuration) {
+        let currentRate = playbackRateLock.withLock { $0 }
+        if let popped = frameQueue.popFrame(
+            forSyncTime: currentSyncTime,
+            nominalFrameDuration: frameDuration,
+            playbackRate: currentRate
+        ) {
             let durationMs = (CACurrentMediaTime() - start) * 1000.0
             let qCount = frameQueue.count
             let isPaused = isVideoDrainPaused.withLock { $0 }
@@ -181,6 +186,8 @@ extension PlayerEngine {
                 }
             }
             let dropped = frameQueue.droppedFramesCount
+            let pipelineDropped = frameQueue.pipelineDroppedFramesCount
+            let speedSkipped = frameQueue.speedSkippedFramesCount
 
             let mode = activeRenderMode
             if mode == .metalToneMap {
@@ -309,7 +316,10 @@ extension PlayerEngine {
                     renderModeName: currentModeName,
                     isDrainPaused: isPaused,
                     avSyncDriftMs: driftMs,
-                    droppedFrames: dropped
+                    droppedFrames: dropped,
+                    pipelineDroppedFrames: pipelineDropped,
+                    speedSkippedFrames: speedSkipped,
+                    playbackRate: currentRate
                 )
 
                 if !isMetalLayerVisibleLock.withLock({ $0 }) {
@@ -329,7 +339,10 @@ extension PlayerEngine {
                     renderModeName: "Apple HDR (AVSBDL)",
                     isDrainPaused: isPaused,
                     avSyncDriftMs: driftMs,
-                    droppedFrames: dropped
+                    droppedFrames: dropped,
+                    pipelineDroppedFrames: pipelineDropped,
+                    speedSkippedFrames: speedSkipped,
+                    playbackRate: currentRate
                 )
 
                 if isMetalLayerVisibleLock.withLock({ $0 }) {
