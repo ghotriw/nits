@@ -158,7 +158,8 @@ extension PlayerEngine {
         }
 
         let start = CACurrentMediaTime()
-        if let popped = frameQueue.popFrame(forSyncTime: currentSyncTime) {
+        let frameDuration = nominalFrameDurationLock.withLock { $0 }
+        if let popped = frameQueue.popFrame(forSyncTime: currentSyncTime, nominalFrameDuration: frameDuration) {
             let durationMs = (CACurrentMediaTime() - start) * 1000.0
             let qCount = frameQueue.count
             let isPaused = isVideoDrainPaused.withLock { $0 }

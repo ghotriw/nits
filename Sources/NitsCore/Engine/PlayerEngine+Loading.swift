@@ -383,6 +383,8 @@ extension PlayerEngine {
         hasVideo = false
         videoWidth = 0
         videoHeight = 0
+        nominalFrameDuration = 1.0 / 24.0
+        nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
         sampleAspectRatio = .square
         videoCodecName = ""
         videoBitDepth = 8
@@ -567,6 +569,9 @@ extension PlayerEngine {
         self.duration = demuxer.durationSeconds
         self.videoWidth = demuxer.width
         self.videoHeight = demuxer.height
+        let frameDuration = demuxer.nominalFrameDuration
+        self.nominalFrameDuration = frameDuration
+        self.nominalFrameDurationLock.withLock { $0 = frameDuration }
         self.sampleAspectRatio = demuxer.sampleAspectRatio
         self.isHDRContent = demuxer.isHDR
         if self.mediaTitle.isEmpty {

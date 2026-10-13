@@ -53,6 +53,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     public var videoWidth: Int = 0
     public var videoHeight: Int = 0
+    public var nominalFrameDuration: Double = 1.0 / 24.0
+    @ObservationIgnored
+    let nominalFrameDurationLock = OSAllocatedUnfairLock(initialState: 1.0 / 24.0)
     public var sampleAspectRatio: RationalAspectRatio = .square
     public var displayAspectRatio: Double {
         RationalAspectRatio.computeDisplayAspectRatio(width: videoWidth, height: videoHeight, sar: sampleAspectRatio)

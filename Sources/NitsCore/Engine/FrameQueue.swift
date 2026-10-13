@@ -128,9 +128,16 @@ public final class FrameQueue: @unchecked Sendable {
         }
     }
 
-    /// Pops the next frame whose PTS matches or precedes `syncTime + maxLeadTime`.
-    /// Immediately releases the internal `DecodedFrame` reference and returns its `PoppedFrame`.
-    public func popFrame(forSyncTime syncTime: CMTime) -> PoppedFrame? {
+    /// Pops the next frame eligible for display at `syncTime`.
+    ///
+    /// Pacing and dropping invariants:
+    /// - `maxLeadTime`: A narrow lead window (clamped to `[0.008, 0.035]` seconds, defaulting to half of `nominalFrameDuration`)
+    ///   allowing the imminent frame to be picked for the current VSYNC tick without grabbing future frames meant for subsequent ticks.
+    /// - `lateTolerance`: Frames whose PTS has fallen behind `syncTime - lateTolerance` (missed their presentation deadline due to
+    ///   decoding stall or system lag) are discarded and counted as dropped frames.
+    /// - Once an eligible frame matching `syncTime + maxLeadTime` is selected, any subsequent frame that is NOT late is held in the queue
+    ///   for the next VSYNC tick.
+    public func popFrame(forSyncTime syncTime: CMTime, nominalFrameDuration: Double = 1.0 / 24.0) -> PoppedFrame? {
         struct DropWarningPayload {
             let droppedCount: Int
             let syncTimeSeconds: Double
@@ -141,7 +148,22 @@ public final class FrameQueue: @unchecked Sendable {
         let (popped, warningPayload) = lock.withLock { () -> (PoppedFrame?, DropWarningPayload?) in
             guard countInternal > 0 else { return (nil, nil) }
 
-            let maxLeadTime = CMTime(value: 50, timescale: 1000)
+            // Sanitize input nominalFrameDuration to prevent NaN/Infinity or <= 0 leading to invalid CMTime
+            let safeFrameDuration =
+                (nominalFrameDuration.isFinite && nominalFrameDuration > 0)
+                ? nominalFrameDuration
+                : (1.0 / 24.0)
+
+            // Dynamic lead window: half the frame interval so future frames wait for the next VSYNC tick.
+            // Clamped between 2ms (supporting HFR up to 240fps) and 35ms (~28fps half-frame max).
+            let leadSeconds = max(0.002, min(safeFrameDuration * 0.5, 0.035))
+            let maxLeadTime = CMTime(seconds: leadSeconds, preferredTimescale: 1000)
+
+            // Late drop tolerance: if a frame is more than 1.5 frame intervals behind the hardware clock,
+            // it missed its deadline and must be discarded.
+            let lateToleranceSeconds = max(0.040, min(safeFrameDuration * 1.5, 0.100))
+            let lateThreshold = syncTime - CMTime(seconds: lateToleranceSeconds, preferredTimescale: 1000)
+
             var chosen: CVPixelBuffer?
             var chosenPts: CMTime = .invalid
             var chosenDovi: DolbyVisionFrameMetadata? = nil
@@ -154,21 +176,68 @@ public final class FrameQueue: @unchecked Sendable {
                     continue
                 }
 
-                if frame.pts <= syncTime + maxLeadTime {
-                    if !frame.doNotDisplay {
-                        if chosen != nil {
-                            droppedFramesCountInternal += 1
-                            droppedInThisTick += 1
-                        }
+                // If the frame has not yet reached its display window (it is in the future), hold it!
+                if frame.pts > syncTime + maxLeadTime {
+                    break
+                }
+
+                // If the frame is displayable
+                if !frame.doNotDisplay {
+                    // Check if this frame is already obsolete / late compared to another frame or the clock
+                    if frame.pts < lateThreshold && countInternal > 1 {
+                        // Truly late frame: discard to catch up with audio / master clock
+                        droppedFramesCountInternal += 1
+                        droppedInThisTick += 1
+                        buffer[head] = nil
+                        head = (head + 1) % capacity
+                        countInternal -= 1
+                        continue
+                    }
+
+                    if chosen == nil {
+                        // First valid candidate within [lateThreshold ... syncTime + maxLeadTime]
                         chosen = frame.pixelBuffer
                         chosenPts = frame.pts
                         chosenDovi = frame.doviMetadata
+                        buffer[head] = nil
+                        head = (head + 1) % capacity
+                        countInternal -= 1
+
+                        // Look ahead at the next frame in the queue:
+                        // Only replace chosen if nextHead is closer to syncTime than chosen
+                        // (and still within the maxLeadTime window).
+                        // If chosen is closer or on-time, leave the next frame in the queue for the next tick!
+                        if let nextHead = buffer[head], !nextHead.doNotDisplay {
+                            let currentDelta = abs(chosenPts.seconds - syncTime.seconds)
+                            let nextDelta = abs(nextHead.pts.seconds - syncTime.seconds)
+                            if currentDelta > nextDelta && nextHead.pts <= syncTime + maxLeadTime {
+                                // Next frame is strictly closer to syncTime: continue loop to replace chosen
+                                continue
+                            } else {
+                                // Next frame belongs to the next tick: preserve it!
+                                break
+                            }
+                        } else {
+                            break
+                        }
+                    } else {
+                        // We previously picked a frame, but it was late and this newer frame is also eligible.
+                        // The older frame is dropped in favor of the fresh one.
+                        droppedFramesCountInternal += 1
+                        droppedInThisTick += 1
+                        chosen = frame.pixelBuffer
+                        chosenPts = frame.pts
+                        chosenDovi = frame.doviMetadata
+                        buffer[head] = nil
+                        head = (head + 1) % capacity
+                        countInternal -= 1
+                        break
                     }
+                } else {
+                    // Frame marked as doNotDisplay
                     buffer[head] = nil
                     head = (head + 1) % capacity
                     countInternal -= 1
-                } else {
-                    break
                 }
             }
 

@@ -162,4 +162,150 @@ struct FrameQueueTests {
             #expect(queue.count == 0)
         }
     }
+
+    @Test("High framerate (50fps) pacing does not prematurely drop frames in a single tick")
+    func testHighFrameratePacingNoPrematureDrop() {
+        let queue = FrameQueue()
+        let buf1 = createDummyPixelBuffer()
+        let buf2 = createDummyPixelBuffer()
+        let buf3 = createDummyPixelBuffer()
+
+        // 50 fps stream: 20ms per frame
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf1, pts: CMTime(value: 0, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf2, pts: CMTime(value: 20, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf3, pts: CMTime(value: 40, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+
+        #expect(queue.count == 3)
+        #expect(queue.droppedFramesCount == 0)
+
+        // Tick 1 at 0ms: should pop exactly buf1, leaving buf2 and buf3 in queue with 0 drops
+        let pop1 = queue.popFrame(forSyncTime: CMTime(value: 0, timescale: 1000), nominalFrameDuration: 0.020)
+        #expect(pop1?.pixelBuffer === buf1)
+        #expect(queue.count == 2)
+        #expect(queue.droppedFramesCount == 0)
+
+        // Tick 2 at 18ms (e.g. ~60Hz tick): should pop buf2, leaving buf3 in queue with 0 drops
+        let pop2 = queue.popFrame(forSyncTime: CMTime(value: 18, timescale: 1000), nominalFrameDuration: 0.020)
+        #expect(pop2?.pixelBuffer === buf2)
+        #expect(queue.count == 1)
+        #expect(queue.droppedFramesCount == 0)
+
+        // Tick 3 at 36ms: should pop buf3 with 0 drops
+        let pop3 = queue.popFrame(forSyncTime: CMTime(value: 36, timescale: 1000), nominalFrameDuration: 0.020)
+        #expect(pop3?.pixelBuffer === buf3)
+        #expect(queue.count == 0)
+        #expect(queue.droppedFramesCount == 0)
+    }
+
+    @Test("Truly late frames falling far behind the master clock are dropped to catch up")
+    func testLateFramesAreDropped() {
+        let queue = FrameQueue()
+        let staleBuf = createDummyPixelBuffer()
+        let freshBuf = createDummyPixelBuffer()
+
+        // Stale frame at 0.0s, Fresh frame at 1.0s
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: staleBuf, pts: CMTime(value: 0, timescale: 1000),
+                duration: CMTime(value: 41, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: freshBuf, pts: CMTime(value: 1000, timescale: 1000),
+                duration: CMTime(value: 41, timescale: 1000)
+            )
+        )
+
+        // Master clock jumped to 1.0s: stale frame at 0.0s is 1000ms behind (> 100ms late tolerance)
+        let popped = queue.popFrame(forSyncTime: CMTime(value: 1000, timescale: 1000), nominalFrameDuration: 1.0 / 24.0)
+        #expect(popped?.pixelBuffer === freshBuf)
+        #expect(queue.droppedFramesCount == 1)
+    }
+
+    @Test("Clock micro-jitter where syncTime slightly leads frame PTS does not skip frame")
+    func testMicroJitterDoesNotPrematurelyDropFrame() {
+        let queue = FrameQueue()
+        let buf1 = createDummyPixelBuffer()
+        let buf2 = createDummyPixelBuffer()
+
+        // 50 fps stream: frame 1 at 20ms, frame 2 at 40ms
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf1, pts: CMTime(value: 20, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf2, pts: CMTime(value: 40, timescale: 1000), duration: CMTime(value: 20, timescale: 1000)
+            )
+        )
+
+        // Micro-jitter: syncTime arrived at 21ms (1ms ahead of buf1 at 20ms, but 19ms before buf2 at 40ms)
+        // buf1 distance: |20 - 21| = 1ms. buf2 distance: |40 - 21| = 19ms.
+        // buf1 must be popped, buf2 must be kept in the queue with 0 drops!
+        let pop = queue.popFrame(forSyncTime: CMTime(value: 21, timescale: 1000), nominalFrameDuration: 0.020)
+        #expect(pop?.pixelBuffer === buf1)
+        #expect(queue.count == 1)
+        #expect(queue.droppedFramesCount == 0)
+    }
+
+    @Test("High frame rate 120fps HFR content does not drop frames due to lead window")
+    func testHFR120fpsPacingNoPrematureDrop() {
+        let queue = FrameQueue()
+        let buf1 = createDummyPixelBuffer()
+        let buf2 = createDummyPixelBuffer()
+
+        // 120 fps stream: ~8.33ms per frame (buf1 at 0ms, buf2 at 8.33ms)
+        let frameDuration = 1.0 / 120.0
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf1, pts: CMTime(seconds: 0.0, preferredTimescale: 12000),
+                duration: CMTime(seconds: frameDuration, preferredTimescale: 12000)
+            )
+        )
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf2, pts: CMTime(seconds: frameDuration, preferredTimescale: 12000),
+                duration: CMTime(seconds: frameDuration, preferredTimescale: 12000)
+            )
+        )
+
+        #expect(queue.count == 2)
+        // Tick at 0ms should pop buf1 and keep buf2
+        let pop1 = queue.popFrame(
+            forSyncTime: CMTime(seconds: 0.0, preferredTimescale: 12000), nominalFrameDuration: frameDuration)
+        #expect(pop1?.pixelBuffer === buf1)
+        #expect(queue.count == 1)
+        #expect(queue.droppedFramesCount == 0)
+    }
+
+    @Test("Invalid nominalFrameDuration (NaN, 0, negative, infinity) is sanitized safely")
+    func testInvalidNominalFrameDurationSanitized() {
+        let queue = FrameQueue()
+        let buf = createDummyPixelBuffer()
+
+        queue.push(
+            VTVideoDecoder.DecodedFrame(
+                pixelBuffer: buf, pts: CMTime(value: 0, timescale: 1000), duration: CMTime(value: 41, timescale: 1000)
+            )
+        )
+
+        // Passing NaN, 0, or negative duration should not crash or produce invalid CMTime
+        let popNaN = queue.popFrame(forSyncTime: CMTime(value: 0, timescale: 1000), nominalFrameDuration: .nan)
+        #expect(popNaN?.pixelBuffer === buf)
+        #expect(queue.count == 0)
+    }
 }
