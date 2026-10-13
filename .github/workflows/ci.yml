@@ -7,6 +7,13 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      run_stress_tests:
+        description: 'Run full stress & audio matrix test suites'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   verify:
@@ -35,8 +42,13 @@ jobs:
       - name: Typecheck and build targets
         run: ./scripts/format.sh typecheck
 
-      - name: Run test suite
-        run: swift test
+      - name: Run fast unit tests (Push / PR)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_stress_tests != true }}
+        run: swift test --disable-sandbox --skip PlaybackStressTests --skip AudioReferenceComparisonTests --skip PlayerLifecycleTests
+
+      - name: Run full test suite including stress tests (Manual dispatch)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress_tests == true }}
+        run: swift test --disable-sandbox
 
       - name: Package Nits.app
         run: ./scripts/bundle_app.sh

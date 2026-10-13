@@ -33,16 +33,16 @@ case "$MODE" in
         ;;
     typecheck|--typecheck|-t)
         echo "Type-checking and building Swift targets (strict concurrency)..."
-        swift build --build-tests -Xswiftc -strict-concurrency=complete
+        swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
         echo "Type-check passed."
         ;;
     check|--check|-c)
         echo "1. Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
         echo "2. Type-checking targets with strict concurrency..."
-        swift build --build-tests -Xswiftc -strict-concurrency=complete
+        swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
         echo "3. Running test suite..."
-        swift test
+        swift test --disable-sandbox
         echo "All checks passed! CI ready."
         ;;
     *)
