@@ -1,216 +1,364 @@
 # Nits: Architecture & Roadmap
 
 This document outlines the architecture, current implementation status, and development roadmap for `Nits`.
-The goal is to evolve the dual-engine video rendering core into a complete standalone media player with audio playback, subtitle rendering, network streaming, and host integration capabilities (e.g., embedding into a `WKWebView`-based Emby/Jellyfin client).
+
+The goal is to evolve the Apple Silicon dual-engine video rendering core into a full-featured standalone media player with hardware-accelerated and software decoding, studio-grade synchronized audio, advanced subtitles, network streaming, playlist management, and host integration capabilities (including a bidirectional `WKWebView` bridge for Emby and Jellyfin clients).
 
 ---
 
-## 1. Current Core Status (Completed)
+## 1. Architectural Baseline & System Invariants
 
-- [x] **Reference Video Pipeline (Dual-Engine Architecture):**
-  - **Apple Liquid Retina XDR:** Direct hardware overlay via `AVSampleBufferDisplayLayer` (1000–1600 nits).
-  - **SDR / External Displays (e.g. LG UltraFine 5K):** Custom Metal tone-mapping compute shader (ITU-R BT.2390 EETF, 203 nits reference white, Display P3, pure 2.2 gamma, FidelityFX CAS 5x luma-optimized sharpening).
-- [x] **Hardware HEVC VideoToolbox Decoder:** P010 biplanar YCbCr, MSB normalization.
-- [x] **Dynamic Color Metadata:** Extract primaries/TRC/matrix from FFmpeg `codecpar` and NAL SEI/VUI.
-- [x] **Annex B & MP4/HVCC Normalization:** Robust container support for MKV, TS, MP4, and raw HEVC streams.
-- [x] **Modular SPM Decomposition:** `NitsCore` (pure system library without `unsafeFlags`), `NitsUI`, `NitsKit`, `NitsApp`.
+- **Target Platform:** macOS 15.0+ (Sequoia) / Apple Silicon (ARM64).
+- **Language Standard:** Swift 6 with complete concurrency checking enabled (`-strict-concurrency=complete`, `ExistentialAny`).
+- **Framework Stack:** Metal, QuartzCore (`CADisplayLink`), AVFoundation (`AVSampleBufferAudioRenderer`, `AVSampleBufferRenderSynchronizer`, `AVSampleBufferDisplayLayer`), VideoToolbox, CoreAudio, FFmpeg (`libavformat`, `libavcodec`, `libswresample`, `libdav1d`), Swift Observation (`@Observable`).
+- **Modular SPM Decomposition:**
+  - `NitsCore`: Headless engine core with zero SwiftUI dependencies (demuxing, decoding, ring buffers, Metal BT.2390 shaders, A/V synchronization, IOKit display sleep assertions, playback history, playlists, subtitle parsing).
+  - `NitsKit`: Windowing, lifecycle, and macOS AppKit integration layer (`PlayerWindow`, `PlayerWindowController`, `PlayerCommands`, `NowPlayingController`, `LogViewerWindowController`).
+  - `NitsUI`: Pure declarative SwiftUI presentation layer (controls overlay, telemetry HUD, OSD notifications, Metal-outlined subtitles, quick settings and playlist drawer overlays, Jump to Time dialog, Open URL sheet).
+  - `NitsApp`: Application lifecycle entry point (`NSApplicationDelegate`, LaunchServices document types, CLI arguments parsing).
 
 ---
 
-## 2. MVP Implementation Roadmap
+## 2. Implementation Stages Overview
 
 ```mermaid
 flowchart TD
-    M1["Stage 1: H.264 / HEVC / DV P5 / HLG ✅"] --> M15["Stage 1.5: Dolby Vision Profile 8.1 / 8.4 RPU Engine ✅"]
-    M15 --> M2["Stage 2: Audio Pipeline ✅"]
-    M2 --> M3["Stage 3: Network & Remote Streaming ✅"]
-    M3 --> M4["Stage 4: Subtitles Subsystem SRT/VTT ✅"]
-    M4 --> M5["Stage 5: WKWebView Bridge"]
-    M5 --> M6["Stage 6: Desktop UI & UX Controls ✅"]
-    M6 --> M7["Stage 7: Standalone App Bundling & Release"]
-    M2 -.-> M25["Stage 2.6: AV1 Hybrid Engine ✅"]
+    M1["Stage 1: Core Video Pipeline (HEVC / H.264 / DV P5 / HLG) ✓"] --> M15["Stage 1.5: Dolby Vision Profile 8.1 / 8.4 RPU Engine ✓"]
+    M15 --> M2["Stage 2: Audio Pipeline & Master Clock Sync ✓"]
+    M2 --> M25["Stage 2.5: AV1 Hybrid Engine & FFmpeg Software Fallback ✓"]
+    M25 --> M3["Stage 3: Network & Remote Streaming (HTTP/HTTPS) ✓"]
+    M3 --> M4["Stage 4: Subtitles Subsystem (SRT / WebVTT / Metal Outline) ✓"]
+    M4 --> M5["Stage 5: Playlists, OSD, Seeking Architecture & UX ✓"]
+    M5 --> M6["Stage 6: Host Integration Bridge (WKWebView Two-Way Bridge) ⏳"]
+    M6 --> M7["Stage 7: Standalone Distribution & Release Bundling"]
+    
+    M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing 📋"]
+    M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range 📋"]
+    M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
+    M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
+    M5 -.-> M5X["Stage 5.9: Chapters, Hover Thumbnails & PiP 📋"]
 ```
 
 ---
 
-### Stage 1: Video Codecs & Formats Expansion — [COMPLETED] ✅
-> Evolve from a specialized HEVC demuxer into a versatile video playback engine.
+## 3. Detailed Stage Breakdown
 
-- [x] **1.1. H.264 / AVC Support (SDR 8-bit & 10-bit):**
-  - Add `AV_CODEC_ID_H264` support in demuxer.
-  - Parse SPS (NAL 7) and PPS (NAL 8) parameter sets.
-  - Initialize decompression session via `CMVideoFormatDescriptionCreateFromH264ParameterSets`.
-  - Dynamic pixel format selection (`.r8Unorm` vs `.r16Unorm`, Video Range vs Full Range).
-  - Direct SDR Metal render pipeline: BT.709 OETF $\to$ Linear BT.709 $\to$ Display P3 with gamma 2.2 and FidelityFX CAS without EETF tone-mapping overhead.
-- [x] **1.2. Extended HDR Standards (HLG & Dolby Vision Profile 5):**
-  - HLG (Hybrid Log-Gamma, ARIB STD-B67 / BT.2100): Inverse OETF + display-adapted OOTF gamma scaling.
-  - Dolby Vision Profile 5: Hardware detection of `dvvC`/`dvcC` atom boxes, IPTc2 / ICtCp unpack $\to$ LMS' $\to$ ST 2084 PQ EOTF $\to$ Linear BT.2020 in nits (eliminates green/purple tint).
-- [x] **1.3. Container Extradata Parsing (`avcC` / `hvcC`):**
-  - Instant extraction of SPS/PPS/VPS from MP4/MKV extradata headers without needing to scan packet bitstreams.
-  - Packet-level scanning retained as a fallback for raw Annex-B streams.
-- [x] **1.4. Unified `MediaDemuxer` & Audio Buffering:**
-  - Rename `HEVCDemuxer` $\to$ `MediaDemuxer`.
-  - Traverse all container streams, extracting audio metadata (`audioStreamIndex`, `audioTimebase`, `audioCodecId`, `audioChannels`, `audioSampleRate`).
-  - Implement concurrent `audioQueue` with `nextAudioPacket()`: demux audio concurrently during video traversal, preserving unified disk I/O.
+### Stage 1: Core Video Pipeline & Format Expansion — [COMPLETED] ✓
+
+- [x] **1.1. Reference Dual-Engine Presentation Pipeline:**
+  - **Apple Liquid Retina XDR Displays (EDR > 1.01):** Direct hardware overlay via `AVSampleBufferDisplayLayer` unlocking 1000–1600 nits peak highlights.
+  - **Standard SDR Displays (EDR == 1.0, e.g., external 4K/5K monitors):** Custom Metal tone-mapping compute shader (ITU-R BT.2390 EETF, 203 nits reference white, Display P3 gamut, pure Gamma 2.2 output, AMD FidelityFX CAS 5× luma-optimized sharpening).
+  - Dynamic display-adaptive handover between `.auto`, `.system`, and `.metalToneMap` with zero frame stalls or pipeline tear-down.
+- [x] **1.2. Hardware HEVC / H.265 Decoding (VideoToolbox):**
+  - 10-bit P010 biplanar YCbCr decoding with MSB alignment normalization (`val * 65535.0 / 1023.0`).
+  - Header parsing for `hvcC` extradata configuration boxes and raw Annex B NAL byte streams.
+- [x] **1.3. H.264 / AVC Support (8-bit & 10-bit SDR):**
+  - Parameter set extraction for SPS (NAL 7) and PPS (NAL 8).
+  - Decompression session configuration via `CMVideoFormatDescriptionCreateFromH264ParameterSets`.
+  - Dynamic pixel format binding (`.r8Unorm` vs. `.r16Unorm`, Video Range vs. Full Range).
+  - Direct SDR Metal render pass: BT.709 OETF $\to$ Linear BT.709 $\to$ Display P3 (Gamma 2.2) with FidelityFX CAS bypassing EETF tone-mapping overhead.
+- [x] **1.4. Extended HDR Standards (HLG & Dolby Vision Profile 5):**
+  - HLG (Hybrid Log-Gamma, BT.2100 / ARIB STD-B67): Inverse OETF and display-adapted OOTF gamma scaling.
+  - Dolby Vision Profile 5: Extradata inspection for `dvvC`/`dvcC` boxes, IPTc2 / ICtCp matrix unpacking $\to$ LMS' $\to$ ST 2084 PQ EOTF $\to$ Linear BT.2020 in nits, eliminating green/purple tinting.
+- [x] **1.5. Non-Square Pixel Aspect Ratio (SAR / DAR) Support:**
+  - Dynamic extraction of `sample_aspect_ratio` from FFmpeg `AVCodecParameters` and `AVStream`.
+  - Exact aspect ratio geometry calculation via `RationalAspectRatio`.
+  - Automatic anamorphic frame correction across video presentation surfaces and subtitle overlays.
 
 ---
 
-### Stage 1.5: Dynamic HDR & Dolby Vision Profile 8 (8.1 / 8.4) Engine — [COMPLETED] ✅
-> Dynamic metadata adaptation (SMPTE ST 2094-10) for Web-DL, UHD Blu-ray rips, and iPhone HDR video.
+### Stage 1.5: Dynamic HDR & Dolby Vision Profile 8 (8.1 / 8.4) Engine — [COMPLETED] ✓
 
-- [x] **1.5.1. Profile Detection & Hardware Decoding:**
-  - Parse `dvvC` / `dvcC` configuration boxes from extradata and stream side data (`AV_PKT_DATA_DOVI_CONF`).
-  - Distinguish Profile 5 (ICtCp), Profile 8.1 (HDR10 PQ), Profile 8.2 (SDR BT.709), Profile 8.4 (BT.2100 HLG), and Profile 7.
-  - Construct Apple-compliant `CMVideoFormatDescription` with `kCMVideoCodecType_DolbyVisionHEVC` (`dvh1`), enabling VideoToolbox hardware decoding of the base layer with `DolbyVisionRPUData` sample buffer attachments.
-- [x] **1.5.2. DOVI RPU Bitstream Parsing (Level 1 & Level 2 Metadata):**
+- [x] **1.5.1. Profile Detection & Hardware Configuration:**
+  - Parse `dvvC`/`dvcC` configuration boxes from container extradata and packet side data (`AV_PKT_DATA_DOVI_CONF`).
+  - Distinguish Profile 5 (ICtCp), Profile 8.1 (HDR10 PQ base layer), Profile 8.2 (SDR BT.709), Profile 8.4 (HLG), and Profile 7 (MEL/FEL).
+  - Construct Apple-compliant `CMVideoFormatDescription` with `kCMVideoCodecType_DolbyVisionHEVC` (`dvh1`), enabling hardware VideoToolbox decoding with attached `DolbyVisionRPUData`.
+- [x] **1.5.2. DOVI RPU Bitstream Parsing (Level 1 & Level 2 Dynamic Metadata):**
   - Parse Dolby Vision Level 1 (L1) dynamic metadata from RPU payload (NAL unit 62): frame-accurate `min_pq`, `max_pq`, and `avg_pq` with ST 2084 nits conversion.
-  - Parse Dolby Vision Level 2 (L2) display trim passes for 100-nit SDR target (`target_max_pq ≈ 2081`), extracting normalized slope, offset, power, and saturation gain parameters per SMPTE ST 2094-10 / ETSI TS 103 572.
-  - Safe bitstream parser with emulation prevention unescaping (`0x000003`), EOF guards, Profile 7 EL residual checking, and zero-allocation stream scanning for 4K60.
-- [x] **1.5.3. Adaptive Scene-by-Scene Tone Mapping:**
-  - Forward dynamic L1/L2 metadata with frame PTS through `VTVideoDecoder` into `FrameQueue` and `displayLinkTick`.
-  - When authored 100-nit L2 trim is present, apply SMPTE ST 2094-10 SOP (Slope, Offset, Power) parametric display mapping directly in the PQ domain before optical linear conversion, avoiding double-tonemapping distortion.
-  - Fallback to dynamic shot peak luminance and adaptive white point scaling via L1 with EMA temporal smoothing and scene refresh resets.
-  - Real-time Performance HUD reporting (`Metal SDR (DoVi L2 Trim)` / `Metal SDR (DoVi L1)`).
+  - Parse Dolby Vision Level 2 (L2) display trim passes for 100-nit SDR mastering targets (`target_max_pq ≈ 2081`), extracting normalized slope, offset, power, and saturation gain parameters per SMPTE ST 2094-10 / ETSI TS 103 572.
+  - High-performance, zero-allocation bitstream parser with emulation prevention unescaping (`0x000003`) and boundary validation for 4K60 streams.
+- [x] **1.5.3. Scene-Adaptive Tone Mapping:**
+  - Forward dynamic L1/L2 metadata with frame PTS through `VTVideoDecoder` into `FrameQueue` and `CADisplayLink` rendering passes.
+  - Direct application of authored 100-nit L2 trim SOP (Slope, Offset, Power) display mapping in the PQ domain before optical linear conversion, preventing double-tonemapping distortion.
+  - Fallback to dynamic shot peak luminance and adaptive white point scaling via L1 with exponential moving average (EMA) temporal smoothing and scene-cut resets.
+  - Telemetry reporting in Performance HUD (`Metal SDR (DoVi L2 Trim)` / `Metal SDR (DoVi L1)`).
+- [x] **1.5.4. User Target White Point Calibration:**
+  - User-configurable `targetNitsScale` multiplier (0.5×–2.0× in UI, 0.1×–4.0× engine bounds) to fine-tune the SDR reference luminance for ambient room lighting.
 
 ---
 
-### Stage 2: Audio Pipeline & Synchronization — [COMPLETED] ✅
-> **Critical MVP milestone.** Seamless high-fidelity audio playback synchronized with video.
+### Stage 2: Audio Pipeline, Hardware Master Clock & System Integration — [COMPLETED] ✓
 
-- [x] **2.1. Hardware Master Clock Synchronization:**
-  - Attach `AVSampleBufferAudioRenderer` to the shared `AVSampleBufferRenderSynchronizer`.
-  - Video and audio synchronize against a single CoreAudio hardware timebase, eliminating A/V lip-sync drift.
+- [x] **2.1. Hardware Master Clock Synchronization (A/V Sync):**
+  - Unified playback clock driven by `AVSampleBufferRenderSynchronizer` with `AVSampleBufferAudioRenderer`.
+  - CoreAudio hardware timebase anchors media timing; video presentation is paced against the synchronizer clock, eliminating lip-sync drift.
+  - Clock settling guard (`ClockSettlingGuard`): transient hardware clock stabilization on seek and track changes, preventing burst frame drops in `FrameQueue`.
 - [x] **2.2. Audio Demuxing & Decoding (FFmpeg libavcodec + libswresample):**
-  - Read audio packets from demuxer's `audioQueue`.
-  - Decode via FFmpeg `libavcodec` and resample via `libswresample` to 48kHz Float32 Linear PCM.
-  - Apple Spatial Audio & multichannel support: preserve 5.1/7.1 channel layouts with SMPTE/AudioUnit tags (`kAudioChannelLayoutTag_AudioUnit_5_1` / `kAudioChannelLayoutTag_AudioUnit_7_1`) in `CMAudioFormatDescription`.
-  - Package PCM into `CMSampleBuffer` with automatic sample size calculation.
-- [x] **2.3. Queue Management, Spatial Audio & Control Center Integration:**
-  - Non-blocking `audioFeedQueue` feeding `AVSampleBufferAudioRenderer.requestMediaDataWhenReady` with ~0.3s lead time backpressure.
-  - Enable `allowedAudioSpatializationFormats = .monoStereoAndMultichannel` for Dynamic Head Tracking on AirPods.
-  - Listen for `.AVSampleBufferAudioRendererOutputConfigurationDidChange` and `.AVSampleBufferAudioRendererWasFlushedAutomatically` notifications for instant CoreAudio DSP-graph reconfiguration on Spatial Audio mode switch (*Off / Fixed / Head Tracked*).
-  - Multi-track discovery (`audioTracks: [AudioTrack]`) and live track switching (`selectAudioTrack(id:)`).
-  - Volume control (`volume: 0.0 ... 1.0`), mute toggle (`isMuted: Bool`), custom UI slider and track picker in `ControlsOverlay`.
-  - Flush audio decoder and renderer buffers on seek and track change.
-- [x] **2.4. App Bundle Lifecycle & System Integration:**
-  - Build and ad-hoc sign `Nits.app` with `CFBundleIdentifier` (`com.ghotriw.nits`) via `scripts/bundle_app.sh`, enabling macOS Control Center integration.
-  - Implement native window controller and `AppDelegate` with `applicationShouldTerminateAfterLastWindowClosed = true` and standard macOS menu shortcuts (`⌘Q`, `⌘W`, `⌘O`).
-- [x] **2.5. System Media Controls & Now Playing Integration:**
-  - Dual-backend architecture: modern `NowPlaying.framework` (`MediaSession` on macOS 27+) and backward-compatible `MediaPlayer` (`MPNowPlayingInfoCenter` / `MPRemoteCommandCenter`).
+  - Concurrent packet extraction via background `audioQueue`.
+  - Multi-threaded decoding and resampling to 48kHz 32-bit Float Linear PCM wrapped into `CMSampleBuffer` via `FFAudioDecoder`.
+  - Apple Spatial Audio and multichannel surround (5.1 / 7.1) support via standard CoreAudio tags (`kAudioChannelLayoutTag_AudioUnit_5_1`, `kAudioChannelLayoutTag_AudioUnit_7_1`).
+  - Planar buffer access via `extended_data` in `swr_convert` (guaranteeing crash-free operation with $>8$ audio channels).
+  - Dynamic on-the-fly resampler recreation upon stream sample rate, channel count, or layout alterations.
+- [x] **2.3. Queue Management & Live Track Switching:**
+  - Non-blocking `audioFeedQueue` feeding `AVSampleBufferAudioRenderer.requestMediaDataWhenReady` with ~0.3s lead time.
+  - Native backpressure handling: elimination of CPU busy-spin loops by adhering to CoreAudio buffer readiness.
+  - Dynamic audio track discovery (`audioTracks`) and seamless hot-switching (`selectAudioTrack(id:)`).
+  - Linear volume control (`0.0 ... 1.0`), mute toggling (`isMuted`), and volume level feedback in OSD.
+- [x] **2.4. CoreAudio Route Monitoring:**
+  - Real-time default audio output device monitoring via `AudioDeviceRouteMonitor` (`kAudioHardwarePropertyDefaultOutputDevice`).
+  - Automatic audio rendering pipeline migration when connecting/disconnecting AirPods or external DACs.
+- [x] **2.5. Audio-Only Playback Mode:**
+  - Native playback for standalone audio containers and lossless formats (FLAC, MP3, AAC, OGG, Opus, WAV, ALAC, AIFF, APE).
+  - Dedicated audio player UI with album artwork display (embedded ID3/Vorbis tags or remote artwork URLs), waveform visualization, and metadata badges.
+- [x] **2.6. System Media Controls & Now Playing Integration:**
+  - Dual-backend implementation: modern `NowPlaying.framework` (`MediaSession` on macOS 27+) with backwards-compatible `MediaPlayer` (`MPNowPlayingInfoCenter` / `MPRemoteCommandCenter`).
   - Remote command handling: Play, Pause, Toggle, Seek/Scrub, and Skip.
-  - Hardware & accessory support: Control Center, Menu Bar "Now Playing", keyboard media keys, Touch Bar, and Bluetooth headphones/headsets.
-  - Safe timeline extrapolation and seamless window reopen lifecycle.
+  - Hardware accessory support: macOS Control Center, Menu Bar Now Playing item, hardware keyboard media keys, Touch Bar, and Bluetooth headset controls.
+  - Embedded and external artwork extraction and pipeline forwarding.
 
 ---
 
-### Stage 2.6: AV1 Hybrid Engine (AOMedia Video 1) — [COMPLETED] ✅
-> Apple Silicon M1/M2 chips lack hardware AV1 decoders (introduced in M3/M4+), necessitating a hybrid fallback.
+### Stage 2.5: Universal Video Decoding — AV1 & FFmpeg Software Fallback — [COMPLETED] ✓
 
-- [x] **2.6.1. Decoder Protocol Abstraction (`VideoDecoderProtocol`):**
-  - Common decoder interface enabling transparent switching between hardware `VTVideoDecoder` and software backends.
-- [x] **2.6.2. M3/M4+ Hardware Path (VideoToolbox):**
-  - Check `VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)`.
-  - Parse `av1C` config atoms and OBUs (Open Bitstream Units).
-- [x] **2.6.3. M1/M2 Software Path (`libdav1d`):**
-  - Integrate high-performance SIMD/NEON assembly decoder `dav1d` (VideoLAN via FFmpeg libavcodec).
-  - Fast mapping of decoded planar YUV420P / YUV420P10 buffers into `CVPixelBuffer` via `CVPixelBufferPool` for Metal / DisplayLayer rendering.
-
----
-
-### Stage 3: Remote Network & Stream Playback (HTTP/HTTPS) — [COMPLETED] ✅
-> Enable direct streaming from remote HTTP/HTTPS servers and media endpoints with custom authentication.
-
-- [x] **3.1. Remote URLs & HTTP Headers Support:**
-  - Extended demuxer initialization: `MediaDemuxer.init(url: String, headers: [String: String], interruptContext: InterruptContext?)`.
-  - Pass custom HTTP request headers to FFmpeg (`AVDictionary` with `"headers"` formatted CRLF, e.g., `Authorization`, `X-Api-Key`, `User-Agent`).
-  - Network options: automatic reconnect (`reconnect`, `reconnect_streamed`, `reconnect_delay_max`), 10s microsecond I/O timeouts (`timeout`, `rw_timeout`).
-  - Unified protocol support (`http://`, `https://`, and `file://`).
-- [x] **3.2. Network Buffering, Interruption & UI Integration:**
-  - Track playback loading state (`isLoading: Bool`) and errors (`loadError: String?`), displaying non-blocking spinner and error banner.
-  - Implement FFmpeg interrupt callbacks (`AVIOInterruptCB` via `InterruptContext`) to cleanly cancel/abort network connections on window close or playback stop without freezing UI or worker threads.
-  - Asynchronous background engine loading (`loadAsync(path:headers:)`).
-  - CLI argument parsing for `--header="Key: Value"` and `--header "Key: Value"` in `PlayerConfiguration`.
-  - Modern "Open URL…" modal sheet with preset headers (`Authorization`, `X-Api-Key`, `User-Agent`), menu shortcut `⌘U`, and quick-access button in `WelcomeView`.
+- [x] **2.5.1. Decoder Protocol Abstraction (`VideoDecoderProtocol`):**
+  - Unified decoder interface: `decode(sampleBuffer:)`, `flush()`, `drain()`, and `setOutputHandler`.
+  - Dynamic backend instantiation via `VideoDecoderFactory`: transparent selection between hardware `VTVideoDecoder` and software FFmpeg decoders.
+- [x] **2.5.2. AV1 Hybrid Engine (AOMedia Video 1):**
+  - Hardware-accelerated decoding on Apple Silicon M3/M4+ through VideoToolbox (`kCMVideoCodecType_AV1`, OBU parsing, `av1C` atom extraction).
+  - High-performance software fallback for M1/M2 chips via `libdav1d` (VideoLAN SIMD/NEON assembly through FFmpeg).
+  - Vectorized UV plane interleaving and zero-copy mapping into `CVPixelBufferPool` instances with IOSurface and Metal backing.
+- [x] **2.5.3. FFmpeg Software Decoder for Legacy Codecs (WMV / VC-1):**
+  - Multi-threaded software decoder `FFmpegVideoDecoder` supporting Windows Media Video (WMV1, WMV2, WMV3) and VC-1 (SMPTE 421M).
+  - Conversion of planar YUV420P / YUVJ420P / YUV420P10 frames directly into hardware-backed `CVPixelBuffer`s (NV12 / P010).
+  - Generation token tagging (`generation token`) in frame queues, atomically discarding stale pre-seek frames during concurrent decode and flush cycles.
 
 ---
 
-### Stage 4: Subtitles Subsystem (Text & Embedded Subtitles) — [COMPLETED] ✅
-> High-performance subtitle overlay for foreign language content with customizable appearance and positioning.
+### Stage 1.8: Extended Video Formats & Compute Deinterlacing — [PLANNED]
 
-- [x] **4.1. Text-based Subtitle Parsers (SRT, WebVTT):**
+> Broaden codec compatibility for web rips and broadcast media while eliminating interlacing combing artifacts.
+
+- [ ] **1.8.1. VP9 Codec Integration (WebM / YouTube Streams):**
+  - VideoToolbox hardware decode path for VP9 Profile 0 (8-bit) and Profile 2 (10-bit HDR) where supported.
+  - Software decoding fallback via `FFmpegVideoDecoder` (`libvpx-vp9` / native FFmpeg VP9).
+  - Mapping of WebM container metadata (Color config, mastering display metadata, MaxCLL/FALL).
+- [ ] **1.8.2. Professional Production Codecs (Apple ProRes & Avid DNxHR):**
+  - Native hardware/framework VideoToolbox decoding for Apple ProRes family (`kCMVideoCodecType_AppleProRes422`, `ProRes422HQ`, `ProRes422LT`, `ProRes422Proxy`, `ProRes4444`, `ProRes4444XQ`).
+  - FFmpeg software decoding for Avid DNxHD / DNxHR with high-bitdepth P010/NV12 pool allocation.
+- [ ] **1.8.3. Metal Compute Shader Deinterlacing (YADIF / BWDIF):**
+  - Field order detection (`interlaced_frame`, `top_field_first`) from `AVCodecParameters` and `AVFrame` flags.
+  - Custom Metal compute deinterlacing pass (YADIF / BWDIF directional interpolation) for broadcast streams (1080i, 576i) and DVD/MPEG-2 remuxes, eliminating combing artifacts.
+
+---
+
+### Stage 2.8: Audio Synchronization Offset & Dynamic Range Management — [PLANNED]
+
+> Solve wireless audio latency and improve dialogue intelligibility during wide dynamic range film playback.
+
+- [ ] **2.8.1. Manual Audio Synchronization Delay (A/V Sync Offset):**
+  - User-configurable audio timestamp offset (`audioDelaySeconds: -1.0 ... +1.0`) to compensate for third-party Bluetooth latency and external DSP pipelines.
+  - Runtime adjustment without pipeline teardown via OSD and Quick Settings (`Audio` pane).
+  - Keyboard shortcuts (`G` / `F`) adjusting delay in ±50ms steps with instant feedback.
+- [ ] **2.8.2. Dynamic Range Compression & Night Mode:**
+  - Audio processing filter stage in `FFAudioDecoder` or CoreAudio AudioUnit graph.
+  - Night Mode / Voice Boost: dynamic range compression raising low-level dialogue while softly limiting explosive peaks and loud effects.
+
+---
+
+### Stage 3: Remote Network & Stream Playback (HTTP/HTTPS) — [COMPLETED] ✓
+
+- [x] **3.1. Remote URLs & Custom HTTP Authorization:**
+  - Demuxer initialization with custom parameters: `MediaDemuxer.init(url:headers:interruptContext:)`.
+  - Pass custom HTTP request headers to FFmpeg via `AVDictionary` (CRLF-formatted strings: `Authorization: Bearer ...`, `X-Emby-Token`, `User-Agent`).
+  - Resilient network options: automatic reconnection (`reconnect`, `reconnect_streamed`, `reconnect_delay_max`) and 10s microsecond I/O timeouts (`timeout`, `rw_timeout`).
+  - Unified protocol handling for `http://`, `https://`, and `file://` schemes.
+- [x] **3.2. Asynchronous Buffering, Interruption & UI:**
+  - Non-blocking asynchronous loading via `loadAsync(path:headers:)`.
+  - Immediate network cancellation via `AVIOInterruptCB` (`InterruptContext`) on window close or media switch without thread hangs.
+  - Playback loading state tracking (`isLoading`) and error presentation with dedicated banners.
+  - "Open URL…" modal sheet with preset authentication headers and `⌘U` shortcut.
+  - Command-line argument parsing for `--header="Key: Value"` in `PlayerConfiguration`.
+
+---
+
+### Stage 3.5: Adaptive Bitrate Streaming (HLS & MPEG-DASH) — [PLANNED]
+
+> Support modern adaptive web media streams with multi-rendition quality switching.
+
+- [ ] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
+  - Parsing master playlists (`.m3u8`) with multiple variant audio and video renditions.
+  - Dynamic stream selection (bandwidth adaptive or manual rendition picker in Quick Settings).
+- [ ] **3.5.2. MPEG-DASH Integration:**
+  - Parsing `.mpd` manifests and segmented MP4/WebM initialization fragments.
+
+---
+
+### Stage 4: Subtitles Subsystem (SRT, WebVTT & Metal Outlines) — [COMPLETED] ✓
+
+- [x] **4.1. Text-Based Subtitle Parsers (SRT, WebVTT):**
   - Robust parser for standard SubRip (`.srt`) and WebVTT (`.vtt`) files.
-  - Cleans HTML tags (`<b>`, `<i>`, `<u>`, `<font>`) and raw styling directives while preserving timing.
-  - $O(\log N)$ binary search for active cue retrieval matching presentation timestamp (PTS).
+  - Stripping of HTML formatting tags (`<b>`, `<i>`, `<u>`, `<font>`) while maintaining cue timing.
+  - Chronological cue indexing with $O(\log N)$ binary search lookup supporting simultaneous and overlapping dialogue lines.
 - [x] **4.2. Embedded Subtitle Demuxing:**
-  - Traversal and extraction of subtitle streams (`AVMEDIA_TYPE_SUBTITLE`) from MKV and MP4 containers.
-  - Support for `subrip` (SRT), `webvtt`, and `mov_text`.
-  - Detection of track metadata (language codes, titles, `isForced`, `isSDH` tags).
-- [x] **4.3. Alignment Directives & Positioning:**
-  - Parsing ASS/SSA alignment tags (`{\an1}` – `{\an9}`, `{\a1}` – `{\a11}`).
-  - Dynamic positioning in `SubtitleOverlayView`: top-aligned dialogs (`\an8`, `\an7`, `\an9`) render at top of screen without obscuring bottom subtitles.
-  - Full-surface overlay ignoring macOS window safe area margins for symmetric top/bottom layout.
-- [x] **4.4. UI Controls & User Appearance Customization:**
-  - Track picker in `ControlsOverlay` with "Off", embedded tracks, and "Load Subtitle File…" panel.
-  - Expanded Settings dialog with dedicated **Subtitles** tab.
-  - Live interactive preview with dark movie gradient.
-  - Configurable font size (16–54 pt), text color, background box color, and background opacity (0%–100%).
-  - Persistence across sessions via `UserDefaults` / `PlayerConfiguration`.
-- [ ] **4.5. Advanced ASS/SSA Styling & Bitmap Subtitles:**
-  - Full ASS drawing/typesetting support via `libass` integration.
+  - Traversal and extraction of subtitle streams (`AVMEDIA_TYPE_SUBTITLE`) from MKV and MP4 containers (`subrip`, `webvtt`, `mov_text`).
+  - Metadata parsing: language codes, titles, `isForced`, and `isSDH` flags.
+- [x] **4.3. Dynamic Positioning & ASS/SSA Tags:**
+  - Parsing of ASS/SSA alignment tags (`{\an1}` – `{\an9}`).
+  - Dynamic positioning in `SubtitleOverlayView`: top-aligned cues render at the top of the display surface without colliding with bottom subtitles.
+- [x] **4.4. GPU-Accelerated Outline Shader & Styling (Metal + SwiftUI):**
+  - Custom stitchable Metal shader (`SubtitleOutlineModifier` / `SubtitleShaders.metal`) generating crisp, omnidirectional text outlines without blur artifacts.
+  - Proportional font scaling dynamically adapting text sizes to video dimensions.
+  - Comprehensive styling settings: font family, weight, point size (16–54 pt), text color, background box color, and opacity with live interactive previews.
+  - Persistence across sessions via `UserDefaults`.
+- [ ] **4.5. Advanced ASS/SSA Typesetting & Bitmap Subtitles:**
+  - Full ASS drawing, vector shapes, and styling support via `libass` integration.
   - Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`) and VOBSUB (DVD).
 
 ---
 
-### Stage 5: Host Integration Bridge (WKWebView Two-Way Bridge)
-> Enable embedding Nits as a native high-performance rendering backend inside hybrid web applications.
+### Stage 4.6: Subtitle Timing Calibration & Drag-and-Drop Ingestion — [PLANNED]
 
-- **5.1. Embedded Native Video Canvas:**
-  - `NativeVideoHostView` as an embeddable `NSView` without intrusive UI chrome.
-  - Transparent `WKWebView` overlay delegating mouse and keyboard gestures seamlessly.
-- **5.2. Two-Way Bridge API Contract:**
-  - **Commands IN (JS -> Native):**
-    - `open(url, headers)`
-    - `play()`, `pause()`, `seek(seconds)`
-    - `setVolume(level)`, `setAudioTrack(id)`, `setSubtitleTrack(id)`
-    - `setToneMapParams(exposure, shadowLift, sharpness)`
-  - **Events OUT (Native -> JS via `messageHandlers`):**
-    - `onTimeUpdate({ currentTime, duration, buffered })`
-    - `onStateChange({ state: 'playing' | 'paused' | 'buffering' | 'ended' })`
-    - `onTracksLoaded({ audioTracks, subtitleTracks })`
-    - `onError({ code, message })`
+> Compensate for out-of-sync subtitle releases and simplify subtitle loading.
+
+- [ ] **4.6.1. Subtitle Timing Offset (Subtitle Delay):**
+  - Configurable timestamp shift (`subtitleDelaySeconds: -30.0 ... +30.0`) in `SubtitleDocument` lookup routines.
+  - Hotkey adjustments (`Z` / `X`) stepping timing by ±200ms with real-time OSD indication.
+  - Manual entry field in Quick Settings (`Subtitles` pane).
+- [ ] **4.6.2. Drag-and-Drop Subtitle Attachment:**
+  - AppKit drag-and-drop ingestion (`NSView.registerForDraggedTypes([.fileURL])`) in `NativeVideoHostView`.
+  - Dropping `.srt`, `.vtt`, or `.ass` directly attaches the subtitle file to active playback with auto-selection.
 
 ---
 
-### Stage 6: Desktop UI & UX Controls (SwiftUI Player Experience) — [COMPLETED] ✅
-> Polished, distraction-free desktop media player interface.
+### Stage 5: Playlists, Navigation Architecture, OSD & UX — [COMPLETED] ✓
 
-- [x] **6.1. Fullscreen Behavior & Cursor Autohide:**
-  - Auto-hide mouse cursor via `NSCursor.setHiddenUntilMouseMoves(true)` and controls overlay after 2.5 seconds of user inactivity.
-  - Double-click on video surface to toggle fullscreen (with controls overlay click isolation).
-  - Native macOS borderless fullscreen mode with auto-hiding traffic lights.
-- [x] **6.2. Hardware Keyboard Shortcuts (Layout-Independent):**
-  - Low-level ANSI keycode interception in `PlayerWindow` (layout-independent: works reliably on Russian, English, and other layouts).
-  - `Space` — Play / Pause.
-  - `Left` / `Right` — Seek backward / forward (5 seconds).
-  - `Option + Left` / `Option + Right` or `,` / `.` — Single frame step (1/24s).
-  - `Up` / `Down` — Volume adjustment (±5%).
-  - `M` — Mute toggle.
-  - `D` / `⌘I` — Performance HUD toggle.
-  - `F` / `⌃⌘F` — Fullscreen toggle.
-  - `Esc` — Exit fullscreen.
-  - Active text input protection: key events bypass player shortcuts when typing in `NSTextView` / `NSText`.
+- [x] **5.1. Playback Speed Control (Variable Rate):**
+  - Continuous rate adjustment from 0.5× to 4.0× in 0.1× increments via keyboard shortcuts (`[`, `]`, `\`) and application menus.
+  - Instant re-anchoring of `AVSampleBufferRenderSynchronizer` clock avoiding phase distortion or audio buffer underruns.
+- [x] **5.2. Responsive Seeking & Scrubbing Architecture:**
+  - Keyframe-aligned relative seeking: instant skips jumping directly between keyframes without decoding intermediate P/B frames.
+  - Single-frame stepping forward and backward (`,`, `.`, `⌥←`, `⌥→`).
+  - Burst-aware relative seeking with chase settle debouncing: preserving play intent and preventing deadlocks during rapid scrubbing.
+  - "Jump to Time…" dialog (`⌘J`) for exact timestamp navigation.
+  - User-configurable seek step (default 5s) and exact seek mode toggles.
+- [x] **5.3. On-Screen Display (OSD):**
+  - Animated transient HUD overlay in the top-left corner reporting volume levels, seek offsets with duration progress bars, play/pause states, rate changes, and track switching.
+- [x] **5.4. Quick Settings Drawer:**
+  - Slide-out side drawer with categorized panes: Audio, Video, Subtitles, and Media Info.
+  - Direct manipulation of tone-mapping parameters (exposure, shadow lift, target nits multiplier, CAS sharpness).
+  - Detailed stream inspector: active video/audio codecs, color primaries, transfer functions, sample rates, channel configurations, and bitrates.
+- [x] **5.5. Playlist Management & Directory Scanning:**
+  - Reactive `@Observable` playlist engine (`PlaylistManager`).
+  - Parsing external playlist formats: M3U, M3U8, PLS, XSPF, CUE.
+  - Automatic recursive directory scanning when opening folders or single media files.
+  - Side drawer UI: search and filtering, active item indication, auto-scroll to current track, repeat modes (Off / All / One), and shuffle.
+  - Persistent playlist repeat and shuffle settings via `UserDefaults`.
+- [x] **5.6. Window Management & Display Sleep Prevention:**
+  - `DisplaySleepManager`: IOKit power assertions (`IOPMAssertionCreateWithName`) preventing display sleep and screen savers during active video playback.
+  - Cursor autohide (`NSCursor.setHiddenUntilMouseMoves`) and controls overlay fading after 2.5s of user inactivity.
+  - Borderless fullscreen mode with double-click toggles and `F` / `⌃⌘F` shortcuts.
+  - Low-level layout-independent ANSI keycode handling in `PlayerWindow`.
+- [x] **5.7. Playback History & Resume:**
+  - Thread-safe storage manager (`PlaybackHistoryStore`) using SHA-256 normalized storage keys.
+  - Automatic recording and restoring of media timestamps, audio track selections, and subtitle preferences.
+- [x] **5.8. Logging Architecture & Diagnostics:**
+  - Structured, categorized logging via `AppLog` (`.engine`, `.video`, `.audio`, `.demuxer`, `.subtitles`, `.playlist`).
+  - In-memory ring buffer log store and live viewer window (`LogViewerWindowController`, `⌥⌘L`).
+  - Real-time telemetry in `PlayerPerformanceMonitor` querying Mach kernel task and thread APIs (CPU %, memory footprint, render FPS, frame delivery times).
 
 ---
 
-### Stage 7: Standalone App Bundling & Release Packaging
-> Eliminate developer environment dependencies (Homebrew FFmpeg) for zero-friction distribution to end users.
+### Stage 5.9: Chapters, Timeline Thumbnails, Screenshots & Picture-in-Picture — [PLANNED]
 
-- **7.1. Dynamic Library Bundling (Dylib Bundling):**
-  - Populate `Contents/Frameworks` within `Nits.app`.
-  - Copy required FFmpeg dylibs (`libavformat`, `libavcodec`, `libavutil`, `libswresample`) and their transitive dependencies.
-  - Rewrite dynamic linker paths using `install_name_tool`: replace hardcoded `/opt/homebrew/...` paths with `@rpath` (`@executable_path/../Frameworks`).
-  - Configure `LC_RPATH` (`@loader_path/../Frameworks`) in `Nits` executable.
-- **7.2. CI Automation & Release Artifacts:**
-  - Add `--standalone` / `--release` flags to `scripts/bundle_app.sh`.
-  - Validate bundle with `otool -L`: verify zero references to non-system directories outside `/System/Library` and `/usr/lib`.
-  - Package compressed DMG / ZIP distribution archives automatically via GitHub Actions CI.
+> Reference desktop player ergonomics: chapter jumps, visual timeline scrubbing, HDR screenshots, and floating window playback.
+
+- [ ] **5.9.1. Container Chapters Navigation:**
+  - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers.
+  - Chapter visual tick marks on `TimelineSlider` with hover title tooltips.
+  - Previous/Next Chapter shortcuts (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`).
+- [ ] **5.9.2. Timeline Hover Seek Thumbnails:**
+  - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
+  - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
+- [ ] **5.9.3. Color-Accurate Screenshot Capture (Frame Export):**
+  - Capture current frame (`⌘S`): export exact decoded `CVPixelBuffer`.
+  - Raw HDR mode: uncompressed 10-bit PNG / TIFF retaining mastering colorimetry.
+  - Tonemapped SDR mode: Display P3 snapshot after passing the Metal BT.2390 shader, capturing what is visually rendered on screen.
+- [ ] **5.9.4. Picture-in-Picture (PiP):**
+  - Native macOS Picture-in-Picture integration (`AVPictureInPictureController` with `AVSampleBufferDisplayLayer` / custom video call controller).
+  - Seamless handover to a floating desktop window when switching virtual spaces or apps.
+
+---
+
+### Stage 6: Host Integration Bridge (WKWebView Two-Way Bridge) — [IN PROGRESS] ⏳
+
+> Embedding Nits as a high-performance native rendering core inside hybrid host applications (e.g., Emby / Jellyfin web shells).
+
+- [x] **6.1. Standalone Video Canvas (`NativeVideoHostView`):**
+  - Lightweight, embeddable `NSView` presenting hardware layers without intrusive native controls.
+- [x] **6.2. Engine Control & Event Protocol (`PlayerEngineProtocol`):**
+  - Standardized programmatic interface: authenticated stream loading (`loadAsync(path:headers:)`), timeline controls, track selection, and rate adjustments.
+  - Event callback hooks: `onTimeUpdate`, `onPlaybackStateChanged`, `onRelativeSeekResolved`.
+- [ ] **6.3. Bidirectional Serialization & Message Dispatch (JS Bridge):**
+  - Implement `WebPlayerBridge` injecting the JavaScript runtime interface into `WKWebView`.
+  - **Commands IN (JavaScript $\to$ Native via `WKScriptMessageHandler`):**
+    - `play()`, `pause()`, `seek(seconds, exact)`
+    - `setVolume(value)`, `setPlaybackRate(rate)`
+    - `selectAudioTrack(id)`, `selectSubtitleTrack(id)`
+    - `setToneMapParams(exposure, shadowLift, targetNitsScale, sharpness)`
+  - **Events OUT (Native $\to$ JavaScript via `evaluateJavaScript`):**
+    - `timeupdate`: `currentTime`, `duration`, `buffered`
+    - `playbackstate`: `'playing'` | `'paused'` | `'buffering'` | `'ended'` | `'error'`
+    - `tracksloaded`: discovered audio and subtitle tracks
+- [ ] **6.4. Transparent Window Compositing:**
+  - Overlay transparent `WKWebView` instances directly above `NativeVideoHostView` while forwarding mouse and keyboard events seamlessly.
+
+---
+
+### Stage 7: Standalone Distribution & Release Bundling — [PLANNED]
+
+> Eliminate external dependencies on package managers (Homebrew FFmpeg) for zero-friction distribution on macOS 15+.
+
+- [x] **7.1. App Bundle Packaging Script (`scripts/bundle_app.sh`):**
+  - Assembly of `Nits.app` bundle hierarchy, resource compilation, `Info.plist` generation with document type associations, and ad-hoc code signing.
+- [ ] **7.2. Dynamic Library Bundling (Dylib Bundling):**
+  - Copy required shared libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libdav1d`) and their dependencies into `Contents/Frameworks`.
+  - Rewrite dynamic linker mach-o load commands via `install_name_tool`: replace Homebrew paths with `@rpath` (`@executable_path/../Frameworks`).
+  - Configure executable `LC_RPATH` headers.
+- [ ] **7.3. CI/CD Automation & Release Artifacts:**
+  - Bundle dependency validation with `otool -L` (guaranteeing zero non-system references outside `/System/Library`, `/usr/lib`, and `@rpath`).
+  - Automated compilation, signing, and notarization of DMG/ZIP release archives via GitHub Actions.
+
+---
+
+## 4. Subsystem Implementation Status
+
+| Subsystem / Feature | Module | Current Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **Metal Tone Mapper (BT.2390 EETF)** | `NitsCore` | Completed ✓ | Display P3, 10-bit, Gamma 2.2, FidelityFX CAS |
+| **Direct XDR DisplayLayer** | `NitsCore` | Completed ✓ | Hardware Direct Scanout decoupled from synchronizer |
+| **Hardware VideoToolbox (HEVC / H.264)** | `NitsCore` | Completed ✓ | P010/NV12, MSB normalization, parameter set extraction |
+| **Dolby Vision P5 / P8.1 / P8.4** | `NitsCore` | Completed ✓ | Hardware `dvh1`, NAL 62 RPU parser, L1/L2 SDR SOP trims |
+| **AV1 Hybrid Decoder** | `NitsCore` | Completed ✓ | M3/M4+ VideoToolbox, M1/M2 fallback to `libdav1d` NEON |
+| **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | Multi-threaded WMV1–3, VC-1 into `CVPixelBufferPool` |
+| **Extended Formats: VP9 & ProRes** | `NitsCore` | Planned 📋 | VP9 (WebM), Apple ProRes VideoToolbox, DNxHR |
+| **Metal Deinterlacer (YADIF/BWDIF)** | `NitsCore` | Planned 📋 | Compute shader deinterlacing for 1080i/576i streams |
+| **Audio Engine & Master Sync** | `NitsCore` | Completed ✓ | CoreAudio hardware clock, Spatial Audio 5.1/7.1, 48kHz Float32 |
+| **Audio-Only Playback** | `NitsCore` / `NitsUI` | Completed ✓ | FLAC, MP3, AAC, OGG, Opus, ALAC, WAV; music UI |
+| **CoreAudio Route Monitoring** | `NitsCore` | Completed ✓ | Real-time device listener, pipeline migration on change |
+| **A/V Sync Offset & Night Mode** | `NitsCore` / `NitsUI` | Planned 📋 | Audio delay calibration (`±1s`), DRC voice boost |
+| **Remote HTTP/HTTPS Streaming** | `NitsCore` | Completed ✓ | Auth headers, auto-reconnect, `AVIOInterruptCB` cancellation |
+| **Adaptive Streaming (HLS / DASH)** | `NitsCore` | Planned 📋 | Multi-rendition variant parsing and switching |
+| **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
+| **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Planned 📋 | Subtitle delay offset (`±30s`), direct file drag-and-drop |
+| **Advanced Subtitles (ASS / PGS)** | `NitsCore` | Planned 📋 | `libass` integration and bitmap overlays |
+| **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, shuffle, repeat |
+| **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
+| **OSD & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, live tone-map & audio adjustments |
+| **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Planned 📋 | MKV/MP4 chapters, timeline preview hover, macOS PiP |
+| **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
+| **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
+| **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |
+| **Display Sleep Management** | `NitsCore` | Completed ✓ | IOKit power assertions during active video |
+| **Logging & Diagnostics** | `NitsCore` / `NitsKit` | Completed ✓ | `AppLog` categories, in-memory store, `LogViewerWindowController` |
+| **WKWebView Bridge** | `NitsKit` | In Progress ⏳ | Two-way JSON bridge for Emby / Jellyfin web shells |
+| **Standalone Dylib Bundling** | Scripts / CI | Planned 📋 | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |
