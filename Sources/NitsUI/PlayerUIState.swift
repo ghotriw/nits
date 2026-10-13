@@ -12,10 +12,16 @@ public final class PlayerUIState {
     public var isPlaylistPresented: Bool = false
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     public let osd: OSDManager
+    public let controlsConfig: ControlsConfiguration
 
-    public init(isFullscreen: Bool = false, osd: OSDManager = OSDManager()) {
+    public init(
+        isFullscreen: Bool = false,
+        osd: OSDManager = OSDManager(),
+        controlsConfig: ControlsConfiguration = ControlsConfiguration.shared
+    ) {
         self.isFullscreen = isFullscreen
         self.osd = osd
+        self.controlsConfig = controlsConfig
     }
 
     public func toggleQuickSettings() {

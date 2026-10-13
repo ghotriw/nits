@@ -45,6 +45,7 @@ public struct SettingsView: View {
     public enum SettingsTab: String, CaseIterable, Identifiable {
         case general = "General"
         case video = "Video & HDR"
+        case controls = "Controls"
 
         public var id: String { rawValue }
 
@@ -54,6 +55,8 @@ public struct SettingsView: View {
                 return "gearshape"
             case .video:
                 return "tv"
+            case .controls:
+                return "slider.horizontal.below.rectangle"
             }
         }
     }
@@ -75,8 +78,14 @@ public struct SettingsView: View {
                     Label(SettingsTab.video.rawValue, systemImage: SettingsTab.video.iconName)
                 }
                 .tag(SettingsTab.video)
+
+            controlsTab
+                .tabItem {
+                    Label(SettingsTab.controls.rawValue, systemImage: SettingsTab.controls.iconName)
+                }
+                .tag(SettingsTab.controls)
         }
-        .frame(width: 580, height: 440)
+        .frame(width: 580, height: 460)
     }
 
     // MARK: - General Tab
@@ -275,6 +284,11 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Controls Tab
+    private var controlsTab: some View {
+        ControlsSettingsPane(controlsConfig: ControlsConfiguration.shared)
     }
 
     private func notifyChange() {

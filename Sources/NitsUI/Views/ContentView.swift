@@ -163,7 +163,9 @@ public struct ContentView: View {
             }
 
             // Controls Overlay
-            if isControlsVisible || !engine.isLoaded || isUserInteracting {
+            if isControlsVisible || !engine.isLoaded || isUserInteracting
+                || uiState.controlsConfig.isSettingsCustomizingControls
+            {
                 ControlsOverlay(
                     engine: engine,
                     uiState: uiState,
@@ -315,6 +317,14 @@ public struct ContentView: View {
                 scheduleControlsHide()
             }
         }
+        .onChange(of: uiState.controlsConfig.isSettingsCustomizingControls) { _, customizing in
+            if customizing {
+                hideTimer?.cancel()
+                withAnimation { isControlsVisible = true }
+            } else {
+                scheduleControlsHide()
+            }
+        }
         .onChange(of: isControlsVisible) { _, visible in
             onControlsVisibilityChanged?(visible)
         }
@@ -356,7 +366,7 @@ public struct ContentView: View {
 
     private func scheduleControlsHide() {
         guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, !uiState.isQuickSettingsPresented,
-            !uiState.isPlaylistPresented
+            !uiState.isPlaylistPresented, !uiState.controlsConfig.isSettingsCustomizingControls
         else {
             return
         }
@@ -365,6 +375,7 @@ public struct ContentView: View {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented
                 && !uiState.isQuickSettingsPresented && !uiState.isPlaylistPresented
+                && !uiState.controlsConfig.isSettingsCustomizingControls
             {
                 withAnimation {
                     isControlsVisible = false

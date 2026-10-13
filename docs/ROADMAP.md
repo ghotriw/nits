@@ -36,7 +36,7 @@ flowchart TD
     M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range 📋"]
     M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
     M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
-    M5 -.-> M5X["Stage 5.9: Chapters, Hover Thumbnails & PiP 📋"]
+    M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
 ```
 
 ---
@@ -265,25 +265,30 @@ flowchart TD
   - Structured, categorized logging via `AppLog` (`.engine`, `.video`, `.audio`, `.demuxer`, `.subtitles`, `.playlist`).
   - In-memory ring buffer log store and live viewer window (`LogViewerWindowController`, `⌥⌘L`).
   - Real-time telemetry in `PlayerPerformanceMonitor` querying Mach kernel task and thread APIs (CPU %, memory footprint, render FPS, frame delivery times).
+- [x] **5.9. Modular & Customizable Player Control Bar:**
+  - Fully decoupled, atomic control components (`ControlComponents.swift`) rendered dynamically from persistent configuration model (`ControlsConfiguration.swift`, `ControlBarItem.swift`).
+  - Reorderable items and visibility toggles: Previous/Next Track, Seek Relative (Backward/Forward), Play/Pause, Timeline & Scrubber, Volume Slider, Audio & Subtitle Track Selectors, Playlist & Quick Settings Drawers, and integrated Playlist Repeat Mode and Shuffle buttons.
+  - Dedicated macOS Settings tab ("Controls") with Drag & Drop reordering (`.onMove`) and hide/show actions, synchronized live with active player windows via `@Observable`.
+  - Smart auto-hide inhibition: keeps player control bar permanently visible while actively configuring layout in Settings.
 
 ---
 
-### Stage 5.9: Chapters, Timeline Thumbnails, Screenshots & Picture-in-Picture — [PLANNED]
+### Stage 5.10: Chapters, Timeline Thumbnails, Screenshots & Picture-in-Picture — [PLANNED]
 
 > Reference desktop player ergonomics: chapter jumps, visual timeline scrubbing, HDR screenshots, and floating window playback.
 
-- [ ] **5.9.1. Container Chapters Navigation:**
+- [ ] **5.10.1. Container Chapters Navigation:**
   - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers.
   - Chapter visual tick marks on `TimelineSlider` with hover title tooltips.
   - Previous/Next Chapter shortcuts (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`).
-- [x] **5.9.2. Timeline Hover Seek Thumbnails:**
+- [x] **5.10.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
-- [ ] **5.9.3. Color-Accurate Screenshot Capture (Frame Export):**
+- [ ] **5.10.3. Color-Accurate Screenshot Capture (Frame Export):**
   - Capture current frame (`⌘S`): export exact decoded `CVPixelBuffer`.
   - Raw HDR mode: uncompressed 10-bit PNG / TIFF retaining mastering colorimetry.
   - Tonemapped SDR mode: Display P3 snapshot after passing the Metal BT.2390 shader, capturing what is visually rendered on screen.
-- [ ] **5.9.4. Picture-in-Picture (PiP):**
+- [ ] **5.10.4. Picture-in-Picture (PiP):**
   - Native macOS Picture-in-Picture integration (`AVPictureInPictureController` with `AVSampleBufferDisplayLayer` / custom video call controller).
   - Seamless handover to a floating desktop window when switching virtual spaces or apps.
 

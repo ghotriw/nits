@@ -20,7 +20,7 @@ A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and 
 - [x] Subtitles: embedded and external SRT / WebVTT with customizable styling
 
 **Player & system**
-- [x] Keyboard shortcuts, OSD, frame stepping, quick settings, playlists
+- [x] Keyboard shortcuts, OSD, frame stepping, quick settings, playlists, customizable control bar
 - [x] macOS integration: Now Playing media keys, Control Center, sleep prevention
 - [x] Network streaming over HTTP/HTTPS with custom headers
 - [x] Playback history: resume where you left off
