@@ -3,6 +3,7 @@ import AppKit
 
 public final class NativeVideoHostView: NSView {
     public var onFileDrop: ((String) -> Void)?
+    public var onFilesDrop: (([URL]) -> Void)?
     private let engine: PlayerEngine
     private let rootLayer = CALayer()
 
@@ -125,11 +126,15 @@ public final class NativeVideoHostView: NSView {
 
     public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard let items = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-            let firstUrl = items.first
+            !items.isEmpty
         else {
             return false
         }
-        onFileDrop?(firstUrl.path)
+        if let onFilesDrop {
+            onFilesDrop(items)
+        } else if let firstUrl = items.first {
+            onFileDrop?(firstUrl.path)
+        }
         return true
     }
 }

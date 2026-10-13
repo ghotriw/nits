@@ -32,11 +32,8 @@ public struct ContentView: View {
     public var body: some View {
         ZStack {
             // Video Surface View
-            VideoSurfaceView(engine: engine) { filePath in
-                let url = URL(fileURLWithPath: filePath)
-                engine.load(path: filePath)
-                onFileLoaded?(url)
-                scheduleControlsHide()
+            VideoSurfaceView(engine: engine) { urls in
+                loadMedia(urls: urls)
             }
             .ignoresSafeArea()
             .onTapGesture(count: 2) {
@@ -377,10 +374,19 @@ public struct ContentView: View {
     }
 
     private func openFileDialog() {
-        if let url = MediaOpenPanel.promptForMediaFile() {
-            engine.load(path: url.path)
-            onFileLoaded?(url)
-            scheduleControlsHide()
+        let urls = MediaOpenPanel.promptForMediaFiles()
+        loadMedia(urls: urls)
+    }
+
+    private func loadMedia(urls: [URL]) {
+        guard let firstURL = urls.first else { return }
+        if urls.count > 1 {
+            engine.playlist.clear()
+            engine.playlist.append(urls: urls)
         }
+        let filePath = firstURL.path(percentEncoded: false)
+        engine.load(path: filePath)
+        onFileLoaded?(firstURL)
+        scheduleControlsHide()
     }
 }

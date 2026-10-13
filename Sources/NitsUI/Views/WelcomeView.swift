@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 public struct WelcomeView: View {
     public var onOpenFile: () -> Void
     public var onOpenURL: (() -> Void)?
-    public var onFileDropped: (String) -> Void
+    public var onFileDropped: ((String) -> Void)?
+    public var onFilesDropped: (([URL]) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var isTargetedForDrop: Bool = false
@@ -18,6 +19,18 @@ public struct WelcomeView: View {
         self.onOpenFile = onOpenFile
         self.onOpenURL = onOpenURL
         self.onFileDropped = onFileDropped
+        self.onFilesDropped = nil
+    }
+
+    public init(
+        onOpenFile: @escaping () -> Void,
+        onOpenURL: (() -> Void)? = nil,
+        onFilesDropped: @escaping ([URL]) -> Void
+    ) {
+        self.onOpenFile = onOpenFile
+        self.onOpenURL = onOpenURL
+        self.onFileDropped = nil
+        self.onFilesDropped = onFilesDropped
     }
 
     public var body: some View {
@@ -81,8 +94,12 @@ public struct WelcomeView: View {
         }
         .frame(width: 520, height: 350)
         .dropDestination(for: URL.self) { urls, _ in
-            guard let firstUrl = urls.first else { return false }
-            onFileDropped(firstUrl.path)
+            guard !urls.isEmpty else { return false }
+            if let onFilesDropped {
+                onFilesDropped(urls)
+            } else if let firstUrl = urls.first {
+                onFileDropped?(firstUrl.path)
+            }
             return true
         } isTargeted: { targeted in
             isTargetedForDrop = targeted

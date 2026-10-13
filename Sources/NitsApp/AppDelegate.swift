@@ -57,8 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activePlayer = nil
         if welcomeWindowController == nil {
             welcomeWindowController = WelcomeWindowController(
-                onOpenURL: { [weak self] url in
-                    self?.openMediaFile(at: url)
+                onOpenURLs: { [weak self] urls in
+                    self?.openMediaFiles(at: urls)
                 },
                 onPromptOpenURL: { [weak self] in
                     self?.promptOpenURL()
@@ -71,7 +71,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func openMediaFile(at url: URL, startTime: Double? = nil, audioTrack: String? = nil, subtitleTrack: String? = nil) {
-        openStream(url: url, headers: [:], startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
+        openMediaFiles(at: [url], startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
+    }
+
+    func openMediaFiles(
+        at urls: [URL], startTime: Double? = nil, audioTrack: String? = nil, subtitleTrack: String? = nil
+    ) {
+        guard let firstURL = urls.first else { return }
+        if urls.count > 1 {
+            AppLog.info(
+                .playlist,
+                "Opening \(urls.count) media files. Populating playlist and starting '\(firstURL.lastPathComponent)'")
+            ensurePlayerWindowController()
+            if let playlist = playerWindowController?.engine.playlist {
+                playlist.clear()
+                playlist.append(urls: urls)
+            }
+        }
+        openStream(
+            url: firstURL, headers: [:], startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
     }
 
     @discardableResult
@@ -114,8 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func promptOpenFile() {
         if let playerWC = playerWindowController, playerWC.window?.isVisible == true {
-            if let url = MediaOpenPanel.promptForMediaFile() {
-                openMediaFile(at: url)
+            let urls = MediaOpenPanel.promptForMediaFiles()
+            if !urls.isEmpty {
+                openMediaFiles(at: urls)
             }
         } else {
             welcomeWindowController?.promptOpenFile()
@@ -191,18 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .engine, "Received \(urls.count) media URLs to open. Opening first: \(firstURL.lastPathComponent)")
         }
 
-        // If multiple URLs are explicitly provided (e.g. multi-selection in Finder),
-        // populate the playlist beforehand so initial media loading does not scan the folder.
-        if urls.count > 1 {
-            ensurePlayerWindowController()
-            if let playlist = playerWindowController?.engine.playlist {
-                playlist.clear()
-                playlist.append(urls: urls)
-            }
-        }
-
         if firstURL.isFileURL {
-            openMediaFile(at: firstURL)
+            openMediaFiles(at: urls)
         } else {
             openStream(url: firstURL, headers: [:])
         }

@@ -144,6 +144,31 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
                 <string>ape</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Playlist Media</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.playlist</string>
+                <string>public.m3u-playlist</string>
+                <string>com.soundflavor.bestplaylist-format</string>
+                <string>org.xiph.xspf</string>
+                <string>org.videolan.pls</string>
+                <string>com.cdrwin.cue</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>m3u</string>
+                <string>m3u8</string>
+                <string>pls</string>
+                <string>xspf</string>
+                <string>cue</string>
+            </array>
+        </dict>
     </array>
     <key>UTImportedTypeDeclarations</key>
     <array>
@@ -230,6 +255,60 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
                 <key>public.filename-extension</key>
                 <array>
                     <string>opus</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.videolan.pls</string>
+            <key>UTTypeDescription</key>
+            <string>PLS Playlist</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.playlist</string>
+                <string>public.text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>pls</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.xiph.xspf</string>
+            <key>UTTypeDescription</key>
+            <string>XSPF Playlist</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.playlist</string>
+                <string>public.xml</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>xspf</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.cdrwin.cue</string>
+            <key>UTTypeDescription</key>
+            <string>CUE Sheet</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.playlist</string>
+                <string>public.text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>cue</string>
                 </array>
             </dict>
         </dict>

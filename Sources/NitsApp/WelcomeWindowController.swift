@@ -6,14 +6,14 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class WelcomeWindowController: NSWindowController {
-    private let onOpenURL: (URL) -> Void
+    private let onOpenURLs: ([URL]) -> Void
     private let onPromptOpenURL: (() -> Void)?
 
     init(
-        onOpenURL: @escaping (URL) -> Void,
+        onOpenURLs: @escaping ([URL]) -> Void,
         onPromptOpenURL: (() -> Void)? = nil
     ) {
-        self.onOpenURL = onOpenURL
+        self.onOpenURLs = onOpenURLs
         self.onPromptOpenURL = onPromptOpenURL
 
         let window = NSWindow(
@@ -26,6 +26,20 @@ final class WelcomeWindowController: NSWindowController {
         super.init(window: window)
 
         setupWindow(window)
+    }
+
+    convenience init(
+        onOpenURL: @escaping (URL) -> Void,
+        onPromptOpenURL: (() -> Void)? = nil
+    ) {
+        self.init(
+            onOpenURLs: { urls in
+                if let first = urls.first {
+                    onOpenURL(first)
+                }
+            },
+            onPromptOpenURL: onPromptOpenURL
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -53,8 +67,8 @@ final class WelcomeWindowController: NSWindowController {
             onOpenURL: { [weak self] in
                 self?.onPromptOpenURL?()
             },
-            onFileDropped: { [weak self] path in
-                self?.onOpenURL(URL(fileURLWithPath: path))
+            onFilesDropped: { [weak self] urls in
+                self?.onOpenURLs(urls)
             }
         )
 
@@ -67,8 +81,8 @@ final class WelcomeWindowController: NSWindowController {
     }
 
     func promptOpenFile() {
-        if let url = MediaOpenPanel.promptForMediaFile() {
-            onOpenURL(url)
-        }
+        let urls = MediaOpenPanel.promptForMediaFiles()
+        guard !urls.isEmpty else { return }
+        onOpenURLs(urls)
     }
 }
