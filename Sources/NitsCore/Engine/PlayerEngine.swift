@@ -286,6 +286,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var chaseTargetTime: Double? = nil
     @ObservationIgnored
     var chaseExactSeek: Bool = true
+    /// Minimum allowed PTS for step-frame seeking to guarantee advancing forward
+    @ObservationIgnored
+    var minStepFramePTS: Double? = nil
     /// Keyframe-seek direction: forward seeks land on the next keyframe at/after the target.
     @ObservationIgnored
     var chaseForwardSeek: Bool = false

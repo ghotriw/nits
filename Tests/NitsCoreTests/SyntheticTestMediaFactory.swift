@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Provides automated, deterministic synthetic test media generation via FFmpeg.
 /// Generates test assets dynamically into the temporary directory if not already cached.
@@ -22,6 +23,8 @@ public enum SyntheticTestMediaFactory {
         case wideGOPH264
         /// AV1 video (3s) encoded with libsvtav1 (640x360 @ 24fps) with AAC audio
         case av1SDR
+        /// WMV2 video (3s) encoded with wmv2 (640x360 @ 24fps) with WMAv2 audio in ASF container
+        case wmv2SDR
 
         public var filename: String {
             switch self {
@@ -41,11 +44,13 @@ public enum SyntheticTestMediaFactory {
                 return "synth_wide_gop_h264_5s.mp4"
             case .av1SDR:
                 return "synth_av1_sdr.mkv"
+            case .wmv2SDR:
+                return "synth_wmv2_sdr.wmv"
             }
         }
     }
 
-    private static let lock = NSLock()
+    private static let lock = OSAllocatedUnfairLock()
 
     /// Resolves the absolute path to `ffmpeg` binary on the machine.
     public static func ffmpegBinaryPath() -> String? {
@@ -79,20 +84,22 @@ public enum SyntheticTestMediaFactory {
     /// Ensures that the specified media preset is generated and available on disk.
     /// Returns the absolute path to the ready file, or `nil` if FFmpeg is unavailable.
     public static func ensureMedia(preset: Preset = .multiTrackH264) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NitsSyntheticMedia")
-        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-
         let targetURL = tmpDir.appendingPathComponent(preset.filename)
         let targetPath = targetURL.path
 
-        // Check if cached file already exists and has valid size (> 4KB)
-        if FileManager.default.fileExists(atPath: targetPath),
-            let attr = try? FileManager.default.attributesOfItem(atPath: targetPath),
-            let size = attr[.size] as? UInt64, size > 4096
-        {
+        let alreadyExists: Bool = lock.withLock {
+            try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: targetPath),
+                let attr = try? FileManager.default.attributesOfItem(atPath: targetPath),
+                let size = attr[.size] as? UInt64, size > 4096
+            {
+                return true
+            }
+            return false
+        }
+
+        if alreadyExists {
             return targetPath
         }
 
@@ -245,6 +252,16 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
                 "-c:v", "libsvtav1", "-preset", "10", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .wmv2SDR:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "wmv2", "-b:v", "2000k",
+                "-c:a", "wmav2", "-b:a", "128k",
                 outputPath,
             ]
         }

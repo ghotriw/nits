@@ -544,18 +544,12 @@ public final class MediaDemuxer: @unchecked Sendable {
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
                 && !isAttachedPic
-                && (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264 || codecId == AV_CODEC_ID_AV1)
-                && self.videoStreamIndex < 0
+                && self.videoStreamIndex < 0,
+                let detectedCodec = VideoCodec.from(codecId: codecId)
             {
                 self.videoStreamIndex = i
                 self.timebase = stream.pointee.time_base
-                if codecId == AV_CODEC_ID_HEVC {
-                    self.codec = .hevc
-                } else if codecId == AV_CODEC_ID_H264 {
-                    self.codec = .h264
-                } else if codecId == AV_CODEC_ID_AV1 {
-                    self.codec = .av1
-                }
+                self.codec = detectedCodec
                 self.width = Int(stream.pointee.codecpar.pointee.width)
                 self.height = Int(stream.pointee.codecpar.pointee.height)
 
@@ -1175,8 +1169,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var formatDesc: CMVideoFormatDescription?
-        if codec == .av1 {
-            if videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex],
+        if !codec.isHardwareAccelerated {
+            // Software codecs (AV1, WMV1, WMV2, WMV3, VC-1, etc.):
+            // Provide extradata in atoms if present, and create format description directly.
+            if codec == .av1, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex],
                 let extradata = stream.pointee.codecpar.pointee.extradata,
                 stream.pointee.codecpar.pointee.extradata_size > 0
             {
@@ -1184,8 +1180,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 let extraData = Data(bytes: extradata, count: extraSize)
                 var atoms =
                     (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
-                        as? [String: Any])
-                    ?? [:]
+                        as? [String: Any]) ?? [:]
                 atoms["av1C"] = extraData
                 extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
             }
@@ -1193,7 +1188,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             var desc: CMVideoFormatDescription?
             let status = CMVideoFormatDescriptionCreate(
                 allocator: kCFAllocatorDefault,
-                codecType: kCMVideoCodecType_AV1,
+                codecType: codec.cmVideoCodecType,
                 width: Int32(width),
                 height: Int32(height),
                 extensions: extensionsDict as CFDictionary,
@@ -1375,7 +1370,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         let hvccData: Data
         let hvccSize: Int
-        if codec == .av1 {
+        if !codec.requiresHVCC {
             hvccData = rawData
             hvccSize = rawData.count
         } else {

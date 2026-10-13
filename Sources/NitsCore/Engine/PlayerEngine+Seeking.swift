@@ -6,11 +6,13 @@ import os
 
 extension PlayerEngine {
     public func seek(to seconds: Double) {
+        minStepFramePTS = nil
         seek(to: seconds, exact: true)
     }
 
     public func seek(to seconds: Double, exact: Bool) {
         resetRelativeSeekBurst()
+        minStepFramePTS = nil
         seek(to: seconds, exact: exact, forward: false)
     }
 
@@ -88,6 +90,7 @@ extension PlayerEngine {
         isSeeking = true
         let isExact = self.chaseExactSeek
         let isForward = self.chaseForwardSeek
+        let minTargetPts = self.minStepFramePTS
         let seekId = currentSeekId
 
         let shouldResume = self.resumePlaybackAfterChase
@@ -127,6 +130,7 @@ extension PlayerEngine {
                     frameQueue: frameQueue,
                     seconds: targetSeconds,
                     exact: isExact,
+                    minPts: minTargetPts,
                     isCurrent: { !isSuperseded() }
                 )
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
@@ -160,6 +164,7 @@ extension PlayerEngine {
                     } else {
                         self.isSeeking = false
                         self.isRelativeSeekInFlight = false
+                        self.minStepFramePTS = nil
                     }
                     return
                 }
@@ -190,6 +195,7 @@ extension PlayerEngine {
             } else {
                 self.isSeeking = false
                 self.isRelativeSeekInFlight = false
+                self.minStepFramePTS = nil
             }
             return
         }
@@ -203,6 +209,7 @@ extension PlayerEngine {
 
         // Settled decoding for this position. Mark seek background work as done.
         isSeeking = false
+        minStepFramePTS = nil
 
         // If a preview frame was already rendered directly via renderDirect, do NOT overwrite it
         // by popping from frameQueue.getLatestFrame (which may drop preroll frames tagged doNotDisplay).
@@ -274,11 +281,15 @@ extension PlayerEngine {
         frameQueue: FrameQueue,
         seconds: Double,
         exact: Bool,
+        minPts: Double? = nil,
         isCurrent: @Sendable () -> Bool
     ) -> SeekPreviewResult? {
         let lock = OSAllocatedUnfairLock()
         let box = SeekPreviewBox()
-        if exact {
+        let isStepForward = (minPts != nil)
+        // Discarding non-reference B-frames during step-frame forward drops intermediate frames!
+        // Only discard non-reference frames when doing larger jumps.
+        if exact && !isStepForward {
             decoder.setDiscardNonReferenceFrames(true)
         }
         decoder.setOutputHandler { frame in
@@ -289,7 +300,27 @@ extension PlayerEngine {
                 lock.lock()
                 let framePts = frame.pts.seconds
                 let shouldUpdate: Bool
-                if box.buffer == nil {
+                if let minPts {
+                    // Forward step seek: candidate must satisfy minPts to guarantee forward progress
+                    if framePts >= minPts {
+                        if box.buffer == nil {
+                            shouldUpdate = true
+                        } else if box.pts < minPts {
+                            shouldUpdate = true
+                        } else {
+                            shouldUpdate = abs(framePts - seconds) < abs(box.pts - seconds)
+                        }
+                    } else {
+                        // Keep closest fallback if no frame >= minPts has been seen yet
+                        if box.buffer == nil {
+                            shouldUpdate = true
+                        } else if box.pts < minPts {
+                            shouldUpdate = abs(framePts - seconds) <= abs(box.pts - seconds)
+                        } else {
+                            shouldUpdate = false
+                        }
+                    }
+                } else if box.buffer == nil {
                     shouldUpdate = true
                 } else if exact {
                     // Exact seek: select the decoded frame closest to the requested target time,
@@ -324,6 +355,13 @@ extension PlayerEngine {
             return box.buffer != nil
         }
 
+        let hasSatisfiedMinPts: () -> Bool = {
+            guard let minPts else { return hasPreview() }
+            lock.lock()
+            defer { lock.unlock() }
+            return box.buffer != nil && box.pts >= minPts
+        }
+
         var attempts = 0
         var reachedTargetPacket = false
         var extraPipelineAttempts = 0
@@ -349,7 +387,7 @@ extension PlayerEngine {
                     maxAttempts = min(max(estimatedPackets, 120), 1200)
                 }
 
-                if exact && ptsSeconds.isFinite && ptsSeconds >= (seconds - 0.5) {
+                if exact && !isStepForward && ptsSeconds.isFinite && ptsSeconds >= (seconds - 0.5) {
                     // Near target window: restore all frames (including non-reference B-frames)
                     decoder.setDiscardNonReferenceFrames(false)
                 }
@@ -366,7 +404,7 @@ extension PlayerEngine {
                         // Ensure we feed at least 6 packets past reachedTargetPacket so that
                         // any trailing B-frames or reordered pictures in display order are decoded.
                         extraPipelineAttempts += 1
-                        if hasPreview() && extraPipelineAttempts >= 6 {
+                        if hasSatisfiedMinPts() && extraPipelineAttempts >= 6 {
                             foundTarget = true
                         } else if extraPipelineAttempts >= 16 {
                             foundTarget = true
@@ -404,6 +442,7 @@ extension PlayerEngine {
     public func seekRelative(by seconds: Double) -> Double {
         guard isLoaded, demuxer != nil else { return 0.0 }
         armRelativeSeekBurstTimer()
+        minStepFramePTS = nil
 
         let isFirstInBurst = !isRelativeSeekBurstActive && !isRelativeSeekInFlight
         isRelativeSeekBurstActive = true
@@ -430,6 +469,7 @@ extension PlayerEngine {
 
     public func seekRelative(by seconds: Double, exact: Bool) {
         resetRelativeSeekBurst()
+        minStepFramePTS = nil
         let baseTime = chaseTargetTime ?? currentTime
         // Forward keyframe steps must land on the next keyframe; a backward search on sparse-GOP
         // streams (AV1) would snap back to the current keyframe and the position would never advance.
@@ -451,6 +491,12 @@ extension PlayerEngine {
         let baseTime = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
         let targetTime = forward ? (baseTime + stepDuration) : (baseTime - stepDuration * 1.05)
         let clampedTarget = max(0, duration > 0 ? min(targetTime, duration) : targetTime)
+        if forward {
+            // Require the next settled frame to be at least baseTime + 0.001s
+            minStepFramePTS = baseTime + 0.001
+        } else {
+            minStepFramePTS = nil
+        }
         seek(to: clampedTarget)
     }
 }

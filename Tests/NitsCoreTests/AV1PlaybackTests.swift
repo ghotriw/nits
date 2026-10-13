@@ -34,7 +34,7 @@ struct AV1PlaybackTests {
         }
     }
 
-    @Test("Dav1dVideoDecoder decodes AV1 video frames into valid CVPixelBuffers")
+    @Test("FFmpegVideoDecoder decodes AV1 video frames into valid CVPixelBuffers")
     func dav1dDecodesFrames() async throws {
         guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else {
             return
@@ -50,8 +50,8 @@ struct AV1PlaybackTests {
             return
         }
 
-        guard let decoder = Dav1dVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else {
-            Issue.record("Failed to initialize Dav1dVideoDecoder")
+        guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else {
+            Issue.record("Failed to initialize FFmpegVideoDecoder")
             return
         }
 
@@ -155,7 +155,7 @@ struct AV1PlaybackTests {
         #expect(engine.isLoaded == false)
     }
 
-    @Test("Dav1dVideoDecoder handles non-unitary timebase without PTS drift")
+    @Test("FFmpegVideoDecoder handles non-unitary timebase without PTS drift")
     func dav1dTimebaseScaling() async throws {
         guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else { return }
         guard let demuxer = MediaDemuxer(url: av1Path) else { return }
@@ -163,8 +163,8 @@ struct AV1PlaybackTests {
 
         // Use standard non-unitary timebase e.g. 1001/30000 (29.97 fps)
         let nonUnitaryTimebase = AVRational(num: 1001, den: 30000)
-        guard let decoder = Dav1dVideoDecoder(codecParameters: codecParams, timebase: nonUnitaryTimebase) else {
-            Issue.record("Failed to initialize Dav1dVideoDecoder with custom timebase")
+        guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: nonUnitaryTimebase) else {
+            Issue.record("Failed to initialize FFmpegVideoDecoder with custom timebase")
             return
         }
 
@@ -183,18 +183,19 @@ struct AV1PlaybackTests {
         #expect(firstPts.value >= 0.0)
     }
 
-    @Test("Dav1dVideoDecoder preserves color metadata attachments across drain() on EOF")
+    @Test("FFmpegVideoDecoder preserves color metadata attachments across drain() on EOF")
     func dav1dPreservesColorAttachmentsOnDrain() async throws {
         guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else { return }
         guard let demuxer = MediaDemuxer(url: av1Path) else { return }
         guard let codecParams = demuxer.getVideoCodecParameters() else { return }
 
-        guard let decoder = Dav1dVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else { return }
+        guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else { return }
 
         let colorPrimariesObserved = LockIsolated<String?>(nil)
         decoder.setOutputHandler { frame in
             if let prim = CVBufferCopyAttachment(frame.pixelBuffer, kCVImageBufferColorPrimariesKey, nil) {
-                colorPrimariesObserved.withValue { $0 = String(describing: prim) }
+                let primDesc = String(describing: prim)
+                colorPrimariesObserved.withValue { $0 = primDesc }
             }
         }
 
@@ -207,27 +208,5 @@ struct AV1PlaybackTests {
         decoder.drain()
 
         #expect(colorPrimariesObserved.value != nil)
-    }
-}
-
-// Simple thread-safe box for unit testing callbacks
-private final class LockIsolated<T: Sendable>: @unchecked Sendable {
-    private var _value: T
-    private let lock = NSLock()
-
-    init(_ value: T) {
-        self._value = value
-    }
-
-    var value: T {
-        lock.lock()
-        defer { lock.unlock() }
-        return _value
-    }
-
-    func withValue<R>(_ body: (inout T) -> R) -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&_value)
     }
 }

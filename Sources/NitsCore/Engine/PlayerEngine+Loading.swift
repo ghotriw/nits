@@ -230,6 +230,7 @@ extension PlayerEngine {
         activeSeekId.withLock { $0 = seekId }
         isSeeking = false
         chaseTargetTime = nil
+        minStepFramePTS = nil
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
         resumePlaybackAfterChase = false
@@ -321,6 +322,7 @@ extension PlayerEngine {
         activeSeekId.withLock { $0 = seekId }
         isSeeking = false
         chaseTargetTime = nil
+        minStepFramePTS = nil
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
         resumePlaybackAfterChase = false
@@ -745,6 +747,10 @@ extension PlayerEngine {
                 case .hevc: "HEVC"
                 case .h264: "H.264"
                 case .av1: "AV1"
+                case .wmv1: "WMV1"
+                case .wmv2: "WMV2"
+                case .wmv3: "WMV3"
+                case .vc1: "VC-1"
                 case .unknown: "Unknown"
                 }
             self.videoCodecName = codecDisplay
@@ -859,6 +865,12 @@ extension PlayerEngine {
         self.isLoaded = true
         self.isLoading = false
 
+        // Synchronously re-anchor clock and reset FrameQueue so any subsequent play() or display tick
+        // observes the clean timeline start and cannot drop initial frames with stale clock from previous media
+        let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
+        self.startSynchronizerClock(at: targetCMTime, rate: 0.0, armGuard: false)
+        self.frameQueue.clear(resetDroppedFrames: true)
+
         let decoder = self.decoder
         let hasVideo = demuxer.hasVideo
         let loadID = self.currentLoadID
@@ -870,22 +882,27 @@ extension PlayerEngine {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.currentLoadID == loadID else { return }
-                self.frameQueue.clear(resetDroppedFrames: true)
-                self.startFeeding()
-                if self.currentSeekId == seekId && self.chaseTargetTime == nil {
-                    let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
-                    self.currentTime = effectiveStartTime
-                    let currentRate = self.playbackRate
-                    AppLog.info(
-                        .engine,
-                        "Starting synchronizer clock: targetTime = \(String(format: "%.3f", effectiveStartTime))s, rate = \(currentRate)"
-                    )
-                    self.startSynchronizerClock(at: targetCMTime, rate: currentRate)
+                let alreadyStarted = self.isPlaying
+                if !alreadyStarted {
+                    self.frameQueue.clear(resetDroppedFrames: true)
+                    self.startFeeding()
+                    if self.currentSeekId == seekId && self.chaseTargetTime == nil {
+                        let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
+                        self.currentTime = effectiveStartTime
+                        let currentRate = self.playbackRate
+                        AppLog.info(
+                            .engine,
+                            "Starting synchronizer clock: targetTime = \(String(format: "%.3f", effectiveStartTime))s, rate = \(currentRate)"
+                        )
+                        self.startSynchronizerClock(at: targetCMTime, rate: currentRate)
+                    }
                 }
                 self.displayLink?.isPaused = !hasVideo
-                self.isPlaying = true
-                self.playbackState = .playing
-                self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
+                if !alreadyStarted {
+                    self.isPlaying = true
+                    self.playbackState = .playing
+                    self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
+                }
             }
         }
     }

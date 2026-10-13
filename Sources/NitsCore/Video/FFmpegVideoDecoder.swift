@@ -5,10 +5,11 @@ import CoreVideo
 import Foundation
 import os
 
-/// High-performance AV1 software video decoder powered by VideoLAN's `libdav1d` (via FFmpeg libavcodec).
-/// Decodes multi-threaded AV1 bitstreams and converts planar YUV420P / YUV420P10 frames directly into
-/// hardware-backed `CVPixelBuffer`s (NV12 / P010) via a pre-allocated `CVPixelBufferPool`.
-public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
+/// High-performance software video decoder powered by FFmpeg libavcodec (including VideoLAN's `libdav1d`).
+/// Decodes multi-threaded software bitstreams (AV1, WMV1, WMV2, WMV3, VC-1, and future legacy codecs)
+/// and converts planar YUV420P / YUVJ420P / YUV420P10 frames directly into hardware-backed `CVPixelBuffer`s
+/// (NV12 / P010) via a pre-allocated `CVPixelBufferPool` with Metal and IOSurface backing.
+public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var codecCtx: UnsafeMutablePointer<AVCodecContext>?
     private var frame: UnsafeMutablePointer<AVFrame>?
@@ -33,32 +34,48 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
 
     public init?(codecParameters: UnsafePointer<AVCodecParameters>, timebase: AVRational) {
         self.timebase = timebase
-        guard let codec = avcodec_find_decoder_by_name("libdav1d") ?? avcodec_find_decoder(AV_CODEC_ID_AV1) else {
-            AppLog.error(.video, "libdav1d / AV1 decoder not found in libavcodec")
+        let codecId = codecParameters.pointee.codec_id
+
+        let codec: UnsafePointer<AVCodec>? = {
+            if codecId == AV_CODEC_ID_AV1 {
+                return avcodec_find_decoder_by_name("libdav1d") ?? avcodec_find_decoder(codecId)
+            }
+            return avcodec_find_decoder(codecId)
+        }()
+
+        guard let codec else {
+            AppLog.error(.video, "FFmpeg decoder not found for codec ID \(codecId.rawValue)")
             return nil
         }
 
         guard let ctx = avcodec_alloc_context3(codec) else {
-            AppLog.error(.video, "Failed to allocate AVCodecContext for dav1d")
+            AppLog.error(.video, "Failed to allocate AVCodecContext for codec ID \(codecId.rawValue)")
             return nil
         }
         self.codecCtx = ctx
 
         if avcodec_parameters_to_context(ctx, codecParameters) < 0 {
-            AppLog.error(.video, "Failed to copy codec parameters to context for dav1d")
+            AppLog.error(.video, "Failed to copy codec parameters to context for codec ID \(codecId.rawValue)")
             avcodec_free_context(&self.codecCtx)
             return nil
         }
 
         ctx.pointee.pkt_timebase = timebase
 
-        // Multi-threading: dav1d manages internal threading via thread_count.
-        // Cap at 10 to balance decoding throughput with frame-threading latency.
-        let cpuCount = ProcessInfo.processInfo.activeProcessorCount
-        ctx.pointee.thread_count = Int32(min(max(cpuCount, 2), 10))
+        // Multi-threading configuration:
+        // Only set multi-threading if the decoder explicitly advertises frame/slice thread capabilities.
+        // Legacy codecs (WMV1, WMV2, etc.) do not support multi-threading and require thread_count = 1.
+        let caps = codec.pointee.capabilities
+        let supportsThreading = (caps & (AV_CODEC_CAP_FRAME_THREADS | AV_CODEC_CAP_SLICE_THREADS)) != 0
+        if supportsThreading {
+            let cpuCount = ProcessInfo.processInfo.activeProcessorCount
+            ctx.pointee.thread_count = Int32(min(max(cpuCount, 2), 10))
+        } else {
+            ctx.pointee.thread_count = 1
+        }
 
         if avcodec_open2(ctx, codec, nil) < 0 {
-            AppLog.error(.video, "Failed to open dav1d codec context")
+            AppLog.error(.video, "Failed to open FFmpeg codec context for codec ID \(codecId.rawValue)")
             avcodec_free_context(&self.codecCtx)
             return nil
         }
@@ -71,7 +88,8 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
             return nil
         }
 
-        AppLog.info(.video, "Dav1dVideoDecoder initialized successfully with \(ctx.pointee.thread_count) threads.")
+        let codecName = String(cString: codec.pointee.name)
+        AppLog.info(.video, "FFmpegVideoDecoder initialized successfully (\(codecName)) with \(ctx.pointee.thread_count) threads.")
     }
 
     public func setOutputHandler(_ handler: @escaping OutputHandler) {
@@ -95,6 +113,7 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         guard status == kCMBlockBufferNoErr, let dataPtr = dataPointer, totalLength > 0 else { return }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let dts = CMSampleBufferGetDecodeTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
 
         var doNotDisplay = false
@@ -110,7 +129,7 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         var currentGen: UInt64 = 0
 
         lock.lock()
-        guard let ctx = codecCtx, let avFrame = frame, let pkt = packet else {
+        guard let ctx = self.codecCtx, let frame = self.frame, let pkt = self.packet else {
             lock.unlock()
             return
         }
@@ -122,6 +141,7 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         // Convert CMTime (value * timebase.num) into FFmpeg stream units (pts.value / timebase.num)
         let num64 = Int64(max(timebase.num, 1))
         let ffmpegPts = pts.isValid ? (pts.value / num64) : Int64.min
+        let ffmpegDts = dts.isValid ? (dts.value / num64) : (ffmpegPts != Int64.min ? ffmpegPts : Int64.min)
         let ffmpegDuration = duration.isValid ? (duration.value / num64) : 0
 
         // Record in-flight metadata keyed by ffmpegPts
@@ -144,98 +164,146 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         if ffmpegPts != Int64.min {
             pkt.pointee.pts = ffmpegPts
         }
+        if ffmpegDts != Int64.min {
+            pkt.pointee.dts = ffmpegDts
+        }
         if ffmpegDuration > 0 {
             pkt.pointee.duration = ffmpegDuration
         }
 
-        let sendRes = avcodec_send_packet(ctx, pkt)
+        let sendRet = avcodec_send_packet(ctx, pkt)
+        // Immediately detach borrowed CMBlockBuffer pointer to prevent dangling references in pkt
         pkt.pointee.data = nil
         pkt.pointee.size = 0
+        pkt.pointee.pts = Int64.min
+        pkt.pointee.dts = Int64.min
 
-        if sendRes < 0 {
+        if sendRet < 0 {
             lock.unlock()
+            AppLog.error(.video, "FFmpegVideoDecoder: avcodec_send_packet failed with code \(sendRet)")
             return
         }
 
-        while avcodec_receive_frame(ctx, avFrame) == 0 {
-            if let decoded = makeDecodedFrame(from: avFrame, sampleBuffer: sampleBuffer) {
-                decodedFrames.append(decoded)
-            }
-        }
-        let handler = outputHandler
-        let isStale = (self.flushGeneration != currentGen)
-        if !isStale, let handler {
-            for f in decodedFrames {
-                handler(f)
+        while true {
+            let recvRet = avcodec_receive_frame(ctx, frame)
+            if recvRet == 0 {
+                if let decoded = makeDecodedFrame(from: frame, sampleBuffer: sampleBuffer) {
+                    decodedFrames.append(decoded)
+                }
+                av_frame_unref(frame)
+            } else {
+                break
             }
         }
         lock.unlock()
+
+        // Deliver outside the lock
+        if !decodedFrames.isEmpty {
+            lock.lock()
+            let isStale = (self.flushGeneration != currentGen)
+            let handler = self.outputHandler
+            lock.unlock()
+
+            if !isStale, let handler {
+                for f in decodedFrames {
+                    handler(f)
+                }
+            }
+        }
     }
 
     public func flush() {
         lock.lock()
         defer { lock.unlock() }
-        self.flushGeneration &+= 1
-        self.inFlightMetadata.removeAll(keepingCapacity: true)
+        flushGeneration &+= 1
+        inFlightMetadata.removeAll(keepingCapacity: true)
         if let ctx = codecCtx {
-            ctx.pointee.skip_frame = AVDISCARD_NONE
             avcodec_flush_buffers(ctx)
         }
     }
 
-    public func setDiscardNonReferenceFrames(_ discard: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let ctx = codecCtx else { return }
-        ctx.pointee.skip_frame = discard ? AVDISCARD_NONREF : AVDISCARD_NONE
+    public func waitForPendingFrames() {
+        // Synchronous send/receive with lock; in-flight frames are processed immediately.
     }
-
-    /// Frames are emitted synchronously from `decode(sampleBuffer:)`. Frames still held by dav1d's
-    /// frame-threading pipeline are delivered by subsequent `decode` calls, so this is a no-op.
-    /// Must NOT call `avcodec_flush_buffers`: that drops reference frames and dav1d would then
-    /// discard every inter frame until the next keyframe (video freeze after seek).
-    public func waitForPendingFrames() {}
 
     public func drain() {
         var drainedFrames: [DecodedFrame] = []
         var currentGen: UInt64 = 0
 
         lock.lock()
-        guard let ctx = codecCtx, let avFrame = frame else {
+        guard let ctx = self.codecCtx, let frame = self.frame else {
             lock.unlock()
             return
         }
         currentGen = self.flushGeneration
 
-        // Signal EOF to flush remaining buffered frames from multi-threaded pipeline
-        avcodec_send_packet(ctx, nil)
+        // Send NULL packet to enter draining mode
+        _ = avcodec_send_packet(ctx, nil)
 
-        while avcodec_receive_frame(ctx, avFrame) == 0 {
-            if let decoded = makeDecodedFrame(from: avFrame, sampleBuffer: nil) {
-                drainedFrames.append(decoded)
-            }
-        }
-        let handler = outputHandler
-        let isStale = (self.flushGeneration != currentGen)
-        if !isStale, let handler {
-            for f in drainedFrames {
-                handler(f)
+        while true {
+            let ret = avcodec_receive_frame(ctx, frame)
+            if ret == 0 {
+                if let decoded = makeDecodedFrame(from: frame, sampleBuffer: nil) {
+                    drainedFrames.append(decoded)
+                }
+                av_frame_unref(frame)
+            } else {
+                break
             }
         }
         lock.unlock()
+
+        if !drainedFrames.isEmpty {
+            lock.lock()
+            let isStale = (self.flushGeneration != currentGen)
+            let handler = self.outputHandler
+            lock.unlock()
+
+            if !isStale, let handler {
+                for f in drainedFrames {
+                    handler(f)
+                }
+            }
+        }
     }
 
     public func resetSession() {
-        flush()
+        lock.lock()
+        defer { lock.unlock() }
+        flushGeneration &+= 1
+        inFlightMetadata.removeAll()
+        if let ctx = codecCtx {
+            avcodec_flush_buffers(ctx)
+        }
+        pixelBufferPool = nil
     }
+
+    public func setDiscardNonReferenceFrames(_ discard: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ctx = codecCtx else { return }
+        if discard {
+            ctx.pointee.skip_frame = AVDISCARD_NONREF
+        } else {
+            ctx.pointee.skip_frame = AVDISCARD_DEFAULT
+        }
+    }
+
+    // MARK: - Internal Conversion & Frame Construction
 
     private func makeDecodedFrame(
         from avFrame: UnsafeMutablePointer<AVFrame>,
         sampleBuffer: CMSampleBuffer?
     ) -> DecodedFrame? {
-        let rawPts = avFrame.pointee.pts
+        var rawPts = avFrame.pointee.best_effort_timestamp
+        if rawPts == Int64.min || rawPts < 0 {
+            rawPts = avFrame.pointee.pts
+        }
+        if rawPts == Int64.min || rawPts < 0 {
+            rawPts = avFrame.pointee.pkt_dts
+        }
         let framePts: CMTime
-        if rawPts != Int64.min && timebase.den > 0 {
+        if rawPts != Int64.min && rawPts >= 0 && timebase.den > 0 {
             framePts = CMTime(value: rawPts * Int64(timebase.num), timescale: timebase.den)
         } else {
             framePts = .invalid
@@ -296,6 +364,9 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         guard status == kCVReturnSuccess, let pool = newPool else {
             return nil
         }
+        if let oldPool = self.pixelBufferPool {
+            CVPixelBufferPoolFlush(oldPool, .excessBuffers)
+        }
         self.pixelBufferPool = pool
         self.poolWidth = width
         self.poolHeight = height
@@ -314,13 +385,15 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         let format = avFrame.pointee.format
         guard
             format == AV_PIX_FMT_YUV420P.rawValue
+                || format == AV_PIX_FMT_YUVJ420P.rawValue
                 || format == AV_PIX_FMT_YUV420P10LE.rawValue
         else {
-            AppLog.error(.video, "Dav1dVideoDecoder: Unsupported AV1 pixel format: \(format)")
+            AppLog.error(.video, "FFmpegVideoDecoder: Unsupported pixel format: \(format)")
             return nil
         }
 
-        let isFullRange = (avFrame.pointee.color_range == AVCOL_RANGE_JPEG)
+        // Both AVCOL_RANGE_JPEG and AV_PIX_FMT_YUVJ420P represent full range color
+        let isFullRange = (avFrame.pointee.color_range == AVCOL_RANGE_JPEG) || (format == AV_PIX_FMT_YUVJ420P.rawValue)
         let is10Bit = (format == AV_PIX_FMT_YUV420P10LE.rawValue)
 
         let pixelFormat: OSType
@@ -343,36 +416,36 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         var pixelBufferOut: CVPixelBuffer?
         let auxAttributes =
             [
-                kCVPixelBufferPoolAllocationThresholdKey as String: 96
+                kCVPixelBufferPoolAllocationThresholdKey as String: 64
             ] as CFDictionary
-        let poolStatus = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+
+        let status = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
             kCFAllocatorDefault,
             pool,
             auxAttributes,
             &pixelBufferOut
         )
-        guard poolStatus == kCVReturnSuccess, let pixelBuffer = pixelBufferOut else {
-            if poolStatus == kCVReturnWouldExceedAllocationThreshold {
-                AppLog.warning(.video, "CVPixelBufferPool allocation threshold reached (96 frames)")
-            }
+        guard status == kCVReturnSuccess, let pixelBuffer = pixelBufferOut else {
             return nil
         }
 
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
 
-        guard let destY = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
-            let destUV = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+        guard
+            let yDest = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+            let uvDest = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
         else {
             return nil
         }
 
-        let destYBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
-        let destUVBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+        let destYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let destUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
 
-        guard let srcY = avFrame.pointee.data.0,
-            let srcU = avFrame.pointee.data.1,
-            let srcV = avFrame.pointee.data.2
+        guard
+            let ySrc = avFrame.pointee.data.0,
+            let uSrc = avFrame.pointee.data.1,
+            let vSrc = avFrame.pointee.data.2
         else {
             return nil
         }
@@ -381,67 +454,51 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
         let srcUStride = Int(avFrame.pointee.linesize.1)
         let srcVStride = Int(avFrame.pointee.linesize.2)
 
-        // Strict linesize verification to prevent buffer overruns
-        let minBytesY = is10Bit ? (width * 2) : width
-        let minBytesChroma = is10Bit ? (((width + 1) / 2) * 2) : ((width + 1) / 2)
-        guard srcYStride >= minBytesY && srcUStride >= minBytesChroma && srcVStride >= minBytesChroma else {
-            AppLog.error(
-                .video,
-                "Dav1dVideoDecoder: Invalid linesize from AVFrame: Y=\(srcYStride), U=\(srcUStride), V=\(srcVStride)")
-            return nil
-        }
-
-        // Odd dimension handling
         let halfH = (height + 1) / 2
         let halfW = (width + 1) / 2
 
         if is10Bit {
-            // AV1 10-bit YUV420P10LE (LSB [9:0]) -> P010 (MSB [15:6] BiPlanar)
-            let srcYRaw = UnsafeRawPointer(srcY)
-            let srcURaw = UnsafeRawPointer(srcU)
-            let srcVRaw = UnsafeRawPointer(srcV)
+            // 10-bit Y plane: convert 10-bit Little-Endian integers to VideoToolbox MSB-aligned (shift left by 6)
+            let srcY16 = OpaquePointer(ySrc)
+            let destY16 = OpaquePointer(yDest)
+            let srcYStride16 = srcYStride / 2
+            let destYStride16 = destYStride / 2
 
-            let destYRaw = UnsafeMutableRawPointer(destY)
-            let destUVRaw = UnsafeMutableRawPointer(destUV)
-
-            // Y Plane: vectorized shift left by 6 bits using safe unaligned SIMD16 loads and stores
-            let simdStep = 16
-            let vecWidth = (width / simdStep) * simdStep
-
-            for y in 0..<height {
-                let sRow = srcYRaw.advanced(by: y * srcYStride)
-                let dRow = destYRaw.advanced(by: y * destYBytesPerRow)
-
+            let simdStep16 = 8
+            for row in 0..<height {
+                let sRow = UnsafePointer<UInt16>(srcY16).advanced(by: row * srcYStride16)
+                let dRow = UnsafeMutablePointer<UInt16>(destY16).advanced(by: row * destYStride16)
                 var x = 0
-                while x < vecWidth {
-                    let byteOffset = x * 2
-                    let inVec = sRow.advanced(by: byteOffset).loadUnaligned(as: SIMD16<UInt16>.self)
-                    let outVec = inVec &<< 6
-                    dRow.advanced(by: byteOffset).storeBytes(of: outVec, as: SIMD16<UInt16>.self)
-                    x += simdStep
+                while x + simdStep16 <= width {
+                    let vec = UnsafeRawPointer(sRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self)
+                    let shifted = vec &<< 6
+                    UnsafeMutableRawPointer(dRow.advanced(by: x)).storeBytes(of: shifted, as: SIMD8<UInt16>.self)
+                    x += simdStep16
                 }
                 while x < width {
-                    let val = sRow.advanced(by: x * 2).loadUnaligned(as: UInt16.self)
-                    dRow.advanced(by: x * 2).storeBytes(of: val &<< 6, as: UInt16.self)
+                    dRow[x] = sRow[x] &<< 6
                     x += 1
                 }
             }
 
-            // UV Plane: vectorized shift and interleave of U and V planes
+            // 10-bit UV plane: interleave U and V planar components into CbCr with << 6 shift
+            let srcU16 = OpaquePointer(uSrc)
+            let srcV16 = OpaquePointer(vSrc)
+            let destUV16 = OpaquePointer(uvDest)
+            let srcUStride16 = srcUStride / 2
+            let srcVStride16 = srcVStride / 2
+            let destUVStride16 = destUVStride / 2
+
             let uvSimdStep = 8
-            let uvVecWidth = (halfW / uvSimdStep) * uvSimdStep
-
-            for y in 0..<halfH {
-                let uRow = srcURaw.advanced(by: y * srcUStride)
-                let vRow = srcVRaw.advanced(by: y * srcVStride)
-                let uvRow = destUVRaw.advanced(by: y * destUVBytesPerRow)
-
+            for row in 0..<halfH {
+                let uRow = UnsafePointer<UInt16>(srcU16).advanced(by: row * srcUStride16)
+                let vRow = UnsafePointer<UInt16>(srcV16).advanced(by: row * srcVStride16)
+                let uvRow = UnsafeMutablePointer<UInt16>(destUV16).advanced(by: row * destUVStride16)
                 var x = 0
-                while x < uvVecWidth {
-                    let uVec = uRow.advanced(by: x * 2).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
-                    let vVec = vRow.advanced(by: x * 2).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
+                while x + uvSimdStep <= halfW {
+                    let uVec = UnsafeRawPointer(uRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
+                    let vVec = UnsafeRawPointer(vRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
 
-                    // Zip lower and upper halves into interleaved 16-element vectors
                     let lowInterleaved = SIMD8<UInt16>(
                         uVec[0], vVec[0], uVec[1], vVec[1],
                         uVec[2], vVec[2], uVec[3], vVec[3]
@@ -451,46 +508,38 @@ public final class Dav1dVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
                         uVec[6], vVec[6], uVec[7], vVec[7]
                     )
 
-                    let destByteOffset = x * 4
-                    uvRow.advanced(by: destByteOffset).storeBytes(of: lowInterleaved, as: SIMD8<UInt16>.self)
-                    uvRow.advanced(by: destByteOffset + 16).storeBytes(of: highInterleaved, as: SIMD8<UInt16>.self)
+                    let destOffset = x * 2
+                    UnsafeMutableRawPointer(uvRow.advanced(by: destOffset))
+                        .storeBytes(of: lowInterleaved, as: SIMD8<UInt16>.self)
+                    UnsafeMutableRawPointer(uvRow.advanced(by: destOffset + 8))
+                        .storeBytes(of: highInterleaved, as: SIMD8<UInt16>.self)
 
                     x += uvSimdStep
                 }
                 while x < halfW {
-                    let uVal = uRow.advanced(by: x * 2).loadUnaligned(as: UInt16.self) &<< 6
-                    let vVal = vRow.advanced(by: x * 2).loadUnaligned(as: UInt16.self) &<< 6
-                    let uvPair = SIMD2<UInt16>(uVal, vVal)
-                    uvRow.advanced(by: x * 4).storeBytes(of: uvPair, as: SIMD2<UInt16>.self)
+                    let uVal = uRow[x] &<< 6
+                    let vVal = vRow[x] &<< 6
+                    uvRow[x * 2] = uVal
+                    uvRow[x * 2 + 1] = vVal
                     x += 1
                 }
             }
         } else {
-            // AV1 8-bit YUV420P -> NV12 (BiPlanar 8-bit)
-            let destY8 = destY.assumingMemoryBound(to: UInt8.self)
-
-            // Y Plane: row copy
-            for y in 0..<height {
-                let sRow = srcY.advanced(by: y * srcYStride)
-                let dRow = destY8.advanced(by: y * destYBytesPerRow)
-                memcpy(dRow, sRow, width)
+            // 8-bit Y plane: direct row-by-row memory copy
+            for row in 0..<height {
+                let srcRow = ySrc.advanced(by: row * srcYStride)
+                let dstRow = yDest.advanced(by: row * destYStride)
+                memcpy(dstRow, srcRow, width)
             }
 
-            // UV Plane: vectorized interleave of U and V planes using SIMD16
-            let srcURaw = UnsafeRawPointer(srcU)
-            let srcVRaw = UnsafeRawPointer(srcV)
-            let destUVRaw = UnsafeMutableRawPointer(destUV)
-
+            // 8-bit UV plane: interleave U and V planar channels into CbCr NV12 format using 128-bit SIMD16 registers
             let uvSimdStep = 16
-            let uvVecWidth = (halfW / uvSimdStep) * uvSimdStep
-
-            for y in 0..<halfH {
-                let uRow = srcURaw.advanced(by: y * srcUStride)
-                let vRow = srcVRaw.advanced(by: y * srcVStride)
-                let uvRow = destUVRaw.advanced(by: y * destUVBytesPerRow)
-
+            for row in 0..<halfH {
+                let uRow = UnsafeRawPointer(uSrc.advanced(by: row * srcUStride))
+                let vRow = UnsafeRawPointer(vSrc.advanced(by: row * srcVStride))
+                let uvRow = UnsafeMutableRawPointer(uvDest.advanced(by: row * destUVStride))
                 var x = 0
-                while x < uvVecWidth {
+                while x + uvSimdStep <= halfW {
                     let uVec = uRow.advanced(by: x).loadUnaligned(as: SIMD16<UInt8>.self)
                     let vVec = vRow.advanced(by: x).loadUnaligned(as: SIMD16<UInt8>.self)
 

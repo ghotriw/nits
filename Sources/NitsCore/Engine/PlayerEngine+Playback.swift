@@ -23,7 +23,8 @@ extension PlayerEngine {
         if !feedingActive {
             startFeeding()
         }
-        startSynchronizerClock(at: synchronizer.currentTime(), rate: playbackRate, armGuard: false)
+        let targetTime = resolvePlaybackStartTime(syncTime: synchronizer.currentTime())
+        startSynchronizerClock(at: targetTime, rate: playbackRate, armGuard: true)
         displayLink?.isPaused = !hasVideo
         isPlaying = true
         playbackState = .playing
@@ -59,6 +60,19 @@ extension PlayerEngine {
         haltPlaybackPipeline()
         isPlaying = false
         performanceMonitor.handlePlaybackStateChange(isPlaying: false)
+    }
+
+    /// Resolves the master clock timeline starting position when entering play mode.
+    ///
+    /// If CoreAudio synchronizer reports a valid non-zero time that matches the engine's `currentTime`
+    /// within 500ms (e.g. unpausing), we retain the hardware clock.
+    /// Otherwise (e.g. initial track start or post-reload before hardware clock resets),
+    /// we re-anchor to `currentTime` to prevent running on a stale clock from previous media.
+    private func resolvePlaybackStartTime(syncTime: CMTime) -> CMTime {
+        if syncTime.isNumeric && syncTime.seconds > 0 && abs(syncTime.seconds - currentTime) < 0.5 {
+            return syncTime
+        }
+        return CMTime(seconds: currentTime, preferredTimescale: 60000)
     }
 
     /// Safely starts or re-anchors the synchronizer master clock.
