@@ -109,8 +109,7 @@ extension PlayerEngine {
                         .playlist,
                         "Opening playlist '\(playlistURL.lastPathComponent)' with \(parsedItems.count) track(s)"
                     )
-                    self.playlist.clear()
-                    self.playlist.append(items: parsedItems)
+                    self.playlist.replaceAll(items: parsedItems)
                     if let firstItem = self.playlist.currentItem {
                         self.load(item: firstItem)
                     } else {

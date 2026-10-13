@@ -621,4 +621,104 @@ struct PlaylistManagerTests {
         #expect(items[1].url.path == "/Users/test/Music/#131_Relative.mp4")
         #expect(items[1].filename == "#131_Relative.mp4")
     }
+
+    @Test("Persistent shuffle is automatically applied when replacing or loading a playlist")
+    func testShuffleOnReplaceAll() {
+        let manager = PlaylistManager(isShuffled: true)
+        let urls = (1...25).map { URL(fileURLWithPath: "/tmp/track\($0).mp4") }
+        let items = urls.enumerated().map { PlaylistItem(url: $1, originalIndex: $0) }
+
+        manager.replaceAll(items: items)
+        #expect(manager.isShuffled == true)
+        #expect(manager.items.count == 25)
+        #expect(manager.currentIndex == 0)
+
+        // Active first item remains at index 0 for immediate playback
+        #expect(manager.items[0].url == urls[0])
+        #expect(manager.items[0].originalIndex == 0)
+
+        // Remaining tracks must be shuffled
+        let subsequentIndices = manager.items.dropFirst().map(\.originalIndex)
+        let strictlySequential = Array(1...24)
+        #expect(subsequentIndices != strictlySequential)
+
+        // Turning shuffle off must cleanly restore original order
+        manager.toggleShuffle()
+        #expect(manager.isShuffled == false)
+        for i in 0..<25 {
+            #expect(manager.items[i].originalIndex == i)
+            #expect(manager.items[i].url == urls[i])
+        }
+    }
+
+    @Test("Persistent shuffle is automatically applied on append into empty playlist")
+    func testShuffleOnAppendWhenEmpty() {
+        let manager = PlaylistManager(isShuffled: true)
+        let urls = (1...25).map { URL(fileURLWithPath: "/tmp/song\($0).mp4") }
+        manager.append(urls: urls)
+
+        #expect(manager.isShuffled == true)
+        #expect(manager.items.count == 25)
+        #expect(manager.currentIndex == 0)
+        #expect(manager.items[0].url == urls[0])
+
+        let subsequentIndices = manager.items.dropFirst().map(\.originalIndex)
+        let strictlySequential = Array(1...24)
+        #expect(subsequentIndices != strictlySequential)
+
+        // Unshuffle restores exact order
+        manager.toggleShuffle()
+        #expect(manager.isShuffled == false)
+        for i in 0..<25 {
+            #expect(manager.items[i].originalIndex == i)
+            #expect(manager.items[i].url == urls[i])
+        }
+    }
+
+    @Test("Persistent shuffle is applied when PlaylistManager is initialized with items")
+    func testShuffleOnInitWithItems() {
+        let urls = (1...25).map { URL(fileURLWithPath: "/tmp/video\($0).mp4") }
+        let items = urls.enumerated().map { PlaylistItem(url: $1, originalIndex: $0) }
+        let manager = PlaylistManager(items: items, isShuffled: true)
+
+        #expect(manager.isShuffled == true)
+        #expect(manager.items.count == 25)
+        #expect(manager.items[0].url == urls[0])
+
+        let subsequentIndices = manager.items.dropFirst().map(\.originalIndex)
+        let strictlySequential = Array(1...24)
+        #expect(subsequentIndices != strictlySequential)
+
+        manager.toggleShuffle()
+        #expect(manager.isShuffled == false)
+        for i in 0..<25 {
+            #expect(manager.items[i].originalIndex == i)
+            #expect(manager.items[i].url == urls[i])
+        }
+    }
+
+    @Test(
+        "Initializing with items and isShuffled=false assigns proper originalIndex so subsequent shuffle/unshuffle preserves order"
+    )
+    func testInitWithoutShufflePreservesIndicesOnLaterShuffle() {
+        let urls = (1...15).map { URL(fileURLWithPath: "/tmp/clip\($0).mp4") }
+        // Default PlaylistItem initializes originalIndex to 0
+        let items = urls.map { PlaylistItem(url: $0) }
+        let manager = PlaylistManager(items: items, isShuffled: false)
+
+        #expect(manager.isShuffled == false)
+        for i in 0..<15 {
+            #expect(manager.items[i].originalIndex == i)
+        }
+
+        manager.toggleShuffle()
+        #expect(manager.isShuffled == true)
+
+        manager.toggleShuffle()
+        #expect(manager.isShuffled == false)
+        for i in 0..<15 {
+            #expect(manager.items[i].originalIndex == i)
+            #expect(manager.items[i].url == urls[i])
+        }
+    }
 }

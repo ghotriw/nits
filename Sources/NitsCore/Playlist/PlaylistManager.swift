@@ -56,11 +56,24 @@ public final class PlaylistManager: Sendable {
         autoPlayNext: Bool = true,
         userDefaults: UserDefaults? = nil
     ) {
-        self.items = items
         self.repeatMode = repeatMode
         self.isShuffled = isShuffled
         self.autoPlayNext = autoPlayNext
         self.userDefaults = userDefaults
+        let indexedItems = items.enumerated().map { offset, item in
+            var copy = item
+            copy.originalIndex = offset
+            return copy
+        }
+        if isShuffled && indexedItems.count > 1 {
+            var shuffled = indexedItems
+            let first = shuffled.remove(at: 0)
+            shuffled.shuffle()
+            shuffled.insert(first, at: 0)
+            self.items = shuffled
+        } else {
+            self.items = indexedItems
+        }
         recomputeFilteredItems()
     }
 
@@ -232,6 +245,36 @@ public final class PlaylistManager: Sendable {
 
     // MARK: - Modification
 
+    /// Replaces the playlist with the specified items, respecting shuffle state.
+    /// If `isShuffled` is true, the item at `startIndex` is preserved at the top and remaining items are shuffled.
+    public func replaceAll(items newItems: [PlaylistItem], startIndex: Int = 0) {
+        clear()
+        guard !newItems.isEmpty else { return }
+
+        let clampedStartIndex = newItems.indices.contains(startIndex) ? startIndex : 0
+        var indexedItems = newItems.enumerated().map { offset, item in
+            var copy = item
+            copy.originalIndex = offset
+            return copy
+        }
+
+        if isShuffled && indexedItems.count > 1 {
+            let active = indexedItems.remove(at: clampedStartIndex)
+            indexedItems.shuffle()
+            indexedItems.insert(active, at: 0)
+            self.items = indexedItems
+            self.currentIndex = 0
+        } else {
+            self.items = indexedItems
+            self.currentIndex = clampedStartIndex
+        }
+
+        AppLog.info(.playlist, "Replaced playlist with \(items.count) item(s) (shuffled: \(isShuffled))")
+        if let currentIndex, items.indices.contains(currentIndex) {
+            onCurrentItemChanged?(items[currentIndex])
+        }
+    }
+
     /// Appends multiple URLs to the playlist (automatically discovering media if any URL is a folder, or parsing playlist files).
     public func append(urls: [URL]) {
         let fm = FileManager.default
@@ -256,19 +299,7 @@ public final class PlaylistManager: Sendable {
         }
 
         guard !newItems.isEmpty else { return }
-
-        let startOriginalIndex = items.count
-        let preparedItems = newItems.enumerated().map { offset, item in
-            var copy = item
-            copy.originalIndex = startOriginalIndex + offset
-            return copy
-        }
-        items.append(contentsOf: preparedItems)
-        AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
-        if currentIndex == nil && !items.isEmpty {
-            currentIndex = 0
-            onCurrentItemChanged?(items[0])
-        }
+        append(items: newItems)
     }
 
     /// Asynchronously appends multiple URLs to the playlist, fetching remote playlists without blocking.
@@ -298,19 +329,7 @@ public final class PlaylistManager: Sendable {
         }
 
         guard !Task.isCancelled, !newItems.isEmpty else { return }
-
-        let startOriginalIndex = items.count
-        let preparedItems = newItems.enumerated().map { offset, item in
-            var copy = item
-            copy.originalIndex = startOriginalIndex + offset
-            return copy
-        }
-        items.append(contentsOf: preparedItems)
-        AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
-        if currentIndex == nil && !items.isEmpty {
-            currentIndex = 0
-            onCurrentItemChanged?(items[0])
-        }
+        append(items: newItems)
     }
 
     /// Scans a directory for playable media files and appends them to the playlist (flat by default).
@@ -335,6 +354,8 @@ public final class PlaylistManager: Sendable {
     }
 
     /// Appends a collection of items to the playlist.
+    /// If `isShuffled` is true and playlist is currently empty, keeps the first item at the top and shuffles remaining items.
+    /// If `isShuffled` is true and playlist already contains items, shuffles the newly appended slice.
     public func append(items newItems: [PlaylistItem]) {
         guard !newItems.isEmpty else { return }
         let startOriginalIndex = items.count
@@ -343,7 +364,21 @@ public final class PlaylistManager: Sendable {
             copy.originalIndex = startOriginalIndex + offset
             return copy
         }
-        items.append(contentsOf: preparedItems)
+
+        if items.isEmpty && isShuffled && preparedItems.count > 1 {
+            var shuffled = preparedItems
+            let first = shuffled.remove(at: 0)
+            shuffled.shuffle()
+            shuffled.insert(first, at: 0)
+            items = shuffled
+        } else if isShuffled && !items.isEmpty {
+            var shuffledSlice = preparedItems
+            shuffledSlice.shuffle()
+            items.append(contentsOf: shuffledSlice)
+        } else {
+            items.append(contentsOf: preparedItems)
+        }
+
         AppLog.info(.playlist, "Appended \(newItems.count) item(s) to playlist. Total items: \(items.count)")
         if currentIndex == nil && !items.isEmpty {
             currentIndex = 0
@@ -353,14 +388,7 @@ public final class PlaylistManager: Sendable {
 
     /// Appends a single item to the playlist.
     public func append(item: PlaylistItem) {
-        var newItem = item
-        newItem.originalIndex = items.count
-        items.append(newItem)
-        AppLog.info(.playlist, "Appended 1 item '\(newItem.title)' to playlist. Total items: \(items.count)")
-        if currentIndex == nil && !items.isEmpty {
-            currentIndex = 0
-            onCurrentItemChanged?(items[0])
-        }
+        append(items: [item])
     }
 
     /// Inserts URLs at a specific index.
