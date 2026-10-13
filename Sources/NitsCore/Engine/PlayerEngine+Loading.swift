@@ -41,56 +41,69 @@ extension PlayerEngine {
         return localPath.removingPercentEncoding ?? localPath
     }
 
-    public func load(path: String) {
-        load(path: path, title: nil, headers: [:], startTime: nil)
+    /// Resets all internal playback, demuxing, feeding and clock tracking state before loading new media.
+    private func resetPlaybackTrackingState(
+        for path: String, explicitTitle: String?, artworkData: Data?, artworkURL: URL?
+    ) -> (loadID: UUID, interruptContext: MediaDemuxer.InterruptContext) {
+        self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: explicitTitle)
+        self.artworkData = artworkData
+        self.artworkURL = artworkURL
+
+        // Save progress for previously active media if present
+        saveCurrentPlaybackProgress()
+
+        // Reset playback tracking state so stale values from previous media do not leak
+        self.currentPath = nil
+        self.currentTime = 0
+        self.duration = 0
+        self.isLoaded = false
+        self.isLoading = true
+
+        let seekId = currentSeekId + 1
+        currentSeekId = seekId
+        activeSeekId.withLock { $0 = seekId }
+        isSeeking = false
+        chaseTargetTime = nil
+        minStepFramePTS = nil
+        chaseSettleTask?.cancel()
+        chaseSettleTask = nil
+        resumePlaybackAfterChase = false
+
+        let loadID = UUID()
+        self.currentLoadID = loadID
+
+        currentInterruptContext?.cancel()
+        currentInterruptContext = nil
+        demuxer?.cancel()
+        demuxer = nil
+
+        let interruptContext = MediaDemuxer.InterruptContext()
+        self.currentInterruptContext = interruptContext
+
+        isFeeding.withLock { $0 = false }
+        stopFeedingVideo()
+        stopFeedingAudio()
+        clearVideoSurface()
+        displayLink?.isPaused = true
+        synchronizer.setRate(0.0, time: .zero)
+        clockSettlingGuardLock.withLock { $0 = nil }
+        isPlaying = false
+        loadError = nil
+        hasVideo = false
+        playbackState = .loading
+
+        return (loadID, interruptContext)
     }
 
-    public func load(path: String, title: String?) {
-        load(path: path, title: title, headers: [:], startTime: nil)
-    }
-
-    public func load(path: String, headers: [String: String]) {
-        load(path: path, title: nil, headers: headers, startTime: nil)
-    }
-
-    public func load(path: String, headers: [String: String], startTime: Double?) {
-        load(path: path, title: nil, headers: headers, startTime: startTime)
-    }
-
-    public func load(
-        path: String,
-        title: String? = nil,
-        headers: [String: String] = [:],
-        startTime: Double? = nil
-    ) {
-        load(
-            path: path,
-            title: title,
-            artworkData: nil,
-            artworkURL: nil,
-            headers: headers,
-            startTime: startTime
-        )
-    }
-
-    public func load(
-        path: String,
-        title: String?,
-        artworkData: Data?,
-        artworkURL: URL?,
-        headers: [String: String] = [:],
-        startTime: Double? = nil,
-        audioTrack: String? = nil,
-        subtitleTrack: String? = nil
-    ) {
-        // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
-        let normalizedPath = Self.normalizeMediaPath(path)
+    public func load(_ request: MediaLoadRequest) {
+        let normalizedPath = Self.normalizeMediaPath(request.path)
         let isNetwork = MediaDemuxer.isNetworkURL(normalizedPath)
         let isRemoteOrMounted = MediaDemuxer.isRemoteOrMountedVolume(normalizedPath)
+
+        // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
         if PlaylistParser.isPlaylistFile(path: normalizedPath),
             let playlistURL = isNetwork ? URL(string: normalizedPath) : URL(fileURLWithPath: normalizedPath)
         {
-            // Parse playlist asynchronously without blocking the MainActor
             self.isLoading = true
             self.playlist.setIsLoading(true)
             loadingTask?.cancel()
@@ -117,16 +130,7 @@ extension PlayerEngine {
                     }
                 } else if isNetwork {
                     // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
-                    await self.loadAsync(
-                        path: path,
-                        title: title,
-                        artworkData: artworkData,
-                        artworkURL: artworkURL,
-                        headers: headers,
-                        startTime: startTime,
-                        audioTrack: audioTrack,
-                        subtitleTrack: subtitleTrack
-                    )
+                    await self.loadAsync(request)
                 } else {
                     self.isLoading = false
                 }
@@ -134,128 +138,39 @@ extension PlayerEngine {
             return
         }
 
-        // Save playback progress of previously active media before loading new track
-        saveCurrentPlaybackProgress()
+        var normalizedRequest = request
+        normalizedRequest.path = normalizedPath
 
-        self.mediaTitle = Self.resolveTitle(from: normalizedPath, explicitTitle: title)
-        self.artworkData = artworkData
-        self.artworkURL = artworkURL
+        // Immediately update mediaTitle and artwork so UI reflects loaded track synchronously
+        self.mediaTitle = Self.resolveTitle(from: normalizedPath, explicitTitle: request.title)
+        self.artworkData = request.artworkData
+        self.artworkURL = request.artworkURL
+
         if isRemoteOrMounted {
+            self.isLoading = true
+            self.playbackState = .loading
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
-                await self?.loadAsync(
-                    path: normalizedPath,
-                    title: title,
-                    artworkData: artworkData,
-                    artworkURL: artworkURL,
-                    headers: headers,
-                    startTime: startTime,
-                    audioTrack: audioTrack,
-                    subtitleTrack: subtitleTrack
-                )
+                await self?.loadAsync(normalizedRequest)
             }
         } else {
-            loadSync(
-                path: normalizedPath,
-                title: title,
-                artworkData: artworkData,
-                artworkURL: artworkURL,
-                headers: headers,
-                startTime: startTime,
-                audioTrack: audioTrack,
-                subtitleTrack: subtitleTrack
-            )
+            loadSync(normalizedRequest)
         }
     }
 
-    public func loadAsync(path: String) async {
-        await loadAsync(path: path, title: nil, headers: [:], startTime: nil)
-    }
-
-    public func loadAsync(path: String, title: String?) async {
-        await loadAsync(path: path, title: title, headers: [:], startTime: nil)
-    }
-
-    public func loadAsync(path: String, headers: [String: String]) async {
-        await loadAsync(path: path, title: nil, headers: headers, startTime: nil)
-    }
-
-    public func loadAsync(
-        path: String,
-        title: String? = nil,
-        headers: [String: String] = [:],
-        startTime: Double? = nil
-    ) async {
-        await loadAsync(
-            path: path,
-            title: title,
-            artworkData: nil,
-            artworkURL: nil,
-            headers: headers,
-            startTime: startTime
+    public func loadAsync(_ request: MediaLoadRequest) async {
+        let path = request.path
+        let (loadID, interruptContext) = resetPlaybackTrackingState(
+            for: path,
+            explicitTitle: request.title,
+            artworkData: request.artworkData,
+            artworkURL: request.artworkURL
         )
-    }
 
-    public func loadAsync(
-        path: String,
-        title: String?,
-        artworkData: Data?,
-        artworkURL: URL?,
-        headers: [String: String] = [:],
-        startTime: Double? = nil,
-        audioTrack: String? = nil,
-        subtitleTrack: String? = nil
-    ) async {
-        self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: title)
-        self.artworkData = artworkData
-        self.artworkURL = artworkURL
         AppLog.info(
             .engine,
-            "Loading async: \(path) title: \(self.mediaTitle) with headers count: \(headers.count) startTime: \(String(describing: startTime))"
+            "Loading async: \(path) title: \(self.mediaTitle) with headers count: \(request.headers.count) startTime: \(String(describing: request.startTime))"
         )
-
-        // Save progress for previously active media if present
-        saveCurrentPlaybackProgress()
-
-        // Reset playback tracking state so stale values from previous media do not leak
-        self.currentPath = nil
-        self.currentTime = 0
-        self.duration = 0
-        self.isLoaded = false
-        self.isLoading = true
-
-        let seekId = currentSeekId + 1
-        currentSeekId = seekId
-        activeSeekId.withLock { $0 = seekId }
-        isSeeking = false
-        chaseTargetTime = nil
-        minStepFramePTS = nil
-        chaseSettleTask?.cancel()
-        chaseSettleTask = nil
-        resumePlaybackAfterChase = false
-
-        // Generate a new load ID and cancel any in-flight requests immediately
-        let loadID = UUID()
-        self.currentLoadID = loadID
-
-        currentInterruptContext?.cancel()
-        demuxer?.cancel()
-        demuxer = nil
-
-        let interruptContext = MediaDemuxer.InterruptContext()
-        self.currentInterruptContext = interruptContext
-
-        isFeeding.withLock { $0 = false }
-        stopFeedingVideo()
-        stopFeedingAudio()
-        clearVideoSurface()
-        displayLink?.isPaused = true
-        synchronizer.setRate(0.0, time: .zero)
-        clockSettlingGuardLock.withLock { $0 = nil }
-        isPlaying = false
-        loadError = nil
-        hasVideo = false
-        playbackState = .loading
 
         let isNetwork = MediaDemuxer.isNetworkURL(path)
         let maxAttempts = isNetwork ? 5 : 1
@@ -268,7 +183,7 @@ extension PlayerEngine {
 
             let task = Task.detached(priority: .userInitiated) { () -> MediaDemuxer? in
                 guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
-                return MediaDemuxer(url: path, headers: headers, interruptContext: interruptContext)
+                return MediaDemuxer(url: path, headers: request.headers, interruptContext: interruptContext)
             }
 
             newDemuxer = await task.value
@@ -326,73 +241,33 @@ extension PlayerEngine {
         }
 
         applyLoadedDemuxer(
-            demuxer, path: path, headers: headers, requestedStartTime: startTime,
-            requestedAudioTrack: audioTrack, requestedSubtitleTrack: subtitleTrack)
+            demuxer,
+            path: path,
+            headers: request.headers,
+            requestedStartTime: request.startTime,
+            requestedAudioTrack: request.audioTrack,
+            requestedSubtitleTrack: request.subtitleTrack
+        )
     }
 
-    func loadSync(
-        path: String,
-        title: String?,
-        artworkData: Data?,
-        artworkURL: URL?,
-        headers: [String: String],
-        startTime: Double?,
-        audioTrack: String?,
-        subtitleTrack: String?
-    ) {
-        self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: title)
-        self.artworkData = artworkData
-        self.artworkURL = artworkURL
-        AppLog.info(
-            .engine,
-            "Loading sync: \(path) title: \(self.mediaTitle) startTime: \(String(describing: startTime))"
-        )
-
-        // Save progress for previously active media if present
-        saveCurrentPlaybackProgress()
-
-        // Reset playback tracking state so stale values from previous media do not leak
-        self.currentPath = nil
-        self.currentTime = 0
-        self.duration = 0
-        self.isLoaded = false
-        self.isLoading = true
-
-        let seekId = currentSeekId + 1
-        currentSeekId = seekId
-        activeSeekId.withLock { $0 = seekId }
-        isSeeking = false
-        chaseTargetTime = nil
-        minStepFramePTS = nil
-        chaseSettleTask?.cancel()
-        chaseSettleTask = nil
-        resumePlaybackAfterChase = false
-
-        let loadID = UUID()
-        self.currentLoadID = loadID
-
+    func loadSync(_ request: MediaLoadRequest) {
         loadingTask?.cancel()
         loadingTask = nil
-        currentInterruptContext?.cancel()
-        currentInterruptContext = nil
-        demuxer?.cancel()
-        demuxer = nil
 
-        isFeeding.withLock { $0 = false }
-        stopFeedingVideo()
-        stopFeedingAudio()
-        clearVideoSurface()
-        displayLink?.isPaused = true
-        synchronizer.setRate(0.0, time: .zero)
-        clockSettlingGuardLock.withLock { $0 = nil }
-        isPlaying = false
-        loadError = nil
-        hasVideo = false
-        playbackState = .loading
+        let path = request.path
+        let (_, interruptContext) = resetPlaybackTrackingState(
+            for: path,
+            explicitTitle: request.title,
+            artworkData: request.artworkData,
+            artworkURL: request.artworkURL
+        )
 
-        let interruptContext = MediaDemuxer.InterruptContext()
-        self.currentInterruptContext = interruptContext
-        guard let demuxer = MediaDemuxer(url: path, headers: headers, interruptContext: interruptContext) else {
+        AppLog.info(
+            .engine,
+            "Loading sync: \(path) title: \(self.mediaTitle) startTime: \(String(describing: request.startTime))"
+        )
+
+        guard let demuxer = MediaDemuxer(url: path, headers: request.headers, interruptContext: interruptContext) else {
             let errorDetail: String
             if let err = interruptContext.lastError {
                 errorDetail = "\(err.message) (code \(err.code))"
@@ -407,8 +282,13 @@ extension PlayerEngine {
         }
 
         applyLoadedDemuxer(
-            demuxer, path: path, headers: headers, requestedStartTime: startTime,
-            requestedAudioTrack: audioTrack, requestedSubtitleTrack: subtitleTrack)
+            demuxer,
+            path: path,
+            headers: request.headers,
+            requestedStartTime: request.startTime,
+            requestedAudioTrack: request.audioTrack,
+            requestedSubtitleTrack: request.subtitleTrack
+        )
     }
 
     public func stop() {

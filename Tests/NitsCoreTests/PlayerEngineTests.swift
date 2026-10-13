@@ -174,6 +174,31 @@ struct PlayerEngineTests {
         #expect(engine.loadError != nil)
     }
 
+    @Test("Synchronous engine.load with remote URL does not self-cancel its own loadingTask")
+    @MainActor
+    func testLoadNetworkURLViaSynchronousLoadWrapper() async {
+        let engine = PlayerEngine()
+        // Calls synchronous load(_:) which wraps into loadingTask = Task { await loadAsync(...) }
+        engine.load(path: "http://127.0.0.1:65534/nonexistent.mkv")
+
+        // Wait until asynchronous loading concludes
+        let deadline = ContinuousClock.now + .seconds(8)
+        while engine.isLoading && ContinuousClock.now < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        #expect(engine.isLoading == false)
+        #expect(engine.isLoaded == false)
+        // If the task cancelled itself, loadError would be nil and state would be .idle
+        // With the fix, the network failure is properly encountered and reported:
+        #expect(engine.loadError != nil)
+        if case .failed = engine.playbackState {
+            // Success
+        } else {
+            Issue.record("Expected playbackState to be .failed, but got \(engine.playbackState)")
+        }
+    }
+
     @Test("Engine notifies playbackState changes and time updates")
     @MainActor
     func testPlaybackStateTransitions() async {
@@ -529,5 +554,133 @@ struct PlayerEngineTests {
         #expect(abs(engine.currentTime - 18.0) < 1.0)
 
         engine.stop()
+    }
+
+    @Test("MediaLoadRequest builder and fluent methods configure request properly")
+    func testMediaLoadRequestBuilder() {
+        let req = MediaLoadRequest(path: "https://example.com/stream.m3u8")
+            .title("Sample Stream")
+            .headers(["Authorization": "Bearer token123"])
+            .startTime(42.5)
+            .audioTrack("eng")
+            .subtitleTrack("fra")
+
+        #expect(req.path == "https://example.com/stream.m3u8")
+        #expect(req.title == "Sample Stream")
+        #expect(req.headers["Authorization"] == "Bearer token123")
+        #expect(req.startTime == 42.5)
+        #expect(req.audioTrack == "eng")
+        #expect(req.subtitleTrack == "fra")
+    }
+
+    @Test("PlayerEngineProtocol mock can be trivially implemented with minimal load methods")
+    @MainActor
+    func testPlayerEngineProtocolMock() {
+        @MainActor
+        final class MockEngine: PlayerEngineProtocol {
+            var loadedRequest: MediaLoadRequest?
+            var asyncLoadedRequest: MediaLoadRequest?
+
+            func load(_ request: MediaLoadRequest) {
+                loadedRequest = request
+            }
+
+            func loadAsync(_ request: MediaLoadRequest) async {
+                asyncLoadedRequest = request
+            }
+
+            // Minimal stubbed properties and requirements
+            var playbackState: PlaybackState = .idle
+            var onTimeUpdate: ((Double, Double) -> Void)? = nil
+            var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
+            var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
+            var currentTime: Double = 0
+            var pendingSeekTime: Double? = nil
+            var isSeeking: Bool = false
+            var duration: Double = 0
+            var isPlaying: Bool = false
+            var isLoaded: Bool = false
+            var isLoading: Bool = false
+            var loadError: String? = nil
+            var mediaTitle: String = ""
+            var artworkData: Data? = nil
+            var artworkURL: URL? = nil
+            var hasVideo: Bool = false
+            var videoWidth: Int = 1920
+            var videoHeight: Int = 1080
+            var nominalFrameDuration: Double = 1.0 / 24.0
+            var sampleAspectRatio: RationalAspectRatio = RationalAspectRatio(numerator: 1, denominator: 1)
+            var displayAspectRatio: Double = 16.0 / 9.0
+            var videoCodecName: String = "hevc"
+            var videoBitDepth: Int = 10
+            var videoColorPrimaries: String = "bt2020"
+            var videoTransferFunction: String = "smpte2084"
+            var videoDolbyVisionProfile: String? = nil
+            var videoSourcePeakNits: Float = 1000.0
+            var renderMode: RenderMode = .auto
+            var isHDRDisplay: Bool = false
+            var isToneMappingPermitted: Bool = true
+            nonisolated var activeRenderMode: RenderMode { .metalToneMap }
+            var isDisplaySleepDisabled: Bool = false
+            var metalExposure: Float = 0
+            var metalShadowLift: Float = 0
+            var metalTargetNits: Float = 203.0
+            var targetNitsScale: Float = 1.0
+            var baseAdaptiveTargetNits: Float = 203.0
+            var metalSharpness: Float = 0
+            var volume: Float = 1.0
+            var isMuted: Bool = false
+            var playbackRate: Double = 1.0
+            var seekStepSeconds: Double = 5.0
+            var exactSeekOnSinglePress: Bool = false
+            var enableOSD: Bool = true
+            var showDebugHUD: Bool = false
+            var droppedFramesCount: Int = 0
+            var pipelineDroppedFramesCount: Int = 0
+            var speedSkippedFramesCount: Int = 0
+            var thumbnailManager: ThumbnailManager = ThumbnailManager()
+            var audioTracks: [MediaDemuxer.AudioTrack] = []
+            var selectedAudioTrackId: Int = 0
+            var subtitleTracks: [SubtitleTrack] = []
+            var selectedSubtitleTrackId: Int? = nil
+            var currentSubtitleText: String? = nil
+            var currentSubtitleCue: SubtitleCue? = nil
+            var currentSubtitleCues: [SubtitleCue] = []
+            var subtitleFontSize: Double = 16.0
+            var subtitleFontName: String = "Helvetica"
+            var subtitleFontWeight: String = "Regular"
+            var subtitleTextColorHex: String = "#FFFFFF"
+            var subtitleBgColorHex: String = "#000000"
+            var subtitleBgOpacity: Double = 0.5
+            var playlist: PlaylistManager = PlaylistManager()
+
+            init() {}
+
+            func selectSubtitleTrack(id: Int?) {}
+            func loadExternalSubtitle(url: URL) {}
+            func stop() {}
+            func play() {}
+            func pause() {}
+            func togglePlayPause() {}
+            func seek(to seconds: Double, exact: Bool) {}
+            func seekRelative(by seconds: Double, exact: Bool) {}
+            func stepFrameForward() {}
+            func stepFrameBackward() {}
+            func stepVolume(by delta: Float) {}
+            func toggleMute() {}
+            func toggleDebugHUD() {}
+            func renderCurrentFrame() {}
+            func selectAudioTrack(id: Int) {}
+            func playNext() {}
+            func playPrevious() {}
+            func playPlaylistItem(id: UUID) {}
+            func removePlaylistItem(id: UUID) {}
+        }
+
+        let mock = MockEngine()
+        // Verify convenience protocol extension overload delegates to single load(request)
+        mock.load(path: "test.mkv", title: "Test Title")
+        #expect(mock.loadedRequest?.path == "test.mkv")
+        #expect(mock.loadedRequest?.title == "Test Title")
     }
 }

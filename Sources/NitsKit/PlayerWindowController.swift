@@ -201,15 +201,16 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
 
         engine.load(
-            path: pathString,
-            title: title,
-            artworkData: artworkData,
-            artworkURL: artworkURL,
-            headers: headers,
-            startTime: startTime,
-            audioTrack: audioTrack,
-            subtitleTrack: subtitleTrack
-        )
+            MediaLoadRequest(
+                path: pathString,
+                title: title,
+                artworkData: artworkData,
+                artworkURL: artworkURL,
+                headers: headers,
+                startTime: startTime,
+                audioTrack: audioTrack,
+                subtitleTrack: subtitleTrack
+            ))
         window?.title = engine.mediaTitle
 
         showWindow(nil)

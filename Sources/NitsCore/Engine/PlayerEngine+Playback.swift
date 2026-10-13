@@ -136,15 +136,12 @@ extension PlayerEngine {
     public func load(item: PlaylistItem) {
         let pathString = item.url.isFileURL ? item.url.standardizedFileURL.path : item.url.absoluteString
         self.load(
-            path: pathString,
-            title: item.title,
-            artworkData: nil,
-            artworkURL: nil,
-            headers: item.customHeaders,
-            startTime: item.startTime,
-            audioTrack: nil,
-            subtitleTrack: nil
-        )
+            MediaLoadRequest(
+                path: pathString,
+                title: item.title,
+                headers: item.customHeaders,
+                startTime: item.startTime
+            ))
     }
 
     /// Advances to and loads the next item in the playlist.

@@ -89,34 +89,8 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor func selectSubtitleTrack(id: Int?)
     @MainActor func loadExternalSubtitle(url: URL)
 
-    @MainActor func load(path: String)
-    @MainActor func load(path: String, title: String?)
-    @MainActor func load(path: String, headers: [String: String])
-    @MainActor func load(path: String, title: String?, headers: [String: String], startTime: Double?)
-    @MainActor func load(
-        path: String,
-        title: String?,
-        artworkData: Data?,
-        artworkURL: URL?,
-        headers: [String: String],
-        startTime: Double?,
-        audioTrack: String?,
-        subtitleTrack: String?
-    )
-    @MainActor func loadAsync(path: String) async
-    @MainActor func loadAsync(path: String, title: String?) async
-    @MainActor func loadAsync(path: String, headers: [String: String]) async
-    @MainActor func loadAsync(path: String, title: String?, headers: [String: String], startTime: Double?) async
-    @MainActor func loadAsync(
-        path: String,
-        title: String?,
-        artworkData: Data?,
-        artworkURL: URL?,
-        headers: [String: String],
-        startTime: Double?,
-        audioTrack: String?,
-        subtitleTrack: String?
-    ) async
+    @MainActor func load(_ request: MediaLoadRequest)
+    @MainActor func loadAsync(_ request: MediaLoadRequest) async
     @MainActor func stop()
     @MainActor func play()
     @MainActor func pause()
@@ -163,6 +137,96 @@ extension PlayerEngineProtocol {
 
     @MainActor
     public func resetPlaybackRate() {}
+}
+
+extension PlayerEngineProtocol {
+    @MainActor
+    public func load(path: String) {
+        load(MediaLoadRequest(path: path))
+    }
+
+    @MainActor
+    public func load(path: String, title: String?) {
+        load(MediaLoadRequest(path: path, title: title))
+    }
+
+    @MainActor
+    public func load(path: String, headers: [String: String]) {
+        load(MediaLoadRequest(path: path, headers: headers))
+    }
+
+    @MainActor
+    public func load(path: String, title: String?, headers: [String: String], startTime: Double?) {
+        load(MediaLoadRequest(path: path, title: title, headers: headers, startTime: startTime))
+    }
+
+    @MainActor
+    public func load(
+        path: String,
+        title: String?,
+        artworkData: Data?,
+        artworkURL: URL?,
+        headers: [String: String],
+        startTime: Double?,
+        audioTrack: String?,
+        subtitleTrack: String?
+    ) {
+        load(
+            MediaLoadRequest(
+                path: path,
+                title: title,
+                artworkData: artworkData,
+                artworkURL: artworkURL,
+                headers: headers,
+                startTime: startTime,
+                audioTrack: audioTrack,
+                subtitleTrack: subtitleTrack
+            ))
+    }
+
+    @MainActor
+    public func loadAsync(path: String) async {
+        await loadAsync(MediaLoadRequest(path: path))
+    }
+
+    @MainActor
+    public func loadAsync(path: String, title: String?) async {
+        await loadAsync(MediaLoadRequest(path: path, title: title))
+    }
+
+    @MainActor
+    public func loadAsync(path: String, headers: [String: String]) async {
+        await loadAsync(MediaLoadRequest(path: path, headers: headers))
+    }
+
+    @MainActor
+    public func loadAsync(path: String, title: String?, headers: [String: String], startTime: Double?) async {
+        await loadAsync(MediaLoadRequest(path: path, title: title, headers: headers, startTime: startTime))
+    }
+
+    @MainActor
+    public func loadAsync(
+        path: String,
+        title: String?,
+        artworkData: Data?,
+        artworkURL: URL?,
+        headers: [String: String],
+        startTime: Double?,
+        audioTrack: String?,
+        subtitleTrack: String?
+    ) async {
+        await loadAsync(
+            MediaLoadRequest(
+                path: path,
+                title: title,
+                artworkData: artworkData,
+                artworkURL: artworkURL,
+                headers: headers,
+                startTime: startTime,
+                audioTrack: audioTrack,
+                subtitleTrack: subtitleTrack
+            ))
+    }
 }
 
 extension PlayerEngineProtocol {
