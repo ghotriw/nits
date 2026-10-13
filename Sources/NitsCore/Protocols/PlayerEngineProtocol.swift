@@ -71,6 +71,7 @@ public protocol PlayerEngineProtocol: AnyObject, Sendable {
     @MainActor var droppedFramesCount: Int { get }
     @MainActor var pipelineDroppedFramesCount: Int { get }
     @MainActor var speedSkippedFramesCount: Int { get }
+    @MainActor var thumbnailManager: ThumbnailManager { get }
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
     @MainActor var selectedAudioTrackId: Int { get }
     @MainActor var subtitleTracks: [SubtitleTrack] { get }

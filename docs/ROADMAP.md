@@ -276,7 +276,7 @@ flowchart TD
   - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers.
   - Chapter visual tick marks on `TimelineSlider` with hover title tooltips.
   - Previous/Next Chapter shortcuts (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`).
-- [ ] **5.9.2. Timeline Hover Seek Thumbnails:**
+- [x] **5.9.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
 - [ ] **5.9.3. Color-Accurate Screenshot Capture (Frame Export):**

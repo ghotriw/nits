@@ -32,6 +32,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyExactSeekOnSinglePress)
     private var exactSeekOnSinglePress: Bool = true
 
+    @AppStorage(PlayerConfiguration.keyNetworkThumbnailPolicy)
+    private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
+
     private static let standardSeekSteps: [Double] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
 
     @State private var showHistoryClearedAlert: Bool = false
@@ -188,6 +191,26 @@ public struct SettingsView: View {
                         : "For video, seeking always jumps to keyframes (fastest, recommended for software decoders like AV1). For audio, seeking uses the selected step interval."
                 )
             }
+            Section {
+                Picker("Network stream thumbnails", selection: $networkThumbnailPolicy) {
+                    ForEach(NetworkThumbnailPolicy.allCases) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
+                .onChange(of: networkThumbnailPolicy) { _, _ in
+                    notifyChange()
+                }
+            } header: {
+                Text("Timeline Preview Thumbnails")
+            } footer: {
+                Text(
+                    networkThumbnailPolicy == .localNetworkOnly
+                        ? "Thumbnails are generated on local network streams (Emby, Plex, NAS) and skipped for external internet streams to conserve bandwidth."
+                        : (networkThumbnailPolicy == .always
+                            ? "Thumbnails are generated for all network streams (may consume additional bandwidth on metered connections)."
+                            : "Thumbnails are only generated for local files on disk. Network streams will show time badges only.")
+                )
+            }
         }
         .formStyle(.grouped)
     }
@@ -273,7 +296,8 @@ public struct SettingsView: View {
             enableOSD: enableOSD,
             autoLoadFolderMedia: autoLoadFolderMedia,
             seekStepSeconds: seekStepSeconds,
-            exactSeekOnSinglePress: exactSeekOnSinglePress
+            exactSeekOnSinglePress: exactSeekOnSinglePress,
+            networkThumbnailPolicy: networkThumbnailPolicy
         )
         onConfigurationChanged?(current)
     }

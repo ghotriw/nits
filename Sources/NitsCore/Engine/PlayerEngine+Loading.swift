@@ -258,12 +258,49 @@ extension PlayerEngine {
         hasVideo = false
         playbackState = .loading
 
-        let task = Task.detached(priority: .userInitiated) { () -> MediaDemuxer? in
-            guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
-            return MediaDemuxer(url: path, headers: headers, interruptContext: interruptContext)
-        }
+        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let maxAttempts = isNetwork ? 5 : 1
+        var newDemuxer: MediaDemuxer? = nil
 
-        let newDemuxer = await task.value
+        for attempt in 1...maxAttempts {
+            if self.currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled {
+                break
+            }
+
+            let task = Task.detached(priority: .userInitiated) { () -> MediaDemuxer? in
+                guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
+                return MediaDemuxer(url: path, headers: headers, interruptContext: interruptContext)
+            }
+
+            newDemuxer = await task.value
+            if newDemuxer != nil {
+                break
+            }
+
+            // If another load was started or this task was cancelled, break immediately
+            if self.currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled {
+                break
+            }
+
+            // Check if failure is a transient socket/network error
+            if let err = interruptContext.lastError {
+                let code = err.code
+                // Transient Darwin/POSIX network socket error codes:
+                // -65 (EHOSTUNREACH), -61 (ECONNREFUSED), -51 (ENETUNREACH), -60 (ETIMEDOUT),
+                // -64 (EHOSTDOWN), -54 (ECONNRESET), -50 (ENETDOWN)
+                let transientCodes: Set<Int32> = [-65, -61, -51, -60, -64, -54, -50]
+                let isTransient = transientCodes.contains(code)
+                if isTransient && attempt < maxAttempts {
+                    AppLog.warning(
+                        .engine,
+                        "Transient network failure (\(err.message), code \(code)) opening '\(path)' on attempt \(attempt)/\(maxAttempts). Retrying in \(attempt * 250)ms..."
+                    )
+                    try? await Task.sleep(nanoseconds: UInt64(attempt * 250_000_000))
+                    continue
+                }
+            }
+            break
+        }
 
         // Prevent race condition: if another load started or task was cancelled, discard result
         if self.currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled {
@@ -276,11 +313,16 @@ extension PlayerEngine {
         }
 
         guard let demuxer = newDemuxer else {
-            AppLog.error(.engine, "Failed to open file or network stream: \(path)")
+            let errorDetail: String
+            if let err = interruptContext.lastError {
+                errorDetail = "\(err.message) (code \(err.code))"
+            } else {
+                errorDetail = "Failed to open stream or media file."
+            }
+            AppLog.error(.engine, "Failed to open file or network stream '\(path)': \(errorDetail)")
             self.isLoading = false
-            let err = "Failed to open stream or media file."
-            self.loadError = err
-            self.playbackState = .failed(err)
+            self.loadError = errorDetail
+            self.playbackState = .failed(errorDetail)
             return
         }
 
@@ -349,12 +391,19 @@ extension PlayerEngine {
         hasVideo = false
         playbackState = .loading
 
-        guard let demuxer = MediaDemuxer(url: path, headers: headers) else {
-            AppLog.error(.engine, "Failed to open file: \(path)")
-            let err = "Failed to open media file."
-            self.loadError = err
+        let interruptContext = MediaDemuxer.InterruptContext()
+        self.currentInterruptContext = interruptContext
+        guard let demuxer = MediaDemuxer(url: path, headers: headers, interruptContext: interruptContext) else {
+            let errorDetail: String
+            if let err = interruptContext.lastError {
+                errorDetail = "\(err.message) (code \(err.code))"
+            } else {
+                errorDetail = "Failed to open media file."
+            }
+            AppLog.error(.engine, "Failed to open file '\(path)': \(errorDetail)")
+            self.loadError = errorDetail
             self.isLoading = false
-            self.playbackState = .failed(err)
+            self.playbackState = .failed(errorDetail)
             return
         }
 
@@ -412,6 +461,7 @@ extension PlayerEngine {
         duration = 0
         isLoading = false
         playbackState = .idle
+        thumbnailManager.reset()
     }
 
     public func saveCurrentPlaybackProgress() {
@@ -598,6 +648,16 @@ extension PlayerEngine {
                 )
             }
             playlist.updateCurrentItemDuration(demuxer.durationSeconds)
+        }
+        if demuxer.hasVideo {
+            thumbnailManager.prepareThumbnails(
+                for: path,
+                duration: demuxer.durationSeconds,
+                headers: headers,
+                networkPolicy: configuration.networkThumbnailPolicy
+            )
+        } else {
+            thumbnailManager.reset()
         }
         // Fall back to embedded container artwork if no explicit artwork data was provided
         if self.artworkData == nil, let embedded = demuxer.embeddedArtworkData {

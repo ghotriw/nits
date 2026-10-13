@@ -1,5 +1,28 @@
 import Foundation
 
+/// Policy for timeline hover thumbnail generation on network streams.
+public enum NetworkThumbnailPolicy: String, Sendable, Codable, CaseIterable, Identifiable {
+    /// Generate thumbnails automatically on local network streams (LAN / private IP / Bonjour), skip for WAN streams.
+    case localNetworkOnly
+    /// Generate thumbnails on all network streams (LAN and WAN).
+    case always
+    /// Disable thumbnail generation on all network streams (only local disk files).
+    case never
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .localNetworkOnly:
+            return "Local Network Only (LAN)"
+        case .always:
+            return "Always (All Network Streams)"
+        case .never:
+            return "Never (Local Files Only)"
+        }
+    }
+}
+
 /// Global configuration for playback behavior, rendering engines, and hardware options.
 public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether automatic tone mapping and custom Metal SDR rendering are permitted.
@@ -88,6 +111,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Saved playlist shuffle state (default false).
     public var playlistIsShuffled: Bool
 
+    /// Policy for timeline hover thumbnail generation on network streams (default .localNetworkOnly).
+    public var networkThumbnailPolicy: NetworkThumbnailPolicy
+
     public init(
         enableToneMapping: Bool = true,
         defaultRenderMode: RenderMode = .auto,
@@ -113,7 +139,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
         playlistRepeatMode: PlaylistRepeatMode = .off,
-        playlistIsShuffled: Bool = false
+        playlistIsShuffled: Bool = false,
+        networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -143,6 +170,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleTrack = subtitleTrack
         self.playlistRepeatMode = playlistRepeatMode
         self.playlistIsShuffled = playlistIsShuffled
+        self.networkThumbnailPolicy = networkThumbnailPolicy
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -164,6 +192,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
     public static let keyPlaylistRepeatMode = "Nits.playlistRepeatMode"
     public static let keyPlaylistIsShuffled = "Nits.playlistIsShuffled"
+    public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -229,6 +258,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyPlaylistIsShuffled) != nil {
             config.playlistIsShuffled = userDefaults.bool(forKey: keyPlaylistIsShuffled)
         }
+        if let networkThumbnailsRaw = userDefaults.string(forKey: keyNetworkThumbnailPolicy),
+            let policy = NetworkThumbnailPolicy(rawValue: networkThumbnailsRaw)
+        {
+            config.networkThumbnailPolicy = policy
+        }
         return config
     }
 
@@ -253,6 +287,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
         userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
         userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
+        userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
     }
 
     private static func nonEmpty(_ value: String) -> String? {
@@ -341,6 +376,19 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.subtitleFontName = String(arg.dropFirst("--subtitle-font=".count))
             } else if arg.starts(with: "--subtitle-weight=") {
                 config.subtitleFontWeight = String(arg.dropFirst("--subtitle-weight=".count))
+            } else if arg.starts(with: "--network-thumbnails=") {
+                let val = String(arg.dropFirst("--network-thumbnails=".count)).lowercased()
+                if val == "always" || val == "all" || val == "true" {
+                    config.networkThumbnailPolicy = .always
+                } else if val == "never" || val == "none" || val == "false" || val == "off" {
+                    config.networkThumbnailPolicy = .never
+                } else if val == "lan" || val == "local" || val == "localnetwork" {
+                    config.networkThumbnailPolicy = .localNetworkOnly
+                }
+            } else if arg == "--no-network-thumbnails" {
+                config.networkThumbnailPolicy = .never
+            } else if arg == "--always-network-thumbnails" {
+                config.networkThumbnailPolicy = .always
             } else if arg.starts(with: "--header=") {
                 let headerStr = String(arg.dropFirst("--header=".count))
                 if let colonIdx = headerStr.firstIndex(of: ":") {

@@ -351,6 +351,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var currentPath: String?
     public let historyStore: PlaybackHistoryStore
     public let playlist: PlaylistManager
+    public let thumbnailManager = ThumbnailManager()
     @ObservationIgnored
     let isFeeding = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored

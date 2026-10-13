@@ -31,7 +31,8 @@ A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and 
 - [ ] Audio sync delay adjustment
 - [ ] Subtitle sync delay adjustment
 - [ ] Apple ProRes support
-- [ ] Timeline thumbnails and chapters
+- [x] Timeline thumbnails
+- [ ] Timeline chapters
 - [ ] Picture-in-Picture
 - [ ] Embedding in web clients (WKWebView bridge)
 - [ ] Standalone app bundle with embedded FFmpeg

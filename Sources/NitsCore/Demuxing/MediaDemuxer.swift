@@ -407,6 +407,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     public final class InterruptContext: @unchecked Sendable {
         private let lock = OSAllocatedUnfairLock()
         private var _isCancelled = false
+        private var _lastErrorCode: Int32?
+        private var _lastErrorMessage: String?
 
         public init() {}
 
@@ -421,6 +423,20 @@ public final class MediaDemuxer: @unchecked Sendable {
             _isCancelled = true
             lock.unlock()
         }
+
+        public var lastError: (code: Int32, message: String)? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let code = _lastErrorCode, let msg = _lastErrorMessage else { return nil }
+            return (code, msg)
+        }
+
+        public func recordError(code: Int32, message: String) {
+            lock.lock()
+            _lastErrorCode = code
+            _lastErrorMessage = message
+            lock.unlock()
+        }
     }
 
     private let interruptContext: InterruptContext
@@ -433,9 +449,62 @@ public final class MediaDemuxer: @unchecked Sendable {
         return isEOFInternal
     }
 
+    /// Returns human-readable error description from FFmpeg av_strerror.
+    public static func ffmpegErrorDescription(_ code: Int32) -> String {
+        var buffer = [CChar](repeating: 0, count: 256)
+        let res = av_strerror(code, &buffer, 256)
+        if res == 0 {
+            return buffer.withUnsafeBufferPointer { ptr in
+                String(cString: ptr.baseAddress!)
+            }
+        }
+        return "FFmpeg error (\(code))"
+    }
+
     public static func isNetworkURL(_ path: String) -> Bool {
         guard let url = URL(string: path), let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
+    }
+
+    /// Checks if a network URL points to a local area network (LAN) / private network address
+    /// (e.g. 192.168.x.x, 10.x.x.x, 172.16-31.x.x, 127.0.0.1, localhost, .local, etc.)
+    public static func isLocalNetworkURL(_ path: String) -> Bool {
+        guard let url = URL(string: path), let rawHost = url.host?.lowercased() else { return false }
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+
+        // Loopback and local domain suffixes
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+            return true
+        }
+        if host.hasSuffix(".local") || host.hasSuffix(".lan") || host.hasSuffix(".home")
+            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || host.hasSuffix(".localdomain")
+        {
+            return true
+        }
+
+        // IPv4 parsing (e.g. 192.168.1.83)
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        if parts.count == 4 && parts.allSatisfy({ $0 >= 0 && $0 <= 255 }) {
+            let p0 = parts[0]
+            let p1 = parts[1]
+            // 10.0.0.0/8 (10.x.x.x)
+            if p0 == 10 { return true }
+            // 172.16.0.0/12 (172.16.x.x - 172.31.x.x)
+            if p0 == 172 && (16...31).contains(p1) { return true }
+            // 192.168.0.0/16 (192.168.x.x)
+            if p0 == 192 && p1 == 168 { return true }
+            // 169.254.0.0/16 (link-local)
+            if p0 == 169 && p1 == 254 { return true }
+            // 127.0.0.0/8 (loopback)
+            if p0 == 127 { return true }
+        }
+
+        // IPv6 Link-Local (fe80::/10) or Unique Local (fc00::/7 - fc.. or fd..)
+        if host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") {
+            return true
+        }
+
+        return false
     }
 
     /// Checks if a path points to a remote streaming resource or a mounted remote volume (e.g. NFS, SMB, AFP under /Volumes/).
@@ -528,12 +597,20 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
         guard ret >= 0, let formatCtx = ctx else {
+            let errorMsg = Self.ffmpegErrorDescription(ret)
+            ctxContext.recordError(code: ret, message: errorMsg)
+            AppLog.error(.demuxer, "avformat_open_input failed with code \(ret) (\(errorMsg)) for '\(url)'")
             // Per FFmpeg avformat_open_input contract: user-allocated AVFormatContext is automatically freed on failure.
             return nil
         }
         self.formatCtx = formatCtx
 
-        guard avformat_find_stream_info(formatCtx, nil) >= 0 else {
+        let streamInfoRet = avformat_find_stream_info(formatCtx, nil)
+        guard streamInfoRet >= 0 else {
+            let errorMsg = Self.ffmpegErrorDescription(streamInfoRet)
+            ctxContext.recordError(code: streamInfoRet, message: errorMsg)
+            AppLog.error(
+                .demuxer, "avformat_find_stream_info failed with code \(streamInfoRet) (\(errorMsg)) for '\(url)'")
             avformat_close_input(&self.formatCtx)
             return nil
         }

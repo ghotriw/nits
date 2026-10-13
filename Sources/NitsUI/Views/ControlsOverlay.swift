@@ -14,6 +14,9 @@ public struct ControlsOverlay: View {
     @State private var dragPosition: Double = 0
     @State private var isBottomHovered: Bool = false
     @State private var isTopHovered: Bool = false
+    @State private var isTimelineHovered: Bool = false
+    @State private var timelineHoverLocation: CGPoint = .zero
+    @State private var timelineHoverRatio: Double = 0
 
     public var body: some View {
         VStack {
@@ -155,7 +158,7 @@ public struct ControlsOverlay: View {
                     }
                     .help("Jump to Time (⌘J)")
 
-                // Progress Bar
+                // Progress Bar with Keyframe Thumbnail Hover & Scrub Preview
                 GeometryReader { geo in
                     let total = max(engine.duration, 1)
                     let current = isDragging ? dragPosition : engine.currentTime
@@ -177,23 +180,68 @@ public struct ControlsOverlay: View {
                     }
                     .frame(height: 18)
                     .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            isTimelineHovered = true
+                            timelineHoverLocation = location
+                            let ratio = min(max(location.x / max(geo.size.width, 1), 0), 1)
+                            timelineHoverRatio = ratio
+                        case .ended:
+                            isTimelineHovered = false
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if (isTimelineHovered || isDragging) && engine.duration > 0 {
+                            let previewTime: Double = isDragging ? dragPosition : (timelineHoverRatio * engine.duration)
+                            let previewThumbnail = engine.thumbnailManager.thumbnail(at: previewTime)
+                            let rawX: CGFloat = isDragging ? (progress * geo.size.width) : timelineHoverLocation.x
+                            let clampedCursorX: CGFloat = min(max(rawX, 0), max(geo.size.width, 0))
+                            let halfWidth: CGFloat = {
+                                if previewThumbnail != nil {
+                                    return 85
+                                } else {
+                                    return engine.duration >= 3600 ? 37 : 29
+                                }
+                            }()
+                            let cardX: CGFloat = clampedCursorX - halfWidth
+
+                            TimelineThumbnailPreviewView(
+                                thumbnail: previewThumbnail,
+                                time: previewTime,
+                                duration: engine.duration
+                            )
+                            .fixedSize()
+                            .offset(x: cardX, y: -31)
+                            .zIndex(100)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
+                    }
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
                                 isDragging = true
                                 let ratio = min(max(value.location.x / geo.size.width, 0), 1)
                                 dragPosition = ratio * engine.duration
+                                timelineHoverLocation = value.location
+                                timelineHoverRatio = ratio
                             }
                             .onEnded { value in
                                 let ratio = min(max(value.location.x / geo.size.width, 0), 1)
                                 let targetTime = ratio * engine.duration
                                 engine.seek(to: targetTime)
                                 isDragging = false
+                                if value.location.y >= -10 && value.location.y <= 28 {
+                                    isTimelineHovered = true
+                                    timelineHoverLocation = value.location
+                                    timelineHoverRatio = ratio
+                                }
                             }
                     )
                 }
                 .padding(.horizontal, 7)
                 .frame(height: 18)
+                .zIndex(10)
 
                 // Total duration
                 Text(formatTime(engine.duration))

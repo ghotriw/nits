@@ -18,10 +18,10 @@ let package = Package(
     targets: [
         .systemLibrary(
             name: "CFFmpeg",
-            pkgConfig: "libavformat libavcodec libavutil libswresample",
+            pkgConfig: "libavformat libavcodec libavutil libswresample libswscale",
             providers: [
                 .brew(["ffmpeg"]),
-                .apt(["libavformat-dev", "libavcodec-dev", "libavutil-dev", "libswresample-dev"]),
+                .apt(["libavformat-dev", "libavcodec-dev", "libavutil-dev", "libswresample-dev", "libswscale-dev"]),
             ]
         ),
         .target(
