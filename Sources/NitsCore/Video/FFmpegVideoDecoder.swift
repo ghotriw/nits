@@ -42,6 +42,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let codec: UnsafePointer<AVCodec>? = {
             if codecId == AV_CODEC_ID_AV1 {
                 return avcodec_find_decoder_by_name("libdav1d") ?? avcodec_find_decoder(codecId)
+            } else if codecId == AV_CODEC_ID_VP9 {
+                return avcodec_find_decoder_by_name("libvpx-vp9") ?? avcodec_find_decoder(codecId)
             }
             return avcodec_find_decoder(codecId)
         }()
@@ -488,7 +490,16 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 || format == AV_PIX_FMT_YUVJ420P.rawValue
                 || format == AV_PIX_FMT_YUV420P10LE.rawValue
         else {
-            AppLog.error(.video, "FFmpegVideoDecoder: Unsupported pixel format: \(format)")
+            let desc: String
+            switch format {
+            case AV_PIX_FMT_YUV422P.rawValue, AV_PIX_FMT_YUV422P10LE.rawValue:
+                desc = "4:2:2 planar YUV is not supported by bi-planar hardware renderer"
+            case AV_PIX_FMT_YUV444P.rawValue, AV_PIX_FMT_YUV444P10LE.rawValue:
+                desc = "4:4:4 planar YUV is not supported by bi-planar hardware renderer"
+            default:
+                desc = "format id \(format)"
+            }
+            AppLog.error(.video, "FFmpegVideoDecoder: Unsupported pixel format (\(desc))")
             return nil
         }
 

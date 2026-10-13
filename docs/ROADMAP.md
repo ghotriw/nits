@@ -138,7 +138,7 @@ flowchart TD
 
 > Broaden codec compatibility for web rips and broadcast media while eliminating interlacing combing artifacts.
 
-- [ ] **1.8.1. VP9 Codec Integration (WebM / YouTube Streams):**
+- [x] **1.8.1. VP9 Codec Integration (WebM / YouTube Streams):**
   - VideoToolbox hardware decode path for VP9 Profile 0 (8-bit) and Profile 2 (10-bit HDR) where supported.
   - Software decoding fallback via `FFmpegVideoDecoder` (`libvpx-vp9` / native FFmpeg VP9).
   - Mapping of WebM container metadata (Color config, mastering display metadata, MaxCLL/FALL).
@@ -340,7 +340,8 @@ flowchart TD
 | **Dolby Vision P5 / P8.1 / P8.4** | `NitsCore` | Completed ✓ | Hardware `dvh1`, NAL 62 RPU parser, L1/L2 SDR SOP trims |
 | **AV1 Hybrid Decoder** | `NitsCore` | Completed ✓ | M3/M4+ VideoToolbox, M1/M2 fallback to `libdav1d` NEON |
 | **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | Multi-threaded WMV1–3, VC-1 into `CVPixelBufferPool` |
-| **Extended Formats: VP9 & ProRes** | `NitsCore` | Planned 📋 | VP9 (WebM), Apple ProRes VideoToolbox, DNxHR |
+| **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
+| **Professional Production Codecs** | `NitsCore` | Planned 📋 | Apple ProRes VideoToolbox, Avid DNxHR |
 | **Metal Deinterlacer (YADIF/BWDIF)** | `NitsCore` | Planned 📋 | Compute shader deinterlacing for 1080i/576i streams |
 | **Audio Engine & Master Sync** | `NitsCore` | Completed ✓ | CoreAudio hardware clock, Spatial Audio 5.1/7.1, 48kHz Float32 |
 | **Audio-Only Playback** | `NitsCore` / `NitsUI` | Completed ✓ | FLAC, MP3, AAC, OGG, Opus, ALAC, WAV; music UI |

@@ -665,7 +665,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 let pixFmt = stream.pointee.codecpar.pointee.format
                 if pixFmt == AV_PIX_FMT_YUV420P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV420P10BE.rawValue
                     || pixFmt == AV_PIX_FMT_YUV422P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV444P10LE.rawValue
-                    || ((codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_AV1)
+                    || ((codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_AV1 || codecId == AV_CODEC_ID_VP9)
                         && (self.transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
                             || self.transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG))
                 {
@@ -1062,6 +1062,45 @@ public final class MediaDemuxer: @unchecked Sendable {
         return (nil, nil, nil)
     }
 
+    /// Synthesizes a standard 12-byte VP Codec Configuration Box (`vpcC` per ISO/IEC 14496-15)
+    /// for streams (such as WebM / Matroska) where the demuxer does not supply container extradata.
+    package static func synthesizeVPCC(
+        profile: Int,
+        level: Int,
+        bitDepth: Int,
+        isFullRange: Bool,
+        colorPrimaries: Int,
+        colorTransfer: Int,
+        colorSpace: Int
+    ) -> Data {
+        var box = [UInt8](repeating: 0, count: 12)
+        // Byte 0: version = 1
+        box[0] = 1
+        // Bytes 1..3: flags = 0
+        box[1] = 0
+        box[2] = 0
+        box[3] = 0
+        // Byte 4: profile (0, 1, 2, or 3). Sanitize negative / unset FFmpeg values.
+        box[4] = UInt8(max(0, min(profile, 3)))
+        // Byte 5: level (e.g. 10 for 1.0, 31 for 3.1, 51 for 5.1). Default to 0 if unknown/unset.
+        box[5] = UInt8(max(0, min(level, 255)))
+        // Byte 6: bitDepth (4 bits) | chromaSubsampling (3 bits: 0=4:2:0 vertical, 1=4:2:0 colocated, 2=4:2:2, 3=4:4:4) | videoFullRangeFlag (1 bit)
+        let depthVal = UInt8(max(8, min(bitDepth, 12)))
+        let chromaSubsampling: UInt8 = 1  // 4:2:0 colocated (standard for VP9)
+        let fullRangeFlag: UInt8 = isFullRange ? 1 : 0
+        box[6] = (depthVal << 4) | (chromaSubsampling << 1) | fullRangeFlag
+        // Byte 7: colourPrimaries (ISO/IEC 23001-8 / ITU-T H.273)
+        box[7] = UInt8(max(0, min(colorPrimaries, 255)))
+        // Byte 8: transferCharacteristics (ISO/IEC 23001-8 / ITU-T H.273)
+        box[8] = UInt8(max(0, min(colorTransfer, 255)))
+        // Byte 9: matrixCoefficients (ISO/IEC 23001-8 / ITU-T H.273)
+        box[9] = UInt8(max(0, min(colorSpace, 255)))
+        // Bytes 10..11: codecInitializationDataSize = 0 (16-bit big endian)
+        box[10] = 0
+        box[11] = 0
+        return Data(box)
+    }
+
     private func extractVideoFormatDescription() -> CMVideoFormatDescription? {
         guard let ctx = formatCtx else { return nil }
 
@@ -1182,6 +1221,28 @@ public final class MediaDemuxer: @unchecked Sendable {
                     (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
                         as? [String: Any]) ?? [:]
                 atoms["av1C"] = extraData
+                extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
+            } else if codec == .vp9, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+                let vpccData: Data
+                if let extradata = stream.pointee.codecpar.pointee.extradata,
+                    stream.pointee.codecpar.pointee.extradata_size >= 12
+                {
+                    vpccData = Data(bytes: extradata, count: Int(stream.pointee.codecpar.pointee.extradata_size))
+                } else {
+                    vpccData = Self.synthesizeVPCC(
+                        profile: Int(stream.pointee.codecpar.pointee.profile),
+                        level: Int(stream.pointee.codecpar.pointee.level),
+                        bitDepth: self.bitDepth,
+                        isFullRange: self.isFullRange,
+                        colorPrimaries: Int(stream.pointee.codecpar.pointee.color_primaries.rawValue),
+                        colorTransfer: Int(stream.pointee.codecpar.pointee.color_trc.rawValue),
+                        colorSpace: Int(stream.pointee.codecpar.pointee.color_space.rawValue)
+                    )
+                }
+                var atoms =
+                    (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
+                        as? [String: Any]) ?? [:]
+                atoms["vpcC"] = vpccData
                 extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
             }
 

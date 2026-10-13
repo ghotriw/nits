@@ -7,23 +7,34 @@ A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and 
 
 ## Roadmap
 
-- [x] Rendering: Apple HDR passthrough and Metal BT.2390 EETF tone mapping
-- [x] Video: HEVC 10-bit, H.264 8/10-bit, Dolby Vision Profile 5, HLG
-- [x] Audio: master clock sync, multiple PCM tracks, Spatial Audio, 5.1/7.1
-- [x] Diagnostics overlay: CPU/RAM, A/V drift, queue levels
-- [x] Desktop UX: keyboard shortcuts, OSD, double-click fullscreen, cursor auto-hide
-- [x] Now Playing & system media controls.
-- [x] HTTP/HTTPS streaming with custom auth headers
-- [x] Resume playback & start time position control (Watch Later)
-- [x] Subtitles: embedded SubRip/MKV/MP4 & external SRT/WebVTT with styling & alignment
-- [ ] Subtitles: advanced stylized ASS/SSA typesetting (`libass`) & bitmap formats (PGS/VOBSUB)
-- [x] Dolby Vision: Profile 8 (8.1, 8.4) playback
-- [x] Dolby Vision: dynamic metadata (RPU L1 and L2) scene-adaptive tone mapping
-- [x] AV1 (`dav1d` on M1/M2)
-- [ ] AV1 (VideoToolbox on M3 and later)
-- [x] Playlist management
-- [ ] Embedding the video view in a WKWebView-based client
-- [ ] Bundling FFmpeg dylibs into the app
+**Video & HDR**
+- [x] Codecs: VP9, AV1, HEVC, H.264, WMV/VC-1
+- [x] HDR output on Apple XDR displays, custom tone mapping to SDR on standard screens
+
+**Dolby Vision**
+- [x] Profile 5 and Profile 8 (8.1, 8.4) playback
+- [x] Dynamic metadata (RPU L1 & L2) with scene-adaptive tone mapping
+
+**Audio & subtitles**
+- [x] Audio: multichannel 5.1/7.1, Spatial Audio, track switching, audio-only playback
+- [x] Subtitles: embedded and external SRT / WebVTT with customizable styling
+
+**Player & system**
+- [x] Keyboard shortcuts, OSD, frame stepping, quick settings, playlists
+- [x] macOS integration: Now Playing media keys, Control Center, sleep prevention
+- [x] Network streaming over HTTP/HTTPS with custom headers
+- [x] Playback history: resume where you left off
+
+**Next**
+- [ ] Styled ASS/SSA subtitles
+- [ ] Bitmap subtitles (PGS / VOBSUB)
+- [ ] Audio sync delay adjustment
+- [ ] Subtitle sync delay adjustment
+- [ ] Apple ProRes support
+- [ ] Timeline thumbnails and chapters
+- [ ] Picture-in-Picture
+- [ ] Embedding in web clients (WKWebView bridge)
+- [ ] Standalone app bundle with embedded FFmpeg
 
 Details: [docs/ROADMAP.md](docs/ROADMAP.md).
 

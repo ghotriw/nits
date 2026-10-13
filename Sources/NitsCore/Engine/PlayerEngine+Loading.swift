@@ -747,6 +747,7 @@ extension PlayerEngine {
                 case .hevc: "HEVC"
                 case .h264: "H.264"
                 case .av1: "AV1"
+                case .vp9: "VP9"
                 case .wmv1: "WMV1"
                 case .wmv2: "WMV2"
                 case .wmv3: "WMV3"

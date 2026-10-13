@@ -25,6 +25,10 @@ public enum SyntheticTestMediaFactory {
         case av1SDR
         /// WMV2 video (3s) encoded with wmv2 (640x360 @ 24fps) with WMAv2 audio in ASF container
         case wmv2SDR
+        /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
+        case vp9SDR
+        /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
+        case vp910BitHDR
 
         public var filename: String {
             switch self {
@@ -46,6 +50,10 @@ public enum SyntheticTestMediaFactory {
                 return "synth_av1_sdr.mkv"
             case .wmv2SDR:
                 return "synth_wmv2_sdr.wmv"
+            case .vp9SDR:
+                return "synth_vp9_sdr.webm"
+            case .vp910BitHDR:
+                return "synth_vp9_10bit_hdr.webm"
             }
         }
     }
@@ -121,6 +129,28 @@ public enum SyntheticTestMediaFactory {
             try process.run()
             process.waitUntilExit()
             if process.terminationStatus == 0 && FileManager.default.fileExists(atPath: targetPath) {
+                // For VP9 10-bit HDR WebM, libvpx-vp9 ignores container color metadata during initial encoding pass.
+                // A secondary remux pass copies the bitstream and correctly injects WebM Matroska Color elements.
+                if preset == .vp910BitHDR {
+                    let tempCopy = targetPath + ".raw.webm"
+                    try? FileManager.default.moveItem(atPath: targetPath, toPath: tempCopy)
+                    let remux = Process()
+                    remux.executableURL = URL(fileURLWithPath: ffmpeg)
+                    remux.arguments = [
+                        "-y", "-i", tempCopy,
+                        "-c", "copy",
+                        "-color_primaries:v", "bt2020",
+                        "-color_trc:v", "smpte2084",
+                        "-colorspace:v", "bt2020nc",
+                        targetPath,
+                    ]
+                    remux.standardOutput = Pipe()
+                    remux.standardError = Pipe()
+                    try remux.run()
+                    remux.waitUntilExit()
+                    try? FileManager.default.removeItem(atPath: tempCopy)
+                    guard remux.terminationStatus == 0 else { return nil }
+                }
                 return targetPath
             } else {
                 let errText = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -262,6 +292,29 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
                 "-c:v", "wmv2", "-b:v", "2000k",
                 "-c:a", "wmav2", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .vp9SDR:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-crf", "30", "-b:v", "0",
+                "-c:a", "libopus", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .vp910BitHDR:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p10le", "-crf", "30", "-b:v", "0",
+                "-color_primaries", "bt2020",
+                "-color_trc", "smpte2084",
+                "-colorspace", "bt2020nc",
+                "-c:a", "libopus", "-b:a", "128k",
                 outputPath,
             ]
         }

@@ -7,6 +7,7 @@ public enum VideoCodec: String, Sendable {
     case hevc = "HEVC / H.265"
     case h264 = "AVC / H.264"
     case av1 = "AV1"
+    case vp9 = "VP9"
     case wmv1 = "Windows Media Video 7 (WMV1)"
     case wmv2 = "Windows Media Video 8 (WMV2)"
     case wmv3 = "Windows Media Video 9 (WMV3)"
@@ -24,6 +25,8 @@ public enum VideoCodec: String, Sendable {
             return kCMVideoCodecType_H264
         case .av1:
             return kCMVideoCodecType_AV1
+        case .vp9:
+            return kCMVideoCodecType_VP9
         case .wmv1:
             // 'wmv1' = 0x776d7631
             return 0x776D_7631
@@ -44,6 +47,9 @@ public enum VideoCodec: String, Sendable {
     /// Cached detection of host AV1 hardware decoding capability.
     public static let isAV1HardwareSupported: Bool = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
 
+    /// Cached detection of host VP9 hardware decoding capability.
+    public static let isVP9HardwareSupported: Bool = VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)
+
     /// Corresponding FFmpeg AVCodecID (package-internal to avoid leaking CFFmpeg to external modules).
     package var ffmpegCodecID: AVCodecID {
         switch self {
@@ -53,6 +59,8 @@ public enum VideoCodec: String, Sendable {
             return AV_CODEC_ID_H264
         case .av1:
             return AV_CODEC_ID_AV1
+        case .vp9:
+            return AV_CODEC_ID_VP9
         case .wmv1:
             return AV_CODEC_ID_WMV1
         case .wmv2:
@@ -73,6 +81,8 @@ public enum VideoCodec: String, Sendable {
             return true
         case .av1:
             return Self.isAV1HardwareSupported
+        case .vp9:
+            return Self.isVP9HardwareSupported
         case .wmv1, .wmv2, .wmv3, .vc1, .unknown:
             return false
         }
@@ -83,7 +93,7 @@ public enum VideoCodec: String, Sendable {
         switch self {
         case .hevc, .h264:
             return true
-        case .av1, .wmv1, .wmv2, .wmv3, .vc1, .unknown:
+        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .unknown:
             return false
         }
     }
@@ -97,6 +107,8 @@ public enum VideoCodec: String, Sendable {
             return .h264
         case AV_CODEC_ID_AV1:
             return .av1
+        case AV_CODEC_ID_VP9:
+            return .vp9
         case AV_CODEC_ID_WMV1:
             return .wmv1
         case AV_CODEC_ID_WMV2:
