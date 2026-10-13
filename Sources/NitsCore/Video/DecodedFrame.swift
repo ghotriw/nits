@@ -9,18 +9,21 @@ public struct DecodedFrame: @unchecked Sendable {
     public let duration: CMTime
     public let doNotDisplay: Bool
     public let doviMetadata: DolbyVisionFrameMetadata?
+    public let generation: UInt64
 
     public init(
         pixelBuffer: CVPixelBuffer,
         pts: CMTime,
         duration: CMTime,
         doNotDisplay: Bool = false,
-        doviMetadata: DolbyVisionFrameMetadata? = nil
+        doviMetadata: DolbyVisionFrameMetadata? = nil,
+        generation: UInt64 = 0
     ) {
         self.pixelBuffer = pixelBuffer
         self.pts = pts
         self.duration = duration
         self.doNotDisplay = doNotDisplay
         self.doviMetadata = doviMetadata
+        self.generation = generation
     }
 }

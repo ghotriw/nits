@@ -433,7 +433,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
         let queue = self.frameQueue
         decoder.setOutputHandler { frame in
-            queue.push(frame)
+            if !frame.doNotDisplay {
+                queue.push(frame)
+            }
         }
 
         setupDisplayLink()

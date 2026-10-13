@@ -10,7 +10,11 @@ import os
 /// and converts planar YUV420P / YUVJ420P / YUV420P10 frames directly into hardware-backed `CVPixelBuffer`s
 /// (NV12 / P010) via a pre-allocated `CVPixelBufferPool` with Metal and IOSurface backing.
 public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock()
+    private let codecLock = OSAllocatedUnfairLock()
+    private let poolLock = OSAllocatedUnfairLock()
+    private let outputLock = OSAllocatedUnfairLock()
+    private let flushGenerationLock = OSAllocatedUnfairLock(initialState: UInt64(1))
+
     private var codecCtx: UnsafeMutablePointer<AVCodecContext>?
     private var frame: UnsafeMutablePointer<AVFrame>?
     private var packet: UnsafeMutablePointer<AVPacket>?
@@ -27,7 +31,6 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let doNotDisplay: Bool
     }
     private var inFlightMetadata: [Int64: PacketMeta] = [:]
-    private var flushGeneration: UInt64 = 0
 
     // Cached color metadata dictionary to preserve attributes across drain() / EOF
     private var cachedColorAttachments: [CFString: CFTypeRef] = [:]
@@ -89,13 +92,50 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
 
         let codecName = String(cString: codec.pointee.name)
-        AppLog.info(.video, "FFmpegVideoDecoder initialized successfully (\(codecName)) with \(ctx.pointee.thread_count) threads.")
+        AppLog.info(
+            .video,
+            "FFmpegVideoDecoder initialized successfully (\(codecName)) with \(ctx.pointee.thread_count) threads.")
     }
 
     public func setOutputHandler(_ handler: @escaping OutputHandler) {
-        lock.lock()
+        outputLock.lock()
         outputHandler = handler
-        lock.unlock()
+        outputLock.unlock()
+    }
+
+    /// RAII container ensuring the underlying FFmpeg `AVFrame` is freed upon deallocation.
+    private final class ManagedAVFrame: @unchecked Sendable {
+        private var pointer: UnsafeMutablePointer<AVFrame>?
+
+        var rawPointer: UnsafeMutablePointer<AVFrame>? {
+            pointer
+        }
+
+        init?(borrowingFrom source: UnsafeMutablePointer<AVFrame>) {
+            guard let allocated = av_frame_alloc() else {
+                AppLog.error(.video, "FFmpegVideoDecoder: Failed to allocate AVFrame for decoupled processing")
+                return nil
+            }
+            av_frame_move_ref(allocated, source)
+            self.pointer = allocated
+        }
+
+        func free() {
+            if pointer != nil {
+                av_frame_free(&pointer)
+            }
+        }
+
+        deinit {
+            free()
+        }
+    }
+
+    private struct RawReceivedFrame {
+        let managedFrame: ManagedAVFrame
+        let pts: CMTime
+        let duration: CMTime
+        let doNotDisplay: Bool
     }
 
     public func decode(sampleBuffer: CMSampleBuffer) {
@@ -112,6 +152,9 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         )
         guard status == kCMBlockBufferNoErr, let dataPtr = dataPointer, totalLength > 0 else { return }
 
+        // Cache incoming color metadata outside codecLock without holding any locks simultaneously
+        updateCachedColorMetadata(from: sampleBuffer)
+
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let dts = CMSampleBufferGetDecodeTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
@@ -125,18 +168,15 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             doNotDisplay = val
         }
 
-        var decodedFrames: [DecodedFrame] = []
+        var receivedFrames: [RawReceivedFrame] = []
         var currentGen: UInt64 = 0
 
-        lock.lock()
+        codecLock.lock()
         guard let ctx = self.codecCtx, let frame = self.frame, let pkt = self.packet else {
-            lock.unlock()
+            codecLock.unlock()
             return
         }
-        currentGen = self.flushGeneration
-
-        // Cache incoming color metadata to ensure trailing drain() frames receive accurate color properties
-        updateCachedColorMetadata(from: sampleBuffer)
+        currentGen = self.flushGenerationLock.withLock { $0 }
 
         // Convert CMTime (value * timebase.num) into FFmpeg stream units (pts.value / timebase.num)
         let num64 = Int64(max(timebase.num, 1))
@@ -179,7 +219,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         pkt.pointee.dts = Int64.min
 
         if sendRet < 0 {
-            lock.unlock()
+            codecLock.unlock()
             AppLog.error(.video, "FFmpegVideoDecoder: avcodec_send_packet failed with code \(sendRet)")
             return
         }
@@ -187,35 +227,32 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         while true {
             let recvRet = avcodec_receive_frame(ctx, frame)
             if recvRet == 0 {
-                if let decoded = makeDecodedFrame(from: frame, sampleBuffer: sampleBuffer) {
-                    decodedFrames.append(decoded)
+                if let managed = ManagedAVFrame(borrowingFrom: frame), let rawPtr = managed.rawPointer {
+                    let timing = extractTimingAndMetadata(from: rawPtr)
+                    receivedFrames.append(
+                        RawReceivedFrame(
+                            managedFrame: managed,
+                            pts: timing.pts,
+                            duration: timing.duration,
+                            doNotDisplay: timing.doNotDisplay
+                        )
+                    )
+                } else {
+                    av_frame_unref(frame)
                 }
-                av_frame_unref(frame)
             } else {
                 break
             }
         }
-        lock.unlock()
+        codecLock.unlock()
 
-        // Deliver outside the lock
-        if !decodedFrames.isEmpty {
-            lock.lock()
-            let isStale = (self.flushGeneration != currentGen)
-            let handler = self.outputHandler
-            lock.unlock()
-
-            if !isStale, let handler {
-                for f in decodedFrames {
-                    handler(f)
-                }
-            }
-        }
+        convertAndDeliver(receivedFrames: &receivedFrames, generation: currentGen)
     }
 
     public func flush() {
-        lock.lock()
-        defer { lock.unlock() }
-        flushGeneration &+= 1
+        flushGenerationLock.withLock { $0 &+= 1 }
+        codecLock.lock()
+        defer { codecLock.unlock() }
         inFlightMetadata.removeAll(keepingCapacity: true)
         if let ctx = codecCtx {
             avcodec_flush_buffers(ctx)
@@ -227,15 +264,15 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     }
 
     public func drain() {
-        var drainedFrames: [DecodedFrame] = []
+        var receivedFrames: [RawReceivedFrame] = []
         var currentGen: UInt64 = 0
 
-        lock.lock()
+        codecLock.lock()
         guard let ctx = self.codecCtx, let frame = self.frame else {
-            lock.unlock()
+            codecLock.unlock()
             return
         }
-        currentGen = self.flushGeneration
+        currentGen = self.flushGenerationLock.withLock { $0 }
 
         // Send NULL packet to enter draining mode
         _ = avcodec_send_packet(ctx, nil)
@@ -243,44 +280,49 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         while true {
             let ret = avcodec_receive_frame(ctx, frame)
             if ret == 0 {
-                if let decoded = makeDecodedFrame(from: frame, sampleBuffer: nil) {
-                    drainedFrames.append(decoded)
+                if let managed = ManagedAVFrame(borrowingFrom: frame), let rawPtr = managed.rawPointer {
+                    let timing = extractTimingAndMetadata(from: rawPtr)
+                    receivedFrames.append(
+                        RawReceivedFrame(
+                            managedFrame: managed,
+                            pts: timing.pts,
+                            duration: timing.duration,
+                            doNotDisplay: timing.doNotDisplay
+                        )
+                    )
+                } else {
+                    av_frame_unref(frame)
                 }
-                av_frame_unref(frame)
             } else {
                 break
             }
         }
-        lock.unlock()
+        codecLock.unlock()
 
-        if !drainedFrames.isEmpty {
-            lock.lock()
-            let isStale = (self.flushGeneration != currentGen)
-            let handler = self.outputHandler
-            lock.unlock()
-
-            if !isStale, let handler {
-                for f in drainedFrames {
-                    handler(f)
-                }
-            }
-        }
+        convertAndDeliver(receivedFrames: &receivedFrames, generation: currentGen)
     }
 
     public func resetSession() {
-        lock.lock()
-        defer { lock.unlock() }
-        flushGeneration &+= 1
+        flushGenerationLock.withLock { $0 &+= 1 }
+        codecLock.lock()
         inFlightMetadata.removeAll()
         if let ctx = codecCtx {
             avcodec_flush_buffers(ctx)
         }
+        codecLock.unlock()
+
+        poolLock.lock()
         pixelBufferPool = nil
+        poolWidth = 0
+        poolHeight = 0
+        poolPixelFormat = 0
+        cachedColorAttachments.removeAll()
+        poolLock.unlock()
     }
 
     public func setDiscardNonReferenceFrames(_ discard: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
+        codecLock.lock()
+        defer { codecLock.unlock() }
         guard let ctx = codecCtx else { return }
         if discard {
             ctx.pointee.skip_frame = AVDISCARD_NONREF
@@ -289,12 +331,69 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
     }
 
+    private func convertAndDeliver(receivedFrames: inout [RawReceivedFrame], generation: UInt64) {
+        guard !receivedFrames.isEmpty else { return }
+
+        // Fast-path: if generation is already stale before heavy processing begins, discard all frames immediately
+        if isFlushStale(generation: generation) {
+            while !receivedFrames.isEmpty {
+                receivedFrames.removeFirst().managedFrame.free()
+            }
+            return
+        }
+
+        var decodedFrames: [DecodedFrame] = []
+        decodedFrames.reserveCapacity(receivedFrames.count)
+
+        // Process frames in-place and clear references promptly to ensure prompt deallocation
+        while !receivedFrames.isEmpty {
+            let raw = receivedFrames.removeFirst()
+            if isFlushStale(generation: generation) {
+                raw.managedFrame.free()
+                continue
+            }
+
+            if let rawPtr = raw.managedFrame.rawPointer,
+                let pixelBuffer = convertAVFrameToPixelBuffer(rawPtr)
+            {
+                decodedFrames.append(
+                    DecodedFrame(
+                        pixelBuffer: pixelBuffer,
+                        pts: raw.pts,
+                        duration: raw.duration,
+                        doNotDisplay: raw.doNotDisplay,
+                        doviMetadata: nil,
+                        generation: generation
+                    )
+                )
+            }
+            raw.managedFrame.free()
+        }
+
+        if !decodedFrames.isEmpty && !isFlushStale(generation: generation) {
+            outputLock.lock()
+            let handler = self.outputHandler
+            outputLock.unlock()
+
+            if let handler {
+                for f in decodedFrames {
+                    // Check generation before each delivered frame to close any race with a concurrent seek/flush()
+                    guard !isFlushStale(generation: generation) else { break }
+                    handler(f)
+                }
+            }
+        }
+    }
+
+    private func isFlushStale(generation: UInt64) -> Bool {
+        flushGenerationLock.withLock { $0 != generation }
+    }
+
     // MARK: - Internal Conversion & Frame Construction
 
-    private func makeDecodedFrame(
-        from avFrame: UnsafeMutablePointer<AVFrame>,
-        sampleBuffer: CMSampleBuffer?
-    ) -> DecodedFrame? {
+    private func extractTimingAndMetadata(from avFrame: UnsafeMutablePointer<AVFrame>) -> (
+        pts: CMTime, duration: CMTime, doNotDisplay: Bool
+    ) {
         var rawPts = avFrame.pointee.best_effort_timestamp
         if rawPts == Int64.min || rawPts < 0 {
             rawPts = avFrame.pointee.pts
@@ -312,24 +411,26 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         var frameDuration: CMTime = .invalid
         var frameDoNotDisplay: Bool = false
 
-        if rawPts != Int64.min, let meta = inFlightMetadata.removeValue(forKey: rawPts) {
-            frameDuration = meta.duration
-            frameDoNotDisplay = meta.doNotDisplay
+        // Match metadata across candidate timestamp keys: rawPts (best_effort_timestamp), pts, and pkt_dts
+        var meta: PacketMeta?
+        if rawPts != Int64.min {
+            meta = inFlightMetadata.removeValue(forKey: rawPts)
+        }
+        if meta == nil && avFrame.pointee.pts != Int64.min && avFrame.pointee.pts != rawPts {
+            meta = inFlightMetadata.removeValue(forKey: avFrame.pointee.pts)
+        }
+        if meta == nil && avFrame.pointee.pkt_dts != Int64.min && avFrame.pointee.pkt_dts != rawPts {
+            meta = inFlightMetadata.removeValue(forKey: avFrame.pointee.pkt_dts)
+        }
+
+        if let found = meta {
+            frameDuration = found.duration
+            frameDoNotDisplay = found.doNotDisplay
         } else if avFrame.pointee.duration > 0 && timebase.den > 0 {
             frameDuration = CMTime(value: avFrame.pointee.duration * Int64(timebase.num), timescale: timebase.den)
         }
 
-        guard let pixelBuffer = convertAVFrameToPixelBuffer(avFrame, sampleBuffer: sampleBuffer) else {
-            return nil
-        }
-
-        return DecodedFrame(
-            pixelBuffer: pixelBuffer,
-            pts: framePts,
-            duration: frameDuration,
-            doNotDisplay: frameDoNotDisplay,
-            doviMetadata: nil
-        )
+        return (framePts, frameDuration, frameDoNotDisplay)
     }
 
     private func getOrCreatePool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
@@ -375,8 +476,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     }
 
     private func convertAVFrameToPixelBuffer(
-        _ avFrame: UnsafeMutablePointer<AVFrame>,
-        sampleBuffer: CMSampleBuffer?
+        _ avFrame: UnsafeMutablePointer<AVFrame>
     ) -> CVPixelBuffer? {
         let width = Int(avFrame.pointee.width)
         let height = Int(avFrame.pointee.height)
@@ -409,15 +509,17 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         }
 
-        guard let pool = getOrCreatePool(width: width, height: height, pixelFormat: pixelFormat) else {
-            return nil
-        }
-
         var pixelBufferOut: CVPixelBuffer?
         let auxAttributes =
             [
                 kCVPixelBufferPoolAllocationThresholdKey as String: 64
             ] as CFDictionary
+
+        poolLock.lock()
+        guard let pool = getOrCreatePool(width: width, height: height, pixelFormat: pixelFormat) else {
+            poolLock.unlock()
+            return nil
+        }
 
         let status = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
             kCFAllocatorDefault,
@@ -425,6 +527,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             auxAttributes,
             &pixelBufferOut
         )
+        poolLock.unlock()
+
         guard status == kCVReturnSuccess, let pixelBuffer = pixelBufferOut else {
             return nil
         }
@@ -590,21 +694,30 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             }
         }
 
+        poolLock.lock()
         cacheAttachment(key: kCVImageBufferColorPrimariesKey)
         cacheAttachment(key: kCVImageBufferTransferFunctionKey)
         cacheAttachment(key: kCVImageBufferYCbCrMatrixKey)
         cacheAttachment(key: kCVImageBufferPixelAspectRatioKey)
         cacheAttachment(key: kCVImageBufferMasteringDisplayColorVolumeKey)
         cacheAttachment(key: kCVImageBufferContentLightLevelInfoKey)
+        poolLock.unlock()
     }
 
     private func applyColorAttachments(to pixelBuffer: CVPixelBuffer) {
-        for (key, val) in cachedColorAttachments {
+        poolLock.lock()
+        let attachments = cachedColorAttachments
+        poolLock.unlock()
+
+        for (key, val) in attachments {
             CVBufferSetAttachment(pixelBuffer, key, val, .shouldPropagate)
         }
     }
 
     private func teardown() {
+        flushGenerationLock.withLock { $0 &+= 1 }
+        codecLock.lock()
+        inFlightMetadata.removeAll()
         if codecCtx != nil {
             avcodec_free_context(&self.codecCtx)
         }
@@ -614,11 +727,21 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         if packet != nil {
             av_packet_free(&self.packet)
         }
+        codecLock.unlock()
+
+        poolLock.lock()
         pixelBufferPool = nil
+        poolWidth = 0
+        poolHeight = 0
+        poolPixelFormat = 0
+        cachedColorAttachments.removeAll()
+        poolLock.unlock()
     }
 
     deinit {
+        outputLock.lock()
         outputHandler = nil
+        outputLock.unlock()
         teardown()
     }
 }

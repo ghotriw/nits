@@ -809,7 +809,9 @@ extension PlayerEngine {
             self.decoder = videoDecoder
             let queue = self.frameQueue
             self.decoder.setOutputHandler { frame in
-                queue.push(frame)
+                if !frame.doNotDisplay {
+                    queue.push(frame)
+                }
             }
         }
 

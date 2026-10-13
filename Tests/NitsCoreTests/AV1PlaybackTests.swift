@@ -206,7 +206,115 @@ struct AV1PlaybackTests {
             fed += 1
         }
         decoder.drain()
-
         #expect(colorPrimariesObserved.value != nil)
+    }
+
+    @Test("FFmpegVideoDecoder flush does not block or deadlock during concurrent decode")
+    func dav1dConcurrentFlushDuringDecode() async throws {
+        guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else { return }
+        guard let demuxer = MediaDemuxer(url: av1Path) else { return }
+        guard let codecParams = demuxer.getVideoCodecParameters() else { return }
+        guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else { return }
+
+        let deliveredFrames = LockIsolated(0)
+        decoder.setOutputHandler { _ in
+            deliveredFrames.withValue { $0 += 1 }
+        }
+
+        final class SampleBox: @unchecked Sendable {
+            let samples: [CMSampleBuffer]
+            init(samples: [CMSampleBuffer]) {
+                self.samples = samples
+            }
+        }
+
+        // Collect samples first
+        var collectedSamples: [CMSampleBuffer] = []
+        while let s = demuxer.nextVideoSample() {
+            collectedSamples.append(s)
+            if collectedSamples.count >= 30 { break }
+        }
+        let box = SampleBox(samples: collectedSamples)
+
+        // Concurrently feed samples and trigger flush()
+        let isDone = LockIsolated(false)
+        let flushCount = LockIsolated(0)
+
+        let feedTask = Task {
+            for sample in box.samples {
+                decoder.decode(sampleBuffer: sample)
+            }
+            isDone.withValue { $0 = true }
+        }
+
+        let flushTask = Task {
+            while !isDone.value {
+                decoder.flush()
+                flushCount.withValue { $0 += 1 }
+                await Task.yield()
+            }
+        }
+
+        _ = await feedTask.result
+        _ = await flushTask.result
+
+        // Verify that flushes indeed occurred during decoding
+        #expect(flushCount.value > 0)
+
+        // Reset and verify decoder remains fully functional after concurrent flushes
+        decoder.flush()
+        let postFlushDelivered = LockIsolated(0)
+        decoder.setOutputHandler { _ in
+            postFlushDelivered.withValue { $0 += 1 }
+        }
+
+        demuxer.seek(to: 0.0)
+        var fedCount = 0
+        while fedCount < 10, let sample = demuxer.nextVideoSample() {
+            decoder.decode(sampleBuffer: sample)
+            fedCount += 1
+        }
+        decoder.drain()
+        #expect(postFlushDelivered.value > 0)
+    }
+
+    @Test("FFmpegVideoDecoder does not deliver stale pre-flush frames after flush()")
+    func dav1dRejectsStaleFramesAfterFlush() async throws {
+        guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else { return }
+        guard let demuxer = MediaDemuxer(url: av1Path) else { return }
+        guard let codecParams = demuxer.getVideoCodecParameters() else { return }
+        guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else { return }
+
+        // Feed some frames from beginning (PTS ~ 0.0s .. 0.16s)
+        var count = 0
+        while count < 5, let sample = demuxer.nextVideoSample() {
+            decoder.decode(sampleBuffer: sample)
+            count += 1
+        }
+
+        // Flush immediately to invalidate prior generation
+        decoder.flush()
+
+        // Clear tracking and set handler to observe post-flush frames
+        let deliveredFrames = LockIsolated<[DecodedFrame]>([])
+        decoder.setOutputHandler { frame in
+            deliveredFrames.withValue { $0.append(frame) }
+        }
+
+        // Seek demuxer back to start without exact preroll discard (exact: false)
+        demuxer.seek(to: 0.0, exact: false)
+        var afterFlushCount = 0
+        while afterFlushCount < 10, let sample = demuxer.nextVideoSample() {
+            decoder.decode(sampleBuffer: sample)
+            afterFlushCount += 1
+        }
+        decoder.drain()
+
+        let frames = deliveredFrames.value
+        #expect(!frames.isEmpty)
+        for f in frames {
+            #expect(!f.doNotDisplay)
+            #expect(f.pts.seconds >= 0.0)
+        }
     }
 }
