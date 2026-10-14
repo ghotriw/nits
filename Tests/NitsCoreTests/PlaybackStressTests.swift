@@ -512,4 +512,113 @@ extension PlaybackStressTests {
 
         engine.stop()
     }
+
+    // MARK: - 13. Playback Start Preroll
+    /// Samples the master clock every 20ms and reports whether it never moved backwards.
+    @MainActor
+    private static func sampleClock(of engine: PlayerEngine, samples: Int) async -> (isMonotonic: Bool, advance: Double)
+    {
+        let first = engine.synchronizer.currentTime().seconds
+        var previous = first
+        var isMonotonic = true
+        for _ in 0..<samples {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let now = engine.synchronizer.currentTime().seconds
+            if now < previous { isMonotonic = false }
+            previous = now
+        }
+        return (isMonotonic, previous - first)
+    }
+
+    @Test("Starting playback right after load does not drop the leading video frames")
+    @MainActor
+    func testPlaybackStartPrerollDoesNotDropLeadingFrames() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        #expect(engine.isLoaded == true)
+
+        // The clock must stay anchored at 0.0 until the first decoded frame is on screen; if it ran while the
+        // first frame was still decoding, the display link would discard the leading frames as late.
+        engine.play()
+        let clock = await Self.sampleClock(of: engine, samples: 40)
+
+        #expect(
+            engine.pipelineDroppedFramesCount == 0,
+            "Leading frames dropped at playback start: \(engine.pipelineDroppedFramesCount)")
+        #expect(engine.isPlaying == true)
+        #expect(clock.isMonotonic, "Clock moved backwards after playback start")
+        #expect(clock.advance > 0, "Clock never started after preroll")
+
+        engine.stop()
+    }
+
+    // MARK: - 14. Pause / Resume Clock Continuity
+    @Test("Resuming after pause continues playback without dropping queued frames")
+    @MainActor
+    func testResumeAfterPauseDoesNotDropQueuedFrames() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        engine.play()
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+        for cycle in 0..<3 {
+            engine.pause()
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            let pausedClock = engine.synchronizer.currentTime().seconds
+            let droppedBefore = engine.pipelineDroppedFramesCount
+
+            engine.play()
+            let clock = await Self.sampleClock(of: engine, samples: 30)
+
+            #expect(clock.isMonotonic, "Cycle \(cycle): clock moved backwards after resume")
+            #expect(
+                engine.synchronizer.currentTime().seconds > pausedClock,
+                "Cycle \(cycle): clock did not resume from \(pausedClock)s")
+            // A single skipped VSYNC tick under heavy parallel test load may replace one frame; a clock leap drops 2+.
+            #expect(
+                engine.pipelineDroppedFramesCount - droppedBefore <= 1,
+                "Cycle \(cycle): frames dropped after resume: \(engine.pipelineDroppedFramesCount - droppedBefore)")
+        }
+
+        engine.stop()
+    }
+
+    // MARK: - 15. Mid-GOP Start Position (resume from history / explicit start time)
+    @Test("Starting playback mid-GOP never presents or drops reordered pre-target B-frames")
+    @MainActor
+    func testMidGOPStartDoesNotDropPreTargetFrames() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        // 24-frame GOPs with B-frames: 5.5s lands half-way between keyframes, so after the exact seek the decoder
+        // emits B-frames that present before the target although they follow a post-target frame in decode order.
+        let startTime = 5.5
+        let halfFrame = 0.5 / 24.0
+        let engine = Self.makeEngine()
+        engine.load(MediaLoadRequest(path: path, startTime: startTime))
+        engine.play()
+
+        var firstPresentedPts = -1.0
+        for _ in 0..<100 where firstPresentedPts < 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            firstPresentedPts = engine.frameQueue.getLastRenderedPTS()
+        }
+        let clock = await Self.sampleClock(of: engine, samples: 30)
+
+        #expect(
+            firstPresentedPts >= startTime - halfFrame,
+            "Pre-target frame presented at \(firstPresentedPts)s for start \(startTime)s")
+        // Leaked pre-target B-frames drop 2+ at once; tolerate one skipped VSYNC tick under parallel test load.
+        #expect(
+            engine.pipelineDroppedFramesCount <= 1,
+            "Pre-target frames reached the queue and were dropped: \(engine.pipelineDroppedFramesCount)")
+        #expect(engine.isPlaying == true)
+        #expect(clock.isMonotonic, "Clock moved backwards after mid-GOP start")
+        #expect(engine.synchronizer.currentTime().seconds > startTime, "Clock did not start from \(startTime)s")
+
+        engine.stop()
+    }
 }

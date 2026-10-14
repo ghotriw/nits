@@ -27,6 +27,12 @@ public final class FrameQueue: @unchecked Sendable {
     private var speedSkippedFramesCountInternal: Int = 0
     private var lastDropWarningInstant: ContinuousClock.Instant = .now - .seconds(10)
 
+    /// Exact-seek display floor (mpv `hrseek_pts`): decoded frames presenting before it are discarded on push.
+    /// After an exact seek the decoder must decode from the preceding keyframe, and reordered B-frames presenting
+    /// before the target still emerge after the first post-target frame, so the filter has to act on decoded output
+    /// rather than on demuxed packets. Stays in effect until the next seek/load replaces it.
+    private var displayFloorPts: CMTime = .invalid
+
     public init(capacity: Int = defaultCapacity) {
         precondition(capacity > 0, "Capacity must be positive")
         self.capacity = capacity
@@ -61,11 +67,22 @@ public final class FrameQueue: @unchecked Sendable {
         return countInternal
     }
 
+    /// Sets (or with `.invalid` clears) the exact-seek display floor; see `displayFloorPts`.
+    public func setDisplayFloor(_ floor: CMTime) {
+        lock.lock()
+        defer { lock.unlock() }
+        displayFloorPts = floor
+    }
+
     /// Pushes a decoded frame into the queue, maintaining strict ascending PTS order.
     /// If the buffer is full, the furthest future frame at the tail is discarded to preserve imminent playback frames.
     public func push(_ frame: DecodedFrame) {
         lock.lock()
         defer { lock.unlock() }
+
+        if displayFloorPts.isValid && frame.pts.isValid && frame.pts < displayFloorPts {
+            return
+        }
 
         if countInternal == 0 {
             buffer[head] = frame

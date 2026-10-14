@@ -26,9 +26,10 @@ extension PlayerEngine {
         videoFeedingTask = nil
     }
 
+    /// Cancels audio feeding. The task handle is kept so the next run can wait for this one to stash its
+    /// undelivered output (see `runAudioFeeding`).
     func stopFeedingAudio() {
         audioFeedingTask?.cancel()
-        audioFeedingTask = nil
     }
 
     func startFeeding() {
@@ -119,13 +120,17 @@ extension PlayerEngine {
 
     func startFeedingAudio() {
         guard let demuxer = self.demuxer, let aDecoder = self.audioDecoder else { return }
-        stopFeedingAudio()
+        // The previous run may still be unwinding from its cancellation; the new one waits for it so the
+        // output it stashes is delivered first and in order.
+        let previousRun = audioFeedingTask
+        previousRun?.cancel()
 
         let feedingLock = self.isFeeding
         let receiver = self.audioReceiver
         let audioTimebase = demuxer.audioTimebase
 
         audioFeedingTask = Task.detached(priority: .userInitiated) {
+            await previousRun?.value
             await Self.runAudioFeeding(
                 demuxer: demuxer,
                 audioDecoder: aDecoder,
@@ -136,6 +141,11 @@ extension PlayerEngine {
         }
     }
 
+    /// Feeds decoded audio to the renderer until cancelled or EOF.
+    ///
+    /// Cancellation (pause) usually lands while `enqueue` waits on renderer backpressure, i.e. with part of a
+    /// decoded packet still undelivered. That remainder is stashed in the decoder and delivered first by the
+    /// next run instead of being dropped, so pause/resume keeps the audio stream gapless.
     private nonisolated static func runAudioFeeding(
         demuxer: MediaDemuxer,
         audioDecoder: FFAudioDecoder,
@@ -144,32 +154,45 @@ extension PlayerEngine {
         audioTimebase: AVRational
     ) async {
         var hasLoggedFirstAudioBuffer = false
+        var pendingGeneration = audioDecoder.generation
+        var pending = ArraySlice(audioDecoder.takeUndelivered())
+        defer { audioDecoder.stashUndelivered(pending, generation: pendingGeneration) }
+
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
-            guard let packet = demuxer.nextAudioPacket() else {
-                if demuxer.isEOF {
-                    break
+            guard let buf = pending.first else {
+                guard let packet = demuxer.nextAudioPacket() else {
+                    if demuxer.isEOF {
+                        break
+                    }
+                    try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+                    continue
                 }
-                try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+                pendingGeneration = audioDecoder.generation
+                pending = ArraySlice(
+                    audioDecoder.decode(
+                        packetData: packet.data,
+                        pts: packet.pts,
+                        timebase: audioTimebase
+                    ))
                 continue
             }
-            let pcmBuffers = audioDecoder.decode(
-                packetData: packet.data,
-                pts: packet.pts,
-                timebase: audioTimebase
-            )
-            for buf in pcmBuffers {
-                if Task.isCancelled || !feedingLock.withLock({ $0 }) { break }
-                nonisolated(unsafe) let sBuf = buf
-                let ready: CMReadySampleBuffer<CMSampleBuffer.DynamicContent> = CMReadySampleBuffer(unsafeBuffer: sBuf)
-                if !hasLoggedFirstAudioBuffer {
-                    hasLoggedFirstAudioBuffer = true
-                    let pts = CMSampleBufferGetPresentationTimeStamp(buf)
-                    AppLog.debug(
-                        .audio,
-                        "First audio buffer enqueued to renderer: pts = \(pts.isValid ? String(format: "%.3f", pts.seconds) : "invalid")s"
-                    )
-                }
-                _ = try? await receiver.enqueue(ready)
+            nonisolated(unsafe) let sBuf = buf
+            let ready: CMReadySampleBuffer<CMSampleBuffer.DynamicContent> = CMReadySampleBuffer(unsafeBuffer: sBuf)
+            do {
+                _ = try await receiver.enqueue(ready)
+            } catch is CancellationError {
+                break  // not accepted by the renderer; stays pending
+            } catch {
+                AppLog.warning(.audio, "Audio enqueue failed: \(error)")
+            }
+            pending.removeFirst()
+            if !hasLoggedFirstAudioBuffer {
+                hasLoggedFirstAudioBuffer = true
+                let pts = CMSampleBufferGetPresentationTimeStamp(buf)
+                AppLog.debug(
+                    .audio,
+                    "First audio buffer enqueued to renderer: pts = \(pts.isValid ? String(format: "%.3f", pts.seconds) : "invalid")s"
+                )
             }
         }
     }

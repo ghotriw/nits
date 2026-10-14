@@ -93,6 +93,43 @@ struct AudioContinuityTests {
         }
     }
 
+    @Test("Undelivered output stashed on pause is returned in order and dropped by a flush")
+    func testUndeliveredOutputSurvivesPauseButNotFlush() {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .exoticAudioTracks),
+            let demuxer = MediaDemuxer(url: path),
+            let track = demuxer.audioTracks.first
+        else { return }
+        demuxer.selectAudioTrack(trackId: track.id)
+        guard let params = demuxer.getAudioCodecParameters(),
+            let decoder = FFAudioDecoder(codecParameters: params, timebase: demuxer.audioTimebase)
+        else {
+            Issue.record("Cannot create audio decoder")
+            return
+        }
+
+        var decoded: [CMSampleBuffer] = []
+        while decoded.count < 4, let pkt = demuxer.nextAudioPacket() {
+            decoded += decoder.decode(packetData: pkt.data, pts: pkt.pts, timebase: demuxer.audioTimebase)
+        }
+        #expect(decoded.count >= 4)
+
+        // Pause: the feeder delivered the first buffer and stashes the rest for the next run.
+        let generation = decoder.generation
+        decoder.stashUndelivered(decoded.dropFirst(), generation: generation)
+        let resumed = decoder.takeUndelivered()
+        #expect(
+            resumed.map(CMSampleBufferGetPresentationTimeStamp)
+                == decoded.dropFirst().map(CMSampleBufferGetPresentationTimeStamp))
+        #expect(decoder.takeUndelivered().isEmpty)
+
+        // Seek: a flush drops the stash, and a run that decoded before the flush cannot re-stash afterwards.
+        decoder.stashUndelivered(decoded[...], generation: generation)
+        decoder.flush()
+        #expect(decoder.takeUndelivered().isEmpty)
+        decoder.stashUndelivered(decoded[...], generation: generation)
+        #expect(decoder.takeUndelivered().isEmpty)
+    }
+
     /// Manual diagnostic: AUDIO_DIAG_PATH=/path/to/file.mkv swift test --filter testExternalFileContinuity
     @Test("External file continuity (only when AUDIO_DIAG_PATH is set)")
     func testExternalFileContinuity() {

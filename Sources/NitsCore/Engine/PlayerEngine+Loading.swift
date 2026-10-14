@@ -71,6 +71,7 @@ extension PlayerEngine {
         stepFrameCache.clear()
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
+        cancelPreroll()
         resumePlaybackAfterChase = false
 
         let loadID = UUID()
@@ -815,6 +816,7 @@ extension PlayerEngine {
             demuxer.seek(to: effectiveStartTime)
             demuxer.purgeAudio(beforeSeconds: effectiveStartTime)
         }
+        setExactSeekDisplayFloor(effectiveStartTime > 0 ? effectiveStartTime : nil)
 
         self.currentTime = effectiveStartTime
         self.isLoaded = true
@@ -849,7 +851,7 @@ extension PlayerEngine {
                             .engine,
                             "Starting synchronizer clock: targetTime = \(String(format: "%.3f", effectiveStartTime))s, rate = \(currentRate)"
                         )
-                        self.startSynchronizerClock(at: targetCMTime, rate: currentRate)
+                        self.startSynchronizerClockAfterPreroll(at: targetCMTime)
                     }
                 }
                 self.displayLink?.isPaused = !hasVideo

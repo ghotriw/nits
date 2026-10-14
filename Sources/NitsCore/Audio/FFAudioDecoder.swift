@@ -126,6 +126,34 @@ public final class FFAudioDecoder: @unchecked Sendable {
     private var currentSrcRate: Int32 = -1
     /// PTS (seconds) expected for the next output buffer; keeps timestamps sample-accurate. Reset on flush.
     private var nextExpectedPts: Double?
+    /// Bumped by every flush so output decoded before it can be told apart from output decoded after it.
+    private var flushGeneration = 0
+    /// Decoded output the feeder could not hand to the renderer before it was cancelled (pause). Its packets are
+    /// already consumed from the demuxer, so it must be delivered first on the next run — dropping it leaves a gap
+    /// that `nextExpectedPts` then snaps over, which is audible and shifts audio against video. Cleared on flush.
+    private var undeliveredOutput: [CMSampleBuffer] = []
+
+    /// Current flush generation; capture it before `decode(...)` and pass it to `stashUndelivered(_:generation:)`.
+    public var generation: Int {
+        lock.withLock { flushGeneration }
+    }
+
+    /// Keeps decoded buffers that were not enqueued, unless a flush happened since they were decoded.
+    public func stashUndelivered(_ buffers: ArraySlice<CMSampleBuffer>, generation: Int) {
+        guard !buffers.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == flushGeneration else { return }
+        undeliveredOutput.append(contentsOf: buffers)
+    }
+
+    /// Returns (and forgets) the buffers stashed by an interrupted feeding run, in presentation order.
+    public func takeUndelivered() -> [CMSampleBuffer] {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { undeliveredOutput.removeAll() }
+        return undeliveredOutput
+    }
 
     private func initSwrIfNeeded(srcFrame: UnsafeMutablePointer<AVFrame>) -> Bool {
         let frameChannels = srcFrame.pointee.ch_layout.nb_channels
@@ -318,6 +346,8 @@ public final class FFAudioDecoder: @unchecked Sendable {
     public func flush() {
         lock.lock()
         defer { lock.unlock() }
+        flushGeneration += 1
+        undeliveredOutput.removeAll()
         if let ctx = codecCtx {
             avcodec_flush_buffers(ctx)
             nextExpectedPts = nil

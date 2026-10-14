@@ -27,12 +27,16 @@ extension PlayerEngine {
             return
         }
 
+        // A preroll already owns the pending clock start; restarting it would only re-anchor the timeline.
+        if isPlaying && isPrerolling { return }
+
         let feedingActive = isFeeding.withLock { $0 }
         if !feedingActive {
             startFeeding()
         }
         let targetTime = resolvePlaybackStartTime(syncTime: synchronizer.currentTime())
-        startSynchronizerClock(at: targetTime, rate: playbackRate, armGuard: true)
+        // Resuming from pause: the audio renderer still holds the paused media.
+        startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: true)
         displayLink?.isPaused = !hasVideo
         isPlaying = true
         playbackState = .playing
@@ -51,6 +55,7 @@ extension PlayerEngine {
 
     /// Halts clock synchronization and feeders without altering user-facing isPlaying or playbackState.
     func haltPlaybackPipeline() {
+        cancelPreroll()
         synchronizer.setRate(0.0, time: synchronizer.currentTime())
         displayLink?.isPaused = true
         isFeeding.withLock { $0 = false }
@@ -89,18 +94,130 @@ extension PlayerEngine {
     ///   - targetTime: Target timeline position for CoreAudio synchronizer.
     ///   - rate: Target playback rate.
     ///   - armGuard: If `true`, arms `ClockSettlingGuard` to hold video frames while hardware clock settles to new target.
-    func startSynchronizerClock(at targetTime: CMTime, rate: Double, armGuard: Bool = true) {
+    ///   - startDelay: If positive, `targetTime` is pinned to `now + startDelay` host time instead of letting the
+    ///     synchronizer pick the start (see `play()`).
+    nonisolated func startSynchronizerClock(
+        at targetTime: CMTime, rate: Double, armGuard: Bool = true, startDelay: TimeInterval = 0
+    ) {
+        let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
+        let scheduledHostTime = hostNow.seconds + max(startDelay, 0)
         if armGuard, targetTime.isNumeric {
             let targetSec = targetTime.seconds
             clockSettlingGuardLock.withLock {
                 $0 = ClockSettlingGuard(
                     targetSeconds: targetSec,
-                    setHostTime: CACurrentMediaTime(),
+                    setHostTime: scheduledHostTime,
                     rate: rate
                 )
             }
         }
-        synchronizer.setRate(Float(rate), time: targetTime)
+        if startDelay > 0 && rate > 0 {
+            let hostTime = hostNow + CMTime(seconds: startDelay, preferredTimescale: 1_000_000_000)
+            synchronizer.setRate(Float(rate), time: targetTime, atHostTime: hostTime)
+        } else {
+            synchronizer.setRate(Float(rate), time: targetTime)
+        }
+    }
+
+    // MARK: - Playback Start Preroll
+
+    /// Decoded frames that must be queued behind the presented anchor frame before the clock starts,
+    /// as in KSPlayer (`frameCount >= 2`) and mpv (`handle_playback_restart` waits for video READY).
+    nonisolated static let prerollMinimumQueuedFrames = 1
+    /// Safety net only: the clock normally starts from the display-link tick. This bounds the wait when the
+    /// decoder stalls or the display link does not tick (occluded window).
+    static let prerollTimeout: Duration = .seconds(1)
+    /// Cap for the resume start delay, so a bogus device latency (or a Bluetooth route reporting a huge one)
+    /// cannot noticeably postpone playback.
+    static let maxOutputLatencyAlignment: TimeInterval = 0.25
+
+    var isPrerolling: Bool {
+        pendingClockStartLock.withLock { $0 != nil }
+    }
+
+    /// Starts the master clock at `targetTime` once video has prerolled.
+    ///
+    /// Starting the clock right after `startFeeding()` lets it run while the first (slow, e.g. 4K Dolby Vision)
+    /// frame is still decoding, so the display link later finds the leading frames already late and drops them
+    /// in a burst. Instead the clock is anchored at `targetTime` with rate 0 — the display link still pops and
+    /// shows the first frame — and the display-link tick itself starts it (`startPendingClockIfPrerolled`) once
+    /// that frame is on screen and `prerollMinimumQueuedFrames` more are decoded. Waiting for the presentation,
+    /// not just for decoded frames, keeps a late first tick from skipping the anchor frame. Audio needs no
+    /// explicit wait: with media enqueued, the synchronizer holds the clock until the audio device is running.
+    ///
+    /// The pending start is cancelled by `haltPlaybackPipeline()`, seeks and media reloads.
+    ///
+    /// - Parameter alignWithBufferedAudio: The audio renderer still holds media from before a pause. Started
+    ///   "as soon as possible", the synchronizer then discards what was in the device's output buffer and leaps the
+    ///   clock ahead by the output latency (~15–20 ms on built-in speakers), skipping that much audio and a video
+    ///   frame. Scheduling the start one output latency ahead lets the first sample at `targetTime` become audible
+    ///   exactly when the clock reaches it.
+    func startSynchronizerClockAfterPreroll(at targetTime: CMTime, alignWithBufferedAudio: Bool = false) {
+        cancelPreroll()
+        // Nothing presents video without a display link, so there is no anchor frame to protect.
+        let isReady =
+            !hasVideo || displayLink == nil || (demuxer?.isEOF ?? true)
+            || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
+        if isReady {
+            let startDelay =
+                alignWithBufferedAudio
+                ? min(AudioDeviceRouteMonitor.fetchDefaultOutputLatency() ?? 0, Self.maxOutputLatencyAlignment) : 0
+            if startDelay > 0 {
+                AppLog.debug(
+                    .engine,
+                    "Aligning clock start with buffered audio: +\(String(format: "%.1f", startDelay * 1000.0))ms output latency"
+                )
+            }
+            startSynchronizerClock(at: targetTime, rate: playbackRate, startDelay: startDelay)
+            return
+        }
+
+        synchronizer.setRate(0.0, time: targetTime)
+        let pending = PendingClockStart(
+            targetTime: targetTime, rate: playbackRate, requestHostTime: CACurrentMediaTime())
+        pendingClockStartLock.withLock { $0 = pending }
+        prerollTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.prerollTimeout)
+            guard !Task.isCancelled, let self else { return }
+            self.prerollTimeoutTask = nil
+            guard
+                let pending = self.pendingClockStartLock.withLock({ state in
+                    defer { state = nil }
+                    return state
+                })
+            else { return }
+            AppLog.warning(
+                .engine,
+                "Preroll timed out after \(Self.prerollTimeout) (queued frames: \(self.frameQueue.count)); starting clock anyway"
+            )
+            self.startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
+        }
+    }
+
+    /// Called from the display-link tick after presentation: starts a pending clock exactly once when the
+    /// anchor frame is on screen and the next frames are decoded.
+    nonisolated func startPendingClockIfPrerolled() {
+        guard pendingClockStartLock.withLock({ $0 != nil }),
+            frameQueue.getLastRenderedPTS() >= 0,
+            frameQueue.count >= Self.prerollMinimumQueuedFrames,
+            let pending = pendingClockStartLock.withLock({ state in
+                defer { state = nil }
+                return state
+            })
+        else { return }
+
+        startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
+        let elapsedMs = (CACurrentMediaTime() - pending.requestHostTime) * 1000.0
+        AppLog.debug(
+            .engine,
+            "Preroll complete in \(String(format: "%.1f", elapsedMs))ms (queued frames: \(frameQueue.count)); starting clock at \(String(format: "%.3f", pending.targetTime.seconds))s"
+        )
+    }
+
+    func cancelPreroll() {
+        pendingClockStartLock.withLock { $0 = nil }
+        prerollTimeoutTask?.cancel()
+        prerollTimeoutTask = nil
     }
 
     public func togglePlayPause() {

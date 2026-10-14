@@ -139,13 +139,28 @@ extension PlayerEngine {
         enqueueToDisplayLayer(sample)
     }
 
-    nonisolated func displayLinkTick() {
-        let currentSyncTime = synchronizer.currentTime()
-        guard currentSyncTime.isNumeric else { return }
+    /// - Parameter targetTimestamp: Host time of the vsync at which the frame picked in this tick reaches the screen.
+    nonisolated func displayLinkTick(targetTimestamp: CFTimeInterval) {
+        let clockNow = synchronizer.currentTime()
+        guard clockNow.isNumeric else { return }
+        let now = CACurrentMediaTime()
+
+        // Pick frames for the clock at the target vsync, not at callback time. The callback runs on the main run
+        // loop and its latency varies by milliseconds (UI work, cursor moves, ProMotion rate changes); sampling the
+        // clock there turns that jitter into skipped frames whenever content fps is close to the link rate
+        // (50 fps on 60 Hz tolerates only ~3 ms). Target timestamps are vsync-spaced, so the jitter cancels out.
+        let lookahead = min(max(targetTimestamp - now, 0), Self.maxVsyncLookaheadSeconds)
+        let clockRate = CMTimebaseGetRate(synchronizer.timebase)
+        let currentSyncTime = clockNow + CMTime(seconds: lookahead * clockRate, preferredTimescale: 1_000_000)
+
+        let droppedBefore = frameQueue.pipelineDroppedFramesCount
+        let vsyncIntervalMs = tickDiagnosticsLock.withLock { state -> Double in
+            defer { state.lastTargetTimestamp = targetTimestamp }
+            return state.lastTargetTimestamp > 0 ? (targetTimestamp - state.lastTargetTimestamp) * 1000.0 : 0
+        }
 
         // Stale clock leap protection: if playback or seek just started, verify the hardware clock
         // has settled into the active playback window before popping video frames.
-        let now = CACurrentMediaTime()
         let shouldHoldFrame = clockSettlingGuardLock.withLock { guardState -> Bool in
             guard let state = guardState else { return false }
             let elapsedHost = now - state.setHostTime
@@ -154,7 +169,7 @@ extension PlayerEngine {
                 guardState = nil
                 return false
             }
-            let clockSeconds = currentSyncTime.seconds
+            let clockSeconds = clockNow.seconds
             let baseTolerance = Self.clockSettlingBaseToleranceSeconds
             let minAllowedClock = state.targetSeconds - baseTolerance
             let maxAllowedClock = state.targetSeconds + (state.rate * elapsedHost) + baseTolerance
@@ -257,6 +272,30 @@ extension PlayerEngine {
                 }
             }
         }
+
+        // Single drops stay below FrameQueue's per-tick warning threshold; log them with the link timing that
+        // explains them (a vsync interval above the frame duration means the link itself skipped or slowed).
+        let newDrops = frameQueue.pipelineDroppedFramesCount - droppedBefore
+        if newDrops > 0 {
+            let dropsToLog = tickDiagnosticsLock.withLock { state -> Int? in
+                state.unloggedDrops += newDrops
+                let nowInstant = ContinuousClock.now
+                guard nowInstant - state.lastLogInstant >= .seconds(1) else { return nil }
+                state.lastLogInstant = nowInstant
+                defer { state.unloggedDrops = 0 }
+                return state.unloggedDrops
+            }
+            if let dropsToLog {
+                let frameMs = nominalFrameDurationLock.withLock { $0 } * 1000.0
+                AppLog.debug(
+                    .video,
+                    "Pipeline dropped \(dropsToLog) frame(s); last at clock \(String(format: "%.3f", currentSyncTime.seconds))s, vsync interval \(String(format: "%.1f", vsyncIntervalMs))ms, frame \(String(format: "%.1f", frameMs))ms, callback lead \(String(format: "%.1f", (targetTimestamp - now) * 1000.0))ms"
+                )
+            }
+        }
+
+        // Playback-start preroll: the anchor frame is now on screen, so a held clock may start.
+        startPendingClockIfPrerolled()
 
         // Backpressure check: if feeding was paused due to full frame buffer, resume when queue drops to <= 25 frames
         if frameQueue.count <= 25 && isVideoDrainPaused.withLock({ $0 }) {

@@ -50,6 +50,7 @@ extension PlayerEngine {
         // Cancel any pending settle debounce from an earlier seek in the burst
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
+        cancelPreroll()
         clockSettlingGuardLock.withLock { $0 = nil }
 
         // 1. Maintain play intent across seek bursts (Apple QA1820 / mpv)
@@ -83,6 +84,18 @@ extension PlayerEngine {
         executeDemuxerSeek()
     }
 
+    /// Restricts displayable frames to those at/after an exact-seek target, like mpv's hr-seek. Half a frame of
+    /// tolerance keeps the frame whose display interval contains the target. `nil` (keyframe seeks, start at 0)
+    /// lifts the restriction.
+    func setExactSeekDisplayFloor(_ targetSeconds: Double?) {
+        guard let targetSeconds else {
+            frameQueue.setDisplayFloor(.invalid)
+            return
+        }
+        let halfFrame = nominalFrameDurationLock.withLock { $0 } * 0.5
+        frameQueue.setDisplayFloor(CMTime(seconds: targetSeconds - halfFrame, preferredTimescale: 90000))
+    }
+
     func executeDemuxerSeek() {
         guard let targetSeconds = chaseTargetTime else { return }
         guard let demuxer = self.demuxer else { return }
@@ -100,6 +113,7 @@ extension PlayerEngine {
         stopFeedingVideo()
         stopFeedingAudio()
         frameQueue.clear(resetDroppedFrames: true)
+        setExactSeekDisplayFloor(isExact ? targetSeconds : nil)
         // The pipeline is about to be flushed and repositioned; incremental forward stepping is invalid
         // until this seek settles and re-establishes contiguity. Release the old step window; it is
         // repopulated below for paused exact seeks (the frame-stepping scenario).
@@ -268,8 +282,7 @@ extension PlayerEngine {
 
             self.chaseTargetTime = nil
             self.startFeeding()
-            let currentRate = self.playbackRate
-            self.startSynchronizerClock(at: targetTime, rate: currentRate)
+            self.startSynchronizerClockAfterPreroll(at: targetTime)
             self.displayLink?.isPaused = !self.hasVideo
             self.isPlaying = true
             self.playbackState = .playing

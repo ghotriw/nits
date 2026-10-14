@@ -208,7 +208,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 return
             }
             playbackRateLock.withLock { $0 = clamped }
-            if isPlaying {
+            // While prerolling the clock is intentionally held; the pending start picks up the new rate.
+            let isPrerollPending = pendingClockStartLock.withLock { pending -> Bool in
+                guard pending != nil else { return false }
+                pending?.rate = clamped
+                return true
+            }
+            if isPlaying && !isPrerollPending {
                 let currentRate = playbackRate
                 clockSettlingGuardLock.withLock { guardState in
                     guard var state = guardState else { return }
@@ -380,6 +386,19 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Threshold in milliseconds to log anomalous A/V sync drift spikes (throttled to 1/sec).
     nonisolated static let syncDriftSpikeThresholdMs: Double = 500.0
 
+    /// Upper bound for projecting the clock forward to the display link's target vsync. Generous enough for a
+    /// 24 Hz link; guards against a bogus `targetTimestamp` (e.g. right after a link is attached or resumed).
+    nonisolated static let maxVsyncLookaheadSeconds: Double = 0.05
+
+    /// Display-link timing kept between ticks to explain pipeline drops in the log (throttled to 1/sec).
+    struct TickDiagnostics {
+        var lastTargetTimestamp: CFTimeInterval = 0
+        var unloggedDrops = 0
+        var lastLogInstant: ContinuousClock.Instant = .now - .seconds(10)
+    }
+    @ObservationIgnored
+    let tickDiagnosticsLock = OSAllocatedUnfairLock(initialState: TickDiagnostics())
+
     /// Tracks whether a rapid relative seek burst sequence is currently active.
     @ObservationIgnored
     var isRelativeSeekBurstActive: Bool = false
@@ -403,6 +422,17 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let isMetalLayerVisibleLock = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored
     let isVideoDrainPaused = OSAllocatedUnfairLock(initialState: false)
+    /// Clock start deferred until the display-link tick has presented the anchor frame
+    /// (see `startSynchronizerClockAfterPreroll`). Claimed exactly once by the tick or by the timeout.
+    struct PendingClockStart: Sendable {
+        let targetTime: CMTime
+        var rate: Double
+        let requestHostTime: Double
+    }
+    @ObservationIgnored
+    let pendingClockStartLock = OSAllocatedUnfairLock<PendingClockStart?>(initialState: nil)
+    @ObservationIgnored
+    var prerollTimeoutTask: Task<Void, Never>? = nil
     public var showDebugHUD: Bool = false {
         didSet {
             if showDebugHUD {
@@ -457,7 +487,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
 
         @objc func onTick(_ link: CADisplayLink) {
-            engine?.displayLinkTick()
+            engine?.displayLinkTick(targetTimestamp: link.targetTimestamp)
         }
     }
 
@@ -623,6 +653,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displaySleepManager.enableDisplaySleep()
         seekTask?.cancel()
         seekTask = nil
+        prerollTimeoutTask?.cancel()
+        prerollTimeoutTask = nil
         if let observer = timeObserver {
             synchronizer.removeTimeObserver(observer)
         }
