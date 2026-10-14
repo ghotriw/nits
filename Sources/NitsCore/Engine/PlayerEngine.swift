@@ -245,14 +245,51 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var loadedSubtitleDocuments: [Int: SubtitleDocument] = [:]
     var currentHeaders: [String: String] = [:]
 
+    // MARK: - Decoupled video enqueue/flush via Objective-C selectors
+    //
+    // The display layer is deliberately NOT attached to `AVSampleBufferRenderSynchronizer`
+    // (the synchronizer drives audio only, via `audioReceiver`). Frames are paced by
+    // `CADisplayLink` and pushed as `CVPixelBuffer`s with `kCMSampleAttachmentKey_DisplayImmediately`.
+    //
+    // Why decoupled: on Apple Silicon a fullscreen `AVSampleBufferDisplayLayer` is promoted to
+    // IOMFB Direct Scanout. When such a layer is attached to the synchronizer, `setRate(0.0)` on
+    // pause can leave the display pipeline blocked on a hardware fence (`IOFenceTransaction`),
+    // freezing WindowServer. Keeping the layer off the synchronizer means its rate is never set
+    // to 0 — pause is just "stop ticking / stop enqueuing" — so that fence state cannot occur.
+    //
+    // Why `perform(selector:)` instead of `enqueue(_:)` / `flush()`: this is ONLY to suppress the
+    // SDK deprecation warning. Apple deprecated the direct enqueue/flush APIs to push callers onto
+    // `synchronizer.sampleBufferReceiver`, which requires the synchronizer attachment we avoid above.
+    // The selector dispatch invokes the exact same underlying Objective-C IMP as `enqueue(_:)` — it
+    // is NOT a workaround for any hardware deadlock, and calling `enqueue(_:)` directly would behave
+    // identically at runtime. Do not "modernize" by migrating to the receiver API.
     nonisolated static let enqueueSampleBufferSelector = sel_registerName("enqueueSampleBuffer:")
     nonisolated static let flushSelector = sel_registerName("flush")
     nonisolated static let flushRemovingImageSelector = sel_registerName(
         "flushWithRemovalOfDisplayedImage:completionHandler:")
 
+    /// C-function signature of `-[AVSampleBufferVideoRenderer enqueueSampleBuffer:]`.
+    typealias EnqueueSampleBufferFn = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+
+    /// IMP of `enqueueSampleBuffer:` resolved once at init, so the per-frame enqueue on the
+    /// `CADisplayLink` hot path skips the `perform(_:with:)` autorelease/bridging overhead
+    /// (mirrors `flushRemovingDisplayedImage`). `nil` only if the renderer somehow does not
+    /// respond, in which case `enqueueToDisplayLayer` falls back to `perform`.
+    let enqueueSampleBufferImp: EnqueueSampleBufferFn?
+
+    /// Enqueues a ready sample buffer to the (synchronizer-decoupled) display layer. See the
+    /// note above on why selector dispatch is used instead of `enqueue(_:)`.
+    nonisolated func enqueueToDisplayLayer(_ sample: CMSampleBuffer) {
+        if let fn = enqueueSampleBufferImp {
+            fn(sampleBufferRenderer, Self.enqueueSampleBufferSelector, sample)
+        } else {
+            _ = sampleBufferRenderer.perform(Self.enqueueSampleBufferSelector, with: sample)
+        }
+    }
+
     /// Calls `flush(removingDisplayedImage: true)` via the Objective-C runtime.
-    /// The display layer is deliberately NOT attached to the render synchronizer (see video_architecture.md 3.1),
-    /// so the receiver-based replacement API is unavailable; this avoids the deprecation warning.
+    /// The display layer is not attached to the synchronizer (see note above), so the
+    /// receiver-based replacement API is unavailable; selector dispatch avoids the deprecation warning.
     nonisolated static func flushRemovingDisplayedImage(_ renderer: NSObject) {
         typealias Fn = @convention(c) (AnyObject, Selector, Bool, @escaping @convention(block) () -> Void) -> Void
         guard renderer.responds(to: flushRemovingImageSelector),
@@ -438,7 +475,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
         metalRenderer?.uniforms.targetNits = effectiveNits
         metalRenderer?.uniforms.outputSharpness = configuration.sharpness
-        self.sampleBufferRenderer = displayLayer.sampleBufferRenderer
+        let renderer = displayLayer.sampleBufferRenderer
+        self.sampleBufferRenderer = renderer
+        if renderer.responds(to: Self.enqueueSampleBufferSelector),
+            let imp = renderer.method(for: Self.enqueueSampleBufferSelector)
+        {
+            self.enqueueSampleBufferImp = unsafeBitCast(imp, to: EnqueueSampleBufferFn.self)
+        } else {
+            self.enqueueSampleBufferImp = nil
+        }
         // Synchronizer manages audio receiver and master clock timeline
         self.audioReceiver = synchronizer.sampleBufferReceiver(adding: audioRenderer)
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel

@@ -136,7 +136,7 @@ extension PlayerEngine {
             dic[kCMSampleAttachmentKey_DisplayImmediately] = true
         }
 
-        _ = sampleBufferRenderer.perform(Self.enqueueSampleBufferSelector, with: sample)
+        enqueueToDisplayLayer(sample)
     }
 
     nonisolated func displayLinkTick() {
