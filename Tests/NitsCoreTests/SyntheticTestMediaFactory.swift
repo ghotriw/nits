@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 /// Provides automated, deterministic synthetic test media generation via FFmpeg.
 /// Generates test assets dynamically into the temporary directory if not already cached.
@@ -58,8 +57,6 @@ public enum SyntheticTestMediaFactory {
         }
     }
 
-    private static let lock = OSAllocatedUnfairLock()
-
     /// Resolves the absolute path to `ffmpeg` binary on the machine.
     public static func ffmpegBinaryPath() -> String? {
         let candidates = [
@@ -91,23 +88,16 @@ public enum SyntheticTestMediaFactory {
 
     /// Ensures that the specified media preset is generated and available on disk.
     /// Returns the absolute path to the ready file, or `nil` if FFmpeg is unavailable.
+    ///
+    /// Tests run in parallel and share the cache, so FFmpeg writes to a private partial file that is
+    /// renamed into place only once complete: a reader never sees a half-written file (an MP4's
+    /// `moov` atom is written last). Concurrent callers may both generate; the last rename wins.
     public static func ensureMedia(preset: Preset = .multiTrackH264) -> String? {
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NitsSyntheticMedia")
-        let targetURL = tmpDir.appendingPathComponent(preset.filename)
-        let targetPath = targetURL.path
+        let targetPath = tmpDir.appendingPathComponent(preset.filename).path
 
-        let alreadyExists: Bool = lock.withLock {
-            try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: targetPath),
-                let attr = try? FileManager.default.attributesOfItem(atPath: targetPath),
-                let size = attr[.size] as? UInt64, size > 4096
-            {
-                return true
-            }
-            return false
-        }
-
-        if alreadyExists {
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: targetPath) {
             return targetPath
         }
 
@@ -116,53 +106,70 @@ public enum SyntheticTestMediaFactory {
             return nil
         }
 
-        let arguments = arguments(for: preset, outputPath: targetPath)
+        // Keeps the preset's extension so FFmpeg still infers the container from it.
+        func partialPath() -> String {
+            tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-\(preset.filename)").path
+        }
 
+        let encodedPath = partialPath()
+        defer { try? FileManager.default.removeItem(atPath: encodedPath) }
+        guard runFFmpeg(ffmpeg, arguments: arguments(for: preset, outputPath: encodedPath), preset: preset) else {
+            return nil
+        }
+
+        var readyPath = encodedPath
+        // For VP9 10-bit HDR WebM, libvpx-vp9 ignores container color metadata during initial encoding pass.
+        // A secondary remux pass copies the bitstream and correctly injects WebM Matroska Color elements.
+        let remuxedPath = partialPath()
+        defer { try? FileManager.default.removeItem(atPath: remuxedPath) }
+        if preset == .vp910BitHDR {
+            let remuxArguments = [
+                "-y", "-i", encodedPath,
+                "-c", "copy",
+                "-color_primaries:v", "bt2020",
+                "-color_trc:v", "smpte2084",
+                "-colorspace:v", "bt2020nc",
+                remuxedPath,
+            ]
+            guard runFFmpeg(ffmpeg, arguments: remuxArguments, preset: preset) else { return nil }
+            readyPath = remuxedPath
+        }
+
+        // rename(2) atomically replaces any copy another test published meanwhile.
+        guard rename(readyPath, targetPath) == 0 else {
+            print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
+            return nil
+        }
+        return targetPath
+    }
+
+    /// Runs FFmpeg to completion. stderr is drained while the process runs (a full pipe would block it)
+    /// and only errors are logged, so the output stays small.
+    private static func runFFmpeg(_ ffmpeg: String, arguments: [String], preset: Preset) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpeg)
-        process.arguments = arguments
-        process.standardOutput = Pipe()
+        process.arguments = ["-hide_banner", "-nostats", "-loglevel", "error"] + arguments
+        process.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         process.standardError = errPipe
 
         do {
             try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus == 0 && FileManager.default.fileExists(atPath: targetPath) {
-                // For VP9 10-bit HDR WebM, libvpx-vp9 ignores container color metadata during initial encoding pass.
-                // A secondary remux pass copies the bitstream and correctly injects WebM Matroska Color elements.
-                if preset == .vp910BitHDR {
-                    let tempCopy = targetPath + ".raw.webm"
-                    try? FileManager.default.moveItem(atPath: targetPath, toPath: tempCopy)
-                    let remux = Process()
-                    remux.executableURL = URL(fileURLWithPath: ffmpeg)
-                    remux.arguments = [
-                        "-y", "-i", tempCopy,
-                        "-c", "copy",
-                        "-color_primaries:v", "bt2020",
-                        "-color_trc:v", "smpte2084",
-                        "-colorspace:v", "bt2020nc",
-                        targetPath,
-                    ]
-                    remux.standardOutput = Pipe()
-                    remux.standardError = Pipe()
-                    try remux.run()
-                    remux.waitUntilExit()
-                    try? FileManager.default.removeItem(atPath: tempCopy)
-                    guard remux.terminationStatus == 0 else { return nil }
-                }
-                return targetPath
-            } else {
-                let errText = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                print(
-                    "[SyntheticTestMediaFactory] FFmpeg failed with exit code \(process.terminationStatus): \(errText.split(separator: "\n").filter { $0.contains("rror") || $0.contains("nvalid") || $0.contains("not ") || $0.contains("Unable") }.joined(separator: " | "))"
-                )
-                return nil
-            }
         } catch {
             print("[SyntheticTestMediaFactory] Failed to launch FFmpeg: \(error)")
-            return nil
+            return false
         }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errText = String(data: errData, encoding: .utf8) ?? ""
+            print(
+                "[SyntheticTestMediaFactory] FFmpeg failed for \(preset.rawValue) with exit code \(process.terminationStatus): \(errText.split(separator: "\n").joined(separator: " | "))"
+            )
+            return false
+        }
+        return true
     }
 
     private static func arguments(for preset: Preset, outputPath: String) -> [String] {
