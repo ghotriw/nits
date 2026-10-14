@@ -89,7 +89,7 @@ struct AV1PlaybackTests {
             return
         }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: av1Path)
 
         #expect(engine.isLoaded == true)

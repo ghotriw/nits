@@ -16,7 +16,7 @@ struct PlaybackStressTests {
     @MainActor
     private static func makeEngine() -> PlayerEngine {
         let config = PlayerConfiguration(resumePlayback: false)
-        return PlayerEngine(configuration: config)
+        return PlayerEngine.makeForTesting(configuration: config)
     }
 
     // MARK: - 1. Rapid Scrubbing Chaos Test
@@ -406,12 +406,13 @@ extension PlaybackStressTests {
 
         // Settle at 0.0s
         engine.seek(to: 0.0, exact: true)
-        try? await Task.sleep(nanoseconds: 800_000_000)
+        _ = await engine.waitUntil { !engine.isSeeking && engine.currentFramePTS >= 0 }
 
         // GOP is strictly 5.0s (keyframes at 0.0, 5.0, 10.0, 15.0, etc.)
-        // Seek forward by 5.0s using keyframe seek (exact: false)
+        // Seek forward by 5.0s using keyframe seek (exact: false). Polling instead of a fixed wait keeps the
+        // assertions strict while tolerating slow decoding under load; a wrong landing still times out.
         engine.seekRelative(by: 5.0, exact: false)
-        try? await Task.sleep(nanoseconds: 800_000_000)
+        _ = await engine.waitUntil { abs(engine.currentFramePTS - 5.0) < 0.25 && abs(engine.currentTime - 5.0) < 0.25 }
 
         let pts1 = engine.currentFramePTS
         print("[KeyframeSeekTest] First keyframe seek landed at frame PTS: \(pts1), currentTime: \(engine.currentTime)")
@@ -421,7 +422,9 @@ extension PlaybackStressTests {
 
         // Seek forward by another 5.0s using keyframe seek (exact: false)
         engine.seekRelative(by: 5.0, exact: false)
-        try? await Task.sleep(nanoseconds: 800_000_000)
+        _ = await engine.waitUntil {
+            abs(engine.currentFramePTS - 10.0) < 0.25 && abs(engine.currentTime - 10.0) < 0.25
+        }
 
         let pts2 = engine.currentFramePTS
         print(
@@ -432,7 +435,7 @@ extension PlaybackStressTests {
 
         // Now seek backward by 5.0s
         engine.seekRelative(by: -5.0, exact: false)
-        try? await Task.sleep(nanoseconds: 800_000_000)
+        _ = await engine.waitUntil { abs(engine.currentFramePTS - 5.0) < 0.25 && abs(engine.currentTime - 5.0) < 0.25 }
 
         let pts3 = engine.currentFramePTS
         print(
@@ -455,21 +458,23 @@ extension PlaybackStressTests {
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
-        // Play for 1.5 seconds so synchronizer clock advances significantly past 0.0s
+        // Play until the synchronizer clock is well past 0.0s
         engine.play()
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        #expect(engine.currentTime >= 0.8)
+        #expect(await engine.waitForClock(toPass: 1.0), "Clock did not advance past 1.0s")
 
         // Reload the same media (simulating playlist track advancement or restart)
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
-        // Reset dropped frames and let playback resume from 0.0s
+        // Play again; the clock must restart from 0.0s, not continue from the previous run (stale clock ≥ 1.0s)
         engine.play()
-        try? await Task.sleep(nanoseconds: 800_000_000)
+        #expect(await engine.waitForClock(toPass: 0.0), "Clock did not start after reload")
+        let restartedAt = engine.synchronizer.currentTime().seconds
+        #expect(restartedAt < 0.3, "Clock resumed from the previous run at \(restartedAt)s")
+        try? await Task.sleep(nanoseconds: 500_000_000)
 
         // With ClockSettlingGuard in place, the engine must NOT discard a burst of frames.
-        // (At most 1-2 frames may be skipped during initial 800ms due to display VSYNC vs media cadence quantization).
+        // (At most 1-2 frames may be skipped due to display VSYNC vs media cadence quantization).
         #expect(engine.droppedFramesCount <= 2, "Stale clock caused frame drop burst: \(engine.droppedFramesCount)")
         #expect(engine.isPlaying == true)
         #expect(
@@ -497,9 +502,14 @@ extension PlaybackStressTests {
 
         #expect(engine.currentTime >= 9.0)
 
-        // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut)
+        // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut); wait until the clock runs from there
         engine.seek(to: 0.0, exact: true)
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        // Right after the seek the clock still reads the old ~11s; the chase seek restarts it near 0.0s.
+        _ = await engine.waitUntil {
+            let clock = engine.synchronizer.currentTime().seconds
+            return clock > 0.2 && clock < 9.0
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
 
         // Must settle close to 0.0s and resume smoothly without frame bursts
         #expect(
@@ -516,10 +526,8 @@ extension PlaybackStressTests {
     // MARK: - 13. Playback Start Preroll
     /// Samples the master clock every 20ms and reports whether it never moved backwards.
     @MainActor
-    private static func sampleClock(of engine: PlayerEngine, samples: Int) async -> (isMonotonic: Bool, advance: Double)
-    {
-        let first = engine.synchronizer.currentTime().seconds
-        var previous = first
+    private static func isClockMonotonic(_ engine: PlayerEngine, samples: Int) async -> Bool {
+        var previous = engine.synchronizer.currentTime().seconds
         var isMonotonic = true
         for _ in 0..<samples {
             try? await Task.sleep(nanoseconds: 20_000_000)
@@ -527,7 +535,7 @@ extension PlaybackStressTests {
             if now < previous { isMonotonic = false }
             previous = now
         }
-        return (isMonotonic, previous - first)
+        return isMonotonic
     }
 
     @Test("Starting playback right after load does not drop the leading video frames")
@@ -542,14 +550,14 @@ extension PlaybackStressTests {
         // The clock must stay anchored at 0.0 until the first decoded frame is on screen; if it ran while the
         // first frame was still decoding, the display link would discard the leading frames as late.
         engine.play()
-        let clock = await Self.sampleClock(of: engine, samples: 40)
+        let isMonotonic = await Self.isClockMonotonic(engine, samples: 40)
 
         #expect(
             engine.pipelineDroppedFramesCount == 0,
             "Leading frames dropped at playback start: \(engine.pipelineDroppedFramesCount)")
         #expect(engine.isPlaying == true)
-        #expect(clock.isMonotonic, "Clock moved backwards after playback start")
-        #expect(clock.advance > 0, "Clock never started after preroll")
+        #expect(isMonotonic, "Clock moved backwards after playback start")
+        #expect(await engine.waitForClock(toPass: 0.0), "Clock never started after preroll")
 
         engine.stop()
     }
@@ -572,11 +580,11 @@ extension PlaybackStressTests {
             let droppedBefore = engine.pipelineDroppedFramesCount
 
             engine.play()
-            let clock = await Self.sampleClock(of: engine, samples: 30)
+            let isMonotonic = await Self.isClockMonotonic(engine, samples: 30)
 
-            #expect(clock.isMonotonic, "Cycle \(cycle): clock moved backwards after resume")
+            #expect(isMonotonic, "Cycle \(cycle): clock moved backwards after resume")
             #expect(
-                engine.synchronizer.currentTime().seconds > pausedClock,
+                await engine.waitForClock(toPass: pausedClock),
                 "Cycle \(cycle): clock did not resume from \(pausedClock)s")
             // A single skipped VSYNC tick under heavy parallel test load may replace one frame; a clock leap drops 2+.
             #expect(
@@ -606,7 +614,7 @@ extension PlaybackStressTests {
             try? await Task.sleep(nanoseconds: 10_000_000)
             firstPresentedPts = engine.frameQueue.getLastRenderedPTS()
         }
-        let clock = await Self.sampleClock(of: engine, samples: 30)
+        let isMonotonic = await Self.isClockMonotonic(engine, samples: 30)
 
         #expect(
             firstPresentedPts >= startTime - halfFrame,
@@ -616,8 +624,8 @@ extension PlaybackStressTests {
             engine.pipelineDroppedFramesCount <= 1,
             "Pre-target frames reached the queue and were dropped: \(engine.pipelineDroppedFramesCount)")
         #expect(engine.isPlaying == true)
-        #expect(clock.isMonotonic, "Clock moved backwards after mid-GOP start")
-        #expect(engine.synchronizer.currentTime().seconds > startTime, "Clock did not start from \(startTime)s")
+        #expect(isMonotonic, "Clock moved backwards after mid-GOP start")
+        #expect(await engine.waitForClock(toPass: startTime), "Clock did not start from \(startTime)s")
 
         engine.stop()
     }

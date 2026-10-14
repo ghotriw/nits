@@ -86,7 +86,7 @@ struct AdaptiveToneMappingTests {
     @Test("targetNitsScale scales content-adaptive target white dynamically while preserving adaptation")
     @MainActor
     func testTargetNitsScaleMultiplier() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         // 1.0x default
         #expect(engine.targetNitsScale == 1.0)
@@ -157,7 +157,7 @@ struct AdaptiveToneMappingTests {
     @Test("PlayerEngine resets dynamic tone mapping state on stop()")
     @MainActor
     func testPlayerEngineToneMappingReset() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         #expect(engine.metalTargetNits == 203.0)
         engine.stop()
         #expect(engine.metalTargetNits == 203.0)

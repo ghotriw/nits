@@ -14,7 +14,7 @@ struct BackwardFrameSteppingTests {
     @Test("Backward steps are instant cache hits after a mid-GOP paused seek")
     func backwardStepsAreCacheHits() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .wideGOPH264) else { return }
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: path)
         for _ in 0..<100 where !engine.isLoaded {
             try? await Task.sleep(nanoseconds: 50_000_000)

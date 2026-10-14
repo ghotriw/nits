@@ -21,7 +21,7 @@ struct PlayerEngineTests {
             seekStepSeconds: 10.0,
             exactSeekOnSinglePress: false
         )
-        let engine = PlayerEngine(configuration: config)
+        let engine = PlayerEngine.makeForTesting(configuration: config)
 
         #expect(engine.isLoaded == false)
         #expect(engine.isPlaying == false)
@@ -41,7 +41,7 @@ struct PlayerEngineTests {
     @Test("Active render mode dynamically computes based on display HDR and permission")
     @MainActor
     func testRenderModeResolution() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         // Default: isHDRDisplay = true, auto -> .system
         engine.isHDRDisplay = true
@@ -80,7 +80,7 @@ struct PlayerEngineTests {
     @Test("Volume and mute updates properly reflect on engine state")
     @MainActor
     func testVolumeAndMute() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         engine.volume = 0.65
         #expect(engine.volume == 0.65)
@@ -96,7 +96,7 @@ struct PlayerEngineTests {
     @Test("Playback toggle and seek commands update internal state")
     @MainActor
     func testPlaybackControls() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         // Toggle when unloaded does not play
         engine.togglePlayPause()
@@ -121,7 +121,7 @@ struct PlayerEngineTests {
             return
         }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: referencePath)
 
         #expect(engine.isLoaded == true)
@@ -165,7 +165,7 @@ struct PlayerEngineTests {
     @Test("Engine handles unavailable network URL gracefully with loadError and not loading")
     @MainActor
     func testLoadAsyncNetworkError() async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         // Invalid port / non-existent local server that will fail or reject instantly
         await engine.loadAsync(path: "http://127.0.0.1:65534/nonexistent.mkv")
 
@@ -177,7 +177,7 @@ struct PlayerEngineTests {
     @Test("Synchronous engine.load with remote URL does not self-cancel its own loadingTask")
     @MainActor
     func testLoadNetworkURLViaSynchronousLoadWrapper() async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         // Calls synchronous load(_:) which wraps into loadingTask = Task { await loadAsync(...) }
         engine.load(path: "http://127.0.0.1:65534/nonexistent.mkv")
 
@@ -202,7 +202,7 @@ struct PlayerEngineTests {
     @Test("Engine notifies playbackState changes and time updates")
     @MainActor
     func testPlaybackStateTransitions() async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         #expect(engine.playbackState == .idle)
 
         var statesReceived: [PlaybackState] = []
@@ -234,7 +234,7 @@ struct PlayerEngineTests {
     @Test("Engine cancellation resets to idle instead of failed")
     @MainActor
     func testLoadCancellationResetsToIdle() async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         let loadTask = Task { @MainActor in
             await engine.loadAsync(path: "http://127.0.0.1:65534/slow.mkv")
         }
@@ -254,7 +254,7 @@ struct PlayerEngineTests {
             return
         }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: referencePath)
         #expect(engine.isLoaded == true)
 
@@ -294,7 +294,7 @@ struct PlayerEngineTests {
     @Test("PlayerEngine load updates mediaTitle and stop clears it")
     @MainActor
     func testEngineMediaTitleLifecycle() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         #expect(engine.mediaTitle == "")
 
         // Load with explicit title
@@ -317,7 +317,7 @@ struct PlayerEngineTests {
         guard let audioPath = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC) else { return }
         guard FileManager.default.fileExists(atPath: audioPath) else { return }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: audioPath)
 
         #expect(engine.isLoaded == true)
@@ -355,7 +355,7 @@ struct PlayerEngineTests {
             FileManager.default.fileExists(atPath: audioPath)
         else { return }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         // 1. Load video
         engine.load(path: referenceVideoPath)
         #expect(engine.isLoaded == true)
@@ -470,7 +470,7 @@ struct PlayerEngineTests {
     @Test("Playback rate controls change speed, clamp bounds, and reset")
     @MainActor
     func testPlaybackRateControls() {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         #expect(engine.playbackRate == 1.0)
 
@@ -517,7 +517,7 @@ struct PlayerEngineTests {
             resumeStartThreshold: 15.0,
             resumeEndThresholdRatio: 0.95
         )
-        let engine = PlayerEngine(configuration: config, historyStore: historyStore)
+        let engine = PlayerEngine.makeForTesting(configuration: config, historyStore: historyStore)
 
         // 1. Load first file (60s) and seek past resume threshold (to 25.0s)
         engine.load(path: path1)

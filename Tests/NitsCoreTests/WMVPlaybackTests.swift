@@ -106,7 +106,7 @@ struct WMVPlaybackTests {
             return
         }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: wmvPath)
 
         #expect(engine.isLoaded == true)

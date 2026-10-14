@@ -156,7 +156,7 @@ struct ThumbnailTests {
         guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else {
             return
         }
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: mediaPath)
 
         for _ in 0..<50 {

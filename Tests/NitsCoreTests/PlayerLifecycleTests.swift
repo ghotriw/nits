@@ -42,7 +42,7 @@ struct PlayerLifecycleTests {
         let box = RefBox<PlayerEngine>(nil)
 
         autoreleasepool {
-            let engine = PlayerEngine()
+            let engine = PlayerEngine.makeForTesting()
             box.value = engine
             #expect(box.value != nil)
             #expect(engine.isLoaded == false)
@@ -58,7 +58,7 @@ struct PlayerLifecycleTests {
         let box = RefBox<PlayerEngine>(nil)
 
         autoreleasepool {
-            let engine = PlayerEngine()
+            let engine = PlayerEngine.makeForTesting()
             box.value = engine
             engine.load(path: path)
             #expect(engine.isLoaded == true)
@@ -74,7 +74,7 @@ struct PlayerLifecycleTests {
     // MARK: - 2. Rapid Sequential Create -> Load -> Play -> Deinit Loop
     @MainActor
     private func runSinglePlayCycle(path: String, box: RefBox<PlayerEngine>) async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         box.value = engine
         engine.load(path: path)
         #expect(engine.isLoaded == true)
@@ -125,7 +125,7 @@ struct PlayerLifecycleTests {
     // MARK: - 3. Immediate Deinit While Actively Playing (Stress Test)
     @MainActor
     private func runAbandonedPlaybackCycle(path: String, box: RefBox<PlayerEngine>) async {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         box.value = engine
         engine.load(path: path)
         engine.play()
@@ -154,7 +154,7 @@ struct PlayerLifecycleTests {
     func testRapidConsecutiveLoadWithoutStop() async {
         guard let path = Self.findTestMedia() else { return }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
 
         for _ in 0..<10 {
             engine.load(path: path)

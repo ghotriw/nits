@@ -206,7 +206,7 @@ struct VP9PlaybackTests {
             return
         }
 
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         engine.load(path: vp9Path)
 
         #expect(engine.isLoaded == true)
