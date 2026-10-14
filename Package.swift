@@ -30,7 +30,13 @@ let package = Package(
             resources: [
                 .process("Video/HDRToneMapping.metal")
             ],
-            swiftSettings: defaultSwiftSettings
+            swiftSettings: defaultSwiftSettings + [
+                // Software YUV->NV12/P010 conversion (FFmpegVideoDecoder) is hand-SIMD that only
+                // vectorizes under -O. Debug (-Onone) makes 10-bit conversion ~40x slower, so 1080p+
+                // 10-bit AV1 playback lags and desyncs from audio. Optimize NitsCore even in Debug so
+                // software playback stays usable while developing (release is unaffected).
+                .unsafeFlags(["-O"], .when(configuration: .debug))
+            ]
         ),
         .target(
             name: "NitsUI",
