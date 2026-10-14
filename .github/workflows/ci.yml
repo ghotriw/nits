@@ -27,14 +27,34 @@ jobs:
       - name: Select Xcode 27
         run: sudo xcode-select -s /Applications/Xcode_27.app
 
+      # Probe the compiler right after install so a broken toolchain fails here with the real
+      # error instead of a silent CompileMetalFile failure inside swift build.
+      - name: Ensure Metal Toolchain is installed
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          sudo xcodebuild -downloadComponent metalToolchain
+          echo 'kernel void probe() {}' > "$RUNNER_TEMP/probe.metal"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun metal -c "$RUNNER_TEMP/probe.metal" -o "$RUNNER_TEMP/probe.air"; then
+              exit 0
+            fi
+            echo "Metal compiler not usable yet (attempt $attempt), retrying..."
+            sleep 10
+          done
+          xcodebuild -showComponent metalToolchain || true
+          exit 1
+
       # Homebrew ffmpeg only provides the CLI for SyntheticTestMediaFactory; Nits itself builds,
       # tests and ships against the LGPL libraries from setup_dependencies.sh.
       - name: Install dependencies
         run: |
           brew install ffmpeg pkg-config meson ninja swift-format
 
-      - name: Cache LGPL FFmpeg / dav1d
-        uses: actions/cache@v4
+      # Restore/save explicitly: actions/cache only saves on job success, so a later failing test
+      # would otherwise force a full FFmpeg rebuild on every run.
+      - name: Restore LGPL FFmpeg / dav1d
+        id: deps-cache
+        uses: actions/cache/restore@v4
         with:
           path: .build/dependencies
           key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
@@ -44,10 +64,12 @@ jobs:
           ./scripts/setup_dependencies.sh
           echo "PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig" >> "$GITHUB_ENV"
 
-      - name: Ensure Metal Toolchain is installed
-        run: |
-          sudo xcodebuild -runFirstLaunch || true
-          sudo xcodebuild -downloadComponent metalToolchain
+      - name: Save LGPL FFmpeg / dav1d
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/dependencies
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
 
       - name: Lint check (code style)
         run: ./scripts/format.sh lint
