@@ -126,7 +126,7 @@ extension PlayerEngine {
         previousRun?.cancel()
 
         let feedingLock = self.isFeeding
-        let receiver = self.audioReceiver
+        let sink = self.audioSink
         let audioTimebase = demuxer.audioTimebase
 
         audioFeedingTask = Task.detached(priority: .userInitiated) {
@@ -134,7 +134,7 @@ extension PlayerEngine {
             await Self.runAudioFeeding(
                 demuxer: demuxer,
                 audioDecoder: aDecoder,
-                receiver: receiver,
+                sink: sink,
                 feedingLock: feedingLock,
                 audioTimebase: audioTimebase
             )
@@ -149,7 +149,7 @@ extension PlayerEngine {
     private nonisolated static func runAudioFeeding(
         demuxer: MediaDemuxer,
         audioDecoder: FFAudioDecoder,
-        receiver: AVSampleBufferAudioRenderer.Receiver,
+        sink: any AudioRendererSink,
         feedingLock: OSAllocatedUnfairLock<Bool>,
         audioTimebase: AVRational
     ) async {
@@ -176,10 +176,8 @@ extension PlayerEngine {
                     ))
                 continue
             }
-            nonisolated(unsafe) let sBuf = buf
-            let ready: CMReadySampleBuffer<CMSampleBuffer.DynamicContent> = CMReadySampleBuffer(unsafeBuffer: sBuf)
             do {
-                _ = try await receiver.enqueue(ready)
+                try await sink.enqueue(buf)
             } catch is CancellationError {
                 break  // not accepted by the renderer; stays pending
             } catch {

@@ -111,8 +111,10 @@ A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
 
 - **Video** — the feeding task stops decoding once `FrameQueue` holds 40 frames and resumes below
   25, polling with `Task.sleep` (no thread blocking).
-- **Audio** — buffers go through `AVSampleBufferAudioRenderer.Receiver.enqueue`, whose `await`
-  provides backpressure from CoreAudio.
+- **Audio** — buffers go through `AudioRendererSink.enqueue`, which suspends under renderer
+  backpressure: on macOS 27+ via `AVSampleBufferAudioRenderer.Receiver.enqueue`, on macOS 15–26 by
+  waiting on `isReadyForMoreMediaData` with `Task.sleep` before a direct `enqueue(_:)`. Both throw
+  `CancellationError` if cancelled before the buffer is accepted, so pause keeps it pending.
 
 ### Display pacing
 

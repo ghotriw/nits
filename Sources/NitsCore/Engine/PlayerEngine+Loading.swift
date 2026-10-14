@@ -789,7 +789,7 @@ extension PlayerEngine {
         } else {
             _ = self.sampleBufferRenderer.perform(Self.flushSelector)
         }
-        self.audioReceiver.flush()
+        self.audioSink.flush()
         self.audioDecoder?.flush()
 
         // Determine effective start time using the priority chain:

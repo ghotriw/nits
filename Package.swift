@@ -8,7 +8,7 @@ let defaultSwiftSettings: [SwiftSetting] = [
 
 let package = Package(
     name: "Nits",
-    platforms: [.macOS("27.0")],
+    platforms: [.macOS(.v15)],
     products: [
         .executable(name: "Nits", targets: ["NitsApp"]),
         .library(name: "NitsCore", targets: ["NitsCore"]),

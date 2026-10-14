@@ -123,7 +123,7 @@ extension PlayerEngine {
 
         let decoder = self.decoder
         let audioDecoder = self.audioDecoder
-        let audioReceiver = self.audioReceiver
+        let audioSink = self.audioSink
         let hasVideo = self.hasVideo
         let seekIdLock = self.activeSeekId
         let frameQueue = self.frameQueue
@@ -176,7 +176,7 @@ extension PlayerEngine {
             // Expensive audio reset only for the seek that is still current (final chase target).
             if !isSuperseded() {
                 audioDecoder?.flush()
-                audioReceiver.flush()
+                audioSink.flush()
             }
 
             DispatchQueue.main.async { [weak self] in

@@ -86,7 +86,8 @@ selectors (see Video pipeline).
   an `OSAllocatedUnfairLock` and is `nonisolated` so the display link reads it without actor hops.
   UI state changed from the display link (e.g. `isMetalLayerVisible`) is set on `@MainActor`.
 - **Backpressure** is cooperative: video feeding pauses at a queue high-water mark using
-  `Task.sleep`; audio relies on `await receiver.enqueue(...)`. Never block threads.
+  `Task.sleep`; audio relies on `await audioSink.enqueue(...)` (`Receiver` on macOS 27+, readiness
+  polling with `Task.sleep` on 15–26). Never block threads.
 
 ## Audio & demuxing invariants
 

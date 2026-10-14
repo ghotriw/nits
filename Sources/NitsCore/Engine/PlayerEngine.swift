@@ -254,7 +254,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     // MARK: - Decoupled video enqueue/flush via Objective-C selectors
     //
     // The display layer is deliberately NOT attached to `AVSampleBufferRenderSynchronizer`
-    // (the synchronizer drives audio only, via `audioReceiver`). Frames are paced by
+    // (the synchronizer drives audio only, via `audioSink`). Frames are paced by
     // `CADisplayLink` and pushed as `CVPixelBuffer`s with `kCMSampleAttachmentKey_DisplayImmediately`.
     //
     // Why decoupled: on Apple Silicon a fullscreen `AVSampleBufferDisplayLayer` is promoted to
@@ -314,7 +314,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
     public let metalRenderer = MetalVideoRenderer()
     public let audioRenderer = AVSampleBufferAudioRenderer()
-    public let audioReceiver: AVSampleBufferAudioRenderer.Receiver
+    let audioSink: any AudioRendererSink
     var videoFeedingTask: Task<Void, Never>?
     var audioFeedingTask: Task<Void, Never>?
     var seekTask: Task<Void, Never>?
@@ -535,8 +535,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         } else {
             self.enqueueSampleBufferImp = nil
         }
-        // Synchronizer manages audio receiver and master clock timeline
-        self.audioReceiver = synchronizer.sampleBufferReceiver(adding: audioRenderer)
+        // Synchronizer drives the audio renderer and the master clock timeline
+        self.audioSink = makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer)
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
@@ -622,7 +622,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
 
         if isPlaying {
-            audioReceiver.flush()
+            audioSink.flush()
             audioDecoder?.flush()
         }
     }

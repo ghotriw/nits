@@ -12,7 +12,7 @@ extension PlayerEngine {
 
         // Stop requesting data and flush renderers
         stopFeedingAudio()
-        audioReceiver.flush()
+        audioSink.flush()
         audioDecoder?.flush()
 
         demuxer.selectAudioTrack(trackId: id)
