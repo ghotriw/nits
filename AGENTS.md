@@ -18,6 +18,12 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
   (`get_platform_compatibility`) — Apple APIs change faster than training data.
 - **`.ref/`** — reference implementations and third-party sources for algorithms, format parsing,
   shader math and pipeline behaviour. Adapt, don't copy: results must follow the rules below.
+  Nits is MIT, so licenses limit what may enter `Sources/` (ideas and behaviour are always fine):
+  - GPL: never port code, not even translated.
+  - LGPL (`mpv`, `ffmpeg`, `gstreamer`): only into a separate file with an LGPL-2.1-or-later
+    header and attribution, listed in `THIRD_PARTY_NOTICES.md` (see `BT2390ToneMapping.metal`).
+  - MIT/BSD (`SwiftPlayer`): keep the copyright notice in `THIRD_PARTY_NOTICES.md`.
+  Prefer implementing from the spec (ITU-R, SMPTE, Apple docs) over porting.
 
 ## Commands
 
@@ -26,6 +32,13 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 - Format / lint: `./scripts/format.sh` / `./scripts/format.sh lint` (pre-push runs `check`)
 - Tests: `swift test`; after touching seek, decoding, audio or track switching also run
   `swift test --filter PlaybackStressTests`.
+- App bundle: `./scripts/bundle_app.sh` — embeds the LGPL FFmpeg / dav1d from
+  `scripts/setup_dependencies.sh` (versions, flags and the release checksum live in
+  `scripts/deps_config.sh`; bump `DEPS_VERSION` when changing them). `format.sh` and CI build and
+  test against `.build/dependencies` when present, otherwise SwiftPM falls back to Homebrew FFmpeg.
+  SwiftPM links with the deployment target (15.0) as the SDK version, so `swift run` binaries show
+  the legacy (pre-Liquid Glass) look on macOS 26+; `bundle_app.sh` stamps the real SDK via `vtool`.
+  Judge UI only from the bundle.
 - Run compilers and CLI tools directly. Don't use inline interpreter scripts (`python3 -c`,
   `node -e`, `ruby -e`, `perl -e`) or wrap tools in `subprocess`; if a helper script is needed,
   write it to a file (e.g. `.agents/scratch/`), run it, then delete it.

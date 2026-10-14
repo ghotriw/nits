@@ -27,9 +27,22 @@ jobs:
       - name: Select Xcode 27
         run: sudo xcode-select -s /Applications/Xcode_27.app
 
+      # Homebrew ffmpeg only provides the CLI for SyntheticTestMediaFactory; Nits itself builds,
+      # tests and ships against the LGPL libraries from setup_dependencies.sh.
       - name: Install dependencies
         run: |
-          brew install ffmpeg pkg-config swift-format
+          brew install ffmpeg pkg-config meson ninja swift-format
+
+      - name: Cache LGPL FFmpeg / dav1d
+        uses: actions/cache@v4
+        with:
+          path: .build/dependencies
+          key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
+
+      - name: Set up LGPL FFmpeg / dav1d
+        run: |
+          ./scripts/setup_dependencies.sh
+          echo "PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Ensure Metal Toolchain is installed
         run: |

@@ -1,0 +1,63 @@
+name: Build and Release Dependencies
+
+# Versions and configure flags live in scripts/deps_config.sh / scripts/build_dependencies.sh.
+# After a run, paste the printed SHA-256 into DEPS_ARCHIVE_SHA256 in scripts/deps_config.sh.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    name: Build macOS 15.0 Dependencies
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read dependency versions
+        id: deps
+        run: |
+          source scripts/deps_config.sh
+          {
+            echo "version=$DEPS_VERSION"
+            echo "ffmpeg=$FFMPEG_VERSION"
+            echo "dav1d=$DAV1D_VERSION"
+            echo "archive=$DEPS_ARCHIVE_NAME"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: brew install pkg-config meson ninja
+
+      - name: Compile dav1d and FFmpeg (macOS 15.0, arm64)
+        run: ./scripts/build_dependencies.sh --package
+
+      - name: Report checksum
+        run: |
+          {
+            echo "### deps-v${{ steps.deps.outputs.version }}"
+            echo
+            echo "Set in \`scripts/deps_config.sh\`:"
+            echo
+            echo "\`\`\`"
+            echo "DEPS_ARCHIVE_SHA256=\"$(awk '{print $1}' .build/dist/${{ steps.deps.outputs.archive }}.sha256)\""
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release Dependencies Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: deps-v${{ steps.deps.outputs.version }}
+          name: Prebuilt Dependencies v${{ steps.deps.outputs.version }} (macOS 15.0+)
+          body: |
+            Prebuilt LGPL dependencies for Nits:
+            - dav1d ${{ steps.deps.outputs.dav1d }}
+            - FFmpeg ${{ steps.deps.outputs.ffmpeg }} (libavcodec, libavformat, libavutil, libswresample, libswscale)
+            - Target: macOS 15.0+ (`-mmacosx-version-min=15.0`), Apple Silicon (`arm64`)
+            Source archives the libraries were built from are attached (LGPL source offer).
+          files: |
+            .build/dist/${{ steps.deps.outputs.archive }}
+            .build/dist/${{ steps.deps.outputs.archive }}.sha256
+            .build/src/ffmpeg-${{ steps.deps.outputs.ffmpeg }}.tar.xz
+            .build/src/dav1d-${{ steps.deps.outputs.dav1d }}.tar.bz2

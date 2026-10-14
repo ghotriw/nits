@@ -10,6 +10,13 @@ if [[ -z "$SWIFT_FORMAT_BIN" ]]; then
 fi
 
 MODE="${1:-format}"
+
+# Build and test against the bundled LGPL FFmpeg (scripts/setup_dependencies.sh) when present,
+# so checks cover what ships instead of Homebrew's build.
+DEPS_PKGCONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.build/dependencies/lib/pkgconfig"
+if [[ -d "$DEPS_PKGCONFIG" ]]; then
+    export PKG_CONFIG_PATH="$DEPS_PKGCONFIG:${PKG_CONFIG_PATH:-}"
+fi
 TARGETS=("Sources" "Tests")
 
 # Filter existing directories

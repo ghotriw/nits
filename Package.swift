@@ -28,7 +28,8 @@ let package = Package(
             name: "NitsCore",
             dependencies: ["CFFmpeg"],
             resources: [
-                .process("Video/HDRToneMapping.metal")
+                .process("Video/HDRToneMapping.metal"),
+                .process("Video/BT2390ToneMapping.metal"),
             ],
             swiftSettings: defaultSwiftSettings + [
                 // Software YUV->NV12/P010 conversion (FFmpegVideoDecoder) is hand-SIMD that only

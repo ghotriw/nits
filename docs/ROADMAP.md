@@ -325,8 +325,8 @@ flowchart TD
 
 - [x] **7.1. App Bundle Packaging Script (`scripts/bundle_app.sh`):**
   - Assembly of `Nits.app` bundle hierarchy, resource compilation, `Info.plist` generation with document type associations, and ad-hoc code signing.
-- [ ] **7.2. Dynamic Library Bundling (Dylib Bundling):**
-  - Copy required shared libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libdav1d`) and their dependencies into `Contents/Frameworks`.
+- [x] **7.2. Dynamic Library Bundling (Dylib Bundling):**
+  - Copy required shared libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`, `libdav1d`) and their dependencies into `Contents/Frameworks`.
   - Rewrite dynamic linker mach-o load commands via `install_name_tool`: replace Homebrew paths with `@rpath` (`@executable_path/../Frameworks`).
   - Configure executable `LC_RPATH` headers.
 - [ ] **7.3. CI/CD Automation & Release Artifacts:**
@@ -367,4 +367,4 @@ flowchart TD
 | **Display Sleep Management** | `NitsCore` | Completed ✓ | IOKit power assertions during active video |
 | **Logging & Diagnostics** | `NitsCore` / `NitsKit` | Completed ✓ | `AppLog` categories, in-memory store, `LogViewerWindowController` |
 | **WKWebView Bridge** | `NitsKit` | In Progress ⏳ | Two-way JSON bridge for Emby / Jellyfin web shells |
-| **Standalone Dylib Bundling** | Scripts / CI | Planned 📋 | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |
+| **Standalone Dylib Bundling** | Scripts / CI | Completed ✓ | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |

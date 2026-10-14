@@ -35,7 +35,7 @@ A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and 
 - [ ] Timeline chapters
 - [ ] Picture-in-Picture
 - [ ] Embedding in web clients (WKWebView bridge)
-- [ ] Standalone app bundle with embedded FFmpeg
+- [x] Standalone app bundle with embedded FFmpeg
 
 Details: [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -159,7 +159,9 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 
 - macOS 15+
 - Apple Silicon
-- FFmpeg shared libraries (`brew install ffmpeg`)
+- FFmpeg: the app bundle ships its own LGPL build (`scripts/setup_dependencies.sh`); plain
+  `swift build` / `swift test` fall back to Homebrew (`brew install ffmpeg`), which also provides
+  the `ffmpeg` CLI used to generate test media
 
 ## Building
 
@@ -167,13 +169,20 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 swift build -c release
 ```
 
-Build a signed `.app` bundle and launch it:
+Build a signed `.app` bundle with embedded FFmpeg / dav1d and launch it:
 
 ```bash
 ./scripts/bundle_app.sh --run
 ```
 
-Tests and formatting check:
+To build and test against the same LGPL libraries that ship in the bundle:
+
+```bash
+./scripts/setup_dependencies.sh
+export PKG_CONFIG_PATH="$PWD/.build/dependencies/lib/pkgconfig"
+```
+
+Tests and formatting check (`format.sh` picks up `.build/dependencies` automatically):
 
 ```bash
 swift test
@@ -183,3 +192,6 @@ swift test
 ## License
 
 [MIT](LICENSE)
+
+Bundled FFmpeg (LGPL-2.1+) and dav1d (BSD-2-Clause), and the mpv-derived tone-mapping shader
+(LGPL-2.1+), keep their own licenses — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

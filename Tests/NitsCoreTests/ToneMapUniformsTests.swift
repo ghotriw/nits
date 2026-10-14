@@ -1,4 +1,5 @@
 import Foundation
+import Metal
 import Testing
 
 @testable import NitsCore
@@ -11,6 +12,18 @@ struct ToneMapUniformsTests {
         #expect(uniforms.targetNits == 203.0)
         #expect(uniforms.outputSharpness == 0.5)
         #expect(uniforms.outputExposure == 1.0)
+    }
+
+    @Test("Tone mapping shaders link across .metal files into a render pipeline")
+    func testToneMapPipelineLinks() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let library = try device.makeDefaultLibrary(bundle: .module)
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = try #require(library.makeFunction(name: "hdrVertexShader"))
+        descriptor.fragmentFunction = try #require(library.makeFunction(name: "hdrToneMapFragmentShader"))
+        descriptor.colorAttachments[0].pixelFormat = .bgr10a2Unorm
+        // Fails if mpvBT2390 (BT2390ToneMapping.metal) or the PQ helpers it uses don't resolve.
+        _ = try device.makeRenderPipelineState(descriptor: descriptor)
     }
 
     @Test("ToneMapUniforms mutation via MetalVideoRenderer is thread-safe")
