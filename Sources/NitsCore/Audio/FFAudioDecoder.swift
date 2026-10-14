@@ -17,6 +17,8 @@ public final class FFAudioDecoder: @unchecked Sendable {
     public let targetSampleRate: Int32 = 48000
     public let targetChannels: Int32
     public let channelLayoutTag: AudioChannelLayoutTag
+    private var packetBuffer: UnsafeMutablePointer<UInt8>? = nil
+    private var packetBufferCapacity: Int = 0
 
     private let lock = OSAllocatedUnfairLock()
 
@@ -189,19 +191,25 @@ public final class FFAudioDecoder: @unchecked Sendable {
 
         av_packet_unref(avPkt)
         let count = packetData.count
-        guard let mem = malloc(count + Int(AV_INPUT_BUFFER_PADDING_SIZE)) else { return [] }
+        let neededCapacity = count + Int(AV_INPUT_BUFFER_PADDING_SIZE)
+        if packetBufferCapacity < neededCapacity {
+            let newCap = max(neededCapacity, max(packetBufferCapacity * 2, 16384))
+            guard let newMem = realloc(packetBuffer, newCap) else { return [] }
+            packetBuffer = newMem.assumingMemoryBound(to: UInt8.self)
+            packetBufferCapacity = newCap
+        }
+        guard let mem = packetBuffer else { return [] }
         _ = packetData.withUnsafeBytes { raw in
             memcpy(mem, raw.baseAddress!, count)
         }
         memset(mem.advanced(by: count), 0, Int(AV_INPUT_BUFFER_PADDING_SIZE))
 
-        avPkt.pointee.data = mem.assumingMemoryBound(to: UInt8.self)
+        avPkt.pointee.data = mem
         avPkt.pointee.size = Int32(count)
         avPkt.pointee.pts = pts
         avPkt.pointee.dts = pts
 
         defer {
-            free(mem)
             av_packet_unref(avPkt)
         }
 
@@ -333,6 +341,11 @@ public final class FFAudioDecoder: @unchecked Sendable {
         }
         if codecCtx != nil {
             avcodec_free_context(&codecCtx)
+        }
+        if let pb = packetBuffer {
+            free(pb)
+            packetBuffer = nil
+            packetBufferCapacity = 0
         }
     }
 

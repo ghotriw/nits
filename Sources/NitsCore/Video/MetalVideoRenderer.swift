@@ -75,6 +75,8 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private let commandQueue: any MTLCommandQueue
     private var pipelineState: (any MTLRenderPipelineState)?
     private var textureCache: CVMetalTextureCache?
+    private let renderPassDesc = MTLRenderPassDescriptor()
+    private var lastRenderedTextures: (CVMetalTexture?, CVMetalTexture?) = (nil, nil)
     private let renderLock = OSAllocatedUnfairLock()
     private let uniformsLock = OSAllocatedUnfairLock(initialState: ToneMapUniforms())
 
@@ -106,6 +108,10 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         if CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess {
             self.textureCache = cache
         }
+
+        renderPassDesc.colorAttachments[0].loadAction = .clear
+        renderPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+        renderPassDesc.colorAttachments[0].storeAction = .store
 
         setupPipeline()
     }
@@ -192,11 +198,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
             return
         }
 
-        let renderPassDesc = MTLRenderPassDescriptor()
         renderPassDesc.colorAttachments[0].texture = drawable.texture
-        renderPassDesc.colorAttachments[0].loadAction = .clear
-        renderPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        renderPassDesc.colorAttachments[0].storeAction = .store
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc)
@@ -216,11 +218,8 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
 
-        // Retain CVMetalTexture references until GPU finishes processing
-        nonisolated(unsafe) let retainedTextures = (yTextureRef, uvTextureRef)
-        commandBuffer.addCompletedHandler { _ in
-            _ = retainedTextures
-        }
+        // Retain textures in renderer slot until next frame without allocating a heap closure
+        lastRenderedTextures = (yTextureRef, uvTextureRef)
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
@@ -231,12 +230,9 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         renderLock.lock()
         defer { renderLock.unlock() }
 
+        lastRenderedTextures = (nil, nil)
         guard let drawable = metalLayer.nextDrawable() else { return }
-        let renderPassDesc = MTLRenderPassDescriptor()
         renderPassDesc.colorAttachments[0].texture = drawable.texture
-        renderPassDesc.colorAttachments[0].loadAction = .clear
-        renderPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        renderPassDesc.colorAttachments[0].storeAction = .store
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
             let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc)

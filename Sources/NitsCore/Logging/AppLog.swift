@@ -266,7 +266,7 @@ public enum AppLog {
     public static func log(
         _ level: LogLevel,
         category: LogCategory,
-        _ message: @autoclosure () -> String,
+        _ message: () -> String,
         file: String = #file,
         line: Int = #line
     ) {
@@ -290,34 +290,39 @@ public enum AppLog {
     public static func debug(
         _ category: LogCategory, _ message: @autoclosure () -> String, file: String = #file, line: Int = #line
     ) {
-        log(.debug, category: category, message(), file: file, line: line)
+        guard LogLevel.debug >= minimumLogLevel else { return }
+        log(.debug, category: category, message, file: file, line: line)
     }
 
     @inlinable
     public static func info(
         _ category: LogCategory, _ message: @autoclosure () -> String, file: String = #file, line: Int = #line
     ) {
-        log(.info, category: category, message(), file: file, line: line)
+        guard LogLevel.info >= minimumLogLevel else { return }
+        log(.info, category: category, message, file: file, line: line)
     }
 
     @inlinable
     public static func notice(
         _ category: LogCategory, _ message: @autoclosure () -> String, file: String = #file, line: Int = #line
     ) {
-        log(.notice, category: category, message(), file: file, line: line)
+        guard LogLevel.notice >= minimumLogLevel else { return }
+        log(.notice, category: category, message, file: file, line: line)
     }
 
     @inlinable
     public static func warning(
         _ category: LogCategory, _ message: @autoclosure () -> String, file: String = #file, line: Int = #line
     ) {
-        log(.warning, category: category, message(), file: file, line: line)
+        guard LogLevel.warning >= minimumLogLevel else { return }
+        log(.warning, category: category, message, file: file, line: line)
     }
 
     @inlinable
     public static func error(
         _ category: LogCategory, _ message: @autoclosure () -> String, file: String = #file, line: Int = #line
     ) {
-        log(.error, category: category, message(), file: file, line: line)
+        guard LogLevel.error >= minimumLogLevel else { return }
+        log(.error, category: category, message, file: file, line: line)
     }
 }

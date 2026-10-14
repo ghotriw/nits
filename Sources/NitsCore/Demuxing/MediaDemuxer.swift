@@ -338,8 +338,56 @@ public final class MediaDemuxer: @unchecked Sendable {
         let flags: Int32
     }
 
-    private var audioQueue: [DemuxedAudioPacket] = []
-    private var videoQueue: [DemuxedVideoPacket] = []
+    /// Fast FIFO queue avoiding O(N) array shifts on pop.
+    private struct PacketFifoQueue<T: Sendable>: Sendable {
+        private var elements: [T?] = []
+        private var headIndex: Int = 0
+
+        var isEmpty: Bool {
+            headIndex >= elements.count
+        }
+
+        var count: Int {
+            max(0, elements.count - headIndex)
+        }
+
+        mutating func append(_ element: T) {
+            elements.append(element)
+        }
+
+        mutating func popFirst() -> T? {
+            guard headIndex < elements.count else { return nil }
+            let element = elements[headIndex]
+            elements[headIndex] = nil
+            headIndex += 1
+            // Periodically compact buffer to prevent unbounded growth while preserving O(1) amortized pop
+            if headIndex > 64 && headIndex * 2 >= elements.count {
+                elements.removeFirst(headIndex)
+                headIndex = 0
+            }
+            return element
+        }
+
+        mutating func removeAll(keepingCapacity: Bool = false) {
+            elements.removeAll(keepingCapacity: keepingCapacity)
+            headIndex = 0
+        }
+
+        mutating func removeAll(where shouldBeRemoved: (T) -> Bool) {
+            var active: [T] = []
+            active.reserveCapacity(count)
+            for i in headIndex..<elements.count {
+                if let el = elements[i], !shouldBeRemoved(el) {
+                    active.append(el)
+                }
+            }
+            elements = active.map { Optional($0) }
+            headIndex = 0
+        }
+    }
+
+    private var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
+    private var videoQueue = PacketFifoQueue<DemuxedVideoPacket>()
     private let maxAudioQueueCount = 500
     private let maxVideoQueueCount = 180
     public private(set) var formatDescription: CMVideoFormatDescription?
@@ -1497,45 +1545,78 @@ public final class MediaDemuxer: @unchecked Sendable {
     private var targetAudioPts: Int64 = -1
 
     private func createVideoSample(from rawData: Data, pts: Int64, dts: Int64, duration: Int64) -> CMSampleBuffer? {
-        guard let formatDesc = formatDescription else { return nil }
+        rawData.withUnsafeBytes { raw in
+            createVideoSample(
+                bytes: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                count: rawData.count,
+                pts: pts,
+                dts: dts,
+                duration: duration
+            )
+        }
+    }
+
+    private func createVideoSample(
+        bytes: UnsafePointer<UInt8>?,
+        count: Int,
+        pts: Int64,
+        dts: Int64,
+        duration: Int64
+    ) -> CMSampleBuffer? {
+        guard let formatDesc = formatDescription, let bytes, count > 0 else { return nil }
 
         var doviMetadata: DolbyVisionFrameMetadata?
         if codec == .hevc && dolbyVisionProfile != nil {
-            if let nalu = Self.findNALUnit62(in: rawData, isAnnexB: self.isAnnexBStream) {
+            if let nalu = Self.findNALUnit62(bytes: bytes, count: count, isAnnexB: self.isAnnexBStream) {
                 doviMetadata = DolbyVisionRPUParser.parse(naluData: nalu)
             }
         }
 
-        let hvccData: Data
-        let hvccSize: Int
+        let mem: UnsafeMutableRawPointer
+        let finalSize: Int
         if !codec.requiresHVCC {
-            hvccData = rawData
-            hvccSize = rawData.count
+            finalSize = count
+            guard let allocated = malloc(finalSize) else { return nil }
+            memcpy(allocated, bytes, finalSize)
+            mem = allocated
         } else {
-            (hvccData, hvccSize) = rawData.withUnsafeBytes { raw in
-                Self.packetDataToHVCC(
-                    pktData: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                    count: rawData.count,
-                    isAnnexBStream: self.isAnnexBStream
-                )
+            let isAnnexB: Bool
+            if isAnnexBStream {
+                isAnnexB =
+                    (bytes[0] == 0 && bytes[1] == 0 && (bytes[2] == 1 || (count > 3 && bytes[2] == 0 && bytes[3] == 1)))
+            } else {
+                isAnnexB = false
             }
-        }
-        guard hvccSize > 0, let mem = malloc(hvccSize) else {
-            return nil
-        }
-        _ = hvccData.withUnsafeBytes { rawBytes in
-            memcpy(mem, rawBytes.baseAddress!, hvccSize)
+
+            if !isAnnexB {
+                finalSize = count
+                guard let allocated = malloc(finalSize) else { return nil }
+                memcpy(allocated, bytes, finalSize)
+                mem = allocated
+            } else {
+                let (hvccData, hvccSize) = Self.packetDataToHVCC(
+                    pktData: bytes,
+                    count: count,
+                    isAnnexBStream: true
+                )
+                guard hvccSize > 0, let allocated = malloc(hvccSize) else { return nil }
+                _ = hvccData.withUnsafeBytes { rawBytes in
+                    memcpy(allocated, rawBytes.baseAddress!, hvccSize)
+                }
+                mem = allocated
+                finalSize = hvccSize
+            }
         }
 
         var blockBuffer: CMBlockBuffer?
         let blockStatus = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault,
             memoryBlock: mem,
-            blockLength: hvccSize,
+            blockLength: finalSize,
             blockAllocator: kCFAllocatorMalloc,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: hvccSize,
+            dataLength: finalSize,
             flags: 0,
             blockBufferOut: &blockBuffer
         )
@@ -1558,7 +1639,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         )
 
         var sampleBuffer: CMSampleBuffer?
-        var sampleSize = hvccSize
+        var sampleSize = finalSize
         let status = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault,
             dataBuffer: blockBuffer,
@@ -1630,8 +1711,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { lock.unlock() }
 
         // Drain videoQueue first if audio reading buffered video packets
-        while !videoQueue.isEmpty {
-            let vp = videoQueue.removeFirst()
+        while let vp = videoQueue.popFirst() {
             if let sample = createVideoSample(from: vp.data, pts: vp.pts, dts: vp.dts, duration: vp.duration) {
                 return sample
             }
@@ -1642,8 +1722,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         var pkt = AVPacket()
         while av_read_frame(ctx, &pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
-                let sample = createVideoSample(from: data, pts: pkt.pts, dts: pkt.dts, duration: pkt.duration)
+                let sample = createVideoSample(
+                    bytes: pkt.data,
+                    count: Int(pkt.size),
+                    pts: pkt.pts,
+                    dts: pkt.dts,
+                    duration: pkt.duration
+                )
                 av_packet_unref(&pkt)
                 if let sample {
                     return sample
@@ -1680,8 +1765,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        while !audioQueue.isEmpty {
-            let p = audioQueue.removeFirst()
+        while let p = audioQueue.popFirst() {
             if targetAudioPts >= 0 {
                 let packetEndPts = p.pts + (p.duration > 0 ? p.duration : 0)
                 if packetEndPts < targetAudioPts {
@@ -1893,67 +1977,70 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// Fast scan for HEVC NAL unit type 62 (Dolby Vision RPU) without allocating all NAL units.
     static func findNALUnit62(in data: Data, isAnnexB: Bool) -> Data? {
-        let count = data.count
-        guard count >= 5 else { return nil }
-        return data.withUnsafeBytes { ptr -> Data? in
+        data.withUnsafeBytes { ptr -> Data? in
             guard let bytes = ptr.bindMemory(to: UInt8.self).baseAddress else { return nil }
-            if isAnnexB {
-                var i = 0
-                while i + 4 < count {
-                    let prefixLen: Int
-                    if bytes[i] == 0 && bytes[i + 1] == 0 {
-                        if bytes[i + 2] == 1 {
-                            prefixLen = 3
-                        } else if bytes[i + 2] == 0 && bytes[i + 3] == 1 {
-                            prefixLen = 4
-                        } else {
-                            i += 1
-                            continue
-                        }
+            return findNALUnit62(bytes: bytes, count: data.count, isAnnexB: isAnnexB)
+        }
+    }
+
+    static func findNALUnit62(bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool) -> Data? {
+        guard count >= 5 else { return nil }
+        if isAnnexB {
+            var i = 0
+            while i + 4 < count {
+                let prefixLen: Int
+                if bytes[i] == 0 && bytes[i + 1] == 0 {
+                    if bytes[i + 2] == 1 {
+                        prefixLen = 3
+                    } else if bytes[i + 2] == 0 && bytes[i + 3] == 1 {
+                        prefixLen = 4
                     } else {
                         i += 1
                         continue
                     }
+                } else {
+                    i += 1
+                    continue
+                }
 
-                    let nalStart = i + prefixLen
-                    guard nalStart < count else { break }
-                    let nalType = (bytes[nalStart] >> 1) & 0x3F
+                let nalStart = i + prefixLen
+                guard nalStart < count else { break }
+                let nalType = (bytes[nalStart] >> 1) & 0x3F
 
-                    if nalType == 62 {
-                        // Find the end of this NALU (next start code or EOF)
-                        var next = nalStart + 1
-                        while next + 2 < count {
-                            if bytes[next] == 0 && bytes[next + 1] == 0
-                                && (bytes[next + 2] == 1
-                                    || (next + 3 < count && bytes[next + 2] == 0 && bytes[next + 3] == 1))
-                            {
-                                break
-                            }
-                            next += 1
+                if nalType == 62 {
+                    // Find the end of this NALU (next start code or EOF)
+                    var next = nalStart + 1
+                    while next + 2 < count {
+                        if bytes[next] == 0 && bytes[next + 1] == 0
+                            && (bytes[next + 2] == 1
+                                || (next + 3 < count && bytes[next + 2] == 0 && bytes[next + 3] == 1))
+                        {
+                            break
                         }
-                        let nalEnd = (next + 2 < count) ? next : count
-                        return data.subdata(in: nalStart..<nalEnd)
+                        next += 1
                     }
+                    let nalEnd = (next + 2 < count) ? next : count
+                    return Data(bytes: bytes.advanced(by: nalStart), count: nalEnd - nalStart)
+                }
 
-                    i = nalStart
-                }
-                return nil
-            } else {
-                var offset = 0
-                while offset + 4 <= count {
-                    let naluLen =
-                        Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
-                        | Int(bytes[offset + 3])
-                    offset += 4
-                    guard naluLen > 0, offset + naluLen <= count else { break }
-                    let nalType = (bytes[offset] >> 1) & 0x3F
-                    if nalType == 62 {
-                        return data.subdata(in: offset..<(offset + naluLen))
-                    }
-                    offset += naluLen
-                }
-                return nil
+                i = nalStart
             }
+            return nil
+        } else {
+            var offset = 0
+            while offset + 4 <= count {
+                let naluLen =
+                    Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
+                    | Int(bytes[offset + 3])
+                offset += 4
+                guard naluLen > 0, offset + naluLen <= count else { break }
+                let nalType = (bytes[offset] >> 1) & 0x3F
+                if nalType == 62 {
+                    return Data(bytes: bytes.advanced(by: offset), count: naluLen)
+                }
+                offset += naluLen
+            }
+            return nil
         }
     }
 

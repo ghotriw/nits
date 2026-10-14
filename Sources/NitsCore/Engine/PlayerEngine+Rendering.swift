@@ -66,18 +66,20 @@ extension PlayerEngine {
                 renderCurrentFrame()
             }
         } else {
-            let baseMode: PlayerPerformanceMonitor.ToneMapEngineMode = dynamicToneMapLock.withLock { state in
+            let (baseMode, peak, target) = dynamicToneMapLock.withLock {
+                state -> (PlayerPerformanceMonitor.ToneMapEngineMode, Float, Float) in
+                let mode: PlayerPerformanceMonitor.ToneMapEngineMode
                 if state.lastRenderModeName.contains("DoVi L2") {
-                    return .doviL2Trim
+                    mode = .doviL2Trim
                 } else if state.lastRenderModeName.contains("DoVi L1") {
-                    return .doviL1Auto
+                    mode = .doviL1Auto
                 } else if state.basePeakNits > 105.0 {
-                    return .bt2390
+                    mode = .bt2390
                 } else {
-                    return .directSDR
+                    mode = .directSDR
                 }
+                return (mode, state.basePeakNits, state.baseTargetNits)
             }
-            let (peak, target) = dynamicToneMapLock.withLock { ($0.basePeakNits, $0.baseTargetNits) }
             performanceMonitor.updateToneMapParams(
                 PlayerPerformanceMonitor.ToneMapParams(mode: baseMode, peakNits: peak, targetNits: target)
             )
@@ -93,13 +95,24 @@ extension PlayerEngine {
     }
 
     nonisolated func presentToDisplayLayer(pixelBuffer: CVPixelBuffer) {
-        var formatDescription: CMVideoFormatDescription?
-        let err = CMVideoFormatDescriptionCreateForImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescriptionOut: &formatDescription
-        )
-        guard err == noErr, let formatDesc = formatDescription else { return }
+        nonisolated(unsafe) let pb = pixelBuffer
+        let formatDesc: CMVideoFormatDescription? = cachedVideoFormatDescription.withLock { cached in
+            if let cached, CMVideoFormatDescriptionMatchesImageBuffer(cached, imageBuffer: pb) {
+                return cached
+            }
+            var newDesc: CMVideoFormatDescription?
+            let err = CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: pb,
+                formatDescriptionOut: &newDesc
+            )
+            if err == noErr, let newDesc {
+                cached = newDesc
+                return newDesc
+            }
+            return nil
+        }
+        guard let formatDesc else { return }
 
         let timing = CMSampleTimingInfo(
             duration: .invalid,
@@ -202,8 +215,8 @@ extension PlayerEngine {
                     let modeName: String
                 }
 
+                let scale = self.targetNitsScaleLock.withLock { $0 }
                 let resolved = dynamicToneMapLock.withLock { state -> ResolvedToneMapParams in
-                    let scale = self.targetNitsScaleLock.withLock { $0 }
                     let effectiveBaseTarget = max(min(state.baseTargetNits * scale, 500.0), 80.0)
 
                     if let dovi = popped.doviMetadata {
@@ -322,8 +335,12 @@ extension PlayerEngine {
                     playbackRate: currentRate
                 )
 
-                if !isMetalLayerVisibleLock.withLock({ $0 }) {
-                    isMetalLayerVisibleLock.withLock { $0 = true }
+                let becameVisible = isMetalLayerVisibleLock.withLock { visible -> Bool in
+                    guard !visible else { return false }
+                    visible = true
+                    return true
+                }
+                if becameVisible {
                     DispatchQueue.main.async { [weak self] in
                         self?.isMetalLayerVisible = true
                     }
@@ -345,8 +362,12 @@ extension PlayerEngine {
                     playbackRate: currentRate
                 )
 
-                if isMetalLayerVisibleLock.withLock({ $0 }) {
-                    isMetalLayerVisibleLock.withLock { $0 = false }
+                let becameHidden = isMetalLayerVisibleLock.withLock { visible -> Bool in
+                    guard visible else { return false }
+                    visible = false
+                    return true
+                }
+                if becameHidden {
                     DispatchQueue.main.async { [weak self] in
                         self?.isMetalLayerVisible = false
                     }
@@ -393,6 +414,7 @@ extension PlayerEngine {
 
     /// Completely flushes and clears the video display layer and Metal canvas, removing any lingering video frame.
     public func clearVideoSurface() {
+        cachedVideoFormatDescription.withLock { $0 = nil }
         frameQueue.clear(resetDroppedFrames: true)
         Self.flushRemovingDisplayedImage(sampleBufferRenderer)
         metalRenderer?.clear()

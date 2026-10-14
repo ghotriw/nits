@@ -267,6 +267,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     nonisolated(unsafe) public let displayLayer = AVSampleBufferDisplayLayer()
     nonisolated(unsafe) let sampleBufferRenderer: AVSampleBufferVideoRenderer
+    @ObservationIgnored
+    let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
     public let metalRenderer = MetalVideoRenderer()
     public let audioRenderer = AVSampleBufferAudioRenderer()
     public let audioReceiver: AVSampleBufferAudioRenderer.Receiver
