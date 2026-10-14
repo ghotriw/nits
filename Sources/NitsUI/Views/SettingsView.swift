@@ -23,6 +23,18 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyEnableOSD)
     private var enableOSD: Bool = true
 
+    @AppStorage(PlayerConfiguration.keyOSDDuration)
+    private var osdDuration: Double = 1.3
+
+    @AppStorage(PlayerConfiguration.keyEnableDebugOSD)
+    private var enableDebugOSD: Bool = false
+
+    @AppStorage(PlayerConfiguration.keyDebugOSDMinimumLevel)
+    private var debugOSDMinimumLevel: LogLevel = .warning
+
+    @AppStorage(PlayerConfiguration.keyDebugOSDDuration)
+    private var debugOSDDuration: Double = 4.0
+
     @AppStorage(PlayerConfiguration.keyAutoLoadFolderMedia)
     private var autoLoadFolderMedia: Bool = true
 
@@ -36,6 +48,8 @@ public struct SettingsView: View {
     private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
 
     private static let standardSeekSteps: [Double] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
+    private static let osdDurations: [Double] = [0.8, 1.3, 2.0, 3.0, 5.0]
+    private static let debugOSDDurations: [Double] = [2.0, 4.0, 6.0, 10.0, 15.0, 30.0]
 
     @State private var showHistoryClearedAlert: Bool = false
     @State private var selectedTab: SettingsTab = .general
@@ -150,8 +164,56 @@ public struct SettingsView: View {
                         notifyChange()
                     }
 
+                if enableOSD {
+                    Picker("Display duration", selection: $osdDuration) {
+                        ForEach(Self.osdDurations, id: \.self) { seconds in
+                            Text(Self.formatSeconds(seconds)).tag(seconds)
+                        }
+                        if !Self.osdDurations.contains(osdDuration) {
+                            Text("Custom (\(Self.formatSeconds(osdDuration)))").tag(osdDuration)
+                        }
+                    }
+                    .onChange(of: osdDuration) { _, _ in
+                        notifyChange()
+                    }
+                }
+
                 Text(
                     "Displays visual feedback badges in the top-left corner for actions like seeking, volume changes, pause/play, and track selection."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+                Toggle("Show debug messages on screen", isOn: $enableDebugOSD)
+                    .onChange(of: enableDebugOSD) { _, _ in
+                        notifyChange()
+                    }
+
+                if enableDebugOSD {
+                    Picker("Minimum level", selection: $debugOSDMinimumLevel) {
+                        ForEach(LogLevel.allCases, id: \.self) { level in
+                            Text(level.rawValue.capitalized).tag(level)
+                        }
+                    }
+                    .onChange(of: debugOSDMinimumLevel) { _, _ in
+                        notifyChange()
+                    }
+
+                    Picker("Message duration", selection: $debugOSDDuration) {
+                        ForEach(Self.debugOSDDurations, id: \.self) { seconds in
+                            Text(Self.formatSeconds(seconds)).tag(seconds)
+                        }
+                        if !Self.debugOSDDurations.contains(debugOSDDuration) {
+                            Text("Custom (\(Self.formatSeconds(debugOSDDuration)))").tag(debugOSDDuration)
+                        }
+                    }
+                    .onChange(of: debugOSDDuration) { _, _ in
+                        notifyChange()
+                    }
+                }
+
+                Text(
+                    "Mirrors application log messages at or above the selected level below the OSD. Intended for diagnostics; identical consecutive messages are collapsed."
                 )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -291,6 +353,11 @@ public struct SettingsView: View {
         ControlsSettingsPane(controlsConfig: ControlsConfiguration.shared)
     }
 
+    private static func formatSeconds(_ seconds: Double) -> String {
+        let value = seconds.rounded() == seconds ? String(Int(seconds)) : String(format: "%.1f", seconds)
+        return "\(value) \(seconds == 1.0 ? "second" : "seconds")"
+    }
+
     private func notifyChange() {
         let savedConfig = PlayerConfiguration.loadFromUserDefaults()
         let current = PlayerConfiguration(
@@ -308,6 +375,10 @@ public struct SettingsView: View {
             subtitleBgColorHex: savedConfig.subtitleBgColorHex,
             subtitleBgOpacity: savedConfig.subtitleBgOpacity,
             enableOSD: enableOSD,
+            osdDuration: osdDuration,
+            enableDebugOSD: enableDebugOSD,
+            debugOSDMinimumLevel: debugOSDMinimumLevel,
+            debugOSDDuration: debugOSDDuration,
             autoLoadFolderMedia: autoLoadFolderMedia,
             seekStepSeconds: seekStepSeconds,
             exactSeekOnSinglePress: exactSeekOnSinglePress,

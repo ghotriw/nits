@@ -82,6 +82,18 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether On-Screen Display (OSD) notifications are enabled (default true).
     public var enableOSD: Bool
 
+    /// How long regular OSD notifications stay on screen, in seconds (default 1.3).
+    public var osdDuration: Double
+
+    /// Whether log messages are mirrored to the On-Screen Display as debug badges (default false).
+    public var enableDebugOSD: Bool
+
+    /// Minimum log level mirrored to the debug OSD (default .warning).
+    public var debugOSDMinimumLevel: LogLevel
+
+    /// How long each debug OSD message stays on screen, in seconds (default 4.0).
+    public var debugOSDDuration: Double
+
     /// Whether to automatically discover and add sibling media files in the folder to the playlist (default true).
     public var autoLoadFolderMedia: Bool
 
@@ -132,6 +144,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleBgColorHex: String = "#000000",
         subtitleBgOpacity: Double = 0.65,
         enableOSD: Bool = true,
+        osdDuration: Double = 1.3,
+        enableDebugOSD: Bool = false,
+        debugOSDMinimumLevel: LogLevel = .warning,
+        debugOSDDuration: Double = 4.0,
         autoLoadFolderMedia: Bool = true,
         seekStepSeconds: Double = 5.0,
         exactSeekOnSinglePress: Bool = true,
@@ -162,6 +178,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleBgColorHex = subtitleBgColorHex
         self.subtitleBgOpacity = subtitleBgOpacity
         self.enableOSD = enableOSD
+        self.osdDuration = osdDuration
+        self.enableDebugOSD = enableDebugOSD
+        self.debugOSDMinimumLevel = debugOSDMinimumLevel
+        self.debugOSDDuration = debugOSDDuration
         self.autoLoadFolderMedia = autoLoadFolderMedia
         self.seekStepSeconds = seekStepSeconds
         self.exactSeekOnSinglePress = exactSeekOnSinglePress
@@ -187,6 +207,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleBgColorHex = "Nits.subtitleBgColorHex"
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
     public static let keyEnableOSD = "Nits.enableOSD"
+    public static let keyOSDDuration = "Nits.osdDuration"
+    public static let keyEnableDebugOSD = "Nits.enableDebugOSD"
+    public static let keyDebugOSDMinimumLevel = "Nits.debugOSDMinimumLevel"
+    public static let keyDebugOSDDuration = "Nits.debugOSDDuration"
     public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
     public static let keySeekStepSeconds = "Nits.seekStepSeconds"
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
@@ -238,6 +262,20 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyEnableOSD) != nil {
             config.enableOSD = userDefaults.bool(forKey: keyEnableOSD)
         }
+        if let duration = userDefaults.object(forKey: keyOSDDuration) as? NSNumber {
+            config.osdDuration = clampOSDDuration(duration.doubleValue)
+        }
+        if userDefaults.object(forKey: keyEnableDebugOSD) != nil {
+            config.enableDebugOSD = userDefaults.bool(forKey: keyEnableDebugOSD)
+        }
+        if let levelRaw = userDefaults.string(forKey: keyDebugOSDMinimumLevel),
+            let level = LogLevel(rawValue: levelRaw)
+        {
+            config.debugOSDMinimumLevel = level
+        }
+        if let duration = userDefaults.object(forKey: keyDebugOSDDuration) as? NSNumber {
+            config.debugOSDDuration = clampDebugOSDDuration(duration.doubleValue)
+        }
         if userDefaults.object(forKey: keyAutoLoadFolderMedia) != nil {
             config.autoLoadFolderMedia = userDefaults.bool(forKey: keyAutoLoadFolderMedia)
         }
@@ -282,12 +320,28 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleBgColorHex, forKey: Self.keySubtitleBgColorHex)
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
         userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
+        userDefaults.set(osdDuration, forKey: Self.keyOSDDuration)
+        userDefaults.set(enableDebugOSD, forKey: Self.keyEnableDebugOSD)
+        userDefaults.set(debugOSDMinimumLevel.rawValue, forKey: Self.keyDebugOSDMinimumLevel)
+        userDefaults.set(debugOSDDuration, forKey: Self.keyDebugOSDDuration)
         userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
         userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
         userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
         userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
+    }
+
+    /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).
+    public static func clampOSDDuration(_ value: Double) -> Double {
+        guard value.isFinite else { return 1.3 }
+        return max(0.5, min(10.0, value))
+    }
+
+    /// Clamps a debug OSD message duration to a sane on-screen range (1...60 s).
+    public static func clampDebugOSDDuration(_ value: Double) -> Double {
+        guard value.isFinite else { return 4.0 }
+        return max(1.0, min(60.0, value))
     }
 
     private static func nonEmpty(_ value: String) -> String? {
@@ -365,6 +419,23 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.enableOSD = false
             } else if arg == "--enable-osd" || arg == "--osd" {
                 config.enableOSD = true
+            } else if arg.starts(with: "--osd-duration=") {
+                if let val = Double(arg.dropFirst("--osd-duration=".count)) {
+                    config.osdDuration = clampOSDDuration(val)
+                }
+            } else if arg == "--debug-osd" {
+                config.enableDebugOSD = true
+            } else if arg == "--no-debug-osd" {
+                config.enableDebugOSD = false
+            } else if arg.starts(with: "--debug-osd-level=") {
+                let val = String(arg.dropFirst("--debug-osd-level=".count)).uppercased()
+                if let level = LogLevel(rawValue: val) {
+                    config.debugOSDMinimumLevel = level
+                }
+            } else if arg.starts(with: "--debug-osd-duration=") {
+                if let val = Double(arg.dropFirst("--debug-osd-duration=".count)) {
+                    config.debugOSDDuration = clampDebugOSDDuration(val)
+                }
             } else if arg == "--auto-load-folder" {
                 config.autoLoadFolderMedia = true
             } else if arg == "--no-auto-load-folder" || arg == "--disable-auto-load-folder" {

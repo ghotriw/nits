@@ -167,3 +167,65 @@ struct PlayerConfigurationTests {
         #expect(configEnabled.enableOSD == true)
     }
 }
+
+@Suite("Debug OSD Configuration Tests")
+struct DebugOSDConfigurationTests {
+    @Test("Debug OSD is disabled by default")
+    func testDefaults() {
+        let config = PlayerConfiguration()
+        #expect(config.enableDebugOSD == false)
+        #expect(config.debugOSDMinimumLevel == .warning)
+        #expect(config.debugOSDDuration == 4.0)
+        #expect(config.osdDuration == 1.3)
+    }
+
+    @Test("UserDefaults roundtrip preserves debug OSD settings")
+    func testUserDefaultsRoundtrip() {
+        let defaults = UserDefaults(suiteName: "test.debug.osd")!
+        defaults.removePersistentDomain(forName: "test.debug.osd")
+        var config = PlayerConfiguration()
+        config.enableDebugOSD = true
+        config.debugOSDMinimumLevel = .debug
+        config.debugOSDDuration = 10.0
+        config.osdDuration = 3.0
+        config.saveToUserDefaults(userDefaults: defaults)
+
+        let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
+        #expect(loaded.enableDebugOSD == true)
+        #expect(loaded.debugOSDMinimumLevel == .debug)
+        #expect(loaded.debugOSDDuration == 10.0)
+        #expect(loaded.osdDuration == 3.0)
+    }
+
+    @Test("CLI arguments parse debug OSD flags and clamp duration")
+    func testParseFlags() {
+        let args = ["Nits", "--debug-osd", "--debug-osd-level=info", "--debug-osd-duration=500", "movie.mkv"]
+        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
+        #expect(config.enableDebugOSD == true)
+        #expect(config.debugOSDMinimumLevel == .info)
+        #expect(config.debugOSDDuration == 60.0)
+        #expect(mediaPath == "movie.mkv")
+
+        let (disabled, _) = PlayerConfiguration.parse(
+            arguments: ["Nits", "--no-debug-osd", "--debug-osd-level=bogus"],
+            base: PlayerConfiguration(enableDebugOSD: true)
+        )
+        #expect(disabled.enableDebugOSD == false)
+        #expect(disabled.debugOSDMinimumLevel == .warning)
+    }
+}
+
+@Suite("OSD Duration Configuration Tests")
+struct OSDDurationConfigurationTests {
+    @Test("CLI argument parses and clamps OSD duration")
+    func testParseOSDDuration() {
+        let (config, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=2.5"])
+        #expect(config.osdDuration == 2.5)
+
+        let (tooLong, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=99"])
+        #expect(tooLong.osdDuration == 10.0)
+
+        let (tooShort, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=0"])
+        #expect(tooShort.osdDuration == 0.5)
+    }
+}

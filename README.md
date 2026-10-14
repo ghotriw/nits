@@ -141,6 +141,10 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 | --- | --- |
 | `[path or URL]` | Local file or `http(s)://` stream |
 | `--no-osd` | Hide the OSD |
+| `--osd-duration=<sec>` | How long OSD notifications stay visible (default 1.3) |
+| `--debug-osd` | Mirror log messages to the OSD |
+| `--debug-osd-level=debug\|info\|notice\|warning\|error` | Minimum level shown by the debug OSD (default warning) |
+| `--debug-osd-duration=<sec>` | How long each debug OSD message stays visible (default 4) |
 | `--render-mode=auto\|system\|metal` | Initial render mode |
 | `--no-tone-mapping` | Disable SDR tone mapping |
 | `--sharpness=0.0–1.0` | Sharpening strength (default 0.5) |

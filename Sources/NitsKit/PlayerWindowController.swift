@@ -23,6 +23,16 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
 
     public func applyConfiguration(_ config: PlayerConfiguration) {
         engine.applyConfiguration(config)
+        applyOSDConfiguration(config)
+    }
+
+    private func applyOSDConfiguration(_ config: PlayerConfiguration) {
+        uiState.osd.eventDuration = config.osdDuration
+        uiState.osd.configureDebug(
+            enabled: config.enableDebugOSD,
+            minimumLevel: config.debugOSDMinimumLevel,
+            duration: config.debugOSDDuration
+        )
     }
 
     private var standardButtons: [NSButton] {
@@ -45,6 +55,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         nowPlayingController.actions = self
         window.actionHandler = self
+        applyOSDConfiguration(configuration)
 
         window.title = "Nits"
         window.titlebarAppearsTransparent = true

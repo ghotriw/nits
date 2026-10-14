@@ -133,14 +133,23 @@ public struct ContentView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
 
-            // On-Screen Display (OSD) Overlay - Top Left
-            if engine.enableOSD, uiState.osd.isVisible, let event = uiState.osd.currentEvent {
+            // On-Screen Display (OSD) Overlay - Top Left, debug log badges stacked below
+            let showsOSDEvent = engine.enableOSD && uiState.osd.isVisible && uiState.osd.currentEvent != nil
+            let showsDebugOSD = uiState.osd.isDebugEnabled && !uiState.osd.debugMessages.isEmpty
+            if showsOSDEvent || showsDebugOSD {
                 VStack {
                     HStack {
-                        OSDOverlayView(event: event)
-                            .transition(.opacity.animation(.easeInOut(duration: 0.16)))
-                            .padding(.top, 28)
-                            .padding(.leading, 28)
+                        VStack(alignment: .leading, spacing: 10) {
+                            if showsOSDEvent, let event = uiState.osd.currentEvent {
+                                OSDOverlayView(event: event)
+                                    .transition(.opacity.animation(.easeInOut(duration: 0.16)))
+                            }
+                            if showsDebugOSD {
+                                DebugOSDStackView(messages: uiState.osd.debugMessages)
+                            }
+                        }
+                        .padding(.top, 28)
+                        .padding(.leading, 28)
                         Spacer()
                     }
                     Spacer()
