@@ -39,6 +39,9 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
   SwiftPM links with the deployment target (15.0) as the SDK version, so `swift run` binaries show
   the legacy (pre-Liquid Glass) look on macOS 26+; `bundle_app.sh` stamps the real SDK via `vtool`.
   Judge UI only from the bundle.
+- Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The app version comes
+  only from tags (`bundle_app.sh`: `git describe` or `--version=`), so never hardcode it in
+  Info.plist or sources.
 - Run compilers and CLI tools directly. Don't use inline interpreter scripts (`python3 -c`,
   `node -e`, `ruby -e`, `perl -e`) or wrap tools in `subprocess`; if a helper script is needed,
   write it to a file (e.g. `.agents/scratch/`), run it, then delete it.

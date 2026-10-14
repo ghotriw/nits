@@ -1,9 +1,9 @@
 # <img src="docs/logo.svg" width="40" height="40" valign="bottom" /> Nits
 
-A video player for macOS built on VideoToolbox, AVSampleBufferDisplayLayer, and Metal.
+A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 
 > [!NOTE]
-> **Status: alpha.** Core playback, HDR tone mapping, audio pipeline, and text subtitles (SRT, WebVTT, embedded SubRip) are implemented.
+> Pre-1.0: the `NitsKit` / `NitsCore` API may change between minor versions.
 
 ## Roadmap
 

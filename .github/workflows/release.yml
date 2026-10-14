@@ -1,0 +1,100 @@
+name: Release
+
+# Push a `vX.Y.Z` tag (or `vX.Y.Z-beta.1` for a prerelease) to build, zip and publish Nits.app.
+# `deps-v*` tags (build-deps.yml) don't match `v*`.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+jobs:
+  release:
+    name: Build and Publish Nits.app
+    runs-on: xcode-27
+    permissions:
+      contents: write
+
+    steps:
+      # Full history: bundle_app.sh uses the commit count as CFBundleVersion.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read versions
+        id: meta
+        run: |
+          source scripts/deps_config.sh
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "version=$version"
+            echo "zip=Nits-$version-macos-$DEPS_ARCH.zip"
+            echo "deps=$DEPS_VERSION"
+            echo "ffmpeg=$FFMPEG_VERSION"
+            echo "dav1d=$DAV1D_VERSION"
+            echo "prerelease=$([[ "$version" == *-* ]] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.app
+
+      - name: Ensure Metal Toolchain is installed
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          sudo xcodebuild -downloadComponent metalToolchain
+          echo 'kernel void probe() {}' > "$RUNNER_TEMP/probe.metal"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun metal -c "$RUNNER_TEMP/probe.metal" -o "$RUNNER_TEMP/probe.air"; then
+              exit 0
+            fi
+            echo "Metal compiler not usable yet (attempt $attempt), retrying..."
+            sleep 10
+          done
+          xcodebuild -showComponent metalToolchain || true
+          exit 1
+
+      - name: Install build tools
+        run: brew install pkg-config meson ninja
+
+      # Same key as ci.yml; caches saved on main are readable from tag runs.
+      - name: Restore LGPL FFmpeg / dav1d
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/dependencies
+          key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
+
+      - name: Build Nits.app
+        run: ./scripts/bundle_app.sh --release --version="${{ steps.meta.outputs.version }}"
+
+      - name: Verify bundle
+        run: |
+          codesign --verify --deep --strict build/Nits.app
+          plutil -extract CFBundleShortVersionString raw build/Nits.app/Contents/Info.plist
+          plutil -extract CFBundleVersion raw build/Nits.app/Contents/Info.plist
+
+      - name: Package
+        run: |
+          mkdir -p build/dist
+          ditto -c -k --keepParent build/Nits.app "build/dist/${{ steps.meta.outputs.zip }}"
+          cd build/dist
+          shasum -a 256 "${{ steps.meta.outputs.zip }}" > "${{ steps.meta.outputs.zip }}.sha256"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Nits ${{ steps.meta.outputs.version }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          generate_release_notes: true
+          body: |
+            Apple Silicon, macOS 15.0+.
+
+            The app is ad-hoc signed, not notarized. After unzipping, either run
+            `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
+            System Settings → Privacy & Security → Open Anyway.
+
+            Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause).
+            Their source archives are attached to
+            [deps-v${{ steps.meta.outputs.deps }}](https://github.com/${{ github.repository }}/releases/tag/deps-v${{ steps.meta.outputs.deps }}).
+          files: |
+            build/dist/${{ steps.meta.outputs.zip }}
+            build/dist/${{ steps.meta.outputs.zip }}.sha256

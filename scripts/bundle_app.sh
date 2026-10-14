@@ -11,6 +11,9 @@ BUNDLE_DYLIBS=true
 RUN_APP=false
 RUN_ARGS=()
 FROM_SOURCE=false
+APP_VERSION=""
+
+USAGE="Usage: $0 [--debug|--release] [--no-dylibs] [--from-source] [--version=X.Y.Z] [--run [args...]]"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,6 +33,10 @@ while [ $# -gt 0 ]; do
             FROM_SOURCE=true
             shift
             ;;
+        --version=*)
+            APP_VERSION="${1#--version=}"
+            shift
+            ;;
         --run)
             RUN_APP=true
             shift
@@ -37,16 +44,36 @@ while [ $# -gt 0 ]; do
             break
             ;;
         -h|--help)
-            echo "Usage: $0 [--debug|--release] [--no-dylibs] [--from-source] [--run [args...]]"
+            echo "$USAGE"
             exit 0
             ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 [--debug|--release] [--no-dylibs] [--from-source] [--run [args...]]" >&2
+            echo "$USAGE" >&2
             exit 1
             ;;
     esac
 done
+
+# Version: --version (release workflow passes the tag), else the latest `vX.Y.Z` tag via
+# `git describe`, else 0.0.0. Builds past a tag keep its X.Y.Z; the build number tells them apart.
+if [ -z "$APP_VERSION" ]; then
+    if GIT_DESCRIBE="$(git describe --tags --match 'v[0-9]*' 2>/dev/null)"; then
+        APP_VERSION="$GIT_DESCRIBE"
+    else
+        APP_VERSION="0.0.0"
+    fi
+fi
+APP_VERSION="${APP_VERSION#v}"
+if ! [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+    echo "Error: invalid version '$APP_VERSION' (expected X.Y.Z or X.Y.Z-suffix)." >&2
+    exit 1
+fi
+# CFBundleShortVersionString must be numeric, so prerelease / describe suffixes are dropped there.
+SHORT_VERSION="${APP_VERSION%%-*}"
+# Monotonic build number; needs full history (shallow clones count 1).
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+echo "==> Version $APP_VERSION (CFBundleShortVersionString $SHORT_VERSION, build $BUILD_NUMBER)"
 
 DEPS_PREFIX="$DIR/.build/dependencies"
 if [ "$BUNDLE_DYLIBS" = true ]; then
@@ -477,6 +504,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 </dict>
 </plist>
 EOF
+plutil -replace CFBundleShortVersionString -string "$SHORT_VERSION" "$CONTENTS_DIR/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$CONTENTS_DIR/Info.plist"
 
 echo "==> Codesigning Nits.app..."
 codesign --force --deep -s - "$APP_DIR"
