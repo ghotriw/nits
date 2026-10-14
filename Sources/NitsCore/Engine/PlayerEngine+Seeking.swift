@@ -100,6 +100,12 @@ extension PlayerEngine {
         stopFeedingVideo()
         stopFeedingAudio()
         frameQueue.clear(resetDroppedFrames: true)
+        // The pipeline is about to be flushed and repositioned; incremental forward stepping is invalid
+        // until this seek settles and re-establishes contiguity. Release the old step window; it is
+        // repopulated below for paused exact seeks (the frame-stepping scenario).
+        stepDecodeContiguous = false
+        didStepSincePause = false
+        stepFrameCache.clear()
 
         let decoder = self.decoder
         let audioDecoder = self.audioDecoder
@@ -107,8 +113,11 @@ extension PlayerEngine {
         let hasVideo = self.hasVideo
         let seekIdLock = self.activeSeekId
         let frameQueue = self.frameQueue
+        // Seed the step window only for paused exact seeks — when the user is scrubbing/stepping, not
+        // during seeks that will resume playback.
+        let stepCache: StepFrameCache? = (!shouldResume && isExact) ? self.stepFrameCache : nil
 
-        seekQueue.async { [weak self, demuxer, decoder, frameQueue] in
+        seekQueue.async { [weak self, demuxer, decoder, frameQueue, stepCache] in
             guard let self else { return }
 
             let isSuperseded: @Sendable () -> Bool = {
@@ -131,6 +140,7 @@ extension PlayerEngine {
                     seconds: targetSeconds,
                     exact: isExact,
                     minPts: minTargetPts,
+                    stepCache: stepCache,
                     isCurrent: { !isSuperseded() }
                 )
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
@@ -241,6 +251,9 @@ extension PlayerEngine {
             isPlaying = false
             playbackState = .paused
             performanceMonitor.handlePlaybackStateChange(isPlaying: false)
+            // Exact seeks leave the decoder warm and positioned just past the displayed frame (preview
+            // over-reads a few frames into the queue). This enables incremental forward frame-stepping.
+            stepDecodeContiguous = hasVideo && chaseExactSeek
             AppLog.debug(.engine, "Chase seek settled at \(completedSeconds)s (paused)")
             return
         }
@@ -282,11 +295,18 @@ extension PlayerEngine {
         seconds: Double,
         exact: Bool,
         minPts: Double? = nil,
+        stepCache: StepFrameCache? = nil,
         isCurrent: @Sendable () -> Bool
     ) -> SeekPreviewResult? {
         let lock = OSAllocatedUnfairLock()
         let box = SeekPreviewBox()
         let isStepForward = (minPts != nil)
+        // When seeding the step-frame cache (paused seek), decode all frames (discard disabled) for a wider
+        // window before the target so backward stepping has ~1s of depth available; otherwise just 0.5s.
+        let stepWindow: Double = stepCache != nil ? 1.1 : 0.5
+        // Only cache a small margin past the target: the trailing over-read (`extraPipelineAttempts`) would
+        // otherwise occupy the fixed-capacity cache with forward frames and starve backward-step depth.
+        let stepForwardMargin: Double = 0.25
         // Discarding non-reference B-frames during step-frame forward drops intermediate frames!
         // Only discard non-reference frames when doing larger jumps.
         if exact && !isStepForward {
@@ -295,6 +315,17 @@ extension PlayerEngine {
         decoder.setOutputHandler { frame in
             if !frame.doNotDisplay {
                 frameQueue.push(frame)
+            }
+            // Seed the step cache with every decoded frame in the window — including exact-seek preroll
+            // frames flagged `doNotDisplay` (which carry valid pixel buffers). They are precisely the
+            // frames below the target that backward stepping needs; the flag only suppresses them from the
+            // transient seek preview, not from deliberate frame-by-frame display.
+            if let stepCache, frame.pts.isValid,
+                frame.pts.seconds >= seconds - stepWindow,
+                frame.pts.seconds <= seconds + stepForwardMargin
+            {
+                stepCache.append(
+                    pixelBuffer: frame.pixelBuffer, pts: frame.pts, doviMetadata: frame.doviMetadata)
             }
             if (exact || !frame.doNotDisplay) && frame.pts.isValid {
                 lock.lock()
@@ -387,7 +418,7 @@ extension PlayerEngine {
                     maxAttempts = min(max(estimatedPackets, 120), 1200)
                 }
 
-                if exact && !isStepForward && ptsSeconds.isFinite && ptsSeconds >= (seconds - 0.5) {
+                if exact && !isStepForward && ptsSeconds.isFinite && ptsSeconds >= (seconds - stepWindow) {
                     // Near target window: restore all frames (including non-reference B-frames)
                     decoder.setDiscardNonReferenceFrames(false)
                 }
@@ -476,12 +507,159 @@ extension PlayerEngine {
         seek(to: baseTime + seconds, exact: exact, forward: seconds > 0 && !exact)
     }
 
+    /// Whether a frame step can be served from the warm pipeline + step cache instead of a full keyframe
+    /// re-seek: video is loaded, paused, not mid-seek, and the pipeline is positioned contiguously.
+    var canFastStepFrame: Bool {
+        hasVideo && stepDecodeContiguous && !isSeeking && chaseTargetTime == nil && !isPlaying
+            && currentFramePTS >= 0
+    }
+
+    /// A step pump or a step-induced seek is still resolving. Extra key-repeat presses are dropped here so
+    /// we advance one frame at a time (each full seek seeds its window) instead of chaining redundant
+    /// full-GOP seeks that outrun the decoder and never let the cache take over.
+    ///
+    /// Only `isSeeking`/`isStepPumping` indicate work genuinely in flight: a lingering non-nil
+    /// `chaseTargetTime` (e.g. a playing seek whose resume debounce was interrupted by pause) is NOT in
+    /// flight and must still accept a step — handled by the cold path via `canFastStepFrame`.
+    var isStepInFlight: Bool {
+        isStepPumping || isSeeking
+    }
+
     public func stepFrameForward() {
-        stepFrame(forward: true)
+        if isStepInFlight { return }
+        guard canFastStepFrame else {
+            stepFrame(forward: true)
+            return
+        }
+        let baseTime = currentFramePTS
+        // 1) Zero-decode: serve the next frame already decoded into the step window.
+        if let entry = stepFrameCache.frameAfter(baseTime) {
+            presentSteppedFrame(entry)
+            return
+        }
+        // 2) Window exhausted forward: decode ahead incrementally from the current contiguous position.
+        fastStepFrameForwardByDecoding(from: baseTime)
     }
 
     public func stepFrameBackward() {
-        stepFrame(forward: false)
+        if isStepInFlight { return }
+        guard canFastStepFrame else {
+            stepFrame(forward: false)
+            return
+        }
+        // Backward stepping cannot cheaply decode in reverse; serve from the step window or fall back to a
+        // full keyframe re-seek (which reseeds the window around the new position).
+        if let entry = stepFrameCache.frameBefore(currentFramePTS) {
+            presentSteppedFrame(entry)
+        } else {
+            stepFrame(forward: false)
+        }
+    }
+
+    /// Decodes forward from the current (contiguous) position until a frame past `baseTime` is produced,
+    /// appending decoded frames to the step cache. Falls back to a full exact seek if progress stalls.
+    private func fastStepFrameForwardByDecoding(from baseTime: Double) {
+        guard let demuxer = self.demuxer else { return }
+        let decoder = self.decoder
+        let frameQueue = self.frameQueue
+        let stepCache = self.stepFrameCache
+
+        isSeeking = true
+        isStepPumping = true
+        resumePlaybackAfterChase = false
+        currentSeekId += 1
+        let seekId = currentSeekId
+        let seekIdLock = self.activeSeekId
+        seekIdLock.withLock { $0 = seekId }
+
+        seekQueue.async { [weak self] in
+            guard let self else { return }
+            let isSuperseded: @Sendable () -> Bool = { seekIdLock.withLock { $0 != seekId } }
+
+            // Route decoded frames into the step cache during the pump, then restore the playback handler.
+            decoder.setOutputHandler { frame in
+                if !frame.doNotDisplay, frame.pts.isValid {
+                    stepCache.append(
+                        pixelBuffer: frame.pixelBuffer, pts: frame.pts, doviMetadata: frame.doviMetadata)
+                }
+            }
+            defer {
+                decoder.setOutputHandler { frame in
+                    if !frame.doNotDisplay { frameQueue.push(frame) }
+                }
+            }
+
+            var entry: StepFrameCache.Entry? = nil
+            var hitBoundary = false
+            var attempts = 0
+            // Keep decoding a few frames past the one we need so subsequent (including key-repeat) forward
+            // steps are served straight from the cache without re-entering a pump.
+            let prefetchAhead = 6
+            // A contiguous position never needs a whole GOP; this covers decoder reorder depth plus margin.
+            let maxAttempts = 48
+            while attempts < maxAttempts && !isSuperseded() {
+                guard let sample = demuxer.nextVideoSample() else {
+                    hitBoundary = true
+                    break
+                }
+                decoder.decode(sampleBuffer: sample)
+                decoder.waitForPendingFrames()
+                attempts += 1
+                if entry == nil {
+                    entry = stepCache.frameAfter(baseTime)
+                }
+                // Once the target frame exists, stop after enough look-ahead frames are buffered.
+                if entry != nil, stepCache.countAfter(baseTime) >= prefetchAhead + 1 {
+                    break
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isStepPumping = false
+                // Superseded by a newer seek/step: hand off to the chase machine if one is queued.
+                if self.currentSeekId != seekId {
+                    if self.chaseTargetTime != nil {
+                        self.executeDemuxerSeek()
+                    } else {
+                        self.isSeeking = false
+                    }
+                    return
+                }
+                self.isSeeking = false
+                if let entry {
+                    self.presentSteppedFrame(entry)
+                } else if hitBoundary {
+                    // Reached EOF / end of readable samples: keep the current frame, stay contiguous.
+                    self.stepDecodeContiguous = true
+                } else {
+                    // Could not advance within the attempt budget: fall back to a correct full seek.
+                    self.stepDecodeContiguous = false
+                    self.stepFrame(forward: true)
+                    return
+                }
+                // Honor a Play pressed while the pump was decoding (play() deferred it via this flag).
+                if self.resumePlaybackAfterChase {
+                    self.resumePlaybackAfterChase = false
+                    self.play()
+                }
+            }
+        }
+    }
+
+    /// Renders a stepped frame and synchronizes clock, timer, and subtitles to its PTS while paused.
+    func presentSteppedFrame(_ entry: StepFrameCache.Entry) {
+        let pts = entry.pts.seconds
+        renderDirect(pixelBuffer: entry.pixelBuffer, pts: pts, doviMetadata: entry.doviMetadata)
+        synchronizer.setRate(0.0, time: entry.pts)
+        currentTime = pts
+        updateActiveSubtitles(at: pts)
+        onTimeUpdate?(pts, duration)
+        // Pipeline remains positioned just past the furthest decoded frame — keep fast stepping enabled.
+        // The step window lives until playback resumes or a seek repositions the pipeline.
+        stepDecodeContiguous = true
+        // Cursor has drifted from the last seek baseline; resuming playback must reseek for clean A/V.
+        didStepSincePause = true
     }
 
     func stepFrame(forward: Bool) {

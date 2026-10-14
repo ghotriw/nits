@@ -23,17 +23,23 @@
 - **MANDATORY**: When writing, updating, or reviewing code for AppKit, SwiftUI, AVFoundation, Metal, and CoreMedia, always check modern APIs via `apple-docs` and avoid obsolete/deprecated patterns.
 - Do NOT guess or rely on pre-2023 training memory for Apple APIs.
 
-## 2. Deprecated & Prohibited Patterns
-- ❌ **Do NOT use `NSApp.activate(ignoringOtherApps:)`** (Deprecated in macOS 14.0).
-  ✅ **Use `NSApp.activate()`**.
-- ❌ **Do NOT use `ObservableObject` and `@Published`** from Combine for application state in macOS 14+.
-  ✅ **Use the `@Observable` macro** from the `Observation` framework.
-- ❌ **Do NOT use imperative `isFocused = true` inside `.onAppear`**.
-  ✅ **Use `.defaultFocus(_:_:)`** and configure `window.initialFirstResponder = hostingView` in AppKit `NSWindowController`.
-- ❌ **Do NOT allocate new objects/adapters inside SwiftUI computed properties** (e.g. `var actionsAdapter: any PlayerActions { ... }`).
-  ✅ Pass dependencies or manage state in `@State` / dedicated controllers.
+## 2. Local Reference Code (.ref/)
+- **Purpose:** The root `.ref/` directory contains local reference implementations, sample projects, and third-party source code kept for architectural comparison and guidance.
+- **Agent Usage Guidelines:**
+  - Agents are encouraged to read and inspect code in `.ref/` when researching algorithms, format parsing, shader math, or pipeline behaviors.
+  - **Do NOT copy-paste blindly:** Always adapt solutions to modern Swift 6 / macOS 15+ standards and ensure strict adherence to `Nits` architecture invariants (no `CVDisplayLink`, no `NSLock`, strict display-layer isolation).
 
-## 3. Keyboard Shortcuts & Menu Architecture
+## 3. Deprecated & Prohibited Patterns
+- ❌ **Do NOT use `NSApp.activate(ignoringOtherApps:)`** (Deprecated in macOS 14.0).
+  ✓ **Use `NSApp.activate()`**.
+- ❌ **Do NOT use `ObservableObject` and `@Published`** from Combine for application state in macOS 14+.
+  ✓ **Use the `@Observable` macro** from the `Observation` framework.
+- ❌ **Do NOT use imperative `isFocused = true` inside `.onAppear`**.
+  ✓ **Use `.defaultFocus(_:_:)`** and configure `window.initialFirstResponder = hostingView` in AppKit `NSWindowController`.
+- ❌ **Do NOT allocate new objects/adapters inside SwiftUI computed properties** (e.g. `var actionsAdapter: any PlayerActions { ... }`).
+  ✓ Pass dependencies or manage state in `@State` / dedicated controllers.
+
+## 4. Keyboard Shortcuts & Menu Architecture
 - **Global Menus (`CommandMenu`)**:
   - Must ONLY use standard system shortcuts with modifier keys (e.g., `⌥→`, `⌥←`, `⌃⌘F`, `⌘I`, `⌘O`).
   - Must NEVER assign unmodified navigation keys (`Space`, `←`, `→`, `↑`, `↓`, `m`) to `CommandMenu` items with `modifiers: []`.

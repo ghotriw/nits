@@ -204,124 +204,7 @@ extension PlayerEngine {
 
             let mode = activeRenderMode
             if mode == .metalToneMap {
-                struct ResolvedToneMapParams {
-                    let hasDoViL2Trim: UInt32
-                    let slope: Float
-                    let offset: Float
-                    let power: Float
-                    let saturation: Float
-                    let peakNits: Float
-                    let targetNits: Float
-                    let modeName: String
-                }
-
-                let scale = self.targetNitsScaleLock.withLock { $0 }
-                let resolved = dynamicToneMapLock.withLock { state -> ResolvedToneMapParams in
-                    let effectiveBaseTarget = max(min(state.baseTargetNits * scale, 500.0), 80.0)
-
-                    if let dovi = popped.doviMetadata {
-                        let isSceneRefresh = dovi.sceneRefresh
-                        let alpha: Float = isSceneRefresh ? 1.0 : 0.15
-
-                        if let trim = dovi.sdrTrim {
-                            state.lastRenderModeName = "Metal SDR (DoVi L2 Trim)"
-                            return ResolvedToneMapParams(
-                                hasDoViL2Trim: 1,
-                                slope: trim.slope,
-                                offset: trim.offset,
-                                power: trim.power,
-                                saturation: trim.saturationGain,
-                                peakNits: state.basePeakNits,
-                                targetNits: effectiveBaseTarget,
-                                modeName: state.lastRenderModeName
-                            )
-                        } else if let l1 = dovi.l1 {
-                            let dynamicPeak = l1.maxNits > 0 ? l1.maxNits : state.basePeakNits
-                            let rawTarget = Self.computeAdaptiveTargetNits(
-                                baseTargetNits: 203.0,
-                                maxPeakNits: dynamicPeak,
-                                maxFallNits: l1.avgNits
-                            )
-                            let scaledTarget = max(min(rawTarget * scale, 500.0), 80.0)
-
-                            state.smoothedPeakNits = (alpha * dynamicPeak) + ((1.0 - alpha) * state.smoothedPeakNits)
-                            state.smoothedTargetNits =
-                                (alpha * scaledTarget) + ((1.0 - alpha) * state.smoothedTargetNits)
-                            state.lastRenderModeName = "Metal SDR (DoVi L1)"
-
-                            return ResolvedToneMapParams(
-                                hasDoViL2Trim: 0,
-                                slope: 1.0,
-                                offset: 0.0,
-                                power: 1.0,
-                                saturation: 0.0,
-                                peakNits: state.smoothedPeakNits,
-                                targetNits: state.smoothedTargetNits,
-                                modeName: state.lastRenderModeName
-                            )
-                        } else {
-                            state.lastRenderModeName = "Metal SDR"
-                            return ResolvedToneMapParams(
-                                hasDoViL2Trim: 0,
-                                slope: 1.0,
-                                offset: 0.0,
-                                power: 1.0,
-                                saturation: 0.0,
-                                peakNits: state.basePeakNits,
-                                targetNits: effectiveBaseTarget,
-                                modeName: state.lastRenderModeName
-                            )
-                        }
-                    } else {
-                        // Frame without RPU metadata: cleanly revert to container static base values
-                        return ResolvedToneMapParams(
-                            hasDoViL2Trim: 0,
-                            slope: 1.0,
-                            offset: 0.0,
-                            power: 1.0,
-                            saturation: 0.0,
-                            peakNits: state.basePeakNits,
-                            targetNits: effectiveBaseTarget,
-                            modeName: state.lastRenderModeName
-                        )
-                    }
-                }
-
-                metalRenderer?.updateUniforms { uniforms in
-                    uniforms.hasDoViL2Trim = resolved.hasDoViL2Trim
-                    if resolved.hasDoViL2Trim == 1 {
-                        uniforms.doViTrimSlope = resolved.slope
-                        uniforms.doViTrimOffset = resolved.offset
-                        uniforms.doViTrimPower = resolved.power
-                        uniforms.doViTrimSaturation = resolved.saturation
-                    }
-                    uniforms.sourcePeakNits = resolved.peakNits
-                    uniforms.targetNits = resolved.targetNits
-                }
-                let currentModeName = resolved.modeName
-                let toneMode: PlayerPerformanceMonitor.ToneMapEngineMode
-                if resolved.hasDoViL2Trim == 1 {
-                    toneMode = .doviL2Trim
-                } else if currentModeName.contains("DoVi L1") {
-                    toneMode = .doviL1Auto
-                } else if resolved.peakNits > 105.0 {
-                    toneMode = .bt2390
-                } else {
-                    toneMode = .directSDR
-                }
-
-                performanceMonitor.updateToneMapParams(
-                    PlayerPerformanceMonitor.ToneMapParams(
-                        mode: toneMode,
-                        slope: resolved.slope,
-                        offset: resolved.offset,
-                        power: resolved.power,
-                        saturation: resolved.saturation,
-                        peakNits: resolved.peakNits,
-                        targetNits: resolved.targetNits
-                    )
-                )
-
+                let currentModeName = applyDynamicToneMap(doviMetadata: popped.doviMetadata)
                 metalRenderer?.render(pixelBuffer: popped.pixelBuffer)
                 performanceMonitor.recordRenderedFrame(
                     durationMs: durationMs,
@@ -402,10 +285,138 @@ extension PlayerEngine {
         }
     }
 
+    /// Resolves and applies dynamic tone-mapping (Dolby Vision L1/L2 trims or static base values) for a
+    /// single frame's metadata, updating the Metal uniforms and performance monitor. Returns the resolved
+    /// render-mode name. Shared by the playback display-link path and direct (seek/step) renders so
+    /// paused frame-stepping over Dolby Vision content keeps reference-accurate tone mapping.
+    nonisolated func applyDynamicToneMap(doviMetadata: DolbyVisionFrameMetadata?) -> String {
+        struct ResolvedToneMapParams {
+            let hasDoViL2Trim: UInt32
+            let slope: Float
+            let offset: Float
+            let power: Float
+            let saturation: Float
+            let peakNits: Float
+            let targetNits: Float
+            let modeName: String
+        }
+
+        let scale = self.targetNitsScaleLock.withLock { $0 }
+        let resolved = dynamicToneMapLock.withLock { state -> ResolvedToneMapParams in
+            let effectiveBaseTarget = max(min(state.baseTargetNits * scale, 500.0), 80.0)
+
+            if let dovi = doviMetadata {
+                let isSceneRefresh = dovi.sceneRefresh
+                let alpha: Float = isSceneRefresh ? 1.0 : 0.15
+
+                if let trim = dovi.sdrTrim {
+                    state.lastRenderModeName = "Metal SDR (DoVi L2 Trim)"
+                    return ResolvedToneMapParams(
+                        hasDoViL2Trim: 1,
+                        slope: trim.slope,
+                        offset: trim.offset,
+                        power: trim.power,
+                        saturation: trim.saturationGain,
+                        peakNits: state.basePeakNits,
+                        targetNits: effectiveBaseTarget,
+                        modeName: state.lastRenderModeName
+                    )
+                } else if let l1 = dovi.l1 {
+                    let dynamicPeak = l1.maxNits > 0 ? l1.maxNits : state.basePeakNits
+                    let rawTarget = Self.computeAdaptiveTargetNits(
+                        baseTargetNits: 203.0,
+                        maxPeakNits: dynamicPeak,
+                        maxFallNits: l1.avgNits
+                    )
+                    let scaledTarget = max(min(rawTarget * scale, 500.0), 80.0)
+
+                    state.smoothedPeakNits = (alpha * dynamicPeak) + ((1.0 - alpha) * state.smoothedPeakNits)
+                    state.smoothedTargetNits =
+                        (alpha * scaledTarget) + ((1.0 - alpha) * state.smoothedTargetNits)
+                    state.lastRenderModeName = "Metal SDR (DoVi L1)"
+
+                    return ResolvedToneMapParams(
+                        hasDoViL2Trim: 0,
+                        slope: 1.0,
+                        offset: 0.0,
+                        power: 1.0,
+                        saturation: 0.0,
+                        peakNits: state.smoothedPeakNits,
+                        targetNits: state.smoothedTargetNits,
+                        modeName: state.lastRenderModeName
+                    )
+                } else {
+                    state.lastRenderModeName = "Metal SDR"
+                    return ResolvedToneMapParams(
+                        hasDoViL2Trim: 0,
+                        slope: 1.0,
+                        offset: 0.0,
+                        power: 1.0,
+                        saturation: 0.0,
+                        peakNits: state.basePeakNits,
+                        targetNits: effectiveBaseTarget,
+                        modeName: state.lastRenderModeName
+                    )
+                }
+            } else {
+                // Frame without RPU metadata: cleanly revert to container static base values
+                return ResolvedToneMapParams(
+                    hasDoViL2Trim: 0,
+                    slope: 1.0,
+                    offset: 0.0,
+                    power: 1.0,
+                    saturation: 0.0,
+                    peakNits: state.basePeakNits,
+                    targetNits: effectiveBaseTarget,
+                    modeName: state.lastRenderModeName
+                )
+            }
+        }
+
+        metalRenderer?.updateUniforms { uniforms in
+            uniforms.hasDoViL2Trim = resolved.hasDoViL2Trim
+            if resolved.hasDoViL2Trim == 1 {
+                uniforms.doViTrimSlope = resolved.slope
+                uniforms.doViTrimOffset = resolved.offset
+                uniforms.doViTrimPower = resolved.power
+                uniforms.doViTrimSaturation = resolved.saturation
+            }
+            uniforms.sourcePeakNits = resolved.peakNits
+            uniforms.targetNits = resolved.targetNits
+        }
+        let currentModeName = resolved.modeName
+        let toneMode: PlayerPerformanceMonitor.ToneMapEngineMode
+        if resolved.hasDoViL2Trim == 1 {
+            toneMode = .doviL2Trim
+        } else if currentModeName.contains("DoVi L1") {
+            toneMode = .doviL1Auto
+        } else if resolved.peakNits > 105.0 {
+            toneMode = .bt2390
+        } else {
+            toneMode = .directSDR
+        }
+
+        performanceMonitor.updateToneMapParams(
+            PlayerPerformanceMonitor.ToneMapParams(
+                mode: toneMode,
+                slope: resolved.slope,
+                offset: resolved.offset,
+                power: resolved.power,
+                saturation: resolved.saturation,
+                peakNits: resolved.peakNits,
+                targetNits: resolved.targetNits
+            )
+        )
+        return currentModeName
+    }
+
     /// Directly renders a decoded pixel buffer onto the active video canvas and updates last rendered state.
-    public func renderDirect(pixelBuffer: CVPixelBuffer, pts: Double) {
+    /// `doviMetadata`, when present, drives dynamic tone mapping so direct renders (seek preview, frame
+    /// stepping) match the live playback path for Dolby Vision content.
+    public func renderDirect(pixelBuffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata? = nil) {
         frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts)
         if activeRenderMode == .metalToneMap {
+            _ = applyDynamicToneMap(doviMetadata: doviMetadata)
             metalRenderer?.render(pixelBuffer: pixelBuffer)
         } else {
             presentToDisplayLayer(pixelBuffer: pixelBuffer)

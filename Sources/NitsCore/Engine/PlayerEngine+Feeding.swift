@@ -33,6 +33,12 @@ extension PlayerEngine {
 
     func startFeeding() {
         guard let demuxer = self.demuxer else { return }
+        // Feeding will consume packets forward from the current position, so the standalone-step
+        // contiguity invariant no longer holds once playback resumes; release the step window too.
+        stepDecodeContiguous = false
+        isStepPumping = false
+        didStepSincePause = false
+        stepFrameCache.clear()
         isFeeding.withLock { $0 = true }
         isVideoDrainPaused.withLock { $0 = false }
 

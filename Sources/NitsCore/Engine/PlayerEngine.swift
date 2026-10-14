@@ -334,6 +334,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Minimum allowed PTS for step-frame seeking to guarantee advancing forward
     @ObservationIgnored
     var minStepFramePTS: Double? = nil
+    /// True when the decoder and demuxer are positioned contiguously just past the current frame, so a
+    /// forward frame step can decode incrementally (or serve an over-read frame) instead of re-seeking to
+    /// the keyframe and re-decoding the whole GOP. Set after an exact seek settles paused; cleared whenever
+    /// playback feeding resumes or a new demuxer seek repositions the pipeline.
+    @ObservationIgnored
+    var stepDecodeContiguous: Bool = false
     /// Keyframe-seek direction: forward seeks land on the next keyframe at/after the target.
     @ObservationIgnored
     var chaseForwardSeek: Bool = false
@@ -409,6 +415,19 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var metricsTimer: (any DispatchSourceTimer)?
 
     let frameQueue = FrameQueue()
+    /// Lazily-populated window of decoded frames around the current position for cheap paused frame-stepping
+    /// in both directions. Empty during normal playback; populated while paused-stepping and held until
+    /// playback resumes or a seek repositions the pipeline (cleared on resume, reseek, reload, or stop).
+    let stepFrameCache = StepFrameCache(capacity: 32)
+    /// True while a forward step pump is decoding on `seekQueue`. Guards against key-repeat presses falling
+    /// through to a heavy keyframe re-seek mid-pump; extra presses are ignored until the pump completes.
+    @ObservationIgnored
+    var isStepPumping: Bool = false
+    /// True once the playback cursor has drifted from the last seek baseline via frame-stepping. On resume
+    /// the demuxer/decoder sit ahead of the cursor and audio before the baseline was purged, so `play()`
+    /// reseeks to `currentTime` to restore clean A/V alignment. Cleared by any seek, load, or resume.
+    @ObservationIgnored
+    var didStepSincePause: Bool = false
     public var currentFramePTS: Double {
         frameQueue.getLastRenderedPTS()
     }

@@ -13,6 +13,14 @@ extension PlayerEngine {
             seek(to: 0.0)
         }
 
+        // After frame-stepping the demuxer/decoder sit ahead of the cursor and audio before the seek
+        // baseline was purged, so resuming feeding as-is would freeze video and drop/desync audio. Reseek
+        // to currentTime first; the chase-settle machinery then resumes playback cleanly at the cursor.
+        if hasVideo, !isSeeking, chaseTargetTime == nil, didStepSincePause {
+            didStepSincePause = false
+            seek(to: currentTime)
+        }
+
         // If a chase seek is currently in flight or queued, record intent to play once seeking finishes
         if isSeeking || chaseTargetTime != nil {
             resumePlaybackAfterChase = true

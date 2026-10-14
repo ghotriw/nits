@@ -65,6 +65,10 @@ extension PlayerEngine {
         isSeeking = false
         chaseTargetTime = nil
         minStepFramePTS = nil
+        stepDecodeContiguous = false
+        isStepPumping = false
+        didStepSincePause = false
+        stepFrameCache.clear()
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
         resumePlaybackAfterChase = false
@@ -299,6 +303,10 @@ extension PlayerEngine {
         isSeeking = false
         chaseTargetTime = nil
         resumePlaybackAfterChase = false
+        stepDecodeContiguous = false
+        isStepPumping = false
+        didStepSincePause = false
+        stepFrameCache.clear()
         saveCurrentPlaybackProgress()
         loadingTask?.cancel()
         loadingTask = nil
