@@ -13,10 +13,10 @@ extension PlayerEngine {
         // If a screen is available on initialization, attach CADisplayLink to NSScreen.main
         if let screen = NSScreen.main {
             let link = screen.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 120, preferred: 60)
             link.add(to: .main, forMode: .common)
             link.isPaused = true
             self.displayLink = link
+            updateDisplayLinkFrameRate()
         }
     }
 
@@ -28,12 +28,63 @@ extension PlayerEngine {
         self.displayLinkTarget = target
 
         let link = view.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 120, preferred: 60)
         link.add(to: .main, forMode: .common)
         link.isPaused = !isPlaying
         self.displayLink = link
+        self.displayLinkHostView = view
+        updateDisplayLinkFrameRate()
     }
 
+    // MARK: - Display Link Frame Rate
+
+    /// Lowest tick rate worth requesting: below it a single late tick costs a whole content frame.
+    nonisolated static let minimumSmoothDisplayLinkRate = 48
+
+    /// Requests a display-link rate matched to the content's frame rate on the current screen.
+    ///
+    /// Each tick presents a frame, so the tick rate is the presentation cadence. A rate that is not a multiple of
+    /// the content rate shows frames for uneven durations (24 fps on 60 Hz → 3:2 pulldown judder), while
+    /// unconditionally running at the panel maximum costs ProMotion power for content that does not need it.
+    /// Call when the content frame rate or the screen changes.
+    public func updateDisplayLinkFrameRate() {
+        guard let displayLink else { return }
+        let screen = displayLinkHostView?.window?.screen ?? NSScreen.main
+        let screenMaxRate = screen?.maximumFramesPerSecond ?? 60
+        let rate = Self.preferredDisplayLinkRate(
+            contentFrameDuration: nominalFrameDuration, screenMaximumRate: screenMaxRate)
+        // Pinned rather than a range: allowed to go lower, Core Animation may pick a rate that is not a multiple of the
+        // content (60 Hz for 24p → 3:2 judder, 30 Hz for 60 fps → every other frame). System caps such as Low Power
+        // Mode still override it.
+        let range = CAFrameRateRange(minimum: Float(rate), maximum: Float(rate), preferred: Float(rate))
+        guard displayLink.preferredFrameRateRange != range else { return }
+        displayLink.preferredFrameRateRange = range
+        AppLog.debug(
+            .video,
+            "Display link rate: \(rate) Hz for \(String(format: "%.3f", 1.0 / nominalFrameDuration)) fps content on a \(screenMaxRate) Hz screen"
+        )
+    }
+
+    /// The display link only delivers rates that divide the screen's maximum refresh rate (120 Hz ProMotion:
+    /// 120/60/40/30/24). Picks the lowest such rate, not below `minimumSmoothDisplayLinkRate`, that is a whole
+    /// multiple of the content rate (23.976 → 120, 29.97 → 60, 24 on 144 Hz → 48); otherwise the screen maximum,
+    /// whose finer tick spacing keeps the unavoidable cadence error smallest (25 / 50 fps on 120 Hz).
+    nonisolated static func preferredDisplayLinkRate(contentFrameDuration: Double, screenMaximumRate: Int) -> Int {
+        let maxRate = max(screenMaximumRate, 1)
+        guard contentFrameDuration.isFinite, contentFrameDuration > 0 else { return maxRate }
+        let contentRate = 1.0 / contentFrameDuration
+
+        for divisor in stride(from: maxRate, through: 1, by: -1) where maxRate % divisor == 0 {
+            let rate = maxRate / divisor
+            guard rate >= minimumSmoothDisplayLinkRate else { continue }
+            let ticksPerFrame = Double(rate) / contentRate
+            let wholeTicks = ticksPerFrame.rounded()
+            // 1% covers NTSC rates (23.976, 29.97, 59.94) against their integer counterparts.
+            if wholeTicks >= 1 && abs(ticksPerFrame - wholeTicks) / wholeTicks < 0.01 {
+                return rate
+            }
+        }
+        return maxRate
+    }
     func updateEffectiveRenderMode() {
         let newMode: RenderMode
         switch renderMode {

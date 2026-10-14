@@ -510,6 +510,7 @@ extension PlayerEngine {
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }
+        updateDisplayLinkFrameRate()
         self.sampleAspectRatio = demuxer.sampleAspectRatio
         self.isHDRContent = demuxer.isHDR
         if self.mediaTitle.isEmpty {

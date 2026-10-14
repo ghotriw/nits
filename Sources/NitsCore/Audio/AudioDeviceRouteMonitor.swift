@@ -98,7 +98,9 @@ public final class AudioDeviceRouteMonitor {
     nonisolated public static func fetchDefaultOutputLatency() -> TimeInterval? {
         guard let deviceID = fetchDefaultOutputDeviceID() else { return nil }
 
-        func outputProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: inout T)
+        func outputProperty<T: BitwiseCopyable>(
+            _ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: inout T
+        )
             -> Bool
         {
             var address = AudioObjectPropertyAddress(

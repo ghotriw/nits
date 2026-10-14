@@ -116,10 +116,20 @@ A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
 
 ### Display pacing
 
-`CADisplayLink` from `view.displayLink(target:selector:)` / `screen.displayLink(...)` with
-`preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 120, preferred: 120)`. Unlike
+`CADisplayLink` from `view.displayLink(target:selector:)` / `screen.displayLink(...)`. Unlike
 `CVDisplayLink`, it follows the window across screens, tracks ProMotion/VRR, and needs no
 `Unmanaged` C callbacks. Lifecycle: `isPaused` / `invalidate()`.
+
+Every tick presents a frame (`DisplayImmediately` / Metal draw), so the tick rate is the presentation
+cadence. The link only delivers rates that divide the screen's maximum refresh (120 Hz ProMotion:
+120/60/40/30/24), so `preferredDisplayLinkRate` picks the lowest such rate ≥ 48 Hz that is a whole multiple
+of the content fps (29.97 → 60, 24 on 144 Hz → 48) and otherwise the screen maximum, whose finer ticks keep
+the unavoidable cadence error smallest (25 / 50 fps on 120 Hz; 23.976 counts as 24 within a 1% tolerance).
+A fixed 60 Hz request would give 24p film 3:2 pulldown judder; a fixed 120 Hz one wastes ProMotion power on 30/60 fps content.
+
+Frames are chosen for the clock at the vsync they will appear on — `synchronizer.currentTime()` projected to
+`link.targetTimestamp` — because the callback runs on the main run loop and its latency jitters by
+milliseconds; sampling the clock there skips frames whenever content fps is close to the link rate.
 
 ## Metal tone-mapper (`HDRToneMapping.metal`)
 

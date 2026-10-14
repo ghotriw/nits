@@ -63,12 +63,22 @@ public final class NativeVideoHostView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if let window {
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(windowDidChangeScreen(_:)),
                 name: NSWindow.didChangeScreenNotification,
                 object: window
+            )
+            // A display mode change (e.g. ProMotion → 60 Hz in System Settings) keeps the window on the same
+            // screen, so `didChangeScreen` does not fire for it.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(screenParametersDidChange(_:)),
+                name: NSApplication.didChangeScreenParametersNotification,
+                object: nil
             )
             updateScreenHDRStatus()
             engine.attachDisplayLink(to: self)
@@ -80,7 +90,12 @@ public final class NativeVideoHostView: NSView {
     }
 
     @objc private func windowDidChangeScreen(_ notification: Notification) {
+        engine.updateDisplayLinkFrameRate()
         updateScreenHDRStatus()
+    }
+
+    @objc private func screenParametersDidChange(_ notification: Notification) {
+        engine.updateDisplayLinkFrameRate()
     }
 
     public override func viewDidChangeBackingProperties() {

@@ -477,6 +477,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     var displayLink: CADisplayLink?
     var displayLinkTarget: DisplayLinkTarget?
+    /// View the display link follows, used to resolve its current screen.
+    @ObservationIgnored weak var displayLinkHostView: NSView?
 
     final class DisplayLinkTarget: NSObject, @unchecked Sendable {
         private weak var engine: PlayerEngine?

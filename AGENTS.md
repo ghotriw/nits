@@ -68,9 +68,10 @@ selectors (see Video pipeline).
   and frames carry `kCMSampleAttachmentKey_DisplayImmediately`. Attaching it makes `setRate(0)` on
   pause freeze `WindowServer` for ~30 s. For the same reason, don't "modernize" the selector-based
   `enqueueSampleBuffer:` / `flush` calls to `synchronizer.sampleBufferReceiver`.
-- **Pacing** comes from `CADisplayLink` with
-  `preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 120, preferred: 120)`, picking
-  frames by `synchronizer.currentTime()`.
+- **Pacing** comes from `CADisplayLink`. Its rate is matched to the content
+  (`preferredDisplayLinkRate`): the lowest divisor of the screen's max refresh that is ≥ 48 Hz and a whole
+  multiple of the content fps, else the screen max; re-evaluated on load and screen change. Frames are picked
+  for the synchronizer clock projected to `link.targetTimestamp`, never the clock at callback time.
 - **Seeks** run on the serial `seekQueue` with a `currentSeekId` generation token; stale seeks are
   dropped. Seek and render-mode switches clear `FrameQueue` and flush decoder and renderer.
 - **Don't tear down `VTDecompressionSession` on seek** — flush it. Before any invalidate/reset,
