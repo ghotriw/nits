@@ -19,8 +19,8 @@ struct ToneMapUniformsTests {
         guard let device = MTLCreateSystemDefaultDevice() else { return }
         let library = try device.makeDefaultLibrary(bundle: .module)
         let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = try #require(library.makeFunction(name: "hdrVertexShader"))
-        descriptor.fragmentFunction = try #require(library.makeFunction(name: "hdrToneMapFragmentShader"))
+        descriptor.vertexFunction = library.makeFunction(name: "hdrVertexShader")
+        descriptor.fragmentFunction = library.makeFunction(name: "hdrToneMapFragmentShader")
         descriptor.colorAttachments[0].pixelFormat = .bgr10a2Unorm
         // Fails if mpvBT2390 (BT2390ToneMapping.metal) or the PQ helpers it uses don't resolve.
         _ = try device.makeRenderPipelineState(descriptor: descriptor)
