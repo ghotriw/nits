@@ -2,11 +2,15 @@ import AppKit
 import NitsCore
 import SwiftUI
 
-/// Floating thumbnail preview card displayed above the timeline slider on hover / scrub.
+/// Borderless thumbnail preview displayed above the timeline slider on hover / scrub.
+/// The frame itself is the card; the time label is overlaid at its bottom edge.
 public struct TimelineThumbnailPreviewView: View {
     public let thumbnail: ThumbnailItem?
     public let time: Double
     public let duration: Double
+
+    private static let maxImageSize = CGSize(width: 176, height: 132)
+    private static let cornerRadius: CGFloat = 8
 
     public init(thumbnail: ThumbnailItem?, time: Double, duration: Double) {
         self.thumbnail = thumbnail
@@ -14,43 +18,55 @@ public struct TimelineThumbnailPreviewView: View {
         self.duration = duration
     }
 
+    /// Size of the rendered preview, used by the timeline to position and clamp it.
+    public static func size(thumbnail: ThumbnailItem?, duration: Double) -> CGSize {
+        guard let thumbnail, thumbnail.width > 0, thumbnail.height > 0 else {
+            return CGSize(width: timeLabelMinWidth(duration: duration) + 10, height: 18)
+        }
+        let aspect = CGFloat(thumbnail.width) / CGFloat(thumbnail.height)
+        let width = min(maxImageSize.width, maxImageSize.height * aspect)
+        return CGSize(width: width.rounded(), height: (width / aspect).rounded())
+    }
+
+    private static func timeLabelMinWidth(duration: Double) -> CGFloat {
+        duration >= 3600 ? 54 : 38
+    }
+
     public var body: some View {
-        VStack(spacing: 5) {
+        Group {
             if let thumbnail {
+                let size = Self.size(thumbnail: thumbnail, duration: duration)
                 Image(decorative: thumbnail.image, scale: 1.0)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 160, height: 90)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
                     )
+                    .overlay(alignment: .bottom) {
+                        timeLabel
+                            .background(Color.black.opacity(0.6), in: Capsule())
+                            .padding(.bottom, 5)
+                    }
+                    .shadow(color: .black.opacity(0.45), radius: 10, x: 0, y: 4)
+            } else {
+                timeLabel
+                    .background(Color.black.opacity(0.6), in: Capsule())
+                    .shadow(color: .black.opacity(0.4), radius: 4, x: 0, y: 2)
             }
-
-            Text(formatTime(time))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white)
-                .frame(minWidth: duration >= 3600 ? 54 : 38)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    Capsule()
-                        .fill(thumbnail != nil ? Color.black.opacity(0.65) : Color.clear)
-                )
         }
-        .padding(5)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                )
-        )
-        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 5)
         .allowsHitTesting(false)
+    }
+
+    private var timeLabel: some View {
+        Text(formatTime(time))
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.white)
+            .frame(minWidth: Self.timeLabelMinWidth(duration: duration))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
     }
 
     private func formatTime(_ seconds: Double) -> String {

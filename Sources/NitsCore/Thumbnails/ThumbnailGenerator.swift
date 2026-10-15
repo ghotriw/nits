@@ -8,7 +8,10 @@ import os
 /// Opens its own independent `AVFormatContext` and `AVCodecContext` to demux and decode
 /// keyframes across the file without interfering with the playback engine.
 public final class ThumbnailGenerator: @unchecked Sendable {
-    public static let targetThumbnailWidth: Int32 = 240
+    /// Covers the 176 pt preview card at 2x scale.
+    public static let targetThumbnailWidth: Int32 = 384
+    /// Height limit for portrait video.
+    public static let maxThumbnailHeight: Int32 = 288
     public static let defaultThumbnailCount: Int = 120
 
     private final class CancelToken: @unchecked Sendable {
@@ -41,9 +44,9 @@ public final class ThumbnailGenerator: @unchecked Sendable {
     }
 
     /// Generates keyframe thumbnails asynchronously across the duration of the video.
-    /// Periodically calls `onProgress` with progressive results.
+    /// Periodically calls `onProgress` with the results so far and the fraction of sample points processed.
     public func generateThumbnails(
-        onProgress: @Sendable @escaping ([ThumbnailItem]) -> Void
+        onProgress: @Sendable @escaping ([ThumbnailItem], Double) -> Void
     ) async -> [ThumbnailItem] {
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -63,7 +66,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
     }
 
     private func runGeneration(
-        onProgress: @Sendable @escaping ([ThumbnailItem]) -> Void
+        onProgress: @Sendable @escaping ([ThumbnailItem], Double) -> Void
     ) -> [ThumbnailItem] {
         guard !isCancelled else { return [] }
 
@@ -205,218 +208,125 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             return []
         }
 
-        // Target thumbnail size
-        let thumbWidth = Self.targetThumbnailWidth
-        let thumbHeight = max(16, Int32(round(Float(thumbWidth) * Float(videoHeight) / Float(videoWidth))))
-
-        // Prepare sws_scale context lazily based on codec parameters or decoded frame format
-        var sourcePixFmt = AVPixelFormat(codecpar.pointee.format)
-        if sourcePixFmt == AV_PIX_FMT_NONE {
-            sourcePixFmt = codecCtx.pointee.pix_fmt
-        }
-
-        var swsCtx: UnsafeMutablePointer<SwsContext>? = nil
-        if sourcePixFmt != AV_PIX_FMT_NONE {
-            swsCtx = sws_getContext(
-                videoWidth,
-                videoHeight,
-                sourcePixFmt,
-                thumbWidth,
-                thumbHeight,
-                AV_PIX_FMT_RGBA,
-                Int32(SWS_BILINEAR.rawValue),
-                nil,
-                nil,
-                nil
+        // Anamorphic video: the scaler stretches samples to the display aspect ratio.
+        let sampleAspect = av_guess_sample_aspect_ratio(activeFormatCtx, stream, nil)
+        let pixelAspect = sampleAspect.num > 0 && sampleAspect.den > 0 ? av_q2d(sampleAspect) : 1
+        let thumbSize = Self.thumbnailSize(displayAspect: Double(videoWidth) * pixelAspect / Double(videoHeight))
+        guard
+            let converter = ThumbnailFrameConverter(
+                width: thumbSize.width,
+                height: thumbSize.height,
+                isDolbyVisionProfile5: Self.isDolbyVisionProfile5(codecpar)
             )
-            if let activeCtx = swsCtx {
-                Self.configureSwsColorspace(swsCtx: activeCtx, frame: nil, codecpar: codecpar)
-            }
-        }
-        defer {
-            if let swsCtx {
-                sws_freeContext(swsCtx)
-            }
-        }
+        else { return [] }
 
         let frame = av_frame_alloc()
-        let frameRGBA = av_frame_alloc()
         let packet = av_packet_alloc()
         defer {
             var f = frame
-            var frgba = frameRGBA
             var p = packet
             av_frame_free(&f)
-            av_frame_free(&frgba)
             av_packet_free(&p)
         }
 
-        guard let frame, let frameRGBA, let packet else { return [] }
+        guard let frame, let packet else { return [] }
 
-        let rgbaBufferSize = av_image_get_buffer_size(AV_PIX_FMT_RGBA, thumbWidth, thumbHeight, 1)
-        guard rgbaBufferSize > 0, let rgbaBuffer = av_malloc(Int(rgbaBufferSize)) else { return [] }
-        defer {
-            av_free(rgbaBuffer)
+        var seenKeyPackets = Set<Int64>()
+        var seenFramePts = Set<Int64>()
+
+        /// Pulls decoded frames and returns the first one not produced before.
+        func receiveNewFrame(fallbackTime: Double) -> ThumbnailItem? {
+            while avcodec_receive_frame(codecCtx, frame) == 0 {
+                let pts =
+                    frame.pointee.best_effort_timestamp != Int64.min
+                    ? frame.pointee.best_effort_timestamp
+                    : frame.pointee.pts
+                // Frames without a timestamp can't be told apart, so they skip deduplication.
+                guard pts == Int64.min || seenFramePts.insert(pts).inserted,
+                    let image = converter.makeImage(from: frame, codecpar: codecpar)
+                else { continue }
+
+                let seconds =
+                    pts != Int64.min && pts >= 0
+                    ? Double(pts) * Double(timebase.num) / Double(timebase.den)
+                    : fallbackTime
+                return ThumbnailItem(
+                    time: seconds,
+                    image: image,
+                    width: Int(thumbSize.width),
+                    height: Int(thumbSize.height)
+                )
+            }
+            return nil
         }
 
-        ret = av_image_fill_arrays(
-            &frameRGBA.pointee.data.0,
-            &frameRGBA.pointee.linesize.0,
-            UnsafePointer<UInt8>(OpaquePointer(rgbaBuffer)),
-            AV_PIX_FMT_RGBA,
-            thumbWidth,
-            thumbHeight,
-            1
-        )
-        guard ret >= 0 else { return [] }
+        /// Decodes the first new frame after a seek.
+        func decodeFrameAfterSeek(fallbackTime: Double, keyframeShortcut: Bool, maxVideoPackets: Int) -> ThumbnailItem?
+        {
+            var videoPacketsRead = 0
+            var totalPacketsRead = 0
+            while videoPacketsRead < maxVideoPackets && totalPacketsRead < 300 && !isCancelled
+                && av_read_frame(activeFormatCtx, packet) >= 0
+            {
+                defer { av_packet_unref(packet) }
+                totalPacketsRead += 1
+                guard packet.pointee.stream_index == streamIndex else { continue }
+                videoPacketsRead += 1
+
+                // The seek landed on a keyframe: decode only that packet and drain, instead of
+                // feeding the decoder until its reorder delay releases a frame.
+                let isKeyframe = (packet.pointee.flags & AV_PKT_FLAG_KEY) != 0
+                if keyframeShortcut && videoPacketsRead == 1 && isKeyframe {
+                    let packetTime = packet.pointee.pts != Int64.min ? packet.pointee.pts : packet.pointee.dts
+                    // Several targets inside one GOP land on the same keyframe; decode it once.
+                    if packetTime != Int64.min && !seenKeyPackets.insert(packetTime).inserted {
+                        return nil
+                    }
+                    guard avcodec_send_packet(codecCtx, packet) >= 0 else { return nil }
+                    _ = avcodec_send_packet(codecCtx, nil)
+                    return receiveNewFrame(fallbackTime: fallbackTime)
+                }
+
+                guard avcodec_send_packet(codecCtx, packet) >= 0 else { return nil }
+                if let item = receiveNewFrame(fallbackTime: fallbackTime) {
+                    return item
+                }
+            }
+            return nil
+        }
 
         // Generate sample points
         let count = min(Self.defaultThumbnailCount, max(10, Int(durationSeconds / 2.0)))
         let interval = durationSeconds / Double(count)
 
         var allThumbnails: [ThumbnailItem] = []
-        var batchThumbnails: [ThumbnailItem] = []
+        var pendingCount = 0
         var lastEmittedTime = CACurrentMediaTime()
-        var addedTimestamps = Set<Int64>()
 
-        for i in 0..<count {
+        for (completed, i) in Self.coarseToFineOrder(count: count).enumerated() {
             guard !isCancelled else { break }
 
             let targetTime = Double(i) * interval
             let targetPts = Int64(round(targetTime * Double(timebase.den) / Double(timebase.num)))
 
-            avcodec_flush_buffers(codecCtx)
-
             // Seek backward to keyframe (try stream-level seek first, then format-level)
-            var seekRet = av_seek_frame(activeFormatCtx, streamIndex, targetPts, AVSEEK_FLAG_BACKWARD)
+            let seekRet = av_seek_frame(activeFormatCtx, streamIndex, targetPts, AVSEEK_FLAG_BACKWARD)
             if seekRet < 0 {
                 let targetPtsAV = Int64(round(targetTime * Double(AV_TIME_BASE)))
-                seekRet = av_seek_frame(activeFormatCtx, -1, targetPtsAV, AVSEEK_FLAG_BACKWARD)
+                _ = av_seek_frame(activeFormatCtx, -1, targetPtsAV, AVSEEK_FLAG_BACKWARD)
             }
             avcodec_flush_buffers(codecCtx)
 
-            // Decode frames until we get one
-            var decodedThumbnail: ThumbnailItem? = nil
-            var videoPacketsRead = 0
-            var totalPacketsRead = 0
-
-            while av_read_frame(activeFormatCtx, packet) >= 0 && videoPacketsRead < 30 && totalPacketsRead < 300 {
-                defer { av_packet_unref(packet) }
-                totalPacketsRead += 1
-
-                guard !isCancelled else { break }
-
-                if packet.pointee.stream_index == streamIndex {
-                    videoPacketsRead += 1
-                    if avcodec_send_packet(codecCtx, packet) < 0 {
-                        break
-                    }
-
-                    while avcodec_receive_frame(codecCtx, frame) == 0 {
-                        let pts =
-                            frame.pointee.best_effort_timestamp != Int64.min
-                            ? frame.pointee.best_effort_timestamp
-                            : frame.pointee.pts
-
-                        if !addedTimestamps.contains(pts) {
-                            addedTimestamps.insert(pts)
-
-                            let actualFrameWidth = frame.pointee.width > 0 ? frame.pointee.width : videoWidth
-                            let actualFrameHeight = frame.pointee.height > 0 ? frame.pointee.height : videoHeight
-                            let frameFmt = AVPixelFormat(frame.pointee.format)
-                            if swsCtx == nil || frameFmt != sourcePixFmt {
-                                if let oldCtx = swsCtx {
-                                    sws_freeContext(oldCtx)
-                                }
-                                sourcePixFmt = frameFmt
-                                swsCtx = sws_getContext(
-                                    actualFrameWidth,
-                                    actualFrameHeight,
-                                    frameFmt,
-                                    thumbWidth,
-                                    thumbHeight,
-                                    AV_PIX_FMT_RGBA,
-                                    Int32(SWS_BILINEAR.rawValue),
-                                    nil,
-                                    nil,
-                                    nil
-                                )
-                                if let activeSwsCtx = swsCtx {
-                                    Self.configureSwsColorspace(swsCtx: activeSwsCtx, frame: frame, codecpar: codecpar)
-                                }
-                            }
-
-                            if let activeSwsCtx = swsCtx {
-                                // Convert frame to RGBA
-                                let scaleRet = withUnsafePointer(to: &frame.pointee.data) { frameDataPtr in
-                                    withUnsafePointer(to: &frame.pointee.linesize) { frameLinesizePtr in
-                                        withUnsafeMutablePointer(to: &frameRGBA.pointee.data) { rgbaDataPtr in
-                                            withUnsafeMutablePointer(to: &frameRGBA.pointee.linesize) {
-                                                rgbaLinesizePtr in
-                                                let inData = OpaquePointer(frameDataPtr)
-                                                let inLinesize = OpaquePointer(frameLinesizePtr)
-                                                let outData = OpaquePointer(rgbaDataPtr)
-                                                let outLinesize = OpaquePointer(rgbaLinesizePtr)
-
-                                                return sws_scale(
-                                                    activeSwsCtx,
-                                                    UnsafePointer<UnsafePointer<UInt8>?>(inData),
-                                                    UnsafePointer<Int32>(inLinesize),
-                                                    0,
-                                                    actualFrameHeight,
-                                                    UnsafePointer<UnsafeMutablePointer<UInt8>?>(outData),
-                                                    UnsafePointer<Int32>(outLinesize)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if scaleRet > 0 {
-                                    let actualSeconds =
-                                        pts != Int64.min && pts >= 0
-                                        ? Double(pts) * Double(timebase.num) / Double(timebase.den)
-                                        : targetTime
-
-                                    let colorInfo = Self.extractColorInfo(frame: frame, codecpar: codecpar)
-                                    if let cgImage = Self.createCGImage(
-                                        fromRGBA: frameRGBA.pointee.data.0!,
-                                        width: Int(thumbWidth),
-                                        height: Int(thumbHeight),
-                                        bytesPerRow: Int(frameRGBA.pointee.linesize.0),
-                                        colorInfo: colorInfo
-                                    ) {
-                                        decodedThumbnail = ThumbnailItem(
-                                            time: actualSeconds,
-                                            image: cgImage,
-                                            width: Int(thumbWidth),
-                                            height: Int(thumbHeight)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if decodedThumbnail != nil {
-                            break
-                        }
-                    }
-
-                    if decodedThumbnail != nil {
-                        break
-                    }
-                }
-            }
-
-            if let item = decodedThumbnail {
+            if let item = decodeFrameAfterSeek(fallbackTime: targetTime, keyframeShortcut: true, maxVideoPackets: 30) {
                 allThumbnails.append(item)
-                batchThumbnails.append(item)
+                pendingCount += 1
             }
 
             let now = CACurrentMediaTime()
-            if (now - lastEmittedTime >= 0.25 || batchThumbnails.count >= 8) && !batchThumbnails.isEmpty {
-                onProgress(allThumbnails)
-                batchThumbnails.removeAll(keepingCapacity: true)
+            if pendingCount > 0 && (now - lastEmittedTime >= 0.25 || pendingCount >= 8) {
+                allThumbnails.sort { $0.time < $1.time }
+                onProgress(allThumbnails, Double(completed + 1) / Double(count))
+                pendingCount = 0
                 lastEmittedTime = now
             }
         }
@@ -425,290 +335,69 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         if allThumbnails.isEmpty && !isCancelled {
             _ = av_seek_frame(activeFormatCtx, -1, 0, AVSEEK_FLAG_BACKWARD)
             avcodec_flush_buffers(codecCtx)
-            var totalPacketsRead = 0
-            while av_read_frame(activeFormatCtx, packet) >= 0 && totalPacketsRead < 300 {
-                defer { av_packet_unref(packet) }
-                totalPacketsRead += 1
-                if packet.pointee.stream_index == streamIndex {
-                    if avcodec_send_packet(codecCtx, packet) >= 0 {
-                        if avcodec_receive_frame(codecCtx, frame) == 0 {
-                            let actualFrameWidth = frame.pointee.width > 0 ? frame.pointee.width : videoWidth
-                            let actualFrameHeight = frame.pointee.height > 0 ? frame.pointee.height : videoHeight
-                            let frameFmt = AVPixelFormat(frame.pointee.format)
-                            if swsCtx == nil || frameFmt != sourcePixFmt {
-                                if let oldCtx = swsCtx { sws_freeContext(oldCtx) }
-                                sourcePixFmt = frameFmt
-                                swsCtx = sws_getContext(
-                                    actualFrameWidth, actualFrameHeight, frameFmt, thumbWidth, thumbHeight,
-                                    AV_PIX_FMT_RGBA, Int32(SWS_BILINEAR.rawValue), nil, nil, nil)
-                                if let activeSwsCtx = swsCtx {
-                                    Self.configureSwsColorspace(swsCtx: activeSwsCtx, frame: frame, codecpar: codecpar)
-                                }
-                            }
-                            if let activeSwsCtx = swsCtx {
-                                let scaleRet = withUnsafePointer(to: &frame.pointee.data) { frameDataPtr in
-                                    withUnsafePointer(to: &frame.pointee.linesize) { frameLinesizePtr in
-                                        withUnsafeMutablePointer(to: &frameRGBA.pointee.data) { rgbaDataPtr in
-                                            withUnsafeMutablePointer(to: &frameRGBA.pointee.linesize) {
-                                                rgbaLinesizePtr in
-                                                let inData = OpaquePointer(frameDataPtr)
-                                                let inLinesize = OpaquePointer(frameLinesizePtr)
-                                                let outData = OpaquePointer(rgbaDataPtr)
-                                                let outLinesize = OpaquePointer(rgbaLinesizePtr)
-                                                return sws_scale(
-                                                    activeSwsCtx, UnsafePointer<UnsafePointer<UInt8>?>(inData),
-                                                    UnsafePointer<Int32>(inLinesize), 0, actualFrameHeight,
-                                                    UnsafePointer<UnsafeMutablePointer<UInt8>?>(outData),
-                                                    UnsafePointer<Int32>(outLinesize))
-                                            }
-                                        }
-                                    }
-                                }
-                                if scaleRet > 0 {
-                                    let colorInfo = Self.extractColorInfo(frame: frame, codecpar: codecpar)
-                                    if let cgImage = Self.createCGImage(
-                                        fromRGBA: frameRGBA.pointee.data.0!,
-                                        width: Int(thumbWidth),
-                                        height: Int(thumbHeight),
-                                        bytesPerRow: Int(frameRGBA.pointee.linesize.0),
-                                        colorInfo: colorInfo
-                                    ) {
-                                        allThumbnails.append(
-                                            ThumbnailItem(
-                                                time: 0, image: cgImage, width: Int(thumbWidth),
-                                                height: Int(thumbHeight)))
-                                        break
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let item = decodeFrameAfterSeek(fallbackTime: 0, keyframeShortcut: false, maxVideoPackets: 300) {
+                allThumbnails.append(item)
+                pendingCount += 1
             }
         }
 
-        if !batchThumbnails.isEmpty {
-            onProgress(allThumbnails)
+        // Sample points are visited out of order; callers get thumbnails sorted by time.
+        allThumbnails.sort { $0.time < $1.time }
+        if pendingCount > 0 {
+            onProgress(allThumbnails, 1.0)
         }
 
         return allThumbnails
     }
 
-    private struct ColorInfo {
-        let isHDR: Bool
-        let isPQ: Bool
-        let isHLG: Bool
-        let isBT2020: Bool
+    /// Thumbnail pixel size for a display aspect ratio (pixel aspect already applied):
+    /// `targetThumbnailWidth` wide, or `maxThumbnailHeight` tall for portrait video.
+    static func thumbnailSize(displayAspect aspect: Double) -> (width: Int32, height: Int32) {
+        guard aspect > 0, aspect.isFinite else {
+            return (targetThumbnailWidth, targetThumbnailWidth * 9 / 16)
+        }
+        let height = Double(targetThumbnailWidth) / aspect
+        if height <= Double(maxThumbnailHeight) {
+            return (targetThumbnailWidth, max(16, Int32(height.rounded())))
+        }
+        return (max(16, Int32((Double(maxThumbnailHeight) * aspect).rounded())), maxThumbnailHeight)
     }
 
-    private static func extractColorInfo(
-        frame: UnsafeMutablePointer<AVFrame>,
-        codecpar: UnsafeMutablePointer<AVCodecParameters>
-    ) -> ColorInfo {
-        let colorTrc =
-            frame.pointee.color_trc != AVCOL_TRC_UNSPECIFIED
-            ? frame.pointee.color_trc
-            : codecpar.pointee.color_trc
-
-        let colorPrimaries =
-            frame.pointee.color_primaries != AVCOL_PRI_UNSPECIFIED
-            ? frame.pointee.color_primaries
-            : codecpar.pointee.color_primaries
-
-        let colorSpace =
-            frame.pointee.colorspace != AVCOL_SPC_UNSPECIFIED
-            ? frame.pointee.colorspace
-            : codecpar.pointee.color_space
-
-        let isPQ = (colorTrc == AVCOL_TRC_SMPTE2084)
-        let isHLG = (colorTrc == AVCOL_TRC_ARIB_STD_B67)
-        let isBT2020 =
-            (colorPrimaries == AVCOL_PRI_BT2020 || colorSpace == AVCOL_SPC_BT2020_NCL
-                || colorSpace == AVCOL_SPC_BT2020_CL)
-        let isHDR = isPQ || isHLG || isBT2020
-
-        return ColorInfo(isHDR: isHDR, isPQ: isPQ, isHLG: isHLG, isBT2020: isBT2020)
+    /// True for Dolby Vision Profile 5, whose IPT-PQ-C2 base layer needs its own conversion.
+    static func isDolbyVisionProfile5(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
+        let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
+        if sideDataCount > 0, let sideData = codecpar.pointee.coded_side_data {
+            for index in 0..<sideDataCount where sideData[index].type == AV_PKT_DATA_DOVI_CONF {
+                guard let data = sideData[index].data,
+                    sideData[index].size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
+                else { continue }
+                let record = UnsafeRawPointer(data).assumingMemoryBound(to: AVDOVIDecoderConfigurationRecord.self)
+                return record.pointee.dv_profile == 5
+            }
+        }
+        if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
+            let data = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
+            return MediaDemuxer.parseDolbyVisionConfigurationBox(from: data)?.profile == 5
+        }
+        return false
     }
 
-    private static func configureSwsColorspace(
-        swsCtx: UnsafeMutablePointer<SwsContext>,
-        frame: UnsafeMutablePointer<AVFrame>?,
-        codecpar: UnsafeMutablePointer<AVCodecParameters>
-    ) {
-        let colorSpace: AVColorSpace = {
-            if let f = frame, f.pointee.colorspace != AVCOL_SPC_UNSPECIFIED {
-                return f.pointee.colorspace
+    /// Sample indices ordered coarse-to-fine (0, ½, ¼, ¾, ⅛, …) so the whole timeline gets
+    /// coverage early and is refined as generation continues.
+    static func coarseToFineOrder(count: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        var order: [Int] = []
+        order.reserveCapacity(count)
+        var visited = [Bool](repeating: false, count: count)
+        var step = 1
+        while step < count { step *= 2 }
+        while step >= 1 {
+            for index in stride(from: 0, to: count, by: step) where !visited[index] {
+                visited[index] = true
+                order.append(index)
             }
-            return codecpar.pointee.color_space
-        }()
-
-        let colorPrimaries: AVColorPrimaries = {
-            if let f = frame, f.pointee.color_primaries != AVCOL_PRI_UNSPECIFIED {
-                return f.pointee.color_primaries
-            }
-            return codecpar.pointee.color_primaries
-        }()
-
-        let isBT2020 =
-            (colorSpace == AVCOL_SPC_BT2020_NCL || colorSpace == AVCOL_SPC_BT2020_CL
-                || colorPrimaries == AVCOL_PRI_BT2020)
-
-        let invTable =
-            isBT2020
-            ? sws_getCoefficients(SWS_CS_BT2020)
-            : (colorSpace == AVCOL_SPC_BT709 ? sws_getCoefficients(SWS_CS_ITU709) : sws_getCoefficients(SWS_CS_DEFAULT))
-
-        let colorRange: AVColorRange = {
-            if let f = frame, f.pointee.color_range != AVCOL_RANGE_UNSPECIFIED {
-                return f.pointee.color_range
-            }
-            return codecpar.pointee.color_range
-        }()
-
-        let srcRange = (colorRange == AVCOL_RANGE_JPEG) ? Int32(1) : Int32(0)
-
-        _ = sws_setColorspaceDetails(
-            swsCtx,
-            invTable,
-            srcRange,
-            sws_getCoefficients(SWS_CS_DEFAULT),
-            1,  // output full range RGBA
-            0,
-            1 << 16,
-            1 << 16
-        )
-    }
-
-    // Precomputed transfer function LUTs (256 entries for fast 8-bit lookup)
-    private static let pqToNitsLUT: [Float] = {
-        var lut = [Float](repeating: 0, count: 256)
-        for i in 0..<256 {
-            let v = Float(i) / 255.0
-            let p = pow(max(v, 0.0), 32.0 / 2523.0)
-            let ratio = max(p - (3424.0 / 4096.0), 0.0) / max((2413.0 / 128.0) - (2392.0 / 128.0) * p, 1e-6)
-            lut[i] = 10000.0 * pow(ratio, 16384.0 / 2610.0)
+            step /= 2
         }
-        return lut
-    }()
-
-    private static let hlgToNitsLUT: [Float] = {
-        var lut = [Float](repeating: 0, count: 256)
-        for i in 0..<256 {
-            let v = Float(i) / 255.0
-            let e: Float
-            if v <= 0.5 {
-                e = (v * v) / 3.0
-            } else {
-                e = (exp((v - 0.55991073) / 0.17883277) + 0.28466892) / 12.0
-            }
-            lut[i] = 1000.0 * pow(max(e, 0.0), 1.2)
-        }
-        return lut
-    }()
-
-    /// Tone-maps and gamut-maps RGBA pixels from HDR (BT.2020 PQ/HLG) to SDR Display P3 (Gamma 2.2).
-    private static func toneMapHDRBufferInPlace(
-        buffer: UnsafeMutablePointer<UInt8>,
-        width: Int,
-        height: Int,
-        bytesPerRow: Int,
-        isPQ: Bool
-    ) {
-        let lut = isPQ ? pqToNitsLUT : hlgToNitsLUT
-
-        for y in 0..<height {
-            var rowPtr = buffer.advanced(by: y * bytesPerRow)
-            for _ in 0..<width {
-                let rByte = Int(rowPtr[0])
-                let gByte = Int(rowPtr[1])
-                let bByte = Int(rowPtr[2])
-
-                let rLin = lut[rByte]
-                let gLin = lut[gByte]
-                let bLin = lut[bByte]
-
-                // Matrix: BT.2020 Linear -> Display P3 Linear (D65 white point)
-                let rP3 = max(1.343578 * rLin - 0.282180 * gLin - 0.061399 * bLin, 0.0)
-                let gP3 = max(-0.065297 * rLin + 1.075788 * gLin - 0.010490 * bLin, 0.0)
-                let bP3 = max(0.002822 * rLin - 0.019598 * gLin + 1.016777 * bLin, 0.0)
-
-                let maxP3 = max(rP3, max(gP3, bP3))
-                if maxP3 <= 1e-4 {
-                    rowPtr[0] = 0
-                    rowPtr[1] = 0
-                    rowPtr[2] = 0
-                    rowPtr += 4
-                    continue
-                }
-
-                // Reference SDR tone curve (reference white 203.0 nits per ITU-R BT.2408)
-                let x = maxP3 / 203.0
-                let mappedX: Float
-                if x <= 0.6 {
-                    mappedX = x
-                } else {
-                    let diff = x - 0.6
-                    mappedX = 0.6 + 0.4 * (diff / (diff + 1.2))
-                }
-
-                let scale = (mappedX / x) / 203.0
-                let rSDR = min(1.0, max(0.0, rP3 * scale))
-                let gSDR = min(1.0, max(0.0, gP3 * scale))
-                let bSDR = min(1.0, max(0.0, bP3 * scale))
-
-                // Pure Gamma 2.2 output (matches linearToSDRDisplay in HDRToneMapping.metal)
-                rowPtr[0] = UInt8(min(255.0, max(0.0, round(pow(rSDR, 1.0 / 2.2) * 255.0))))
-                rowPtr[1] = UInt8(min(255.0, max(0.0, round(pow(gSDR, 1.0 / 2.2) * 255.0))))
-                rowPtr[2] = UInt8(min(255.0, max(0.0, round(pow(bSDR, 1.0 / 2.2) * 255.0))))
-                rowPtr += 4
-            }
-        }
-    }
-
-    /// Creates a CGImage from 32-bit RGBA pixel data with color space and HDR tone mapping applied.
-    private static func createCGImage(
-        fromRGBA buffer: UnsafeMutablePointer<UInt8>,
-        width: Int,
-        height: Int,
-        bytesPerRow: Int,
-        colorInfo: ColorInfo
-    ) -> CGImage? {
-        if colorInfo.isPQ || colorInfo.isHLG {
-            toneMapHDRBufferInPlace(
-                buffer: buffer,
-                width: width,
-                height: height,
-                bytesPerRow: bytesPerRow,
-                isPQ: colorInfo.isPQ
-            )
-        }
-
-        let colorSpace: CGColorSpace = {
-            if colorInfo.isHDR {
-                return CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-            } else {
-                return CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-            }
-        }()
-
-        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
-        let byteCount = bytesPerRow * height
-        let data = Data(bytes: buffer, count: byteCount)
-
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: true,
-            intent: .defaultIntent
-        )
+        return order
     }
 }

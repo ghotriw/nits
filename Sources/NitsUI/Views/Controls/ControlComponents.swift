@@ -432,10 +432,17 @@ public struct ControlPlaylistShuffleButton: View {
 
 // MARK: - Timeline Section (Current Time + Scrub Bar + Duration)
 public struct ControlTimelineSection: View {
+    /// Coordinate space of the container the thumbnail preview may extend across.
+    public static let previewBoundsSpace = "nits.timelinePreviewBounds"
+    private static let previewEdgeMargin: CGFloat = 8
+    private static let trackHeight: CGFloat = 18
+
     let engine: PlayerEngine
     let uiState: PlayerUIState?
     @Binding var isDragging: Bool
     @Binding var dragPosition: Double
+    /// Width of the `previewBoundsSpace` container; `nil` keeps the preview within the slider.
+    let previewBoundsWidth: CGFloat?
 
     @State private var isTimelineHovered: Bool = false
     @State private var timelineHoverLocation: CGPoint = .zero
@@ -445,12 +452,14 @@ public struct ControlTimelineSection: View {
         engine: PlayerEngine,
         uiState: PlayerUIState?,
         isDragging: Binding<Bool>,
-        dragPosition: Binding<Double>
+        dragPosition: Binding<Double>,
+        previewBoundsWidth: CGFloat? = nil
     ) {
         self.engine = engine
         self.uiState = uiState
         self._isDragging = isDragging
         self._dragPosition = dragPosition
+        self.previewBoundsWidth = previewBoundsWidth
     }
 
     public var body: some View {
@@ -505,33 +514,27 @@ public struct ControlTimelineSection: View {
                         .frame(width: 14, height: 14)
                         .offset(x: max(0, min(geo.size.width * progress - 7, geo.size.width - 14)))
                 }
-                .frame(height: 18)
-                .contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let location):
-                        isTimelineHovered = true
-                        timelineHoverLocation = location
-                        let ratio = min(max(location.x / max(geo.size.width, 1), 0), 1)
-                        timelineHoverRatio = ratio
-                    case .ended:
-                        isTimelineHovered = false
-                    }
-                }
+                .frame(height: Self.trackHeight)
                 .overlay(alignment: .bottomLeading) {
                     if (isTimelineHovered || isDragging) && engine.duration > 0 {
                         let previewTime: Double = isDragging ? dragPosition : (timelineHoverRatio * engine.duration)
                         let previewThumbnail = engine.thumbnailManager.thumbnail(at: previewTime)
                         let rawX: CGFloat = isDragging ? (progress * geo.size.width) : timelineHoverLocation.x
                         let clampedCursorX: CGFloat = min(max(rawX, 0), max(geo.size.width, 0))
-                        let halfWidth: CGFloat = {
-                            if previewThumbnail != nil {
-                                return 85
-                            } else {
-                                return engine.duration >= 3600 ? 37 : 29
+                        let cardWidth = TimelineThumbnailPreviewView.size(
+                            thumbnail: previewThumbnail,
+                            duration: engine.duration
+                        ).width
+                        // Allowed range for the card's leading edge, in slider coordinates.
+                        let (minCardX, maxCardX): (CGFloat, CGFloat) = {
+                            guard let boundsWidth = previewBoundsWidth, boundsWidth > 0 else {
+                                return (0, geo.size.width - cardWidth)
                             }
+                            let sliderMinX = geo.frame(in: .named(Self.previewBoundsSpace)).minX
+                            let margin = Self.previewEdgeMargin
+                            return (margin - sliderMinX, boundsWidth - margin - sliderMinX - cardWidth)
                         }()
-                        let cardX: CGFloat = clampedCursorX - halfWidth
+                        let cardX: CGFloat = min(max(clampedCursorX - cardWidth / 2, minCardX), max(maxCardX, minCardX))
 
                         TimelineThumbnailPreviewView(
                             thumbnail: previewThumbnail,
@@ -542,6 +545,20 @@ public struct ControlTimelineSection: View {
                         .offset(x: cardX, y: -31)
                         .zIndex(100)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+                }
+                // Hover / click area spans the full row height; the track stays centred.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        isTimelineHovered = true
+                        timelineHoverLocation = location
+                        let ratio = min(max(location.x / max(geo.size.width, 1), 0), 1)
+                        timelineHoverRatio = ratio
+                    case .ended:
+                        isTimelineHovered = false
                     }
                 }
                 .gesture(
@@ -558,7 +575,7 @@ public struct ControlTimelineSection: View {
                             let targetTime = ratio * engine.duration
                             engine.seek(to: targetTime)
                             isDragging = false
-                            if value.location.y >= -10 && value.location.y <= 28 {
+                            if value.location.y >= 0 && value.location.y <= geo.size.height {
                                 isTimelineHovered = true
                                 timelineHoverLocation = value.location
                                 timelineHoverRatio = ratio
@@ -567,7 +584,9 @@ public struct ControlTimelineSection: View {
                 )
             }
             .padding(.horizontal, 7)
-            .frame(height: 18)
+            .padding(.vertical, 1)
+            // Fills the row when the container fixes its height (see `ControlsOverlay`).
+            .frame(minHeight: Self.trackHeight, maxHeight: .infinity)
             .zIndex(10)
 
             // Total duration

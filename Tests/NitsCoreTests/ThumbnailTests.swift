@@ -116,7 +116,7 @@ struct ThumbnailTests {
 
         let generator = ThumbnailGenerator(path: mediaPath)
         let progressCalls = os.OSAllocatedUnfairLock(initialState: 0)
-        let thumbnails = await generator.generateThumbnails { items in
+        let thumbnails = await generator.generateThumbnails { items, _ in
             progressCalls.withLock { $0 += 1 }
             #expect(!items.isEmpty)
         }
@@ -133,7 +133,7 @@ struct ThumbnailTests {
         }
 
         let generator = ThumbnailGenerator(path: mediaPath)
-        let thumbnails = await generator.generateThumbnails { _ in }
+        let thumbnails = await generator.generateThumbnails { _, _ in }
         #expect(!thumbnails.isEmpty)
         guard let first = thumbnails.first else { return }
         #expect(first.image.colorSpace?.name == CGColorSpace.displayP3)
@@ -146,8 +146,117 @@ struct ThumbnailTests {
         }
 
         let generator = ThumbnailGenerator(path: mediaPath)
-        let thumbnails = await generator.generateThumbnails { _ in }
+        let thumbnails = await generator.generateThumbnails { _, _ in }
         #expect(!thumbnails.isEmpty)
+        // Targets sharing a keyframe must not produce duplicate thumbnails.
+        let times = thumbnails.map(\.time)
+        #expect(Set(times).count == times.count)
+    }
+
+    @Test("Sample points are visited coarse-to-fine, each exactly once")
+    func testCoarseToFineOrder() {
+        #expect(ThumbnailGenerator.coarseToFineOrder(count: 0).isEmpty)
+        #expect(ThumbnailGenerator.coarseToFineOrder(count: 1) == [0])
+        #expect(ThumbnailGenerator.coarseToFineOrder(count: 8) == [0, 4, 2, 6, 1, 3, 5, 7])
+        #expect(ThumbnailGenerator.coarseToFineOrder(count: 6) == [0, 4, 2, 1, 3, 5])
+        for count in [10, 37, 120] {
+            let order = ThumbnailGenerator.coarseToFineOrder(count: count)
+            #expect(order.sorted() == Array(0..<count))
+        }
+    }
+
+    @Test("Thumbnail size keeps aspect ratio within the width / height limits")
+    func testThumbnailSize() {
+        let landscape = ThumbnailGenerator.thumbnailSize(displayAspect: 3840.0 / 2160.0)
+        #expect(landscape.width == ThumbnailGenerator.targetThumbnailWidth)
+        #expect(landscape.height == 216)
+
+        let portrait = ThumbnailGenerator.thumbnailSize(displayAspect: 1080.0 / 1920.0)
+        #expect(portrait.height == ThumbnailGenerator.maxThumbnailHeight)
+        #expect(portrait.width == 162)
+    }
+
+    @Test("Anamorphic video thumbnails use the display aspect ratio")
+    func testThumbnailGeneratorAnamorphic() async throws {
+        guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .anamorphicH264) else {
+            return
+        }
+
+        let thumbnails = await ThumbnailGenerator(path: mediaPath).generateThumbnails { _, _ in }
+        let first = try #require(thumbnails.first)
+        // 720x480 at 32:27 displays as 16:9, not 3:2.
+        #expect(first.width == 384)
+        #expect(first.height == 216)
+        #expect(first.image.height == 216)
+    }
+
+    @Test("HLG thumbnails are tone-mapped to Display P3 with sensible brightness")
+    func testThumbnailGeneratorHLG() async throws {
+        guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .hevc10BitHLG) else {
+            return
+        }
+
+        let thumbnails = await ThumbnailGenerator(path: mediaPath).generateThumbnails { _, _ in }
+        let first = try #require(thumbnails.first)
+        #expect(first.image.colorSpace?.name == CGColorSpace.displayP3)
+        let luma = try #require(Self.averageLuma(of: first.image))
+        #expect(luma > 30 && luma < 225)
+    }
+
+    @Test("Dolby Vision IPT conversion keeps neutrals neutral and maps luminance through PQ")
+    func testDolbyVisionIPTConversion() {
+        // I = PQ(203 nits) with no chroma must come out as achromatic 203 nits.
+        let pq203: Float = 0.58069
+        let gray = ThumbnailToneMapper.nitsFromIPT(i: pq203, ct: 0, cp: 0)
+        #expect(abs(gray.x - 203) < 2)
+        #expect(abs(gray.x - gray.y) < 0.5)
+        #expect(abs(gray.x - gray.z) < 0.5)
+
+        // Chroma must actually move the colour.
+        let tinted = ThumbnailToneMapper.nitsFromIPT(i: pq203, ct: 0.1, cp: 0.1)
+        #expect(abs(tinted.x - tinted.z) > 5)
+    }
+
+    @Test("SDR tone curve: reference white stays below clip, black stays black")
+    func testToneMapperCurve() {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 203), to: &pixel)
+        #expect(pixel[0] == pixel[1] && pixel[1] == pixel[2])
+        #expect(pixel[0] > 200 && pixel[0] < 255)
+
+        ThumbnailToneMapper.writeSDR(nits2020: .zero, to: &pixel)
+        #expect(pixel[0] == 0 && pixel[3] == 255)
+
+        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 4000), to: &pixel)
+        #expect(pixel[0] >= 250)
+    }
+
+    /// Mean of R, G, B over the image rendered into 8-bit sRGB.
+    private static func averageLuma(of image: CGImage) -> Double? {
+        let width = image.width
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { raw in
+            guard
+                let context = CGContext(
+                    data: raw.baseAddress,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: width * 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+                )
+            else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        var sum = 0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            sum += Int(pixels[index]) + Int(pixels[index + 1]) + Int(pixels[index + 2])
+        }
+        return Double(sum) / Double(width * height * 3)
     }
 
     @Test("PlayerEngine prepareThumbnails populates thumbnails on load")

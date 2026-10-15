@@ -28,6 +28,10 @@ public enum SyntheticTestMediaFactory {
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
         case vp910BitHDR
+        /// Anamorphic H.264 (3s): 720x480 storage with 32:27 sample aspect ratio (16:9 display)
+        case anamorphicH264
+        /// HEVC 10-bit HLG video (3s) with BT.2020 primaries in MP4
+        case hevc10BitHLG
 
         public var filename: String {
             switch self {
@@ -53,6 +57,10 @@ public enum SyntheticTestMediaFactory {
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
                 return "synth_vp9_10bit_hdr.webm"
+            case .anamorphicH264:
+                return "synth_anamorphic_h264.mp4"
+            case .hevc10BitHLG:
+                return "synth_hevc_10bit_hlg.mp4"
             }
         }
     }
@@ -322,6 +330,27 @@ public enum SyntheticTestMediaFactory {
                 "-color_trc", "smpte2084",
                 "-colorspace", "bt2020nc",
                 "-c:a", "libopus", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .anamorphicH264:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=24:duration=3",
+                "-vf", "setsar=32/27",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                outputPath,
+            ]
+
+        case .hevc10BitHLG:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
+                "-color_primaries", "bt2020",
+                "-color_trc", "arib-std-b67",
+                "-colorspace", "bt2020nc",
+                "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error",
                 outputPath,
             ]
         }

@@ -13,6 +13,7 @@ public struct ControlsOverlay: View {
     @State private var dragPosition: Double = 0
     @State private var isBottomHovered: Bool = false
     @State private var isTopHovered: Bool = false
+    @State private var overlayWidth: CGFloat = 0
 
     public var body: some View {
         VStack {
@@ -60,8 +61,13 @@ public struct ControlsOverlay: View {
                 let items = uiState?.controlsConfig.items ?? ControlsConfiguration.defaultItems
                 ForEach(items) { item in
                     controlView(for: item)
+                        // Keep the timeline's thumbnail preview above neighbouring controls.
+                        .zIndex(item == .timeline ? 1 : 0)
                 }
             }
+            // Bar height stays the tallest control's; height-flexible items (the timeline's hit
+            // area) stretch to it instead of growing the bar.
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .background(.ultraThinMaterial)
@@ -76,6 +82,12 @@ public struct ControlsOverlay: View {
             }
         }
         .ignoresSafeArea()
+        .coordinateSpace(.named(ControlTimelineSection.previewBoundsSpace))
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+        } action: {
+            overlayWidth = $0
+        }
         .onChange(of: isDragging) { _, _ in
             updateInteractionState()
         }
@@ -105,7 +117,8 @@ public struct ControlsOverlay: View {
                 engine: engine,
                 uiState: uiState,
                 isDragging: $isDragging,
-                dragPosition: $dragPosition
+                dragPosition: $dragPosition,
+                previewBoundsWidth: overlayWidth
             )
         case .volume:
             ControlVolumeSlider(engine: engine)

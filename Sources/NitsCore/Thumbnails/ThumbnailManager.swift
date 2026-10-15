@@ -120,13 +120,11 @@ public final class ThumbnailManager {
         self.isGenerating = true
         self.progress = 0.0
 
-        let result = await generator.generateThumbnails { [weak self, path, duration] partial in
+        let result = await generator.generateThumbnails { [weak self, path] partial, fraction in
             Task { @MainActor [weak self] in
                 guard let self, self.currentPath == path, !Task.isCancelled else { return }
                 self.thumbnails = partial.sorted { $0.time < $1.time }
-                if duration > 0, let last = self.thumbnails.last {
-                    self.progress = min(1.0, max(0.0, last.time / duration))
-                }
+                self.progress = min(1.0, max(0.0, fraction))
             }
         }
 

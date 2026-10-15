@@ -8,7 +8,7 @@ import os
 /// Manages on-disk caching of generated video thumbnails under `~/Library/Caches/Nits/Thumbnails/`.
 /// Keyed by file path, file size, and modification timestamp to ensure freshness.
 public final class ThumbnailDiskCache: Sendable {
-    private static let cacheVersion: UInt32 = 2
+    private static let cacheVersion: UInt32 = 4
     private static let maxDiskCacheSizeBytes: Int64 = 250 * 1024 * 1024  // 250 MB
 
     private let cacheDirectory: URL
