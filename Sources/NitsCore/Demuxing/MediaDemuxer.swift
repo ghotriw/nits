@@ -318,6 +318,17 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let isKeyFrame: Bool
     }
 
+    /// Copies an audio packet's payload and timing out of FFmpeg's buffer.
+    private static func makeAudioPacket(_ pkt: AVPacket) -> DemuxedAudioPacket {
+        DemuxedAudioPacket(
+            data: Data(bytes: pkt.data, count: Int(pkt.size)),
+            pts: pkt.pts,
+            dts: pkt.dts,
+            duration: pkt.duration,
+            isKeyFrame: (pkt.flags & AV_PKT_FLAG_KEY) != 0
+        )
+    }
+
     // Packet queue for demuxed video packets (preserves video if audio pump reads ahead)
     private struct DemuxedVideoPacket: Sendable {
         let data: Data
@@ -1830,16 +1841,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 }
             } else if pkt.stream_index == audioStreamIndex {
                 // Buffer audio packet for Stage 2 audio pipeline
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
-                let isKey = (pkt.flags & AV_PKT_FLAG_KEY) != 0
-                let audioPacket = DemuxedAudioPacket(
-                    data: data,
-                    pts: pkt.pts,
-                    dts: pkt.dts,
-                    duration: pkt.duration,
-                    isKeyFrame: isKey
-                )
-                audioQueue.append(audioPacket)
+                audioQueue.append(Self.makeAudioPacket(pkt))
                 av_packet_unref(&pkt)
             } else if pkt.stream_index == selectedSubtitleStreamIndex {
                 // Intercept subtitle packets in-band (crucial for network streams and single-connection media servers)
@@ -1976,7 +1978,12 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// MPEG-TS / MPEG-PS have no index: `av_seek_frame` bisects on timestamps and lands on whatever
     /// packet is nearest, usually mid-GOP, which the decoder can't start from. Skips ahead to the next
     /// video keyframe and queues it; for exact seeks, backs off further each time that keyframe is past
-    /// the target. Packets skipped here precede the keyframe, so nothing playback needs is dropped.
+    /// the target.
+    ///
+    /// The muxer interleaves audio up to ~0.7 s away from the video of the same time, so audio read
+    /// before the keyframe can still be needed: on the attempt that lands it is queued like any audio
+    /// read ahead of video (`nextAudioPacket` drops what precedes `targetAudioPts`). Subtitle cues are
+    /// kept on every attempt; re-reading them after a back-off is deduplicated.
     private func syncToVideoKeyframe(
         _ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64, requireAtOrBeforeTarget: Bool
     ) {
@@ -1987,9 +1994,18 @@ public final class MediaDemuxer: @unchecked Sendable {
             var pkt = AVPacket()
             var landed = false
             var budget = 20_000
+            var audioBeforeKeyframe: [DemuxedAudioPacket] = []
             while budget > 0, readPacket(ctx, &pkt) >= 0 {
                 budget -= 1
                 defer { av_packet_unref(&pkt) }
+                if pkt.stream_index == audioStreamIndex {
+                    audioBeforeKeyframe.append(Self.makeAudioPacket(pkt))
+                    continue
+                }
+                if pkt.stream_index == selectedSubtitleStreamIndex {
+                    processSubtitlePacket(&pkt)
+                    continue
+                }
                 guard pkt.stream_index == videoStreamIndex, (pkt.flags & AV_PKT_FLAG_KEY) != 0 else { continue }
                 let keyPts = pkt.pts != Int64.min ? pkt.pts : pkt.dts
                 let isLastChance = attempt == maxAttempts - 1
@@ -2003,7 +2019,12 @@ public final class MediaDemuxer: @unchecked Sendable {
                 landed = true
                 break
             }
-            if landed { return }
+            if landed {
+                for packet in audioBeforeKeyframe {
+                    audioQueue.append(packet)
+                }
+                return
+            }
             seekTarget -= oneSecond << attempt
             // Before the first timestamp the bisection fails: restart from the first byte instead.
             if av_seek_frame(ctx, Int32(videoStreamIndex), seekTarget, AVSEEK_FLAG_BACKWARD) < 0 {
