@@ -132,7 +132,10 @@ struct ChapterTests {
         // A second press while the first seek is in flight chains from its target.
         #expect(engine.nextChapter()?.start == 9)
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
-        #expect(abs(engine.currentTime - 9) < 0.1, "Expected to land on 9s, got \(engine.currentTime)")
+        // Load autoplays, so the clock may already have moved on from the chapter start.
+        #expect(
+            engine.currentTime >= 9 - 0.05 && engine.currentTime < 9.5,
+            "Expected to land on 9s, got \(engine.currentTime)")
         #expect(engine.currentChapterIndex == 2)
 
         // Right at the chapter start "previous" goes back a chapter.

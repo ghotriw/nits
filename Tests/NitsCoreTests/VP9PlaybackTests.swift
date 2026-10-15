@@ -290,9 +290,12 @@ struct VP9PlaybackTests {
     @MainActor
     func exactSeekLandsOnTarget() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .vp910BitSDRMP4) else { return }
-        let engine = PlayerEngine.makeForTesting()
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         engine.load(path: path)
         #expect(engine.isLoaded)
+        // Paused seeks settle on the frame and stay there; while playing the clock moves on before the check.
+        #expect(await engine.waitUntil { engine.isPlaying })
+        engine.pause()
 
         for target in [1.5, 0.75, 2.25] {
             engine.seek(to: target, exact: true)

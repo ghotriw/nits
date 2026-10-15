@@ -629,4 +629,37 @@ extension PlaybackStressTests {
 
         engine.stop()
     }
+
+    // MARK: - 16. Seek Immediately After Load
+    /// A host bridge loads and positions in one go, before the engine's post-load autoplay kicks in. The
+    /// autoplay used to start the feeders anyway, racing the seek preview for demuxer packets (the seek
+    /// landed on a keyframe) and dropping the play intent (playback stayed stopped at the target).
+    @Test(
+        "An exact seek issued right after load lands on its target and then autoplays from it",
+        arguments: [
+            // Keyframes every 5s: a seek that loses packets lands on 5.0s or 10.0s.
+            (SyntheticTestMediaFactory.Preset.wideGOPH264, 7.5),
+            // Single keyframe at 0 (hardware VP9 where available): a racing seek lands on 0.
+            (.vp910BitSDRMP4, 2.0),
+        ]
+    )
+    @MainActor
+    func testExactSeekRightAfterLoad(preset: SyntheticTestMediaFactory.Preset, target: Double) async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return }
+        let halfFrame = 0.5 / 24.0
+
+        for startTime in [nil, 1.0] as [Double?] {
+            let engine = Self.makeEngine()
+            await engine.loadAsync(MediaLoadRequest(path: path, startTime: startTime))
+            engine.seek(to: target, exact: true)
+            #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
+
+            #expect(
+                abs(engine.currentTime - target) < halfFrame,
+                "Seek right after load (start \(String(describing: startTime))) landed at \(engine.currentTime)s")
+            #expect(await engine.waitForClock(toPass: target + 0.2), "Playback did not continue from \(target)s")
+            #expect(engine.isPlaying == true)
+            engine.stop()
+        }
+    }
 }

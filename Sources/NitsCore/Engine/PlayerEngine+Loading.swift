@@ -839,13 +839,27 @@ extension PlayerEngine {
         let hasVideo = demuxer.hasVideo
         let loadID = self.currentLoadID
         let seekId = self.currentSeekId
-        self.feedQueue.async { [weak self] in
+        // On the seek queue so this flush is ordered with seeks: a seek issued right after load would
+        // otherwise have its preview decode flushed from under it.
+        self.seekQueue.async { [weak self] in
             if hasVideo {
                 decoder.flush()
             }
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.currentLoadID == loadID else { return }
+                // A seek issued right after load (e.g. a host's "load, then seek") owns the pipeline: its
+                // preview is reading the demuxer on `seekQueue`, and starting the feeders here would race it
+                // for packets, leaving the seek on a keyframe. Hand it the autoplay intent instead; the
+                // chase-settle path starts feeding and the clock at the seek target.
+                if self.currentSeekId != seekId {
+                    if self.isSeeking || self.chaseTargetTime != nil {
+                        self.resumePlaybackAfterChase = true
+                    } else {
+                        self.play()
+                    }
+                    return
+                }
                 let alreadyStarted = self.isPlaying
                 if !alreadyStarted {
                     self.frameQueue.clear(resetDroppedFrames: true)
