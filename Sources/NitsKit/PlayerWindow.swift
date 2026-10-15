@@ -89,12 +89,8 @@ public final class PlayerWindow: NSWindow {
                 actionHandler.dismissJumpToTime()
                 return true
             }
-            if actionHandler.isPlaylistPresented {
-                actionHandler.togglePlaylist()
-                return true
-            }
-            if actionHandler.isQuickSettingsPresented {
-                actionHandler.toggleQuickSettings()
+            if actionHandler.isSidePanelPresented {
+                actionHandler.closeSidePanel()
                 return true
             }
             if styleMask.contains(.fullScreen) {

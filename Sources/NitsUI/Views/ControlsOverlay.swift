@@ -7,6 +7,8 @@ public struct ControlsOverlay: View {
     var uiState: PlayerUIState? = nil
     @Binding var isInteracting: Bool
     var isFullscreen: Bool = false
+    /// Width taken by an open side panel; the bars shrink to stay beside it rather than under it.
+    var trailingInset: CGFloat = 0
     var onOpenFile: () -> Void
 
     @State private var isDragging: Bool = false
@@ -97,6 +99,8 @@ public struct ControlsOverlay: View {
                 updateInteractionState()
             }
         }
+        // Outside the measured width so the timeline preview stays clear of the side panel too.
+        .padding(.trailing, trailingInset)
     }
 
     @ViewBuilder

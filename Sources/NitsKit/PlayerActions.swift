@@ -14,6 +14,7 @@ public protocol PlayerActions: AnyObject {
     var isJumpToPresented: Bool { get }
     var isQuickSettingsPresented: Bool { get }
     var isPlaylistPresented: Bool { get }
+    var isSidePanelPresented: Bool { get }
     var hasNextTrack: Bool { get }
     var hasPreviousTrack: Bool { get }
 
@@ -36,6 +37,7 @@ public protocol PlayerActions: AnyObject {
     func toggleDebugHUD()
     func toggleQuickSettings()
     func togglePlaylist()
+    func closeSidePanel()
     func playNextTrack()
     func playPreviousTrack()
     func toggleFullscreen()
@@ -56,6 +58,7 @@ extension PlayerActions {
     public var isJumpToPresented: Bool { false }
     public var isQuickSettingsPresented: Bool { false }
     public var isPlaylistPresented: Bool { false }
+    public var isSidePanelPresented: Bool { false }
     public var hasNextTrack: Bool { false }
     public var hasPreviousTrack: Bool { false }
     public func seekForward() {
@@ -71,6 +74,7 @@ extension PlayerActions {
     public func dismissJumpToTime() {}
     public func toggleQuickSettings() {}
     public func togglePlaylist() {}
+    public func closeSidePanel() {}
     public func playNextTrack() {}
     public func playPreviousTrack() {}
     public func play() {}

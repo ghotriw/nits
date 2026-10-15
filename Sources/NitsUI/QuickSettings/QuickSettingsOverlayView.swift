@@ -86,14 +86,5 @@ public struct QuickSettingsOverlayView: View {
                 .padding(16)
             }
         }
-        .frame(width: 330)
-        .frame(maxHeight: .infinity)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.white.opacity(0.12))
-                .frame(width: 1)
-        }
-        .shadow(color: .black.opacity(0.4), radius: 24, x: -8, y: 0)
     }
 }

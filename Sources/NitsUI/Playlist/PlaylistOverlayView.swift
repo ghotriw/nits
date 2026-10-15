@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import os
 
-/// Slide-over drawer presenting the current playlist, navigation controls,
+/// Side panel presenting the current playlist, navigation controls,
 /// search filter, repeat/shuffle options, and drag-and-drop management.
 public struct PlaylistOverlayView: View {
     public let engine: PlayerEngine
@@ -53,14 +53,7 @@ public struct PlaylistOverlayView: View {
             // MARK: - Footer Summary
             footerSummaryView
         }
-        .frame(width: 350)
-        .frame(maxHeight: .infinity)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.white.opacity(0.12))
-                .frame(width: 1)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
             if isTargetedForDrop {
                 RoundedRectangle(cornerRadius: 8)
@@ -69,7 +62,6 @@ public struct PlaylistOverlayView: View {
                     .allowsHitTesting(false)
             }
         }
-        .shadow(color: .black.opacity(0.4), radius: 24, x: -8, y: 0)
         .dropDestination(for: URL.self) { urls, _ in
             handleDrop(urls: urls)
         } isTargeted: { targeted in

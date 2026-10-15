@@ -171,6 +171,17 @@ public struct ContentView: View {
                 .transition(.opacity.animation(.easeInOut(duration: 0.15)))
             }
 
+            // Clicking the video closes an open side panel. Sits below the controls so they stay
+            // usable while a panel is open. Single tap only: pairing it with a double tap would delay
+            // the close by the system double-click interval.
+            if uiState.sidePanel != nil {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        closeSidePanel()
+                    }
+            }
+
             // Controls Overlay
             if isControlsVisible || !engine.isLoaded || isUserInteracting
                 || uiState.controlsConfig.isSettingsCustomizingControls
@@ -179,7 +190,8 @@ public struct ContentView: View {
                     engine: engine,
                     uiState: uiState,
                     isInteracting: $isUserInteracting,
-                    isFullscreen: uiState.isFullscreen
+                    isFullscreen: uiState.isFullscreen,
+                    trailingInset: uiState.sidePanel?.width ?? 0
                 ) {
                     openFileDialog()
                 }
@@ -234,59 +246,19 @@ public struct ContentView: View {
                 .zIndex(100)
             }
 
-            // Quick Settings Overlay Drawer - Trailing Side
-            if uiState.isQuickSettingsPresented {
-                ZStack(alignment: .trailing) {
-                    // Transparent backdrop covering the rest of the window
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.spring(duration: 0.25)) {
-                                uiState.isQuickSettingsPresented = false
-                            }
-                        }
-
-                    QuickSettingsOverlayView(
-                        engine: engine,
-                        uiState: uiState,
-                        onClose: {
-                            withAnimation(.spring(duration: 0.25)) {
-                                uiState.isQuickSettingsPresented = false
-                            }
-                        }
-                    )
+            // Side Panel - Trailing Edge. Switching panels swaps the content in place; only
+            // opening and closing slide.
+            ZStack(alignment: .trailing) {
+                if let panel = uiState.sidePanel {
+                    SidePanelContainer(width: panel.width) {
+                        sidePanelContent(panel)
+                    }
                     .transition(.move(edge: .trailing))
                 }
-                .ignoresSafeArea()
-                .zIndex(90)
             }
-
-            // Playlist Overlay Drawer - Trailing Side
-            if uiState.isPlaylistPresented {
-                ZStack(alignment: .trailing) {
-                    // Transparent backdrop covering the rest of the window
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.spring(duration: 0.25)) {
-                                uiState.isPlaylistPresented = false
-                            }
-                        }
-
-                    PlaylistOverlayView(
-                        engine: engine,
-                        uiState: uiState,
-                        onClose: {
-                            withAnimation(.spring(duration: 0.25)) {
-                                uiState.isPlaylistPresented = false
-                            }
-                        }
-                    )
-                    .transition(.move(edge: .trailing))
-                }
-                .ignoresSafeArea()
-                .zIndex(90)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .ignoresSafeArea()
+            .zIndex(90)
         }
         .frame(minWidth: 700, minHeight: 450)
         .onContinuousHover { phase in
@@ -312,18 +284,14 @@ public struct ContentView: View {
                 scheduleControlsHide()
             }
         }
-        .onChange(of: uiState.isQuickSettingsPresented) { _, presented in
-            if presented {
-                hideTimer?.cancel()
-            } else {
+        .onChange(of: uiState.sidePanel == nil) { _, closed in
+            if closed {
+                isFocused = true
                 scheduleControlsHide()
-            }
-        }
-        .onChange(of: uiState.isPlaylistPresented) { _, presented in
-            if presented {
-                hideTimer?.cancel()
             } else {
-                scheduleControlsHide()
+                // The panel and the controls beside it form one layout; keep both on screen.
+                hideTimer?.cancel()
+                withAnimation { isControlsVisible = true }
             }
         }
         .onChange(of: uiState.controlsConfig.isSettingsCustomizingControls) { _, customizing in
@@ -343,26 +311,30 @@ public struct ContentView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($isFocused)
-        .defaultFocus(
-            $isFocused, !uiState.isPlaylistPresented && !uiState.isQuickSettingsPresented && !uiState.isJumpToPresented
-        )
+        .defaultFocus($isFocused, uiState.sidePanel == nil && !uiState.isJumpToPresented)
         .onKeyPress(.escape) {
-            if uiState.isPlaylistPresented {
-                withAnimation(.spring(duration: 0.25)) {
-                    uiState.isPlaylistPresented = false
-                }
-                return .handled
-            }
-            if uiState.isQuickSettingsPresented {
-                withAnimation(.spring(duration: 0.25)) {
-                    uiState.isQuickSettingsPresented = false
-                }
-                return .handled
-            }
-            return .ignored
+            guard uiState.sidePanel != nil else { return .ignored }
+            closeSidePanel()
+            return .handled
         }
         .onAppear {
             onControlsVisibilityChanged?(isControlsVisible)
+        }
+    }
+
+    @ViewBuilder
+    private func sidePanelContent(_ panel: PlayerSidePanel) -> some View {
+        switch panel {
+        case .playlist:
+            PlaylistOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)
+        case .quickSettings:
+            QuickSettingsOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)
+        }
+    }
+
+    private func closeSidePanel() {
+        withAnimation(.spring(duration: 0.25)) {
+            uiState.sidePanel = nil
         }
     }
 
@@ -374,8 +346,8 @@ public struct ContentView: View {
     }
 
     private func scheduleControlsHide() {
-        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, !uiState.isQuickSettingsPresented,
-            !uiState.isPlaylistPresented, !uiState.controlsConfig.isSettingsCustomizingControls
+        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, uiState.sidePanel == nil,
+            !uiState.controlsConfig.isSettingsCustomizingControls
         else {
             return
         }
@@ -383,8 +355,7 @@ public struct ContentView: View {
         hideTimer = Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented
-                && !uiState.isQuickSettingsPresented && !uiState.isPlaylistPresented
-                && !uiState.controlsConfig.isSettingsCustomizingControls
+                && uiState.sidePanel == nil && !uiState.controlsConfig.isSettingsCustomizingControls
             {
                 withAnimation {
                     isControlsVisible = false

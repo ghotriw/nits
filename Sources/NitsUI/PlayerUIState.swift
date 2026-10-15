@@ -8,8 +8,8 @@ public final class PlayerUIState {
     public var controlsVisibilityTrigger: Int = 0
     public var isJumpToPresented: Bool = false
     public var wasPlayingBeforeJumpTo: Bool = false
-    public var isQuickSettingsPresented: Bool = false
-    public var isPlaylistPresented: Bool = false
+    /// The side panel currently open, if any.
+    public var sidePanel: PlayerSidePanel?
     /// Picture in Picture can start now (reported by the host that owns PiP).
     public var isPictureInPicturePossible: Bool = false
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
@@ -28,18 +28,21 @@ public final class PlayerUIState {
         self.controlsConfig = controlsConfig
     }
 
+    public var isQuickSettingsPresented: Bool { sidePanel == .quickSettings }
+
+    public var isPlaylistPresented: Bool { sidePanel == .playlist }
+
+    /// Opens `panel`, replacing any other open panel, or closes it if it is already open.
+    public func toggleSidePanel(_ panel: PlayerSidePanel) {
+        sidePanel = sidePanel == panel ? nil : panel
+    }
+
     public func toggleQuickSettings() {
-        if !isQuickSettingsPresented {
-            isPlaylistPresented = false
-        }
-        isQuickSettingsPresented.toggle()
+        toggleSidePanel(.quickSettings)
     }
 
     public func togglePlaylist() {
-        if !isPlaylistPresented {
-            isQuickSettingsPresented = false
-        }
-        isPlaylistPresented.toggle()
+        toggleSidePanel(.playlist)
     }
 
     public func showControlsTemporarily() {

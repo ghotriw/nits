@@ -617,6 +617,10 @@ extension PlayerWindowController: PlayerActions {
         uiState.isPlaylistPresented
     }
 
+    public var isSidePanelPresented: Bool {
+        uiState.sidePanel != nil
+    }
+
     public var hasNextTrack: Bool {
         engine.playlist.hasNext
     }
@@ -634,6 +638,12 @@ extension PlayerWindowController: PlayerActions {
     public func togglePlaylist() {
         withAnimation(.spring(duration: 0.25)) {
             uiState.togglePlaylist()
+        }
+    }
+
+    public func closeSidePanel() {
+        withAnimation(.spring(duration: 0.25)) {
+            uiState.sidePanel = nil
         }
     }
 
