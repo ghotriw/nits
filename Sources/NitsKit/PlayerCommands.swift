@@ -177,6 +177,16 @@ public struct PlayerCommands: Commands {
             }
             .keyboardShortcut("f", modifiers: [.control, .command])
             .disabled(playerActions == nil)
+
+            Toggle(
+                "Picture in Picture",
+                isOn: Binding(
+                    get: { playerActions?.isPictureInPictureActive ?? false },
+                    set: { _ in playerActions?.togglePictureInPicture() }
+                )
+            )
+            .keyboardShortcut("p", modifiers: [.control, .command])
+            .disabled(!(playerActions?.canTogglePictureInPicture ?? false))
         }
 
         CommandGroup(after: .windowArrangement) {

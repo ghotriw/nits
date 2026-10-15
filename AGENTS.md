@@ -104,6 +104,10 @@ selectors (see Video pipeline).
 - **Backpressure** is cooperative: video feeding pauses at a queue high-water mark using
   `Task.sleep`; audio relies on `await audioSink.enqueue(...)` (`Receiver` on macOS 27+, readiness
   polling with `Task.sleep` on 15–26). Never block threads.
+- **Picture in Picture** mirrors the display layer 1:1 (macOS AVKit bug), so while it is active the
+  layer's geometry comes from `pictureInPictureLayerGeometry`, not the host view's bounds. Keep the
+  AVKit workarounds guarded (act only on a broken layout) and don't give PiP a controlTimebase of its
+  own; see "Picture in Picture" in `docs/ARCHITECTURE.md`.
 
 ## Audio & demuxing invariants
 

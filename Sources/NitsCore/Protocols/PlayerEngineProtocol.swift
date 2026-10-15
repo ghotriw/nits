@@ -269,3 +269,12 @@ extension PlayerPlaybackControlling {
 extension PlayerVideoControlling {
     public var isDisplaySleepDisabled: Bool { false }
 }
+
+/// Display layer geometry while Picture in Picture uses it (see `PlayerEngine.pictureInPictureLayerGeometry`).
+public enum PictureInPictureLayerGeometry: Equatable, Sendable {
+    /// PiP mirrors the layer 1:1 without scaling, so the layer takes the PiP window's content size (points).
+    case pipWindow(CGSize)
+    /// Handing back: the layer covers just the video's aspect-fit rect, which PiP animates its window onto.
+    /// A full-view layer of another aspect ratio would leave a band beside the video during that animation.
+    case videoRect
+}

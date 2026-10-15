@@ -133,6 +133,42 @@ Frames are chosen for the clock at the vsync they will appear on — `synchroniz
 `link.targetTimestamp` — because the callback runs on the main run loop and its latency jitters by
 milliseconds; sampling the clock there skips frames whenever content fps is close to the link rate.
 
+### Picture in Picture
+
+`NitsKit/PictureInPictureController` drives the public `AVPictureInPictureController` with a
+`ContentSource(sampleBufferDisplayLayer:)` over `engine.displayLayer`; the engine only exposes
+`isPictureInPictureActive` and `pictureInPictureLayerGeometry`, so embedding hosts can bring their
+own PiP. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
+included), but a broken private API means no PiP at all, while AVKit's bugs below are cosmetic.
+
+- **Render mode and pacing.** PiP only sees the display layer, so `.metalToneMap` falls back to
+  `.system` while it is active. The window is usually ordered out, and a view-based
+  `CADisplayLink` stops with it, so the link follows the screen until PiP ends.
+- **Clock.** The layer's timebase is the host clock at rate 1.0 and is never paused, and PiP reads
+  the position from it. `PictureInPicturePlaybackSnapshot` maps playback onto it: the time range
+  starts at `hostNow - position` and, at other rates, is divided by the rate (wall-clock seconds,
+  so progress and remaining time stay right; elapsed labels show wall-clock time). PiP is told to
+  re-read its state on pause/resume, rate or duration changes and position jumps.
+- **AVKit layout bugs (macOS only; developer forums thread 821582).** PiP shows the display layer
+  1:1 inside an in-process panel and never scales it; its own view keeps the panel's start size,
+  and an opaque, empty `…CALayerHostView` covers the video once the panel grows past a fixed
+  offset. The display layer therefore takes the panel's content size
+  (`.pipWindow(size)`), and the AVKit pieces are repaired only when found broken, so a fixed AVKit
+  makes this a no-op. AVKit's "playing in picture in picture" indicator is a sublayer of the
+  display layer, sized to it; `NativeVideoHostView` stretches it over the whole view.
+- **Hand-back.** AVKit animates the panel onto the display layer's frame, at the video's aspect
+  ratio. Right before that the layer takes the video's aspect-fit rect (`.videoRect`), so the
+  panel lands on the picture without a band (a full-view layer on a 16:10 fullscreen screen left
+  one); a minimized window is first restored from the Dock. The layer fills the view again once
+  PiP stops; the picture does not move.
+- **Known limitation.** On the first PiP after launch AVKit creates the panel late and animates it
+  by transform, so the first frames of that animation show the layer unscaled. Finding the panel
+  earlier (polling the window list) was worse: resizing the layer mid-transform shows a double
+  image.
+- **Not supported on macOS:** `canStartPictureInPictureAutomaticallyFromInline` and the video-call
+  controller. Automatic PiP is limited to an opt-in "enter PiP when minimizing"; switching apps
+  never triggers it, since macOS windows stay visible.
+
 ## Metal tone-mapper (`HDRToneMapping.metal`)
 
 - **Input** — biplanar YCbCr: `r16Unorm` luma + `rg16Unorm` chroma for 10-bit (VideoToolbox

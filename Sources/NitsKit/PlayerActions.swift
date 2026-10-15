@@ -40,6 +40,9 @@ public protocol PlayerActions: AnyObject {
     func playPreviousTrack()
     func toggleFullscreen()
     func exitFullscreen()
+    var isPictureInPictureActive: Bool { get }
+    var canTogglePictureInPicture: Bool { get }
+    func togglePictureInPicture()
     func promptJumpToTime()
     func dismissJumpToTime()
 }
@@ -61,6 +64,9 @@ extension PlayerActions {
     public func seekBackward() {
         seekRelative(by: -seekStepSeconds)
     }
+    public var isPictureInPictureActive: Bool { false }
+    public var canTogglePictureInPicture: Bool { false }
+    public func togglePictureInPicture() {}
     public func promptJumpToTime() {}
     public func dismissJumpToTime() {}
     public func toggleQuickSettings() {}

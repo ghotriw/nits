@@ -47,6 +47,15 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyNetworkThumbnailPolicy)
     private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
 
+    @AppStorage(PlayerConfiguration.keyPictureInPictureWindowBehavior)
+    private var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide
+
+    @AppStorage(PlayerConfiguration.keyPausesOnPictureInPicture)
+    private var pausesOnPictureInPicture: Bool = false
+
+    @AppStorage(PlayerConfiguration.keyEntersPictureInPictureOnMinimize)
+    private var entersPictureInPictureOnMinimize: Bool = false
+
     private static let standardSeekSteps: [Double] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
     private static let osdDurations: [Double] = [0.8, 1.3, 2.0, 3.0, 5.0]
     private static let debugOSDDurations: [Double] = [2.0, 4.0, 6.0, 10.0, 15.0, 30.0]
@@ -237,6 +246,33 @@ public struct SettingsView: View {
             }
 
             Section {
+                Picker("Player window during PiP", selection: $pictureInPictureWindowBehavior) {
+                    ForEach(PictureInPictureWindowBehavior.allCases) { behavior in
+                        Text(behavior.displayName).tag(behavior)
+                    }
+                }
+                .onChange(of: pictureInPictureWindowBehavior) { _, _ in
+                    notifyChange()
+                }
+
+                Toggle("Pause when entering Picture in Picture", isOn: $pausesOnPictureInPicture)
+                    .onChange(of: pausesOnPictureInPicture) { _, _ in
+                        notifyChange()
+                    }
+
+                Toggle("Enter Picture in Picture when minimizing the window", isOn: $entersPictureInPictureOnMinimize)
+                    .onChange(of: entersPictureInPictureOnMinimize) { _, _ in
+                        notifyChange()
+                    }
+            } header: {
+                Text("Picture in Picture")
+            } footer: {
+                Text(
+                    "Hide puts the player window away until Picture in Picture ends; fullscreen and minimized windows always stay as they are. When PiP starts from minimizing, restoring the window from the Dock ends it."
+                )
+            }
+
+            Section {
                 Picker("Arrow seek step", selection: $seekStepSeconds) {
                     ForEach(Self.standardSeekSteps, id: \.self) { step in
                         Text("\(Int(step)) \(step == 1.0 ? "second" : "seconds")").tag(step)
@@ -382,7 +418,10 @@ public struct SettingsView: View {
             autoLoadFolderMedia: autoLoadFolderMedia,
             seekStepSeconds: seekStepSeconds,
             exactSeekOnSinglePress: exactSeekOnSinglePress,
-            networkThumbnailPolicy: networkThumbnailPolicy
+            networkThumbnailPolicy: networkThumbnailPolicy,
+            pictureInPictureWindowBehavior: pictureInPictureWindowBehavior,
+            pausesOnPictureInPicture: pausesOnPictureInPicture,
+            entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize
         )
         onConfigurationChanged?(current)
     }

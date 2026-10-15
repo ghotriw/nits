@@ -78,6 +78,25 @@ public final class PlayerEngine: PlayerEngineProtocol {
             updateEffectiveRenderMode()
         }
     }
+    /// Set by the host while Picture in Picture mirrors `displayLayer`. PiP only sees the display layer, so Metal
+    /// tone mapping falls back to `.system`, and the display link follows the screen instead of a possibly hidden
+    /// host view.
+    public var isPictureInPictureActive: Bool = false {
+        didSet {
+            guard oldValue != isPictureInPictureActive else { return }
+            updateEffectiveRenderMode()
+            retargetDisplayLinkForPictureInPicture()
+        }
+    }
+    /// How the host view lays out `displayLayer` around Picture in Picture; `nil` fills the host view.
+    public var pictureInPictureLayerGeometry: PictureInPictureLayerGeometry? {
+        didSet {
+            guard oldValue != pictureInPictureLayerGeometry, let host = displayLinkHostView else { return }
+            // The host window is usually ordered out during PiP and would not lay out on its own.
+            host.needsLayout = true
+            host.layoutSubtreeIfNeeded()
+        }
+    }
     public var isHDRDisplay: Bool = false {
         didSet {
             if oldValue != isHDRDisplay {

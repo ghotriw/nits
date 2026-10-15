@@ -288,9 +288,18 @@ flowchart TD
   - Capture current frame (`⌘S`): export exact decoded `CVPixelBuffer`.
   - Raw HDR mode: uncompressed 10-bit PNG / TIFF retaining mastering colorimetry.
   - Tonemapped SDR mode: Display P3 snapshot after passing the Metal BT.2390 shader, capturing what is visually rendered on screen.
-- [ ] **5.10.4. Picture-in-Picture (PiP):**
-  - Native macOS Picture-in-Picture integration (`AVPictureInPictureController` with `AVSampleBufferDisplayLayer` / custom video call controller).
-  - Seamless handover to a floating desktop window when switching virtual spaces or apps.
+- [x] **5.10.4. Picture-in-Picture (PiP):**
+  - Native macOS Picture-in-Picture via public `AVPictureInPictureController` + `ContentSource(sampleBufferDisplayLayer:)`
+    (the video-call controller and automatic inline start are iOS-only). Toggle from View menu (`⌃⌘P`) and an
+    optional control bar button.
+  - Metal tone-mapping mode falls back to `.system` (system tone mapping) while PiP is active; the display link
+    moves from the host view to the screen so pacing survives a hidden window.
+  - Workarounds for macOS AVKit not laying out the PiP panel (unscaled mirror, stale view, opaque band); smooth
+    hand-back onto the video's rect.
+  - Window behaviour on enter (hide / keep open; fullscreen and minimized untouched), optional pause on enter, close
+    button pauses.
+  - Opt-in auto-PiP on window minimize (exit on restore). No auto-PiP on app switch: macOS windows stay visible, so
+    it would only steal the video. Leaving the fullscreen Space is not a trigger.
 
 ---
 

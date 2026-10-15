@@ -108,31 +108,54 @@ public final class NativeVideoHostView: NSView {
 
     public override func layout() {
         super.layout()
-        engine.displayLayer.frame = bounds
+        let videoFrame = aspectFitVideoFrame()
+
+        // No implicit animation, or the layer would lag behind a PiP window being resized.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        switch engine.pictureInPictureLayerGeometry {
+        case nil:
+            engine.displayLayer.frame = bounds
+        case .pipWindow(let size):
+            engine.displayLayer.frame = CGRect(origin: .zero, size: size)
+        case .videoRect:
+            engine.displayLayer.frame = videoFrame
+        }
+        if engine.pictureInPictureLayerGeometry != nil {
+            // AVKit draws its "playing in picture in picture" placeholder as a sublayer of the display layer and
+            // sizes it to that layer; keep it filling the view (the display layer does not clip its sublayers).
+            let layerOrigin = engine.displayLayer.frame.origin
+            for indicator in engine.displayLayer.sublayers ?? []
+            where "\(type(of: indicator))".contains("PictureInPictureIndicator") {
+                indicator.frame = CGRect(origin: CGPoint(x: -layerOrigin.x, y: -layerOrigin.y), size: bounds.size)
+                for part in indicator.sublayers ?? [] { part.frame = indicator.bounds }
+                indicator.setNeedsLayout()
+            }
+        }
+        CATransaction.commit()
 
         guard let metalLayer = engine.metalRenderer?.metalLayer else { return }
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         metalLayer.contentsScale = scale
+        metalLayer.frame = videoFrame
+        metalLayer.drawableSize = CGSize(width: videoFrame.width * scale, height: videoFrame.height * scale)
+    }
 
-        // Calculate aspect-fit frame matching AVSampleBufferDisplayLayer resizeAspect (respecting SAR / DAR)
+    /// Aspect-fit frame of the video in the view, matching AVSampleBufferDisplayLayer `resizeAspect` (SAR / DAR).
+    private func aspectFitVideoFrame() -> CGRect {
         let videoAspect = CGFloat(engine.displayAspectRatio > 0 ? engine.displayAspectRatio : 16.0 / 9.0)
         let viewAspect = bounds.width / max(bounds.height, 1)
-
-        var targetFrame = bounds
         if viewAspect > videoAspect {
             // View is wider than video: letterbox on sides
             let targetWidth = bounds.height * videoAspect
             let offsetX = (bounds.width - targetWidth) / 2.0
-            targetFrame = CGRect(x: offsetX, y: 0, width: targetWidth, height: bounds.height)
+            return CGRect(x: offsetX, y: 0, width: targetWidth, height: bounds.height)
         } else {
             // View is taller than video: letterbox on top/bottom
             let targetHeight = bounds.width / videoAspect
             let offsetY = (bounds.height - targetHeight) / 2.0
-            targetFrame = CGRect(x: 0, y: offsetY, width: bounds.width, height: targetHeight)
+            return CGRect(x: 0, y: offsetY, width: bounds.width, height: targetHeight)
         }
-
-        metalLayer.frame = targetFrame
-        metalLayer.drawableSize = CGSize(width: targetFrame.width * scale, height: targetFrame.height * scale)
     }
 
     public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

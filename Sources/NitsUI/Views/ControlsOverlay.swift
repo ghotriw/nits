@@ -121,6 +121,8 @@ public struct ControlsOverlay: View {
             ControlPlaylistShuffleButton(engine: engine)
         case .quickSettings:
             ControlQuickSettingsToggleButton(uiState: uiState)
+        case .pictureInPicture:
+            ControlPictureInPictureButton(engine: engine, uiState: uiState)
         }
     }
 

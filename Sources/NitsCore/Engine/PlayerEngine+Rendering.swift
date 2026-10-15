@@ -32,6 +32,32 @@ extension PlayerEngine {
         link.isPaused = !isPlaying
         self.displayLink = link
         self.displayLinkHostView = view
+        guard !isPictureInPictureActive else {
+            retargetDisplayLinkForPictureInPicture()
+            return
+        }
+        updateDisplayLinkFrameRate()
+    }
+
+    /// A view-based link stops when its window is hidden, which PiP usually does. While PiP is active the link
+    /// follows the screen; on exit it returns to the host view.
+    func retargetDisplayLinkForPictureInPicture() {
+        let target = displayLinkTarget ?? DisplayLinkTarget(engine: self)
+        self.displayLinkTarget = target
+        let link: CADisplayLink
+        if isPictureInPictureActive {
+            guard let screen = displayLinkHostView?.window?.screen ?? NSScreen.main else { return }
+            link = screen.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        } else if let view = displayLinkHostView {
+            link = view.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        } else {
+            return
+        }
+        displayLink?.invalidate()
+        link.add(to: .main, forMode: .common)
+        link.isPaused = !isPlaying
+        self.displayLink = link
+        AppLog.debug(.video, "Display link follows \(isPictureInPictureActive ? "screen (PiP)" : "host view")")
         updateDisplayLinkFrameRate()
     }
 
@@ -90,7 +116,7 @@ extension PlayerEngine {
         switch renderMode {
         case .auto:
             // Metal tone mapping is ONLY needed when video content is HDR and display is SDR
-            if isHDRContent && !isHDRDisplay && isToneMappingPermitted {
+            if isHDRContent && !isHDRDisplay && isToneMappingPermitted && !isPictureInPictureActive {
                 newMode = .metalToneMap
             } else {
                 newMode = .system
@@ -98,7 +124,7 @@ extension PlayerEngine {
         case .system:
             newMode = .system
         case .metalToneMap:
-            newMode = isToneMappingPermitted ? .metalToneMap : .system
+            newMode = isToneMappingPermitted && !isPictureInPictureActive ? .metalToneMap : .system
         }
         let previousMode = activeRenderModeLock.withLock { mode -> RenderMode in
             let prev = mode

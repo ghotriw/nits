@@ -20,10 +20,29 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     public var onPlaybackEnded: (() -> Void)?
 
     private var lastLoggedTimeSeconds: Double = -1.0
+    private lazy var pictureInPicture: PictureInPictureController = makePictureInPictureController()
+    private var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide
+    private var pausesOnPictureInPicture = false
+    private var entersPictureInPictureOnMinimize = false
+    /// The window was ordered out by PiP and must come back when PiP ends.
+    private var isWindowHiddenForPictureInPicture = false
+    /// PiP was started by minimizing the window, so restoring the window from the Dock ends it.
+    private var isPictureInPictureFromMinimize = false
+    /// PiP's restore, held back while the window comes out of the Dock.
+    private var pendingPictureInPictureRestore: (@MainActor () -> Void)?
+    /// Set in `windowWillClose`; PiP callbacks that follow must not show the window again.
+    private var isWindowClosing = false
 
     public func applyConfiguration(_ config: PlayerConfiguration) {
         engine.applyConfiguration(config)
         applyOSDConfiguration(config)
+        applyPictureInPictureConfiguration(config)
+    }
+
+    private func applyPictureInPictureConfiguration(_ config: PlayerConfiguration) {
+        pictureInPictureWindowBehavior = config.pictureInPictureWindowBehavior
+        pausesOnPictureInPicture = config.pausesOnPictureInPicture
+        entersPictureInPictureOnMinimize = config.entersPictureInPictureOnMinimize
     }
 
     private func applyOSDConfiguration(_ config: PlayerConfiguration) {
@@ -55,7 +74,11 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         nowPlayingController.actions = self
         window.actionHandler = self
+        uiState.togglePictureInPicture = { [weak self] in
+            self?.togglePictureInPicture()
+        }
         applyOSDConfiguration(configuration)
+        applyPictureInPictureConfiguration(configuration)
 
         window.title = "Nits"
         window.titlebarAppearsTransparent = true
@@ -89,7 +112,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         let hostingView = NSHostingView(rootView: contentView)
         window.contentView = hostingView
         window.initialFirstResponder = hostingView
-
         engine.onTimeUpdate = { [weak self] current, dur in
             guard let self else { return }
 
@@ -102,6 +124,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             }
 
             self.onTimeUpdate?(current, dur)
+            if self.engine.isPictureInPictureActive {
+                self.pictureInPicture.refreshSnapshot()
+            }
             self.nowPlayingController.update(
                 title: self.engine.mediaTitle,
                 currentTime: current,
@@ -136,6 +161,12 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             }
 
             self.onPlaybackStateChanged?(state)
+            if self.engine.isPictureInPictureActive {
+                self.pictureInPicture.refreshSnapshot(invalidate: true)
+            }
+            if state == .playing || state == .paused, self.engine.hasVideo {
+                self.pictureInPicture.prepare()
+            }
             switch state {
             case .playing:
                 self.nowPlayingController.update(
@@ -310,6 +341,30 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         uiState.isFullscreen = false
     }
 
+    public func windowDidMiniaturize(_ notification: Notification) {
+        guard entersPictureInPictureOnMinimize, engine.hasVideo, engine.isPlaying, !pictureInPicture.isActive
+        else { return }
+        isPictureInPictureFromMinimize = true
+        pictureInPicture.toggle()
+    }
+
+    /// Restoring from the Dock reports the window visible before the restore animation ends; stopping PiP here keeps
+    /// it from mirroring the layer while the animation distorts it. `windowDidDeminiaturize` stays as a fallback.
+    public func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard isPictureInPictureFromMinimize, window?.occlusionState.contains(.visible) == true else { return }
+        AppLog.debug(.ui, "Player window visible again; leaving minimize-started Picture in Picture")
+        windowDidDeminiaturize(notification)
+    }
+
+    public func windowDidDeminiaturize(_ notification: Notification) {
+        finishPictureInPictureRestore()
+        guard isPictureInPictureFromMinimize else { return }
+        isPictureInPictureFromMinimize = false
+        if pictureInPicture.isActive {
+            pictureInPicture.toggle()
+        }
+    }
+
     public func windowWillClose(_ notification: Notification) {
         let finalTime = engine.currentTime
         let finalDuration = engine.duration
@@ -318,6 +373,13 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             "Player window closing for: '\(engine.mediaTitle)' at \(String(format: "%.2f", finalTime))s / \(String(format: "%.2f", finalDuration))s"
         )
         onClose?(finalTime, finalDuration)
+        // Stopping PiP below must not bring the closing window back.
+        isWindowClosing = true
+        isWindowHiddenForPictureInPicture = false
+        finishPictureInPictureRestore()
+        if pictureInPicture.isActive {
+            pictureInPicture.toggle()
+        }
         nowPlayingController.clear()
         engine.stop()
     }
@@ -459,6 +521,84 @@ extension PlayerWindowController: PlayerActions {
 
     public func toggleFullscreen() {
         window?.toggleFullScreen(nil)
+    }
+
+    public var isPictureInPictureActive: Bool {
+        engine.isPictureInPictureActive
+    }
+
+    public var canTogglePictureInPicture: Bool {
+        engine.hasVideo && (uiState.isPictureInPicturePossible || engine.isPictureInPictureActive)
+    }
+
+    public func togglePictureInPicture() {
+        guard canTogglePictureInPicture else { return }
+        pictureInPicture.toggle()
+    }
+
+    private func makePictureInPictureController() -> PictureInPictureController {
+        let pip = PictureInPictureController(engine: engine)
+        pip.onPossibleChanged = { [weak self] isPossible in
+            self?.uiState.isPictureInPicturePossible = isPossible
+        }
+        pip.onActiveChanged = { [weak self] isActive in
+            guard let self else { return }
+            if isActive {
+                if self.pausesOnPictureInPicture, self.engine.isPlaying {
+                    self.engine.pause()
+                }
+                self.moveWindowAsideForPictureInPicture()
+            } else {
+                self.isPictureInPictureFromMinimize = false
+                self.bringWindowBackAfterPictureInPicture()
+            }
+        }
+        pip.onRestoreUserInterface = { [weak self] windowReady in
+            guard let self, !self.isWindowClosing, let window = self.window else {
+                windowReady()
+                return
+            }
+            self.isPictureInPictureFromMinimize = false
+            self.bringWindowBackAfterPictureInPicture()
+            NSApp.activate()
+            guard window.isMiniaturized else {
+                window.makeKeyAndOrderFront(nil)
+                windowReady()
+                return
+            }
+            // PiP waits until the Dock restore animation is over, or it would animate into a window that is
+            // still flying out of the Dock.
+            self.pendingPictureInPictureRestore = windowReady
+            window.deminiaturize(nil)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                self?.finishPictureInPictureRestore()
+            }
+        }
+        return pip
+    }
+
+    /// Lets PiP animate into the window; runs once, from `windowDidDeminiaturize` or the fallback timeout.
+    private func finishPictureInPictureRestore() {
+        guard let windowReady = pendingPictureInPictureRestore else { return }
+        pendingPictureInPictureRestore = nil
+        window?.makeKeyAndOrderFront(nil)
+        windowReady()
+    }
+
+    private func moveWindowAsideForPictureInPicture() {
+        // Fullscreen and minimized windows are left alone, as in IINA.
+        guard pictureInPictureWindowBehavior == .hide, let window, !window.styleMask.contains(.fullScreen),
+            !window.isMiniaturized
+        else { return }
+        isWindowHiddenForPictureInPicture = true
+        window.orderOut(nil)
+    }
+
+    private func bringWindowBackAfterPictureInPicture() {
+        guard let window, isWindowHiddenForPictureInPicture, !isWindowClosing else { return }
+        isWindowHiddenForPictureInPicture = false
+        window.makeKeyAndOrderFront(nil)
     }
 
     public var canJumpToTime: Bool {

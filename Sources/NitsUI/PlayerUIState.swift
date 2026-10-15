@@ -10,6 +10,10 @@ public final class PlayerUIState {
     public var wasPlayingBeforeJumpTo: Bool = false
     public var isQuickSettingsPresented: Bool = false
     public var isPlaylistPresented: Bool = false
+    /// Picture in Picture can start now (reported by the host that owns PiP).
+    public var isPictureInPicturePossible: Bool = false
+    /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
+    @ObservationIgnored public var togglePictureInPicture: (() -> Void)?
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     public let osd: OSDManager
     public let controlsConfig: ControlsConfiguration

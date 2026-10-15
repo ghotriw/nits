@@ -15,6 +15,7 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
     case playlistRepeat = "playlistRepeat"
     case playlistShuffle = "playlistShuffle"
     case quickSettings = "quickSettings"
+    case pictureInPicture = "pictureInPicture"
 
     public var id: String { rawValue }
 
@@ -47,6 +48,8 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
             return "Shuffle"
         case .quickSettings:
             return "Quick Settings Panel"
+        case .pictureInPicture:
+            return "Picture in Picture"
         }
     }
 
@@ -79,6 +82,8 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
             return "shuffle"
         case .quickSettings:
             return "slider.horizontal.3"
+        case .pictureInPicture:
+            return "pip.enter"
         }
     }
 

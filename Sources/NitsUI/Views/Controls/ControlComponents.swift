@@ -317,6 +317,36 @@ public struct ControlPlaylistToggleButton: View {
     }
 }
 
+// MARK: - Picture in Picture Toggle Button
+public struct ControlPictureInPictureButton: View {
+    let engine: PlayerEngine
+    let uiState: PlayerUIState?
+
+    public init(engine: PlayerEngine, uiState: PlayerUIState?) {
+        self.engine = engine
+        self.uiState = uiState
+    }
+
+    public var body: some View {
+        // Observed properties first: a body that bails out before reading them would never be re-evaluated.
+        if let uiState, engine.hasVideo, uiState.isPictureInPicturePossible || engine.isPictureInPictureActive,
+            let toggle = uiState.togglePictureInPicture
+        {
+            Button {
+                toggle()
+            } label: {
+                Image(systemName: engine.isPictureInPictureActive ? "pip.exit" : "pip.enter")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .padding(.all, 7)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Picture in Picture (⌃⌘P)")
+        }
+    }
+}
+
 // MARK: - Quick Settings Toggle Button
 public struct ControlQuickSettingsToggleButton: View {
     let uiState: PlayerUIState?

@@ -23,6 +23,22 @@ public enum NetworkThumbnailPolicy: String, Sendable, Codable, CaseIterable, Ide
     }
 }
 
+/// What happens to the player window while its video plays in Picture in Picture. Fullscreen and minimized windows
+/// are always left as they are.
+public enum PictureInPictureWindowBehavior: String, Sendable, Codable, CaseIterable, Identifiable {
+    case hide
+    case doNothing
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .hide: "Hide"
+        case .doNothing: "Keep Open"
+        }
+    }
+}
+
 /// Global configuration for playback behavior, rendering engines, and hardware options.
 public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether automatic tone mapping and custom Metal SDR rendering are permitted.
@@ -125,6 +141,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
 
     /// Policy for timeline hover thumbnail generation on network streams (default .localNetworkOnly).
     public var networkThumbnailPolicy: NetworkThumbnailPolicy
+    /// What happens to the player window while its video plays in Picture in Picture.
+    public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
+    /// Pause playback when Picture in Picture starts.
+    public var pausesOnPictureInPicture: Bool
+    /// Enter Picture in Picture when the player window is minimized during playback, and leave it on restore.
+    public var entersPictureInPictureOnMinimize: Bool
 
     public init(
         enableToneMapping: Bool = true,
@@ -156,7 +178,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleTrack: String? = nil,
         playlistRepeatMode: PlaylistRepeatMode = .off,
         playlistIsShuffled: Bool = false,
-        networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
+        networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
+        pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
+        pausesOnPictureInPicture: Bool = false,
+        entersPictureInPictureOnMinimize: Bool = false
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -191,6 +216,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.playlistRepeatMode = playlistRepeatMode
         self.playlistIsShuffled = playlistIsShuffled
         self.networkThumbnailPolicy = networkThumbnailPolicy
+        self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
+        self.pausesOnPictureInPicture = pausesOnPictureInPicture
+        self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -217,6 +245,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyPlaylistRepeatMode = "Nits.playlistRepeatMode"
     public static let keyPlaylistIsShuffled = "Nits.playlistIsShuffled"
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
+    public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
+    public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
+    public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -301,6 +332,17 @@ public struct PlayerConfiguration: Sendable, Equatable {
         {
             config.networkThumbnailPolicy = policy
         }
+        if let pipWindowRaw = userDefaults.string(forKey: keyPictureInPictureWindowBehavior),
+            let behavior = PictureInPictureWindowBehavior(rawValue: pipWindowRaw)
+        {
+            config.pictureInPictureWindowBehavior = behavior
+        }
+        if userDefaults.object(forKey: keyPausesOnPictureInPicture) != nil {
+            config.pausesOnPictureInPicture = userDefaults.bool(forKey: keyPausesOnPictureInPicture)
+        }
+        if userDefaults.object(forKey: keyEntersPictureInPictureOnMinimize) != nil {
+            config.entersPictureInPictureOnMinimize = userDefaults.bool(forKey: keyEntersPictureInPictureOnMinimize)
+        }
         return config
     }
 
@@ -330,6 +372,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
         userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
+        userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
+        userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
+        userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
     }
 
     /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).

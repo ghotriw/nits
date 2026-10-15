@@ -64,6 +64,21 @@ struct PlayerConfigurationTests {
         #expect(engine.activeRenderMode == .metalToneMap)
     }
 
+    @Test("Picture in Picture forces the display-layer render mode and restores it on exit")
+    @MainActor
+    func testPictureInPictureForcesSystemRenderMode() {
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration())
+        engine.renderMode = .metalToneMap
+        #expect(engine.activeRenderMode == .metalToneMap)
+
+        // PiP only mirrors the AVSampleBufferDisplayLayer, never the Metal layer.
+        engine.isPictureInPictureActive = true
+        #expect(engine.activeRenderMode == .system)
+
+        engine.isPictureInPictureActive = false
+        #expect(engine.activeRenderMode == .metalToneMap)
+    }
+
     @Test("CLI arguments correctly parse HTTP headers and network URL")
     func testParseHTTPHeadersAndURL() {
         let args = [
@@ -139,6 +154,30 @@ struct PlayerConfigurationTests {
         let config = PlayerConfiguration.parse(arguments: args).configuration
         #expect(config.audioTrack == "jpn")
         #expect(config.subtitleTrack == "off")
+    }
+
+    @Test("Picture in Picture defaults hide the window and stay opt-in")
+    func testPictureInPictureDefaults() {
+        let config = PlayerConfiguration()
+        #expect(config.pictureInPictureWindowBehavior == .hide)
+        #expect(config.pausesOnPictureInPicture == false)
+        #expect(config.entersPictureInPictureOnMinimize == false)
+    }
+
+    @Test("UserDefaults roundtrip preserves Picture in Picture settings")
+    func testUserDefaultsPictureInPicture() {
+        let defaults = UserDefaults(suiteName: "test.pip.settings")!
+        defaults.removePersistentDomain(forName: "test.pip.settings")
+        var config = PlayerConfiguration()
+        config.pictureInPictureWindowBehavior = .doNothing
+        config.pausesOnPictureInPicture = true
+        config.entersPictureInPictureOnMinimize = true
+        config.saveToUserDefaults(userDefaults: defaults)
+
+        let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
+        #expect(loaded.pictureInPictureWindowBehavior == .doNothing)
+        #expect(loaded.pausesOnPictureInPicture == true)
+        #expect(loaded.entersPictureInPictureOnMinimize == true)
     }
 
     @Test("UserDefaults roundtrip preserves enableOSD flag")
