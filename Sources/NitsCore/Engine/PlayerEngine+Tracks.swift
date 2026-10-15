@@ -60,7 +60,7 @@ extension PlayerEngine {
             self.activeSubtitleDocument = loadedSubtitleDocuments[id]
             self.updateActiveSubtitles(at: currentTime)
         } else if let path = currentPath {
-            if MediaDemuxer.isNetworkURL(path) {
+            if MediaURL.isNetworkURL(path) {
                 // For network streams: bind immediately to in-band demuxed cues.
                 // Do NOT launch a background secondary demuxer that hangs trying to reach EOF or fails on single-token URLs.
                 let liveDoc = demuxer?.getLiveSubtitleDocument() ?? SubtitleDocument(cues: [])
@@ -135,7 +135,7 @@ extension PlayerEngine {
             !track.isExternal,
             let demuxer,
             let path = currentPath,
-            MediaDemuxer.isNetworkURL(path)
+            MediaURL.isNetworkURL(path)
         {
             // For live network streams, refresh the document only when in-band cues version changes
             let currentVersion = demuxer.liveSubtitleVersion

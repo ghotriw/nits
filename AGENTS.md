@@ -120,6 +120,10 @@ selectors (see Video pipeline).
   (MaxCLL/MaxFALL, mastering display) from the stream; never hardcode. Peak luminance feeds
   `sourcePeakNits`.
 - Convert timestamps as `pts * Int64(timebase.num) / Int64(timebase.den)`.
+- MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
+  `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add
+  `timelineOffset` back to `av_seek_frame` targets. A bare `av_read_frame` breaks timing for these
+  files. Background in "Seeking" in `docs/ARCHITECTURE.md`.
 
 ## Keyboard shortcuts
 

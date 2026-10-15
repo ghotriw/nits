@@ -46,7 +46,7 @@ struct MediaDemuxerColorTests {
         streamData.append(contentsOf: spsBytes)
         streamData.append(contentsOf: ppsBytes)
 
-        let nalus = MediaDemuxer.extractNALUnits(from: streamData)
+        let nalus = NALUnitParser.extractNALUnits(from: streamData)
         #expect(nalus.count == 3)
         #expect((nalus[0][0] >> 1) & 0x3F == 32)
         #expect((nalus[1][0] >> 1) & 0x3F == 33)
@@ -54,7 +54,7 @@ struct MediaDemuxerColorTests {
 
         // Test conversion to HVCC format (4-byte big-endian length prefix)
         let (hvccData, count) = streamData.withUnsafeBytes { raw in
-            MediaDemuxer.packetDataToHVCC(
+            NALUnitParser.packetDataToHVCC(
                 pktData: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 count: streamData.count,
                 isAnnexBStream: true
@@ -86,7 +86,7 @@ struct MediaDemuxerColorTests {
         streamData.append(contentsOf: spsBytes)
         streamData.append(contentsOf: ppsBytes)
 
-        let nalus = MediaDemuxer.extractNALUnits(from: streamData)
+        let nalus = NALUnitParser.extractNALUnits(from: streamData)
         #expect(nalus.count == 2)
         #expect(nalus[0][0] & 0x1F == 7)  // SPS
         #expect(nalus[1][0] & 0x1F == 8)  // PPS
@@ -181,7 +181,7 @@ struct MediaDemuxerColorTests {
         dvvCBox.append(contentsOf: [0x00])  // compatibility_id = 0
         dvvCBox.append(contentsOf: Array(repeating: UInt8(0), count: 19))  // reserved padding
 
-        let parsed = MediaDemuxer.parseDolbyVisionConfigurationBox(from: dvvCBox)
+        let parsed = HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: dvvCBox)
         #expect(parsed != nil)
         #expect(parsed?.profile == 5)
         #expect(parsed?.configData.count == 24)
@@ -197,7 +197,7 @@ struct MediaDemuxerColorTests {
         dvcCBox.append(contentsOf: [0x10])  // compatibility_id 1 (8.1 HDR10) -> (1 << 4) = 0x10
         dvcCBox.append(contentsOf: Array(repeating: UInt8(0), count: 19))
 
-        let parsed = MediaDemuxer.parseDolbyVisionConfigurationBox(from: dvcCBox)
+        let parsed = HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: dvcCBox)
         #expect(parsed != nil)
         #expect(parsed?.profile == 8)
         #expect(parsed?.compatibilityId == 1)
@@ -333,6 +333,21 @@ struct MediaDemuxerColorTests {
 
         ctx.cancel()
         #expect(ctx.isCancelled == true)
+        #expect(ctx.shouldAbort == true)
+    }
+
+    @Test("FFmpegInterrupt aborts past its deadline without counting as cancelled, and keeps the last error")
+    func interruptDeadlineAndLastError() {
+        let expired = FFmpegInterrupt(timeout: .zero)
+        #expect(expired.shouldAbort == true)
+        #expect(expired.isCancelled == false)
+
+        let open = FFmpegInterrupt(timeout: .seconds(60))
+        #expect(open.shouldAbort == false)
+        #expect(open.lastError == nil)
+        open.recordError(code: -5, message: "Input/output error")
+        #expect(open.lastError?.code == -5)
+        #expect(open.lastError?.message == "Input/output error")
     }
 
     @Test("Demuxer initializes with custom headers dictionary without breaking")
@@ -355,13 +370,13 @@ struct MediaDemuxerColorTests {
         packetData.append(contentsOf: nalPayload)
 
         // With isAnnexB = false (standard MP4/MKV stream)
-        let nalus = MediaDemuxer.extractNALUnits(from: packetData, isAnnexB: false)
+        let nalus = NALUnitParser.extractNALUnits(from: packetData, isAnnexB: false)
         #expect(nalus.count == 1)
         #expect(nalus[0].count == 65538)
 
         // packetDataToHVCC with isAnnexBStream = false must not corrupt packet
         let (hvccData, count) = packetData.withUnsafeBytes { raw in
-            MediaDemuxer.packetDataToHVCC(
+            NALUnitParser.packetDataToHVCC(
                 pktData: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 count: packetData.count,
                 isAnnexBStream: false

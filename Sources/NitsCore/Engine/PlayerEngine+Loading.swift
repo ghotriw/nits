@@ -10,7 +10,7 @@ extension PlayerEngine {
         if let explicitTitle, !explicitTitle.isEmpty {
             return explicitTitle
         }
-        if MediaDemuxer.isNetworkURL(path), let url = URL(string: path) {
+        if MediaURL.isNetworkURL(path), let url = URL(string: path) {
             let last = url.lastPathComponent
             if last.isEmpty || last == "/" {
                 return url.host ?? path
@@ -29,7 +29,7 @@ extension PlayerEngine {
 
     /// Normalizes an input path: strips file:// scheme if present and decodes percent-encoded characters for local files.
     nonisolated public static func normalizeMediaPath(_ path: String) -> String {
-        if MediaDemuxer.isNetworkURL(path) {
+        if MediaURL.isNetworkURL(path) {
             return path
         }
         let localPath: String
@@ -103,8 +103,8 @@ extension PlayerEngine {
 
     public func load(_ request: MediaLoadRequest) {
         let normalizedPath = Self.normalizeMediaPath(request.path)
-        let isNetwork = MediaDemuxer.isNetworkURL(normalizedPath)
-        let isRemoteOrMounted = MediaDemuxer.isRemoteOrMountedVolume(normalizedPath)
+        let isNetwork = MediaURL.isNetworkURL(normalizedPath)
+        let isRemoteOrMounted = MediaURL.isRemoteOrMountedVolume(normalizedPath)
 
         // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
         if PlaylistParser.isPlaylistFile(path: normalizedPath),
@@ -178,7 +178,7 @@ extension PlayerEngine {
             "Loading async: \(path) title: \(self.mediaTitle) with headers count: \(request.headers.count) startTime: \(String(describing: request.startTime))"
         )
 
-        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let isNetwork = MediaURL.isNetworkURL(path)
         let maxAttempts = isNetwork ? 5 : 1
         var newDemuxer: MediaDemuxer? = nil
 
@@ -520,7 +520,7 @@ extension PlayerEngine {
         }
 
         // Synchronize playlist with current media
-        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let isNetwork = MediaURL.isNetworkURL(path)
         let mediaURL = isNetwork ? URL(string: path) : URL(fileURLWithPath: path)
         if let mediaURL {
             let matchesCurrent: Bool = {

@@ -614,7 +614,7 @@ public final class PlaylistManager: Sendable {
     nonisolated static func isProbeable(_ url: URL) -> Bool {
         if url.isFileURL { return true }
         let ext = url.pathExtension.lowercased()
-        return MediaDemuxer.isLocalNetworkURL(url.absoluteString) && ext != "ts" && mediaExtensions.contains(ext)
+        return MediaURL.isLocalNetworkURL(url.absoluteString) && ext != "ts" && mediaExtensions.contains(ext)
     }
 
     nonisolated private static func wholeFileDuration(

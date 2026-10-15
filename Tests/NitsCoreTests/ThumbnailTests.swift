@@ -280,35 +280,35 @@ struct ThumbnailTests {
     @Test("MediaDemuxer.isLocalNetworkURL detects LAN IPs and hostnames correctly")
     func testIsLocalNetworkURL() {
         // LAN IPv4
-        #expect(MediaDemuxer.isLocalNetworkURL("http://192.168.1.83:8096/stream"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://10.0.0.1/video.mkv"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://172.16.0.10:8000/media.mp4"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://172.31.255.254/media.mp4"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://169.254.1.2/video.mp4"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://127.0.0.1:8080/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://192.168.1.83:8096/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://10.0.0.1/video.mkv"))
+        #expect(MediaURL.isLocalNetworkURL("http://172.16.0.10:8000/media.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://172.31.255.254/media.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://169.254.1.2/video.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://127.0.0.1:8080/stream"))
 
         // LAN hostnames / Bonjour
-        #expect(MediaDemuxer.isLocalNetworkURL("http://localhost:3000/video.mp4"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://media-server.local/stream.mkv"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://nas.lan/video.mp4"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://emby.home:8096/stream"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://server.internal/video.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://localhost:3000/video.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://media-server.local/stream.mkv"))
+        #expect(MediaURL.isLocalNetworkURL("http://nas.lan/video.mp4"))
+        #expect(MediaURL.isLocalNetworkURL("http://emby.home:8096/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://server.internal/video.mp4"))
 
         // LAN IPv6 (including bracketed URL literals)
-        #expect(MediaDemuxer.isLocalNetworkURL("http://[::1]:8080/stream"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://[fe80::1]:8080/stream"))
-        #expect(MediaDemuxer.isLocalNetworkURL("http://[fd12:3456:789a::1]:8080/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://[::1]:8080/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://[fe80::1]:8080/stream"))
+        #expect(MediaURL.isLocalNetworkURL("http://[fd12:3456:789a::1]:8080/stream"))
 
         // WAN / External IPs and domains
-        #expect(!MediaDemuxer.isLocalNetworkURL("http://8.8.8.8/video.mp4"))
-        #expect(!MediaDemuxer.isLocalNetworkURL("https://example.com/stream.m3u8"))
-        #expect(!MediaDemuxer.isLocalNetworkURL("http://172.32.0.1/video.mp4"))
-        #expect(!MediaDemuxer.isLocalNetworkURL("http://1.1.1.1:8080/stream"))
-        #expect(!MediaDemuxer.isLocalNetworkURL("https://cdn.movies.org/video.mp4"))
-        #expect(!MediaDemuxer.isLocalNetworkURL("http://[2001:4860:4860::8888]/video.mp4"))
+        #expect(!MediaURL.isLocalNetworkURL("http://8.8.8.8/video.mp4"))
+        #expect(!MediaURL.isLocalNetworkURL("https://example.com/stream.m3u8"))
+        #expect(!MediaURL.isLocalNetworkURL("http://172.32.0.1/video.mp4"))
+        #expect(!MediaURL.isLocalNetworkURL("http://1.1.1.1:8080/stream"))
+        #expect(!MediaURL.isLocalNetworkURL("https://cdn.movies.org/video.mp4"))
+        #expect(!MediaURL.isLocalNetworkURL("http://[2001:4860:4860::8888]/video.mp4"))
 
         // Local non-network file
-        #expect(!MediaDemuxer.isLocalNetworkURL("/Users/test/video.mp4"))
+        #expect(!MediaURL.isLocalNetworkURL("/Users/test/video.mp4"))
     }
 
     @Test("MediaDemuxer.ffmpegErrorDescription provides readable error strings")

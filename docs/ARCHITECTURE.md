@@ -95,6 +95,26 @@ flushes the decoder and the renderer, but keeps the `VTDecompressionSession` ali
 session invalidate/reset, `VTVideoDecoder` waits for in-flight frames
 (`VTDecompressionSessionWaitForAsynchronousFrames`) so output callbacks can't race the replacement.
 
+On the demuxer side, an exact seek flags every sample before the target `DoNotDisplay` and keeps
+doing so for a second past it: in decode order the first sample past the target is often a P-frame,
+followed by B-frames that still precede it. The window is bounded so an MPEG-TS timestamp
+discontinuity can't hide every following frame. Container quirks:
+
+- **MPEG-TS / MPEG-PS** have no index, so `av_seek_frame` bisects on timestamps and lands mid-GOP.
+  `syncToVideoKeyframe` skips ahead to the next video keyframe and, for exact seeks, backs off
+  1, 2, 4… s until that keyframe precedes the target. Audio read on the way is queued, since the
+  muxer may interleave it ahead of the video of the same time.
+- **MPEG-TS / MPEG-PS** timestamps continue the source clock (a DVD starts near 0.5 s, a broadcast
+  capture hours in). `MediaDemuxer.timelineOrigin(of:)` makes the first one zero: every packet is
+  read through `readPacket` / `MediaDemuxer.rebase`, and seek targets get the offset added back.
+  Thumbnails and embedded subtitle extraction apply the same origin.
+- **AVI** stores decode order only, so I/P packets have no PTS. The sample's PTS falls back to its
+  DTS (the engine needs one), but it carries `presentationTimeUnknownAttachmentKey`, and
+  `FFmpegVideoDecoder` then leaves the packet PTS unset so FFmpeg reorders B-frames correctly.
+  Packet metadata (duration, `DoNotDisplay`) reaches the frame through `AV_CODEC_FLAG_COPY_OPAQUE`
+  rather than timestamp matching. Exact-seek preroll on such samples carries the target
+  (`exactSeekTargetAttachmentKey`), and the decoder decides on the frame's real PTS.
+
 ### FrameQueue
 
 A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:

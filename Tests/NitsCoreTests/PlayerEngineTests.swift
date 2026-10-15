@@ -269,12 +269,12 @@ struct PlayerEngineTests {
 
     @Test("MediaDemuxer.isNetworkURL correctly detects schemes case-insensitively")
     func testIsNetworkURL() {
-        #expect(MediaDemuxer.isNetworkURL("http://example.com/video.mp4") == true)
-        #expect(MediaDemuxer.isNetworkURL("HTTP://EXAMPLE.COM/VIDEO.MP4") == true)
-        #expect(MediaDemuxer.isNetworkURL("https://secure.stream.io/hls.m3u8") == true)
-        #expect(MediaDemuxer.isNetworkURL("Https://Secure.stream.io") == true)
-        #expect(MediaDemuxer.isNetworkURL("/Users/user/video.mkv") == false)
-        #expect(MediaDemuxer.isNetworkURL("file:///path/to/movie.mov") == false)
+        #expect(MediaURL.isNetworkURL("http://example.com/video.mp4") == true)
+        #expect(MediaURL.isNetworkURL("HTTP://EXAMPLE.COM/VIDEO.MP4") == true)
+        #expect(MediaURL.isNetworkURL("https://secure.stream.io/hls.m3u8") == true)
+        #expect(MediaURL.isNetworkURL("Https://Secure.stream.io") == true)
+        #expect(MediaURL.isNetworkURL("/Users/user/video.mkv") == false)
+        #expect(MediaURL.isNetworkURL("file:///path/to/movie.mov") == false)
     }
 
     @Test("PlayerEngine.resolveTitle correctly prioritizes explicit title over URL and path")

@@ -64,14 +64,17 @@ struct LegacyVideoPlaybackTests {
     @Test("Untagged streams default to BT.601 at SD and BT.709 at HD")
     func standardDefinitionPrimaries() {
         #expect(
-            MediaDemuxer.standardDefinitionPrimaries(width: 720, height: 480) == kCVImageBufferColorPrimaries_SMPTE_C)
+            StreamColorimetry.standardDefinitionPrimaries(width: 720, height: 480)
+                == kCVImageBufferColorPrimaries_SMPTE_C)
         #expect(
-            MediaDemuxer.standardDefinitionPrimaries(width: 720, height: 576) == kCVImageBufferColorPrimaries_EBU_3213)
+            StreamColorimetry.standardDefinitionPrimaries(width: 720, height: 576)
+                == kCVImageBufferColorPrimaries_EBU_3213)
         #expect(
-            MediaDemuxer.standardDefinitionPrimaries(width: 352, height: 288) == kCVImageBufferColorPrimaries_EBU_3213)
-        #expect(MediaDemuxer.standardDefinitionPrimaries(width: 1280, height: 720) == nil)
-        #expect(MediaDemuxer.standardDefinitionPrimaries(width: 1920, height: 536) == nil)
-        #expect(MediaDemuxer.standardDefinitionPrimaries(width: 960, height: 720) == nil)
+            StreamColorimetry.standardDefinitionPrimaries(width: 352, height: 288)
+                == kCVImageBufferColorPrimaries_EBU_3213)
+        #expect(StreamColorimetry.standardDefinitionPrimaries(width: 1280, height: 720) == nil)
+        #expect(StreamColorimetry.standardDefinitionPrimaries(width: 1920, height: 536) == nil)
+        #expect(StreamColorimetry.standardDefinitionPrimaries(width: 960, height: 720) == nil)
     }
 
     /// AVI stores decode timestamps only; with B-frames the decoder must still emit every frame

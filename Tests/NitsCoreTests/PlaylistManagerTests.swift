@@ -547,11 +547,11 @@ struct PlaylistManagerTests {
 
     @Test("MediaDemuxer.isRemoteOrMountedVolume correctly identifies network streams and remote volumes")
     func testRemoteVolumeDetection() {
-        #expect(MediaDemuxer.isRemoteOrMountedVolume("http://192.168.1.50/media.mp4") == true)
-        #expect(MediaDemuxer.isRemoteOrMountedVolume("https://example.com/stream.m3u8") == true)
-        #expect(MediaDemuxer.isRemoteOrMountedVolume("nfs://192.168.1.83/home/Drive/file.mp4") == true)
-        #expect(MediaDemuxer.isRemoteOrMountedVolume("smb://192.168.1.83/share/file.mp4") == true)
-        #expect(MediaDemuxer.isRemoteOrMountedVolume("/Users/ghotriw/Movies/local.mp4") == false)
+        #expect(MediaURL.isRemoteOrMountedVolume("http://192.168.1.50/media.mp4") == true)
+        #expect(MediaURL.isRemoteOrMountedVolume("https://example.com/stream.m3u8") == true)
+        #expect(MediaURL.isRemoteOrMountedVolume("nfs://192.168.1.83/home/Drive/file.mp4") == true)
+        #expect(MediaURL.isRemoteOrMountedVolume("smb://192.168.1.83/share/file.mp4") == true)
+        #expect(MediaURL.isRemoteOrMountedVolume("/Users/ghotriw/Movies/local.mp4") == false)
     }
 
     @Test("PlaylistParser quickly parses large playlist with 4000 items without memory spikes")

@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let mediaPath = initialMediaPath {
             hasOpenedInitialMedia = true
-            if MediaDemuxer.isNetworkURL(mediaPath), let url = URL(string: mediaPath) {
+            if MediaURL.isNetworkURL(mediaPath), let url = URL(string: mediaPath) {
                 openStream(
                     url: url, headers: configuration.httpHeaders, startTime: configuration.startTime,
                     audioTrack: configuration.audioTrack, subtitleTrack: configuration.subtitleTrack)

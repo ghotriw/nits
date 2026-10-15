@@ -88,7 +88,7 @@ public final class ThumbnailManager {
         }
 
         // Check network policy if path is a remote stream
-        if MediaDemuxer.isNetworkURL(path) {
+        if MediaURL.isNetworkURL(path) {
             let shouldGenerate: Bool
             switch networkPolicy {
             case .always:
@@ -96,7 +96,7 @@ public final class ThumbnailManager {
             case .never:
                 shouldGenerate = false
             case .localNetworkOnly:
-                shouldGenerate = MediaDemuxer.isLocalNetworkURL(path)
+                shouldGenerate = MediaURL.isLocalNetworkURL(path)
             }
 
             if !shouldGenerate {
@@ -108,7 +108,7 @@ public final class ThumbnailManager {
             } else {
                 AppLog.info(
                     .engine,
-                    "ThumbnailManager: Generating thumbnails for network stream (policy: \(networkPolicy.rawValue), isLAN: \(MediaDemuxer.isLocalNetworkURL(path)))"
+                    "ThumbnailManager: Generating thumbnails for network stream (policy: \(networkPolicy.rawValue), isLAN: \(MediaURL.isLocalNetworkURL(path)))"
                 )
             }
         }

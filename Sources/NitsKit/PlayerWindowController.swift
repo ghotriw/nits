@@ -239,7 +239,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         audioTrack: String? = nil,
         subtitleTrack: String? = nil
     ) {
-        let isNetwork = MediaDemuxer.isNetworkURL(url.absoluteString)
+        let isNetwork = MediaURL.isNetworkURL(url.absoluteString)
         let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
 
         engine.load(

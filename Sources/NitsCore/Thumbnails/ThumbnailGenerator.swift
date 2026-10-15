@@ -2,7 +2,6 @@ import CFFmpeg
 import CoreGraphics
 import Foundation
 import QuartzCore
-import os
 
 /// Low-priority background thumbnail generator.
 /// Opens its own independent `AVFormatContext` and `AVCodecContext` to demux and decode
@@ -14,20 +13,10 @@ public final class ThumbnailGenerator: @unchecked Sendable {
     public static let maxThumbnailHeight: Int32 = 288
     public static let defaultThumbnailCount: Int = 120
 
-    private final class CancelToken: @unchecked Sendable {
-        let lock = OSAllocatedUnfairLock(initialState: false)
-        var isCancelled: Bool {
-            lock.withLock { $0 }
-        }
-        func cancel() {
-            lock.withLock { $0 = true }
-        }
-    }
-
     private let path: String
     private let duration: Double
     private let headers: [String: String]
-    private let cancelToken = CancelToken()
+    private let cancelToken = FFmpegInterrupt()
 
     public init(path: String, duration: Double = 0, headers: [String: String] = [:]) {
         self.path = path
@@ -74,15 +63,8 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         guard let fmtCtx = formatCtx else { return [] }
 
         // Setup interrupt callback to abort hung network requests or cancellation cleanly.
-        let token = self.cancelToken
-        typealias CancelCheck = @convention(c) (UnsafeMutableRawPointer?) -> Int32
-        let cancelCheck: CancelCheck = { opaque in
-            guard let opaque else { return 0 }
-            let token = Unmanaged<CancelToken>.fromOpaque(opaque).takeUnretainedValue()
-            return token.isCancelled ? 1 : 0
-        }
-        fmtCtx.pointee.interrupt_callback.opaque = Unmanaged.passUnretained(token).toOpaque()
-        fmtCtx.pointee.interrupt_callback.callback = cancelCheck
+        // `self` owns the token and outlives `fmtCtx`, which is closed before this method returns.
+        cancelToken.install(on: fmtCtx)
 
         var avOptions: OpaquePointer? = nil
         defer {
@@ -91,8 +73,8 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             }
         }
 
-        if MediaDemuxer.isNetworkURL(path) {
-            MediaDemuxer.applyNetworkOptions(&avOptions, headers: headers)
+        if MediaURL.isNetworkURL(path) {
+            MediaURL.applyNetworkOptions(&avOptions, headers: headers)
         }
 
         let cleanPath = PlayerEngine.normalizeMediaPath(path)
@@ -359,7 +341,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         }
         if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
             let data = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
-            return MediaDemuxer.parseDolbyVisionConfigurationBox(from: data)?.profile == 5
+            return HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: data)?.profile == 5
         }
         return false
     }

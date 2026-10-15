@@ -1,6 +1,5 @@
 import CFFmpeg
 import Foundation
-import os
 
 /// Reads a media resource's duration from its container header without decoding, so playlist rows
 /// and totals are known before each item is played.
@@ -12,23 +11,6 @@ enum MediaDurationProbe {
     /// Per-item limit, as in VLC's preparser: a stalled share or server must not hold up the queue.
     static let defaultTimeout: Duration = .seconds(5)
 
-    private final class Interrupt: Sendable {
-        let deadline: ContinuousClock.Instant
-        private let cancelled = OSAllocatedUnfairLock(initialState: false)
-
-        init(timeout: Duration) {
-            deadline = .now + timeout
-        }
-
-        var shouldAbort: Bool {
-            cancelled.withLock { $0 } || ContinuousClock.now >= deadline
-        }
-
-        func cancel() {
-            cancelled.withLock { $0 = true }
-        }
-    }
-
     /// Duration in seconds, or `nil` if the resource can't be opened in time or declares none.
     static func duration(
         of url: URL,
@@ -36,7 +18,7 @@ enum MediaDurationProbe {
         timeout: Duration = defaultTimeout
     ) async -> Double? {
         let path = url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
-        let interrupt = Interrupt(timeout: timeout)
+        let interrupt = FFmpegInterrupt(timeout: timeout)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
@@ -51,18 +33,14 @@ enum MediaDurationProbe {
         }
     }
 
-    private static func readDuration(path: String, headers: [String: String], interrupt: Interrupt) -> Double? {
+    private static func readDuration(path: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Double? {
         guard !interrupt.shouldAbort else { return nil }
 
         var formatCtx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
         guard let allocatedCtx = formatCtx else { return nil }
 
         // FFmpeg only takes a C callback here; `interrupt` outlives the context via withExtendedLifetime.
-        allocatedCtx.pointee.interrupt_callback.opaque = Unmanaged.passUnretained(interrupt).toOpaque()
-        allocatedCtx.pointee.interrupt_callback.callback = { opaque in
-            guard let opaque else { return 0 }
-            return Unmanaged<Interrupt>.fromOpaque(opaque).takeUnretainedValue().shouldAbort ? 1 : 0
-        }
+        interrupt.install(on: allocatedCtx)
 
         var options: OpaquePointer? = nil
         defer {
@@ -70,9 +48,9 @@ enum MediaDurationProbe {
                 av_dict_free(&options)
             }
         }
-        let isNetwork = MediaDemuxer.isNetworkURL(path)
+        let isNetwork = MediaURL.isNetworkURL(path)
         if isNetwork {
-            MediaDemuxer.applyNetworkOptions(&options, headers: headers)
+            MediaURL.applyNetworkOptions(&options, headers: headers)
         }
 
         // On failure avformat_open_input frees the context itself.

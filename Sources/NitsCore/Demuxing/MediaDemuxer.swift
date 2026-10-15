@@ -141,7 +141,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             lock.unlock()
             return nil
         }
-        let isNetwork = Self.isNetworkURL(url)
+        let isNetwork = MediaURL.isNetworkURL(url)
         lock.unlock()
 
         // For network streams, do NOT spin a secondary demuxer loop to EOF.
@@ -151,136 +151,14 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         // For local files, secondary background extraction can index the entire file quickly.
-        let doc = Self.extractEmbeddedSubtitles(url: url, headers: headers, streamIndex: track.streamIndex)
+        let doc = EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+            url: url, headers: headers, streamIndex: track.streamIndex)
         if let doc {
             lock.lock()
             self.cachedSubtitleDocuments[trackId] = doc
             lock.unlock()
         }
         return doc
-    }
-
-    /// Dedicated fast extraction of text subtitles from media stream without disturbing playback queues.
-    private static func extractEmbeddedSubtitles(url: String, headers: [String: String], streamIndex: Int)
-        -> SubtitleDocument?
-    {
-        var options: OpaquePointer? = nil
-        defer { if options != nil { av_dict_free(&options) } }
-
-        if Self.isNetworkURL(url) {
-            Self.applyNetworkOptions(&options, headers: headers)
-        } else {
-            for (k, v) in headers {
-                av_dict_set(&options, k, v, 0)
-            }
-        }
-
-        var tempCtx: UnsafeMutablePointer<AVFormatContext>? = nil
-        let ret = avformat_open_input(&tempCtx, url, nil, &options)
-        guard ret == 0, let ctx = tempCtx else { return nil }
-        defer { avformat_close_input(&tempCtx) }
-
-        guard avformat_find_stream_info(ctx, nil) >= 0, streamIndex < Int(ctx.pointee.nb_streams) else {
-            return nil
-        }
-
-        // Discard packets on all streams except the target subtitle stream to prevent reading heavy video/audio frames
-        for i in 0..<Int(ctx.pointee.nb_streams) {
-            if i != streamIndex, let st = ctx.pointee.streams[i] {
-                st.pointee.discard = AVDISCARD_ALL
-            }
-        }
-
-        let stream = ctx.pointee.streams[streamIndex]!
-        let timebase = stream.pointee.time_base
-        let codecId = stream.pointee.codecpar.pointee.codec_id
-        guard timebase.den > 0 else { return nil }
-
-        var cues: [SubtitleCue] = []
-        var cueIndex = 0
-
-        var pkt = AVPacket()
-
-        let origin = Self.timelineOrigin(of: ctx)
-        while !Task.isCancelled && av_read_frame(ctx, &pkt) >= 0 {
-            Self.rebase(&pkt, origin: origin, in: ctx)
-            if pkt.stream_index == streamIndex {
-                if let cue = Self.parseSubtitleCue(pkt: &pkt, timebase: timebase, codecId: codecId, cueIndex: cueIndex)
-                {
-                    cueIndex += 1
-                    cues.append(cue)
-                }
-            }
-            av_packet_unref(&pkt)
-        }
-
-        return SubtitleDocument(cues: cues)
-    }
-
-    /// Parses an individual subtitle AVPacket into a SubtitleCue.
-    private static func parseSubtitleCue(
-        pkt: UnsafeMutablePointer<AVPacket>,
-        timebase: AVRational,
-        codecId: AVCodecID,
-        cueIndex: Int
-    ) -> SubtitleCue? {
-        guard pkt.pointee.size > 0, timebase.den > 0 else { return nil }
-        var textData = Data(bytes: pkt.pointee.data, count: Int(pkt.pointee.size))
-
-        // For MP4 mov_text (AV_CODEC_ID_MOV_TEXT), first 2 bytes are uint16_t length prefix
-        if codecId == AV_CODEC_ID_MOV_TEXT, textData.count >= 2 {
-            let textLength = Int(textData[0]) << 8 | Int(textData[1])
-            if textLength <= (textData.count - 2) {
-                textData = textData.subdata(in: 2..<(2 + textLength))
-            } else {
-                textData = textData.dropFirst(2)
-            }
-        }
-
-        guard var rawString = String(data: textData, encoding: .utf8) ?? String(data: textData, encoding: .ascii) else {
-            return nil
-        }
-
-        // For ASS / SSA subtitles, strip the leading comma-separated metadata fields
-        // Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text (8 commas before text)
-        // Or if raw line has "Dialogue: " prefix (9 commas before text)
-        if codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA {
-            if rawString.hasPrefix("Dialogue:") {
-                let parts = rawString.components(separatedBy: ",")
-                if parts.count >= 10 {
-                    rawString = parts.suffix(from: 9).joined(separator: ",")
-                }
-            } else {
-                let parts = rawString.components(separatedBy: ",")
-                if parts.count >= 9 {
-                    rawString = parts.suffix(from: 8).joined(separator: ",")
-                }
-            }
-        }
-
-        let alignment = SubtitleDocument.parseAlignment(from: rawString)
-        let clean = SubtitleDocument.cleanFormattingTags(rawString).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return nil }
-
-        let noPtsValue: Int64 = Int64.min
-        let rawPts =
-            pkt.pointee.pts != noPtsValue ? pkt.pointee.pts : (pkt.pointee.dts != noPtsValue ? pkt.pointee.dts : 0)
-        let startSec = Double(rawPts) * Double(timebase.num) / Double(timebase.den)
-        let durationSec: Double
-        if pkt.pointee.duration > 0 {
-            durationSec = Double(pkt.pointee.duration) * Double(timebase.num) / Double(timebase.den)
-        } else {
-            // Default display duration 4.0 seconds if unspecified
-            durationSec = 4.0
-        }
-
-        return SubtitleCue(
-            id: cueIndex,
-            startTime: max(0.0, startSec),
-            endTime: max(startSec + 0.5, startSec + durationSec),
-            text: clean,
-            alignment: alignment
-        )
     }
 
     /// Ingests a subtitle packet into liveSubtitleCues (called with lock held).
@@ -294,7 +172,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         let codecId = stream.pointee.codecpar.pointee.codec_id
         let nextIndex = liveSubtitleState.withLock { $0.cues.count } + 1
 
-        guard let newCue = Self.parseSubtitleCue(pkt: pkt, timebase: timebase, codecId: codecId, cueIndex: nextIndex)
+        guard
+            let newCue = EmbeddedSubtitleReader.parseSubtitleCue(
+                pkt: pkt, timebase: timebase, codecId: codecId, cueIndex: nextIndex)
         else {
             return
         }
@@ -452,40 +332,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     private var masteringDisplay: Data?
     private var contentLightLevel: Data?
 
-    public final class InterruptContext: @unchecked Sendable {
-        private let lock = OSAllocatedUnfairLock()
-        private var _isCancelled = false
-        private var _lastErrorCode: Int32?
-        private var _lastErrorMessage: String?
-
-        public init() {}
-
-        public var isCancelled: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return _isCancelled
-        }
-
-        public func cancel() {
-            lock.lock()
-            _isCancelled = true
-            lock.unlock()
-        }
-
-        public var lastError: (code: Int32, message: String)? {
-            lock.lock()
-            defer { lock.unlock() }
-            guard let code = _lastErrorCode, let msg = _lastErrorMessage else { return nil }
-            return (code, msg)
-        }
-
-        public func recordError(code: Int32, message: String) {
-            lock.lock()
-            _lastErrorCode = code
-            _lastErrorMessage = message
-            lock.unlock()
-        }
-    }
+    /// Cancels this demuxer's blocking I/O; share one across demuxers to cancel a whole load.
+    public typealias InterruptContext = FFmpegInterrupt
 
     private let interruptContext: InterruptContext
     private let ownsInterruptContext: Bool
@@ -509,105 +357,6 @@ public final class MediaDemuxer: @unchecked Sendable {
         return "FFmpeg error (\(code))"
     }
 
-    public static func isNetworkURL(_ path: String) -> Bool {
-        guard let url = URL(string: path), let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
-    }
-
-    /// Adds custom HTTP headers (CRLF-sanitized) plus reconnect and 10 s I/O timeout settings to
-    /// `avformat_open_input` options for a network URL.
-    static func applyNetworkOptions(_ options: inout OpaquePointer?, headers: [String: String]) {
-        if !headers.isEmpty {
-            var headerString = ""
-            for (key, value) in headers {
-                // Sanitize against CRLF injection
-                let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                guard !cleanKey.isEmpty else { continue }
-
-                if cleanKey.lowercased() == "user-agent" {
-                    _ = av_dict_set(&options, "user_agent", cleanVal, 0)
-                } else {
-                    headerString += "\(cleanKey): \(cleanVal)\r\n"
-                }
-            }
-            if !headerString.isEmpty {
-                _ = av_dict_set(&options, "headers", headerString, 0)
-            }
-        }
-
-        _ = av_dict_set(&options, "reconnect", "1", 0)
-        _ = av_dict_set(&options, "reconnect_streamed", "1", 0)
-        _ = av_dict_set(&options, "reconnect_delay_max", "5", 0)
-        // 10-second timeout in microseconds for network I/O
-        _ = av_dict_set(&options, "rw_timeout", "10000000", 0)
-        _ = av_dict_set(&options, "timeout", "10000000", 0)
-    }
-
-    /// Checks if a network URL points to a local area network (LAN) / private network address
-    /// (e.g. 192.168.x.x, 10.x.x.x, 172.16-31.x.x, 127.0.0.1, localhost, .local, etc.)
-    public static func isLocalNetworkURL(_ path: String) -> Bool {
-        guard let url = URL(string: path), let rawHost = url.host?.lowercased() else { return false }
-        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-
-        // Loopback and local domain suffixes
-        if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-            return true
-        }
-        if host.hasSuffix(".local") || host.hasSuffix(".lan") || host.hasSuffix(".home")
-            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa") || host.hasSuffix(".localdomain")
-        {
-            return true
-        }
-
-        // IPv4 parsing (e.g. 192.168.1.83)
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        if parts.count == 4 && parts.allSatisfy({ $0 >= 0 && $0 <= 255 }) {
-            let p0 = parts[0]
-            let p1 = parts[1]
-            // 10.0.0.0/8 (10.x.x.x)
-            if p0 == 10 { return true }
-            // 172.16.0.0/12 (172.16.x.x - 172.31.x.x)
-            if p0 == 172 && (16...31).contains(p1) { return true }
-            // 192.168.0.0/16 (192.168.x.x)
-            if p0 == 192 && p1 == 168 { return true }
-            // 169.254.0.0/16 (link-local)
-            if p0 == 169 && p1 == 254 { return true }
-            // 127.0.0.0/8 (loopback)
-            if p0 == 127 { return true }
-        }
-
-        // IPv6 Link-Local (fe80::/10) or Unique Local (fc00::/7 - fc.. or fd..)
-        if host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") {
-            return true
-        }
-
-        return false
-    }
-
-    /// Checks if a path points to a remote streaming resource or a mounted remote volume (e.g. NFS, SMB, AFP under /Volumes/).
-    /// Opening such resources can incur network latency and must be performed asynchronously.
-    public static func isRemoteOrMountedVolume(_ path: String) -> Bool {
-        if isNetworkURL(path) {
-            return true
-        }
-        // Network schemes
-        if path.hasPrefix("nfs://") || path.hasPrefix("smb://") || path.hasPrefix("afp://") || path.hasPrefix("rtsp://")
-        {
-            return true
-        }
-        // Mounted volumes outside boot drive (e.g. /Volumes/Drive/...)
-        if path.hasPrefix("/Volumes/") {
-            let url = URL(fileURLWithPath: path)
-            if let values = try? url.resourceValues(forKeys: [.volumeIsLocalKey]), let isLocal = values.volumeIsLocal {
-                return !isLocal
-            }
-            // If resourceValues cannot determine or path is under /Volumes/, treat as potentially remote
-            return true
-        }
-        return false
-    }
-
     public convenience init?(url: String) {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
@@ -626,13 +375,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         // Setup interrupt callback to abort hung network requests cleanly.
         // `self.interruptContext` keeps a strong reference to `ctxContext` across the lifetime of MediaDemuxer.
-        allocatedCtx.pointee.interrupt_callback.opaque = Unmanaged.passUnretained(ctxContext).toOpaque()
-        allocatedCtx.pointee.interrupt_callback.callback = { opaque in
-            guard let opaque else { return 0 }
-            let unmanagedContext = Unmanaged<InterruptContext>.fromOpaque(opaque)
-            let instance = unmanagedContext.takeUnretainedValue()
-            return instance.isCancelled ? 1 : 0
-        }
+        ctxContext.install(on: allocatedCtx)
 
         var avOptions: OpaquePointer? = nil
         defer {
@@ -641,9 +384,9 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        let isNetworkURL = Self.isNetworkURL(url)
+        let isNetworkURL = MediaURL.isNetworkURL(url)
         if isNetworkURL {
-            Self.applyNetworkOptions(&avOptions, headers: headers)
+            MediaURL.applyNetworkOptions(&avOptions, headers: headers)
         }
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
@@ -675,379 +418,20 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         for i in 0..<Int(formatCtx.pointee.nb_streams) {
             let stream = formatCtx.pointee.streams[i]!
-            let codecId = stream.pointee.codecpar.pointee.codec_id
+            let codecType = stream.pointee.codecpar.pointee.codec_type
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
-            if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
-                && !isAttachedPic
-                && self.videoStreamIndex < 0,
-                let detectedCodec = VideoCodec.from(codecId: codecId)
+            if codecType == AVMEDIA_TYPE_VIDEO && !isAttachedPic && self.videoStreamIndex < 0,
+                let detectedCodec = VideoCodec.from(codecId: stream.pointee.codecpar.pointee.codec_id)
             {
-                self.videoStreamIndex = i
-                self.timebase = stream.pointee.time_base
-                self.codec = detectedCodec
-                self.width = Int(stream.pointee.codecpar.pointee.width)
-                self.height = Int(stream.pointee.codecpar.pointee.height)
-
-                // Guess or extract Sample Aspect Ratio (SAR / PAR)
-                let guessedSAR = av_guess_sample_aspect_ratio(formatCtx, stream, nil)
-                if guessedSAR.num > 0 && guessedSAR.den > 0 {
-                    self.sampleAspectRatio = RationalAspectRatio(
-                        numerator: Int(guessedSAR.num), denominator: Int(guessedSAR.den))
-                } else if stream.pointee.sample_aspect_ratio.num > 0 && stream.pointee.sample_aspect_ratio.den > 0 {
-                    self.sampleAspectRatio = RationalAspectRatio(
-                        numerator: Int(stream.pointee.sample_aspect_ratio.num),
-                        denominator: Int(stream.pointee.sample_aspect_ratio.den)
-                    )
-                } else if stream.pointee.codecpar.pointee.sample_aspect_ratio.num > 0
-                    && stream.pointee.codecpar.pointee.sample_aspect_ratio.den > 0
-                {
-                    self.sampleAspectRatio = RationalAspectRatio(
-                        numerator: Int(stream.pointee.codecpar.pointee.sample_aspect_ratio.num),
-                        denominator: Int(stream.pointee.codecpar.pointee.sample_aspect_ratio.den)
-                    )
-                } else {
-                    self.sampleAspectRatio = .square
-                }
-
-                if stream.pointee.duration > 0 {
-                    self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
-                } else if formatCtx.pointee.duration > 0 {
-                    self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
-                }
-
-                // Compute nominal frame duration from stream frame rate with sanity clamp (1 to 240 fps)
-                let avg = stream.pointee.avg_frame_rate
-                let r = stream.pointee.r_frame_rate
-                let rawDuration: Double =
-                    if avg.num > 0 && avg.den > 0 {
-                        Double(avg.den) / Double(avg.num)
-                    } else if r.num > 0 && r.den > 0 {
-                        Double(r.den) / Double(r.num)
-                    } else {
-                        1.0 / 24.0
-                    }
-                self.nominalFrameDuration =
-                    (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
-
-                // Untagged streams: SD resolutions are BT.601 (DVD, DV, DivX rips), everything else BT.709.
-                let sdPrimaries = Self.standardDefinitionPrimaries(width: self.width, height: self.height)
-
-                // Dynamically map color primaries
-                if let primaries = CVColorPrimariesGetStringForIntegerCodePoint(
-                    Int32(stream.pointee.codecpar.pointee.color_primaries.rawValue))
-                {
-                    self.colorPrimaries = primaries.takeUnretainedValue()
-                } else {
-                    switch stream.pointee.codecpar.pointee.color_primaries {
-                    case AVCOL_PRI_BT709:
-                        self.colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_709_2
-                    case AVCOL_PRI_BT2020:
-                        self.colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_2020
-                    case AVCOL_PRI_SMPTE431:
-                        self.colorPrimaries = kCVImageBufferColorPrimaries_DCI_P3
-                    case AVCOL_PRI_SMPTE432:
-                        self.colorPrimaries = kCVImageBufferColorPrimaries_P3_D65
-                    default:
-                        self.colorPrimaries = sdPrimaries ?? kCVImageBufferColorPrimaries_ITU_R_709_2
-                    }
-                }
-
-                // Dynamically map transfer characteristics (TRC)
-                if let trc = CVTransferFunctionGetStringForIntegerCodePoint(
-                    Int32(stream.pointee.codecpar.pointee.color_trc.rawValue))
-                {
-                    self.transferFunction = trc.takeUnretainedValue()
-                } else {
-                    switch stream.pointee.codecpar.pointee.color_trc {
-                    case AVCOL_TRC_BT709, AVCOL_TRC_SMPTE170M, AVCOL_TRC_SMPTE240M:
-                        self.transferFunction = kCVImageBufferTransferFunction_ITU_R_709_2
-                    case AVCOL_TRC_SMPTE2084:
-                        self.transferFunction = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
-                    case AVCOL_TRC_ARIB_STD_B67:
-                        self.transferFunction = kCVImageBufferTransferFunction_ITU_R_2100_HLG
-                    case AVCOL_TRC_GAMMA22:
-                        self.transferFunction = kCVImageBufferTransferFunction_UseGamma
-                    case AVCOL_TRC_LINEAR:
-                        self.transferFunction = kCVImageBufferTransferFunction_Linear
-                    default:
-                        self.transferFunction = kCVImageBufferTransferFunction_ITU_R_709_2
-                    }
-                }
-
-                // Dynamically map YCbCr color matrix / colorspace
-                if let matrix = CVYCbCrMatrixGetStringForIntegerCodePoint(
-                    Int32(stream.pointee.codecpar.pointee.color_space.rawValue))
-                {
-                    self.yCbCrMatrix = matrix.takeUnretainedValue()
-                } else {
-                    switch stream.pointee.codecpar.pointee.color_space {
-                    case AVCOL_SPC_BT709:
-                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2
-                    case AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT2020_CL:
-                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
-                    case AVCOL_SPC_BT470BG, AVCOL_SPC_SMPTE170M:
-                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4
-                    case AVCOL_SPC_SMPTE240M:
-                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995
-                    default:
-                        self.yCbCrMatrix =
-                            sdPrimaries != nil
-                            ? kCVImageBufferYCbCrMatrix_ITU_R_601_4 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
-                    }
-                }
-
-                // Range
-                if stream.pointee.codecpar.pointee.color_range == AVCOL_RANGE_JPEG {
-                    self.isFullRange = true
-                } else {
-                    self.isFullRange = false
-                }
-
-                // Bit depth detection
-                let pixFmt = stream.pointee.codecpar.pointee.format
-                if pixFmt == AV_PIX_FMT_YUV420P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV420P10BE.rawValue
-                    || pixFmt == AV_PIX_FMT_YUV422P10LE.rawValue || pixFmt == AV_PIX_FMT_YUV444P10LE.rawValue
-                    || ((codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_AV1 || codecId == AV_CODEC_ID_VP9)
-                        && (self.transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
-                            || self.transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG))
-                {
-                    self.bitDepth = 10
-                } else {
-                    self.bitDepth = 8
-                }
-
-                // Dolby Vision Detection (Profiles 5, 8.1, 8.4):
-                // In MP4/MKV it is identified by dvvC/dvcC box (or stream side data).
-                // Profile 5 uses IPTc2 color space with PQ transfer function.
-                // Profile 8 uses standard BT.2020 PQ (8.1) or HLG (8.4) with dynamic RPU metadata.
-                if let extradata = stream.pointee.codecpar.pointee.extradata,
-                    stream.pointee.codecpar.pointee.extradata_size >= 24
-                {
-                    let extraDataSize = Int(stream.pointee.codecpar.pointee.extradata_size)
-                    let extraData = Data(bytes: extradata, count: extraDataSize)
-                    if let parsed = Self.parseDolbyVisionConfigurationBox(from: extraData) {
-                        self.dolbyVisionProfile = parsed.profile
-                        self.dolbyVisionCompatibilityId = parsed.compatibilityId
-                        self.dolbyVisionConfigData = parsed.configData
-                        self.bitDepth = 10
-                        if parsed.profile == 5 {
-                            self.isDolbyVisionProfile5 = true
-                        }
-                        AppLog.info(
-                            .video,
-                            "Detected Dolby Vision Profile \(parsed.profile) (dvcC/dvvC payload: \(parsed.configData.count) bytes, compatibility id: \(parsed.compatibilityId))"
-                        )
-                    }
-                }
-
-                let sideDataCount = Int(stream.pointee.codecpar.pointee.nb_coded_side_data)
-                if sideDataCount > 0, let sideDataList = stream.pointee.codecpar.pointee.coded_side_data {
-                    for s in 0..<sideDataCount {
-                        let sd = sideDataList[s]
-                        if self.dolbyVisionProfile == nil && sd.type == AV_PKT_DATA_DOVI_CONF, let sdData = sd.data,
-                            sd.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
-                        {
-                            let doviConf = UnsafeMutableRawPointer(sdData).assumingMemoryBound(
-                                to: AVDOVIDecoderConfigurationRecord.self)
-                            let dvProfile = Int(doviConf.pointee.dv_profile)
-                            let compatId = Int(doviConf.pointee.dv_bl_signal_compatibility_id & 0x0F)
-                            self.dolbyVisionProfile = dvProfile
-                            self.dolbyVisionCompatibilityId = compatId
-                            self.bitDepth = 10
-                            if dvProfile == 5 {
-                                self.isDolbyVisionProfile5 = true
-                            }
-                            // Construct standard 24-byte DOVI configuration box payload per ISO/IEC 14496-15
-                            var boxPayload = [UInt8](repeating: 0, count: 24)
-                            boxPayload[0] = doviConf.pointee.dv_version_major
-                            boxPayload[1] = doviConf.pointee.dv_version_minor
-                            let p = doviConf.pointee.dv_profile
-                            let l = doviConf.pointee.dv_level
-                            let rpu = doviConf.pointee.rpu_present_flag & 0x01
-                            let el = doviConf.pointee.el_present_flag & 0x01
-                            let bl = doviConf.pointee.bl_present_flag & 0x01
-                            boxPayload[2] = ((p & 0x7F) << 1) | ((l >> 5) & 0x01)
-                            boxPayload[3] = ((l & 0x1F) << 3) | (rpu << 2) | (el << 1) | bl
-                            boxPayload[4] = UInt8(compatId << 4)
-                            self.dolbyVisionConfigData = Data(boxPayload)
-                            AppLog.info(
-                                .video,
-                                "Detected Dolby Vision Profile \(dvProfile) via FFmpeg side data (compatibility id: \(compatId))"
-                            )
-                        } else if sd.type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL, let sdData = sd.data,
-                            sd.size >= MemoryLayout<AVContentLightMetadata>.size
-                        {
-                            let clm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(
-                                to: AVContentLightMetadata.self)
-                            if clm.pointee.MaxCLL > 0 {
-                                self.maxPeakNits = Float(clm.pointee.MaxCLL)
-                            }
-                            if clm.pointee.MaxFALL > 0 {
-                                self.maxFallNits = Float(clm.pointee.MaxFALL)
-                            }
-                            var cllBytes = [UInt8](repeating: 0, count: 4)
-                            cllBytes[0] = UInt8((clm.pointee.MaxCLL >> 8) & 0xFF)
-                            cllBytes[1] = UInt8(clm.pointee.MaxCLL & 0xFF)
-                            cllBytes[2] = UInt8((clm.pointee.MaxFALL >> 8) & 0xFF)
-                            cllBytes[3] = UInt8(clm.pointee.MaxFALL & 0xFF)
-                            self.contentLightLevel = Data(cllBytes)
-                            AppLog.info(
-                                .video,
-                                "Extracted ContentLightLevel from side data: MaxCLL=\(clm.pointee.MaxCLL), MaxFALL=\(clm.pointee.MaxFALL)"
-                            )
-                        } else if sd.type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA, let sdData = sd.data,
-                            sd.size >= MemoryLayout<AVMasteringDisplayMetadata>.size
-                        {
-                            let mdm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(
-                                to: AVMasteringDisplayMetadata.self)
-                            if mdm.pointee.has_luminance != 0 && mdm.pointee.max_luminance.den > 0 {
-                                let maxLum = Float(mdm.pointee.max_luminance.num) / Float(mdm.pointee.max_luminance.den)
-                                if self.maxPeakNits == 1000.0 && maxLum > 0 {
-                                    self.maxPeakNits = maxLum
-                                }
-                            }
-                            if mdm.pointee.has_primaries != 0 && mdm.pointee.has_luminance != 0 {
-                                var mdBytes = [UInt8](repeating: 0, count: 24)
-                                let rx = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.0.0.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.0.0.den)))
-                                let ry = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.0.1.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.0.1.den)))
-                                let gx = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.1.0.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.1.0.den)))
-                                let gy = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.1.1.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.1.1.den)))
-                                let bx = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.2.0.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.2.0.den)))
-                                let by = UInt16(
-                                    clamping: Int(mdm.pointee.display_primaries.2.1.num) * 50000
-                                        / Int(max(1, mdm.pointee.display_primaries.2.1.den)))
-                                let wx = UInt16(
-                                    clamping: Int(mdm.pointee.white_point.0.num) * 50000
-                                        / Int(max(1, mdm.pointee.white_point.0.den)))
-                                let wy = UInt16(
-                                    clamping: Int(mdm.pointee.white_point.1.num) * 50000
-                                        / Int(max(1, mdm.pointee.white_point.1.den)))
-                                let maxL = UInt32(
-                                    clamping: Int64(mdm.pointee.max_luminance.num) * 10000
-                                        / Int64(max(1, mdm.pointee.max_luminance.den)))
-                                let minL = UInt32(
-                                    clamping: Int64(mdm.pointee.min_luminance.num) * 10000
-                                        / Int64(max(1, mdm.pointee.min_luminance.den)))
-                                mdBytes[0] = UInt8(rx >> 8)
-                                mdBytes[1] = UInt8(rx & 0xFF)
-                                mdBytes[2] = UInt8(ry >> 8)
-                                mdBytes[3] = UInt8(ry & 0xFF)
-                                mdBytes[4] = UInt8(gx >> 8)
-                                mdBytes[5] = UInt8(gx & 0xFF)
-                                mdBytes[6] = UInt8(gy >> 8)
-                                mdBytes[7] = UInt8(gy & 0xFF)
-                                mdBytes[8] = UInt8(bx >> 8)
-                                mdBytes[9] = UInt8(bx & 0xFF)
-                                mdBytes[10] = UInt8(by >> 8)
-                                mdBytes[11] = UInt8(by & 0xFF)
-                                mdBytes[12] = UInt8(wx >> 8)
-                                mdBytes[13] = UInt8(wx & 0xFF)
-                                mdBytes[14] = UInt8(wy >> 8)
-                                mdBytes[15] = UInt8(wy & 0xFF)
-                                mdBytes[16] = UInt8((maxL >> 24) & 0xFF)
-                                mdBytes[17] = UInt8((maxL >> 16) & 0xFF)
-                                mdBytes[18] = UInt8((maxL >> 8) & 0xFF)
-                                mdBytes[19] = UInt8(maxL & 0xFF)
-                                mdBytes[20] = UInt8((minL >> 24) & 0xFF)
-                                mdBytes[21] = UInt8((minL >> 16) & 0xFF)
-                                mdBytes[22] = UInt8((minL >> 8) & 0xFF)
-                                mdBytes[23] = UInt8(minL & 0xFF)
-                                self.masteringDisplay = Data(mdBytes)
-                            }
-                        }
-                    }
-                }
-            } else if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
-                // Read track metadata (title, language)
-                var title = ""
-                var lang = ""
-                if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-                    title = String(cString: titleTag.pointee.value)
-                }
-                if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
-                    lang = String(cString: langTag.pointee.value)
-                }
-                let codecNameStr: String
-                if let codecDesc = avcodec_descriptor_get(codecId), let name = codecDesc.pointee.name {
-                    codecNameStr = String(cString: name)
-                } else {
-                    codecNameStr = "audio"
-                }
-
-                let track = AudioTrack(
-                    id: self.audioTracks.count,
-                    streamIndex: i,
-                    title: title,
-                    language: lang,
-                    codecName: codecNameStr,
-                    channels: Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels),
-                    sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate)
-                )
-                self.audioTracks.append(track)
-
-                if self.audioStreamIndex < 0 {
-                    // First audio stream found - select as default
-                    self.audioStreamIndex = i
-                    self.selectedAudioTrackIndex = track.id
-                    self.audioTimebase = stream.pointee.time_base
-                    self.audioCodecId = codecId
-                    self.hasAudio = true
-                    self.audioChannels = track.channels
-                    self.audioSampleRate = track.sampleRate
-                    if let ed = stream.pointee.codecpar.pointee.extradata,
-                        stream.pointee.codecpar.pointee.extradata_size > 0
-                    {
-                        self.audioExtraData = Data(
-                            bytes: ed, count: Int(stream.pointee.codecpar.pointee.extradata_size))
-                    }
-                }
-            } else if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE {
-                // Support text subtitle formats: subrip (SRT), webvtt, mov_text, ASS, SSA
-                let isTextSub =
-                    (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
-                        || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
-                if isTextSub {
-                    var title = ""
-                    var lang = ""
-                    if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-                        title = String(cString: titleTag.pointee.value)
-                    }
-                    if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
-                        lang = String(cString: langTag.pointee.value)
-                    }
-                    let isForced = title.localizedCaseInsensitiveContains("forced")
-                    let isSDH = title.localizedCaseInsensitiveContains("sdh")
-                    let displayTitle =
-                        title.isEmpty
-                        ? (lang.isEmpty ? "Subtitle \(self.subtitleTracks.count + 1)" : lang.uppercased()) : title
-
-                    let subTrack = SubtitleTrack(
-                        id: self.subtitleTracks.count,
-                        streamIndex: i,
-                        title: displayTitle,
-                        language: lang,
-                        isExternal: false,
-                        isForced: isForced,
-                        isSDH: isSDH
-                    )
-                    self.subtitleTracks.append(subTrack)
-                }
+                configureVideoStream(stream, index: i, codec: detectedCodec, in: formatCtx)
+            } else if codecType == AVMEDIA_TYPE_AUDIO {
+                registerAudioTrack(stream, index: i)
+            } else if codecType == AVMEDIA_TYPE_SUBTITLE {
+                registerSubtitleTrack(stream, index: i)
             }
 
             // Extract embedded artwork (cover art / attached picture) if present
-            if (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0,
-                self.embeddedArtworkData == nil
-            {
+            if isAttachedPic, self.embeddedArtworkData == nil {
                 let attachedPic = stream.pointee.attached_pic
                 if let picData = attachedPic.data, attachedPic.size > 0 {
                     self.embeddedArtworkData = Data(bytes: picData, count: Int(attachedPic.size))
@@ -1073,6 +457,225 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
+    }
+
+    // MARK: - Stream discovery
+
+    /// Adopts `stream` as the video stream: geometry, timing, colorimetry, Dolby Vision and HDR metadata.
+    private func configureVideoStream(
+        _ stream: UnsafeMutablePointer<AVStream>, index: Int, codec detectedCodec: VideoCodec,
+        in formatCtx: UnsafeMutablePointer<AVFormatContext>
+    ) {
+        let codecpar = stream.pointee.codecpar!
+        self.videoStreamIndex = index
+        self.timebase = stream.pointee.time_base
+        self.codec = detectedCodec
+        self.width = Int(codecpar.pointee.width)
+        self.height = Int(codecpar.pointee.height)
+
+        // Guess or extract Sample Aspect Ratio (SAR / PAR)
+        let guessedSAR = av_guess_sample_aspect_ratio(formatCtx, stream, nil)
+        if guessedSAR.num > 0 && guessedSAR.den > 0 {
+            self.sampleAspectRatio = RationalAspectRatio(
+                numerator: Int(guessedSAR.num), denominator: Int(guessedSAR.den))
+        } else if stream.pointee.sample_aspect_ratio.num > 0 && stream.pointee.sample_aspect_ratio.den > 0 {
+            self.sampleAspectRatio = RationalAspectRatio(
+                numerator: Int(stream.pointee.sample_aspect_ratio.num),
+                denominator: Int(stream.pointee.sample_aspect_ratio.den)
+            )
+        } else if codecpar.pointee.sample_aspect_ratio.num > 0 && codecpar.pointee.sample_aspect_ratio.den > 0 {
+            self.sampleAspectRatio = RationalAspectRatio(
+                numerator: Int(codecpar.pointee.sample_aspect_ratio.num),
+                denominator: Int(codecpar.pointee.sample_aspect_ratio.den)
+            )
+        } else {
+            self.sampleAspectRatio = .square
+        }
+
+        if stream.pointee.duration > 0 {
+            self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
+        } else if formatCtx.pointee.duration > 0 {
+            self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
+        }
+
+        // Compute nominal frame duration from stream frame rate with sanity clamp (1 to 240 fps)
+        let avg = stream.pointee.avg_frame_rate
+        let r = stream.pointee.r_frame_rate
+        let rawDuration: Double =
+            if avg.num > 0 && avg.den > 0 {
+                Double(avg.den) / Double(avg.num)
+            } else if r.num > 0 && r.den > 0 {
+                Double(r.den) / Double(r.num)
+            } else {
+                1.0 / 24.0
+            }
+        self.nominalFrameDuration =
+            (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
+
+        let colorimetry = StreamColorimetry(codecParameters: codecpar, width: width, height: height)
+        self.colorPrimaries = colorimetry.colorPrimaries
+        self.transferFunction = colorimetry.transferFunction
+        self.yCbCrMatrix = colorimetry.yCbCrMatrix
+        self.isFullRange = colorimetry.isFullRange
+        self.bitDepth = colorimetry.bitDepth
+
+        // Dolby Vision Detection (Profiles 5, 8.1, 8.4):
+        // In MP4/MKV it is identified by dvvC/dvcC box (or stream side data).
+        // Profile 5 uses IPTc2 color space with PQ transfer function.
+        // Profile 8 uses standard BT.2020 PQ (8.1) or HLG (8.4) with dynamic RPU metadata.
+        if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
+            let extraData = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
+            if let parsed = HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: extraData) {
+                self.dolbyVisionProfile = parsed.profile
+                self.dolbyVisionCompatibilityId = parsed.compatibilityId
+                self.dolbyVisionConfigData = parsed.configData
+                self.bitDepth = 10
+                if parsed.profile == 5 {
+                    self.isDolbyVisionProfile5 = true
+                }
+                AppLog.info(
+                    .video,
+                    "Detected Dolby Vision Profile \(parsed.profile) (dvcC/dvvC payload: \(parsed.configData.count) bytes, compatibility id: \(parsed.compatibilityId))"
+                )
+            }
+        }
+
+        readHDRSideData(of: codecpar)
+    }
+
+    /// Dolby Vision configuration (when extradata had none), content light level and mastering display from
+    /// the stream's coded side data. Mastering luminance only fills in a peak still at its 1000-nit default.
+    private func readHDRSideData(of codecpar: UnsafeMutablePointer<AVCodecParameters>) {
+        let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
+        guard sideDataCount > 0, let sideDataList = codecpar.pointee.coded_side_data else { return }
+        for s in 0..<sideDataCount {
+            let sd = sideDataList[s]
+            if self.dolbyVisionProfile == nil && sd.type == AV_PKT_DATA_DOVI_CONF, let sdData = sd.data,
+                sd.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
+            {
+                let doviConf = UnsafeMutableRawPointer(sdData).assumingMemoryBound(
+                    to: AVDOVIDecoderConfigurationRecord.self)
+                let dvProfile = Int(doviConf.pointee.dv_profile)
+                let compatId = Int(doviConf.pointee.dv_bl_signal_compatibility_id & 0x0F)
+                self.dolbyVisionProfile = dvProfile
+                self.dolbyVisionCompatibilityId = compatId
+                self.bitDepth = 10
+                if dvProfile == 5 {
+                    self.isDolbyVisionProfile5 = true
+                }
+                self.dolbyVisionConfigData = HDRMetadataEncoding.dolbyVisionConfigurationBox(doviConf.pointee)
+                AppLog.info(
+                    .video,
+                    "Detected Dolby Vision Profile \(dvProfile) via FFmpeg side data (compatibility id: \(compatId))"
+                )
+            } else if sd.type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL, let sdData = sd.data,
+                sd.size >= MemoryLayout<AVContentLightMetadata>.size
+            {
+                let clm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(to: AVContentLightMetadata.self)
+                if clm.pointee.MaxCLL > 0 {
+                    self.maxPeakNits = Float(clm.pointee.MaxCLL)
+                }
+                if clm.pointee.MaxFALL > 0 {
+                    self.maxFallNits = Float(clm.pointee.MaxFALL)
+                }
+                self.contentLightLevel = HDRMetadataEncoding.contentLightLevelInfo(clm.pointee)
+                AppLog.info(
+                    .video,
+                    "Extracted ContentLightLevel from side data: MaxCLL=\(clm.pointee.MaxCLL), MaxFALL=\(clm.pointee.MaxFALL)"
+                )
+            } else if sd.type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA, let sdData = sd.data,
+                sd.size >= MemoryLayout<AVMasteringDisplayMetadata>.size
+            {
+                let mdm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(to: AVMasteringDisplayMetadata.self)
+                if mdm.pointee.has_luminance != 0 && mdm.pointee.max_luminance.den > 0 {
+                    let maxLum = Float(mdm.pointee.max_luminance.num) / Float(mdm.pointee.max_luminance.den)
+                    if self.maxPeakNits == 1000.0 && maxLum > 0 {
+                        self.maxPeakNits = maxLum
+                    }
+                }
+                if mdm.pointee.has_primaries != 0 && mdm.pointee.has_luminance != 0 {
+                    self.masteringDisplay = HDRMetadataEncoding.masteringDisplayColourVolume(mdm.pointee)
+                }
+            }
+        }
+    }
+
+    /// Lists an audio stream as a track; the first one becomes the active track.
+    private func registerAudioTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
+        let codecId = stream.pointee.codecpar.pointee.codec_id
+        // Read track metadata (title, language)
+        var title = ""
+        var lang = ""
+        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
+            title = String(cString: titleTag.pointee.value)
+        }
+        if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
+            lang = String(cString: langTag.pointee.value)
+        }
+        let codecNameStr: String
+        if let codecDesc = avcodec_descriptor_get(codecId), let name = codecDesc.pointee.name {
+            codecNameStr = String(cString: name)
+        } else {
+            codecNameStr = "audio"
+        }
+
+        let track = AudioTrack(
+            id: self.audioTracks.count,
+            streamIndex: index,
+            title: title,
+            language: lang,
+            codecName: codecNameStr,
+            channels: Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels),
+            sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate)
+        )
+        self.audioTracks.append(track)
+
+        if self.audioStreamIndex < 0 {
+            // First audio stream found - select as default
+            self.audioStreamIndex = index
+            self.selectedAudioTrackIndex = track.id
+            self.audioTimebase = stream.pointee.time_base
+            self.audioCodecId = codecId
+            self.hasAudio = true
+            self.audioChannels = track.channels
+            self.audioSampleRate = track.sampleRate
+            if let ed = stream.pointee.codecpar.pointee.extradata, stream.pointee.codecpar.pointee.extradata_size > 0 {
+                self.audioExtraData = Data(bytes: ed, count: Int(stream.pointee.codecpar.pointee.extradata_size))
+            }
+        }
+    }
+
+    /// Lists a text subtitle stream (SRT, WebVTT, mov_text, ASS, SSA) as a track.
+    private func registerSubtitleTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
+        let codecId = stream.pointee.codecpar.pointee.codec_id
+        let isTextSub =
+            (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
+                || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
+        guard isTextSub else { return }
+        var title = ""
+        var lang = ""
+        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
+            title = String(cString: titleTag.pointee.value)
+        }
+        if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
+            lang = String(cString: langTag.pointee.value)
+        }
+        let isForced = title.localizedCaseInsensitiveContains("forced")
+        let isSDH = title.localizedCaseInsensitiveContains("sdh")
+        let displayTitle =
+            title.isEmpty
+            ? (lang.isEmpty ? "Subtitle \(self.subtitleTracks.count + 1)" : lang.uppercased()) : title
+
+        let subTrack = SubtitleTrack(
+            id: self.subtitleTracks.count,
+            streamIndex: index,
+            title: displayTitle,
+            language: lang,
+            isExternal: false,
+            isForced: isForced,
+            isSDH: isSDH
+        )
+        self.subtitleTracks.append(subTrack)
     }
 
     /// Container chapters as FFmpeg exports them (MKV default edition, flattened; MP4 chapter track or
@@ -1134,190 +737,23 @@ public final class MediaDemuxer: @unchecked Sendable {
         return ret
     }
 
-    /// Primaries assumed for a stream that doesn't signal its colorimetry, or `nil` for HD (BT.709). Standard
-    /// definition (≤ 576 lines, narrower than 1280) is BT.601: EBU primaries for 625-line systems
-    /// (576/288 lines), SMPTE C for 525-line ones (480/486/240).
-    nonisolated static func standardDefinitionPrimaries(width: Int, height: Int) -> CFString? {
-        guard width > 0, height > 0, width < 1280, height <= 576 else { return nil }
-        let isPAL = height == 576 || height == 288
-        return isPAL ? kCVImageBufferColorPrimaries_EBU_3213 : kCVImageBufferColorPrimaries_SMPTE_C
-    }
-
-    /// Parses an ISOBMFF dvcC/dvvC Dolby Vision configuration box from extradata.
-    public static func parseDolbyVisionConfigurationBox(from data: Data) -> (
-        profile: Int, compatibilityId: Int, configData: Data
-    )? {
-        guard data.count >= 24 else { return nil }
-        return data.withUnsafeBytes { raw in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            let count = bytes.count
-            for k in 0..<(count - 8) {
-                let isDvcC = (bytes[k] == 0x64 && bytes[k + 1] == 0x76 && bytes[k + 2] == 0x63 && bytes[k + 3] == 0x43)
-                let isDvvC = (bytes[k] == 0x64 && bytes[k + 1] == 0x76 && bytes[k + 2] == 0x76 && bytes[k + 3] == 0x43)
-                if isDvcC || isDvvC {
-                    let dvProfile = Int((bytes[k + 6] >> 1) & 0x7F)
-                    let compatId = Int((bytes[k + 8] >> 4) & 0x0F)
-                    let boxPayloadStart = k + 4
-                    guard count - boxPayloadStart >= 24 else { return nil }
-                    let configData = Data(bytes[boxPayloadStart..<(boxPayloadStart + 24)])
-                    return (profile: dvProfile, compatibilityId: compatId, configData: configData)
-                }
-            }
-            return nil
-        }
-    }
-
-    private func parseExtradata() -> (vps: Data?, sps: Data?, pps: Data?) {
-        guard let ctx = formatCtx, videoStreamIndex >= 0 else { return (nil, nil, nil) }
-        let stream = ctx.pointee.streams[videoStreamIndex]!
-        guard let extradata = stream.pointee.codecpar.pointee.extradata,
-            stream.pointee.codecpar.pointee.extradata_size > 0
-        else {
-            return (nil, nil, nil)
-        }
-        let size = Int(stream.pointee.codecpar.pointee.extradata_size)
-        let data = Data(bytes: extradata, count: size)
-
-        // Case 1: Raw Annex B in extradata (starts with 0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
-        if size >= 3 && data[0] == 0 && data[1] == 0 && (data[2] == 1 || (size > 3 && data[2] == 0 && data[3] == 1)) {
-            self.isAnnexBStream = true
-            let nalus = Self.extractNALUnits(from: data)
-            var vps: Data?
-            var sps: Data?
-            var pps: Data?
-            for nalu in nalus {
-                if codec == .hevc {
-                    let nalType = (nalu[0] >> 1) & 0x3F
-                    if nalType == 32 {
-                        vps = nalu
-                    } else if nalType == 33 {
-                        sps = nalu
-                    } else if nalType == 34 {
-                        pps = nalu
-                    }
-                } else if codec == .h264 {
-                    let nalType = nalu[0] & 0x1F
-                    if nalType == 7 { sps = nalu } else if nalType == 8 { pps = nalu }
-                }
-            }
-            return (vps, sps, pps)
-        }
-
-        // Case 2: H.264 avcC format (ISO/IEC 14496-15)
-        if codec == .h264 && size >= 7 && data[0] == 1 {
-            self.isAnnexBStream = false
-            var offset = 5
-            let numSPS = Int(data[offset] & 0x1F)
-            offset += 1
-            var sps: Data?
-            for _ in 0..<numSPS {
-                guard offset + 2 <= size else { break }
-                let spsLen = Int(data[offset]) << 8 | Int(data[offset + 1])
-                offset += 2
-                guard offset + spsLen <= size else { break }
-                sps = data.subdata(in: offset..<(offset + spsLen))
-                offset += spsLen
-                break  // first SPS is sufficient
-            }
-            guard offset < size else { return (nil, sps, nil) }
-            let numPPS = Int(data[offset])
-            offset += 1
-            var pps: Data?
-            for _ in 0..<numPPS {
-                guard offset + 2 <= size else { break }
-                let ppsLen = Int(data[offset]) << 8 | Int(data[offset + 1])
-                offset += 2
-                guard offset + ppsLen <= size else { break }
-                pps = data.subdata(in: offset..<(offset + ppsLen))
-                offset += ppsLen
-                break  // first PPS
-            }
-            return (nil, sps, pps)
-        }
-
-        // Case 3: HEVC hvcC format (ISO/IEC 14496-15)
-        if codec == .hevc && size >= 23 && data[0] == 1 {
-            self.isAnnexBStream = false
-            var vps: Data?
-            var sps: Data?
-            var pps: Data?
-            var offset = 22
-            let numOfArrays = Int(data[offset])
-            offset += 1
-
-            for _ in 0..<numOfArrays {
-                guard offset + 3 <= size else { break }
-                let nalType = data[offset] & 0x3F
-                let numNalus = Int(data[offset + 1]) << 8 | Int(data[offset + 2])
-                offset += 3
-
-                for _ in 0..<numNalus {
-                    guard offset + 2 <= size else { break }
-                    let nalLen = Int(data[offset]) << 8 | Int(data[offset + 1])
-                    offset += 2
-                    guard offset + nalLen <= size else { break }
-                    let naluData = data.subdata(in: offset..<(offset + nalLen))
-                    offset += nalLen
-
-                    if nalType == 32 {
-                        vps = naluData
-                    } else if nalType == 33 {
-                        sps = naluData
-                    } else if nalType == 34 {
-                        pps = naluData
-                    }
-                }
-            }
-            return (vps, sps, pps)
-        }
-
-        return (nil, nil, nil)
-    }
-
-    /// Synthesizes a standard 12-byte VP Codec Configuration Box (`vpcC` per ISO/IEC 14496-15)
-    /// for streams (such as WebM / Matroska) where the demuxer does not supply container extradata.
-    package static func synthesizeVPCC(
-        profile: Int,
-        level: Int,
-        bitDepth: Int,
-        isFullRange: Bool,
-        colorPrimaries: Int,
-        colorTransfer: Int,
-        colorSpace: Int
-    ) -> Data {
-        var box = [UInt8](repeating: 0, count: 12)
-        // Byte 0: version = 1
-        box[0] = 1
-        // Bytes 1..3: flags = 0
-        box[1] = 0
-        box[2] = 0
-        box[3] = 0
-        // Byte 4: profile (0, 1, 2, or 3). Sanitize negative / unset FFmpeg values.
-        box[4] = UInt8(max(0, min(profile, 3)))
-        // Byte 5: level (e.g. 10 for 1.0, 31 for 3.1, 51 for 5.1). Default to 0 if unknown/unset.
-        box[5] = UInt8(max(0, min(level, 255)))
-        // Byte 6: bitDepth (4 bits) | chromaSubsampling (3 bits: 0=4:2:0 vertical, 1=4:2:0 colocated, 2=4:2:2, 3=4:4:4) | videoFullRangeFlag (1 bit)
-        let depthVal = UInt8(max(8, min(bitDepth, 12)))
-        let chromaSubsampling: UInt8 = 1  // 4:2:0 colocated (standard for VP9)
-        let fullRangeFlag: UInt8 = isFullRange ? 1 : 0
-        box[6] = (depthVal << 4) | (chromaSubsampling << 1) | fullRangeFlag
-        // Byte 7: colourPrimaries (ISO/IEC 23001-8 / ITU-T H.273)
-        box[7] = UInt8(max(0, min(colorPrimaries, 255)))
-        // Byte 8: transferCharacteristics (ISO/IEC 23001-8 / ITU-T H.273)
-        box[8] = UInt8(max(0, min(colorTransfer, 255)))
-        // Byte 9: matrixCoefficients (ISO/IEC 23001-8 / ITU-T H.273)
-        box[9] = UInt8(max(0, min(colorSpace, 255)))
-        // Bytes 10..11: codecInitializationDataSize = 0 (16-bit big endian)
-        box[10] = 0
-        box[11] = 0
-        return Data(box)
-    }
-
     private func extractVideoFormatDescription() -> CMVideoFormatDescription? {
         guard let ctx = formatCtx else { return nil }
+        let codecParameters: UnsafePointer<AVCodecParameters>? =
+            videoStreamIndex >= 0
+            ? ctx.pointee.streams[videoStreamIndex].map { UnsafePointer($0.pointee.codecpar) } : nil
 
         // Step 1: Try parsing from container extradata (avcC / hvcC / Annex B header)
-        var (vps, sps, pps) = parseExtradata()
+        var parameterSets = VideoFormatDescriptionBuilder.ParameterSets()
+        if let codecpar = codecParameters, let extradata = codecpar.pointee.extradata,
+            codecpar.pointee.extradata_size > 0,
+            let parsed = VideoFormatDescriptionBuilder.parameterSets(
+                fromExtradata: Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size)), codec: codec)
+        {
+            parameterSets = parsed.sets
+            self.isAnnexBStream = parsed.isAnnexB
+        }
+        var (vps, sps, pps) = (parameterSets.vps, parameterSets.sps, parameterSets.pps)
         var masteringDisplay: Data?
         var contentLightLevel: Data?
 
@@ -1345,7 +781,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                         self.isAnnexBStream = true
                     }
                 }
-                let nalus = Self.extractNALUnits(from: data, isAnnexB: self.isAnnexBStream)
+                let nalus = NALUnitParser.extractNALUnits(from: data, isAnnexB: self.isAnnexBStream)
                 for naluData in nalus {
                     guard !naluData.isEmpty else { continue }
                     if codec == .hevc {
@@ -1357,7 +793,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                         } else if pps == nil && nalType == 34 {
                             pps = naluData
                         } else if nalType == 39 {
-                            parsePrefixSEI(
+                            applyHDRSEI(
                                 naluData: naluData, masteringDisplay: &masteringDisplay,
                                 contentLightLevel: &contentLightLevel)
                         }
@@ -1396,230 +832,38 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
 
-        var extensionsDict: [String: Any] = [
-            kCVImageBufferColorPrimariesKey as String: colorPrimaries as String,
-            kCVImageBufferTransferFunctionKey as String: transferFunction as String,
-            kCVImageBufferYCbCrMatrixKey as String: yCbCrMatrix as String,
-            kCMFormatDescriptionExtension_FullRangeVideo as String: isFullRange,
-            kCVImageBufferChromaLocationTopFieldKey as String: kCVImageBufferChromaLocation_Left as String,
-            kCVImageBufferChromaLocationBottomFieldKey as String: kCVImageBufferChromaLocation_Left as String,
-            // Lets VTVideoDecoder pick a 10-bit output for high-bit-depth SDR (e.g. VP9 profile 2 / AV1 BT.709),
-            // which neither the transfer function nor the codec type reveals.
-            kCMFormatDescriptionExtension_BitsPerComponent as String: bitDepth,
-        ]
-
-        if !sampleAspectRatio.isSquare {
-            let parDict: [String: Int] = [
-                kCVImageBufferPixelAspectRatioHorizontalSpacingKey as String: sampleAspectRatio.numerator,
-                kCVImageBufferPixelAspectRatioVerticalSpacingKey as String: sampleAspectRatio.denominator,
-            ]
-            extensionsDict[kCVImageBufferPixelAspectRatioKey as String] = parDict
-        }
-
-        if let masteringDisplay {
-            extensionsDict[kCVImageBufferMasteringDisplayColorVolumeKey as String] = masteringDisplay
-        }
-        if let contentLightLevel {
-            extensionsDict[kCVImageBufferContentLightLevelInfoKey as String] = contentLightLevel
-        }
-
-        var formatDesc: CMVideoFormatDescription?
-        if !codec.requiresParameterSets {
-            // Codecs that construct format description via configuration atoms (av1C, vpcC, etc.)
-            // or directly via CMVideoFormatDescriptionCreate without SPS/PPS parameter sets:
-            if codec == .av1, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex],
-                let extradata = stream.pointee.codecpar.pointee.extradata,
-                stream.pointee.codecpar.pointee.extradata_size > 0
-            {
-                let extraSize = Int(stream.pointee.codecpar.pointee.extradata_size)
-                let extraData = Data(bytes: extradata, count: extraSize)
-                var atoms =
-                    (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
-                        as? [String: Any]) ?? [:]
-                atoms["av1C"] = extraData
-                extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
-            } else if codec == .vp9, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
-                let vpccData: Data
-                if let extradata = stream.pointee.codecpar.pointee.extradata,
-                    stream.pointee.codecpar.pointee.extradata_size >= 12
-                {
-                    vpccData = Data(bytes: extradata, count: Int(stream.pointee.codecpar.pointee.extradata_size))
-                } else {
-                    vpccData = Self.synthesizeVPCC(
-                        profile: Int(stream.pointee.codecpar.pointee.profile),
-                        level: Int(stream.pointee.codecpar.pointee.level),
-                        bitDepth: self.bitDepth,
-                        isFullRange: self.isFullRange,
-                        colorPrimaries: Int(stream.pointee.codecpar.pointee.color_primaries.rawValue),
-                        colorTransfer: Int(stream.pointee.codecpar.pointee.color_trc.rawValue),
-                        colorSpace: Int(stream.pointee.codecpar.pointee.color_space.rawValue)
-                    )
-                }
-                var atoms =
-                    (extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String]
-                        as? [String: Any]) ?? [:]
-                atoms["vpcC"] = vpccData
-                extensionsDict[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
+        let builder = VideoFormatDescriptionBuilder(
+            codec: codec,
+            width: width,
+            height: height,
+            colorPrimaries: colorPrimaries,
+            transferFunction: transferFunction,
+            yCbCrMatrix: yCbCrMatrix,
+            isFullRange: isFullRange,
+            bitDepth: bitDepth,
+            sampleAspectRatio: sampleAspectRatio,
+            masteringDisplay: masteringDisplay,
+            contentLightLevel: contentLightLevel,
+            parameterSets: .init(vps: vps, sps: sps, pps: pps),
+            dolbyVision: dolbyVisionProfile.flatMap { profile in
+                dolbyVisionConfigData.map { (profile: profile, configData: $0) }
             }
-
-            var desc: CMVideoFormatDescription?
-            let status = CMVideoFormatDescriptionCreate(
-                allocator: kCFAllocatorDefault,
-                codecType: codec.cmVideoCodecType,
-                width: Int32(width),
-                height: Int32(height),
-                extensions: extensionsDict as CFDictionary,
-                formatDescriptionOut: &desc
-            )
-            if status == noErr {
-                formatDesc = desc
-            }
-        } else if let spsData = sps, let ppsData = pps {
-            if codec == .hevc, let vpsData = vps {
-                vpsData.withUnsafeBytes { vpsBytes in
-                    spsData.withUnsafeBytes { spsBytes in
-                        ppsData.withUnsafeBytes { ppsBytes in
-                            let pointers: [UnsafePointer<UInt8>] = [
-                                vpsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                                spsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                                ppsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                            ]
-                            let sizes: [Int] = [vpsData.count, spsData.count, ppsData.count]
-
-                            var baseFormatDesc: CMVideoFormatDescription?
-                            _ = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-                                allocator: kCFAllocatorDefault,
-                                parameterSetCount: 3,
-                                parameterSetPointers: pointers,
-                                parameterSetSizes: sizes,
-                                nalUnitHeaderLength: 4,
-                                extensions: extensionsDict as CFDictionary,
-                                formatDescriptionOut: &baseFormatDesc
-                            )
-
-                            formatDesc = baseFormatDesc
-                        }
-                    }
-                }
-            } else if codec == .h264 {
-                spsData.withUnsafeBytes { spsBytes in
-                    ppsData.withUnsafeBytes { ppsBytes in
-                        let pointers: [UnsafePointer<UInt8>] = [
-                            spsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                            ppsBytes.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        ]
-                        let sizes: [Int] = [spsData.count, ppsData.count]
-
-                        _ = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                            allocator: kCFAllocatorDefault,
-                            parameterSetCount: 2,
-                            parameterSetPointers: pointers,
-                            parameterSetSizes: sizes,
-                            nalUnitHeaderLength: 4,
-                            formatDescriptionOut: &formatDesc
-                        )
-                    }
-                }
-            }
-        }
-
-        if codec == .hevc, let baseDesc = formatDesc, let doviData = dolbyVisionConfigData,
-            let dvProfile = dolbyVisionProfile
-        {
-            // For Dolby Vision HEVC (Profile 5, 8.1, etc.), attach the standard configuration box (dvcC for <= 7, dvvC for > 7)
-            // and use kCMVideoCodecType_DolbyVisionHEVC ('dvh1') so VideoToolbox decodes the HEVC base layer
-            // and parses dynamic DolbyVisionRPUData into CVPixelBuffer attachments.
-            let atomKey = dvProfile <= 7 ? "dvcC" : "dvvC"
-            if let rawExts = CMFormatDescriptionGetExtensions(baseDesc) as? [String: Any] {
-                var newExts = rawExts
-                var atoms =
-                    (rawExts[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] as? [String: Any])
-                    ?? [:]
-                atoms[atomKey] = doviData
-                newExts[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
-
-                var dvDesc: CMVideoFormatDescription?
-                let status = CMVideoFormatDescriptionCreate(
-                    allocator: kCFAllocatorDefault,
-                    codecType: kCMVideoCodecType_DolbyVisionHEVC,
-                    width: Int32(self.width),
-                    height: Int32(self.height),
-                    extensions: newExts as CFDictionary,
-                    formatDescriptionOut: &dvDesc
-                )
-                if status == noErr, let dvDesc {
-                    AppLog.info(
-                        .video,
-                        "Configured Dolby Vision formatDescription (Profile \(dvProfile), codec: dvh1, atom: \(atomKey))"
-                    )
-                    return dvDesc
-                }
-            }
-        }
-
-        return formatDesc
+        )
+        return builder.make(codecParameters: codecParameters)
     }
 
-    private func parsePrefixSEI(naluData: Data, masteringDisplay: inout Data?, contentLightLevel: inout Data?) {
-        var p = 2
-        while p < naluData.count {
-            var payloadType = 0
-            while p < naluData.count && naluData[p] == 0xFF {
-                payloadType += 255
-                p += 1
-            }
-            if p < naluData.count {
-                payloadType += Int(naluData[p])
-                p += 1
-            }
-
-            var payloadSize = 0
-            while p < naluData.count && naluData[p] == 0xFF {
-                payloadSize += 255
-                p += 1
-            }
-            if p < naluData.count {
-                payloadSize += Int(naluData[p])
-                p += 1
-            }
-
-            guard p + payloadSize <= naluData.count else { break }
-            let rawPayload = naluData.subdata(in: p..<(p + payloadSize))
-
-            // Remove emulation prevention bytes (0x00 0x00 0x03 -> 0x00 0x00)
-            var unescaped: [UInt8] = []
-            unescaped.reserveCapacity(rawPayload.count)
-            var u = 0
-            let rawBytes = [UInt8](rawPayload)
-            while u < rawBytes.count {
-                if u + 2 < rawBytes.count && rawBytes[u] == 0 && rawBytes[u + 1] == 0 && rawBytes[u + 2] == 3 {
-                    unescaped.append(0)
-                    unescaped.append(0)
-                    u += 3
-                } else {
-                    unescaped.append(rawBytes[u])
-                    u += 1
+    /// Collects HDR metadata from an HEVC prefix SEI NAL unit. Mastering display luminance only fills in
+    /// a peak still at its 1000-nit default; MaxCLL overrides it.
+    private func applyHDRSEI(naluData: Data, masteringDisplay: inout Data?, contentLightLevel: inout Data?) {
+        for message in VideoFormatDescriptionBuilder.hdrSEIMessages(inPrefixSEI: naluData) {
+            switch message {
+            case .masteringDisplay(let data, let maxLuminanceNits):
+                masteringDisplay = data
+                if self.maxPeakNits == 1000.0 && maxLuminanceNits > 0 {
+                    self.maxPeakNits = maxLuminanceNits
                 }
-            }
-
-            // SEI 137: Mastering display colour volume (24 bytes)
-            if payloadType == 137 && unescaped.count >= 24 {
-                masteringDisplay = Data(unescaped[0..<24])
-                if self.maxPeakNits == 1000.0 {
-                    let maxLumRaw =
-                        (UInt32(unescaped[16]) << 24) | (UInt32(unescaped[17]) << 16) | (UInt32(unescaped[18]) << 8)
-                        | UInt32(unescaped[19])
-                    let maxLumNits = Float(maxLumRaw) / 10000.0
-                    if maxLumNits > 0 {
-                        self.maxPeakNits = maxLumNits
-                    }
-                }
-            }
-            // SEI 144: Content light level info (4 bytes: maxCLL 2 bytes, maxFALL 2 bytes)
-            else if payloadType == 144 && unescaped.count >= 4 {
-                contentLightLevel = Data(unescaped[0..<4])
-                let maxCLL = (Int(unescaped[0]) << 8) | Int(unescaped[1])
-                let maxFALL = (Int(unescaped[2]) << 8) | Int(unescaped[3])
+            case .contentLightLevel(let data, let maxCLL, let maxFALL):
+                contentLightLevel = data
                 if maxCLL > 0 {
                     self.maxPeakNits = Float(maxCLL)
                 }
@@ -1627,8 +871,6 @@ public final class MediaDemuxer: @unchecked Sendable {
                     self.maxFallNits = Float(maxFALL)
                 }
             }
-
-            p += payloadSize
         }
     }
 
@@ -1660,7 +902,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         var doviMetadata: DolbyVisionFrameMetadata?
         if codec == .hevc && dolbyVisionProfile != nil {
-            if let nalu = Self.findNALUnit62(bytes: bytes, count: count, isAnnexB: self.isAnnexBStream) {
+            if let nalu = NALUnitParser.findNALUnit62(bytes: bytes, count: count, isAnnexB: self.isAnnexBStream) {
                 doviMetadata = DolbyVisionRPUParser.parse(naluData: nalu)
             }
         }
@@ -1687,7 +929,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 memcpy(allocated, bytes, finalSize)
                 mem = allocated
             } else {
-                let (hvccData, hvccSize) = Self.packetDataToHVCC(
+                let (hvccData, hvccSize) = NALUnitParser.packetDataToHVCC(
                     pktData: bytes,
                     count: count,
                     isAnnexBStream: true
@@ -2071,205 +1313,5 @@ public final class MediaDemuxer: @unchecked Sendable {
         if formatCtx != nil {
             avformat_close_input(&formatCtx)
         }
-    }
-
-    // MARK: - Annex B / HVCC Utilities
-
-    /// Parses NAL units from either Annex B byte stream (0x000001 or 0x00000001 start codes)
-    /// or MP4/hvcC format (4-byte big endian length prefixed).
-    static func extractNALUnits(from data: Data, isAnnexB: Bool? = nil) -> [Data] {
-        guard data.count >= 4 else { return [] }
-
-        let bytes = [UInt8](data)
-        let count = bytes.count
-
-        // If format is explicitly known, use it; otherwise inspect start code
-        let annexB: Bool
-        if let isAnnexB {
-            annexB = isAnnexB
-        } else {
-            annexB =
-                (bytes[0] == 0 && bytes[1] == 0 && (bytes[2] == 1 || (count > 3 && bytes[2] == 0 && bytes[3] == 1)))
-        }
-
-        if annexB {
-            var nalus: [Data] = []
-            var starts: [(offset: Int, prefixLen: Int)] = []
-
-            var i = 0
-            while i + 2 < count {
-                if bytes[i] == 0 && bytes[i + 1] == 0 {
-                    if bytes[i + 2] == 1 {
-                        starts.append((offset: i, prefixLen: 3))
-                        i += 3
-                        continue
-                    } else if i + 3 < count && bytes[i + 2] == 0 && bytes[i + 3] == 1 {
-                        starts.append((offset: i, prefixLen: 4))
-                        i += 4
-                        continue
-                    }
-                }
-                i += 1
-            }
-
-            for (idx, start) in starts.enumerated() {
-                let nalStart = start.offset + start.prefixLen
-                let nalEnd = (idx + 1 < starts.count) ? starts[idx + 1].offset : count
-                if nalEnd > nalStart {
-                    nalus.append(data.subdata(in: nalStart..<nalEnd))
-                }
-            }
-            return nalus
-        } else {
-            // Standard MP4 length-prefixed format
-            var nalus: [Data] = []
-            var offset = 0
-            while offset + 4 <= count {
-                let naluLen =
-                    Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
-                    | Int(bytes[offset + 3])
-                offset += 4
-                guard naluLen > 0, offset + naluLen <= count else { break }
-                nalus.append(data.subdata(in: offset..<(offset + naluLen)))
-                offset += naluLen
-            }
-            return nalus
-        }
-    }
-
-    /// Fast scan for HEVC NAL unit type 62 (Dolby Vision RPU) without allocating all NAL units.
-    static func findNALUnit62(in data: Data, isAnnexB: Bool) -> Data? {
-        data.withUnsafeBytes { ptr -> Data? in
-            guard let bytes = ptr.bindMemory(to: UInt8.self).baseAddress else { return nil }
-            return findNALUnit62(bytes: bytes, count: data.count, isAnnexB: isAnnexB)
-        }
-    }
-
-    static func findNALUnit62(bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool) -> Data? {
-        guard count >= 5 else { return nil }
-        if isAnnexB {
-            var i = 0
-            while i + 4 < count {
-                let prefixLen: Int
-                if bytes[i] == 0 && bytes[i + 1] == 0 {
-                    if bytes[i + 2] == 1 {
-                        prefixLen = 3
-                    } else if bytes[i + 2] == 0 && bytes[i + 3] == 1 {
-                        prefixLen = 4
-                    } else {
-                        i += 1
-                        continue
-                    }
-                } else {
-                    i += 1
-                    continue
-                }
-
-                let nalStart = i + prefixLen
-                guard nalStart < count else { break }
-                let nalType = (bytes[nalStart] >> 1) & 0x3F
-
-                if nalType == 62 {
-                    // Find the end of this NALU (next start code or EOF)
-                    var next = nalStart + 1
-                    while next + 2 < count {
-                        if bytes[next] == 0 && bytes[next + 1] == 0
-                            && (bytes[next + 2] == 1
-                                || (next + 3 < count && bytes[next + 2] == 0 && bytes[next + 3] == 1))
-                        {
-                            break
-                        }
-                        next += 1
-                    }
-                    let nalEnd = (next + 2 < count) ? next : count
-                    return Data(bytes: bytes.advanced(by: nalStart), count: nalEnd - nalStart)
-                }
-
-                i = nalStart
-            }
-            return nil
-        } else {
-            var offset = 0
-            while offset + 4 <= count {
-                let naluLen =
-                    Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
-                    | Int(bytes[offset + 3])
-                offset += 4
-                guard naluLen > 0, offset + naluLen <= count else { break }
-                let nalType = (bytes[offset] >> 1) & 0x3F
-                if nalType == 62 {
-                    return Data(bytes: bytes.advanced(by: offset), count: naluLen)
-                }
-                offset += naluLen
-            }
-            return nil
-        }
-    }
-
-    /// Converts an input packet to HVCC format expected by VideoToolbox (4-byte length prefix).
-    /// If packet is already in length-prefixed format, it returns the raw packet bytes directly.
-    static func packetDataToHVCC(pktData: UnsafePointer<UInt8>?, count: Int, isAnnexBStream: Bool = false) -> (
-        Data, Int
-    ) {
-        guard let pktData, count >= 4 else {
-            return (Data(), 0)
-        }
-
-        // Only treat as Annex B if either the stream is known to be Annex B,
-        // or the packet starts with Annex B and cannot be a 4-byte length prefix.
-        let isAnnexB: Bool
-        if isAnnexBStream {
-            isAnnexB =
-                (pktData[0] == 0 && pktData[1] == 0
-                    && (pktData[2] == 1 || (count > 3 && pktData[2] == 0 && pktData[3] == 1)))
-        } else {
-            // For container streams (MP4/MKV), packets are length-prefixed (avcC/hvcC format).
-            // A packet starting with 0x00 0x00 0x01 ... has a 4-byte length between 65536 and 131071.
-            // Do NOT re-parse as Annex B unless the stream format is Annex B!
-            isAnnexB = false
-        }
-
-        if !isAnnexB {
-            let data = Data(bytes: pktData, count: count)
-            return (data, count)
-        }
-
-        // Convert Annex B to 4-byte length prefix
-        var starts: [(offset: Int, prefixLen: Int)] = []
-        var i = 0
-        while i + 2 < count {
-            if pktData[i] == 0 && pktData[i + 1] == 0 {
-                if pktData[i + 2] == 1 {
-                    starts.append((offset: i, prefixLen: 3))
-                    i += 3
-                    continue
-                } else if i + 3 < count && pktData[i + 2] == 0 && pktData[i + 3] == 1 {
-                    starts.append((offset: i, prefixLen: 4))
-                    i += 4
-                    continue
-                }
-            }
-            i += 1
-        }
-
-        var hvccData = Data()
-        hvccData.reserveCapacity(count + 32)
-
-        for (idx, start) in starts.enumerated() {
-            let nalStart = start.offset + start.prefixLen
-            let nalEnd = (idx + 1 < starts.count) ? starts[idx + 1].offset : count
-            let nalSize = nalEnd - nalStart
-            guard nalSize > 0 else { continue }
-
-            var bigEndianLength = UInt32(nalSize).bigEndian
-            withUnsafeBytes(of: &bigEndianLength) { lenBytes in
-                hvccData.append(contentsOf: lenBytes)
-            }
-            let nalPtr = pktData.advanced(by: nalStart)
-            hvccData.append(nalPtr, count: nalSize)
-        }
-
-        let finalCount = hvccData.count
-        return (hvccData, finalCount)
     }
 }

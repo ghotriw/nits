@@ -33,7 +33,7 @@ public final class ThumbnailDiskCache: Sendable {
 
     /// Generates a stable unique hash identifier for a given file URL/path and its filesystem attributes.
     public func cacheKey(for path: String) -> String? {
-        guard !MediaDemuxer.isNetworkURL(path) else {
+        guard !MediaURL.isNetworkURL(path) else {
             // For network URLs, hash the clean URL string along with cache version
             let digest = SHA256.hash(data: Data("\(path)|v\(Self.cacheVersion)".utf8))
             return digest.compactMap { String(format: "%02x", $0) }.joined()
