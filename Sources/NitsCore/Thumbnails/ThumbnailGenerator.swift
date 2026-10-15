@@ -92,28 +92,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         }
 
         if MediaDemuxer.isNetworkURL(path) {
-            if !headers.isEmpty {
-                var headerString = ""
-                for (key, value) in headers {
-                    let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                    let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(
-                        of: "\n", with: "")
-                    guard !cleanKey.isEmpty else { continue }
-                    if cleanKey.lowercased() == "user-agent" {
-                        _ = av_dict_set(&avOptions, "user_agent", cleanVal, 0)
-                    } else {
-                        headerString += "\(cleanKey): \(cleanVal)\r\n"
-                    }
-                }
-                if !headerString.isEmpty {
-                    _ = av_dict_set(&avOptions, "headers", headerString, 0)
-                }
-            }
-            _ = av_dict_set(&avOptions, "reconnect", "1", 0)
-            _ = av_dict_set(&avOptions, "reconnect_streamed", "1", 0)
-            _ = av_dict_set(&avOptions, "reconnect_delay_max", "5", 0)
-            _ = av_dict_set(&avOptions, "rw_timeout", "10000000", 0)
-            _ = av_dict_set(&avOptions, "timeout", "10000000", 0)
+            MediaDemuxer.applyNetworkOptions(&avOptions, headers: headers)
         }
 
         let cleanPath = PlayerEngine.normalizeMediaPath(path)

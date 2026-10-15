@@ -48,12 +48,21 @@ public enum PlaylistRepeatMode: String, Sendable, CaseIterable, Identifiable {
     }
 }
 
-/// Defines sorting orders for playlist items.
-public enum PlaylistSortOrder: String, Sendable, CaseIterable, Identifiable {
-    case titleAscending = "Title (A–Z)"
-    case titleDescending = "Title (Z–A)"
-    case filenameAscending = "Filename (A–Z)"
-    case filenameDescending = "Filename (Z–A)"
+/// What playlist items are sorted by; the direction is chosen separately.
+public enum PlaylistSortKey: String, Sendable, CaseIterable, Identifiable {
+    case title = "Title"
+    case filename = "Filename"
+    case duration = "Duration"
 
     public var id: String { rawValue }
+
+    /// Describes a direction for this key, e.g. "A–Z" or "Shortest First".
+    public func directionTitle(ascending: Bool) -> String {
+        switch self {
+        case .title, .filename:
+            return ascending ? "A–Z" : "Z–A"
+        case .duration:
+            return ascending ? "Shortest First" : "Longest First"
+        }
+    }
 }

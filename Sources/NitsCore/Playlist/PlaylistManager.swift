@@ -9,6 +9,7 @@ public final class PlaylistManager: Sendable {
     public private(set) var items: [PlaylistItem] = [] {
         didSet {
             recomputeFilteredItems()
+            resolveMissingDurations()
         }
     }
     public private(set) var currentIndex: Int? = nil
@@ -20,6 +21,10 @@ public final class PlaylistManager: Sendable {
             recomputeFilteredItems()
         }
     }
+
+    /// Key and direction of the last `sort(by:ascending:)`, offered as the defaults for the next one.
+    public private(set) var sortKey: PlaylistSortKey = .title
+    public private(set) var sortAscending: Bool = true
 
     /// Whether the playlist is currently loading/parsing media tracks asynchronously.
     public private(set) var isLoading: Bool = false
@@ -37,29 +42,43 @@ public final class PlaylistManager: Sendable {
     @ObservationIgnored
     private var folderScanTask: Task<Void, Never>? = nil
 
+    /// Source of durations for items that haven't been played yet; `nil` leaves them unknown until played.
+    @ObservationIgnored
+    private let durationCache: MediaDurationCache?
+    @ObservationIgnored
+    private var durationTask: Task<Void, Never>? = nil
+    /// Bumped by `clear()` so a cancelled duration task can't touch its successor's state.
+    @ObservationIgnored
+    private var durationGeneration = 0
+    /// Items already looked up, whether or not a duration was found, so failures aren't retried.
+    @ObservationIgnored
+    private var durationAttempted: Set<UUID> = []
+
     /// Supported playlist file extensions.
-    public static let playlistExtensions: Set<String> = PlaylistParser.supportedExtensions
+    nonisolated public static let playlistExtensions: Set<String> = PlaylistParser.supportedExtensions
 
     /// Supported media extensions for directory scanning.
-    public static let mediaExtensions: Set<String> = [
+    nonisolated public static let mediaExtensions: Set<String> = [
         "mkv", "mp4", "m4v", "mov", "webm", "avi", "ts", "flv", "ogv", "wmv",
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "alac", "aif", "aiff", "wma", "ape",
     ]
 
     /// Supported extensions for media files and playlist files.
-    public static let supportedExtensions: Set<String> = mediaExtensions.union(playlistExtensions)
+    nonisolated public static let supportedExtensions: Set<String> = mediaExtensions.union(playlistExtensions)
 
     public init(
         items: [PlaylistItem] = [],
         repeatMode: PlaylistRepeatMode = .off,
         isShuffled: Bool = false,
         autoPlayNext: Bool = true,
-        userDefaults: UserDefaults? = nil
+        userDefaults: UserDefaults? = nil,
+        durationCache: MediaDurationCache? = nil
     ) {
         self.repeatMode = repeatMode
         self.isShuffled = isShuffled
         self.autoPlayNext = autoPlayNext
         self.userDefaults = userDefaults
+        self.durationCache = durationCache
         let indexedItems = items.enumerated().map { offset, item in
             var copy = item
             copy.originalIndex = offset
@@ -276,6 +295,7 @@ public final class PlaylistManager: Sendable {
     }
 
     /// Appends multiple URLs to the playlist (automatically discovering media if any URL is a folder, or parsing playlist files).
+    /// Does the folder scans and playlist reads on the calling actor; UI should use `appendAsync(urls:)`.
     public func append(urls: [URL]) {
         let fm = FileManager.default
         var newItems: [PlaylistItem] = []
@@ -302,11 +322,19 @@ public final class PlaylistManager: Sendable {
         append(items: newItems)
     }
 
-    /// Asynchronously appends multiple URLs to the playlist, fetching remote playlists without blocking.
+    /// Appends URLs like `append(urls:)`, but scans folders and reads playlists (local or remote)
+    /// off the main actor while `isLoading` is set, so slow volumes never stall the UI.
     public func appendAsync(urls: [URL]) async {
         self.isLoading = true
         defer { self.isLoading = false }
 
+        let newItems = await Self.expandToItems(urls)
+        guard !Task.isCancelled, !newItems.isEmpty else { return }
+        append(items: newItems)
+    }
+
+    /// Folders become their playable media, playlist files their entries, anything else one item.
+    nonisolated private static func expandToItems(_ urls: [URL]) async -> [PlaylistItem] {
         let fm = FileManager.default
         var newItems: [PlaylistItem] = []
 
@@ -314,10 +342,8 @@ public final class PlaylistManager: Sendable {
             if Task.isCancelled { break }
             var isDir: ObjCBool = false
             if url.isFileURL && fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue {
-                let folderMedia = Self.findPlayableMedia(in: url, recursive: false)
-                for mediaURL in folderMedia {
-                    newItems.append(PlaylistItem(url: mediaURL))
-                }
+                let folderMedia = findPlayableMedia(in: url, recursive: false)
+                newItems.append(contentsOf: folderMedia.map { PlaylistItem(url: $0) })
             } else if PlaylistParser.isPlaylistFile(url: url) {
                 let parsedItems = await PlaylistParser.parseAsync(url: url)
                 AppLog.info(
@@ -327,9 +353,7 @@ public final class PlaylistManager: Sendable {
                 newItems.append(PlaylistItem(url: url))
             }
         }
-
-        guard !Task.isCancelled, !newItems.isEmpty else { return }
-        append(items: newItems)
+        return newItems
     }
 
     /// Scans a directory for playable media files and appends them to the playlist (flat by default).
@@ -486,6 +510,10 @@ public final class PlaylistManager: Sendable {
 
     /// Clears all items from the playlist.
     public func clear() {
+        durationTask?.cancel()
+        durationTask = nil
+        durationGeneration &+= 1
+        durationAttempted.removeAll()
         items.removeAll()
         currentIndex = nil
         onCurrentItemChanged?(nil)
@@ -500,11 +528,106 @@ public final class PlaylistManager: Sendable {
     /// Updates duration for the currently active item (preserves pre-computed duration for CUE sub-tracks).
     public func updateCurrentItemDuration(_ duration: Double) {
         guard let index = currentIndex, items.indices.contains(index) else { return }
+        if let durationCache {
+            let url = items[index].url
+            Task.detached(priority: .utility) {
+                durationCache.store(duration, for: url)
+            }
+        }
         if items[index].startTime != nil && items[index].duration != nil {
             return
         }
         let effectiveDuration = items[index].startTime.map { max(0, duration - $0) } ?? duration
         items[index].duration = effectiveDuration
+    }
+
+    // MARK: - Background Durations
+
+    /// Interval between publishing found durations, so a playlist resolved from the cache
+    /// re-renders a few times rather than once per item.
+    private static let durationPublishInterval: Duration = .milliseconds(250)
+
+    /// Fills in durations of not-yet-played items in the background, one item at a time: from the
+    /// cache, else by probing the header of local files and LAN streams (internet streams are left
+    /// to playback). Local files go first. A no-op while a run is active; the run picks up items
+    /// added meanwhile.
+    private func resolveMissingDurations() {
+        guard let durationCache, durationTask == nil, items.contains(where: needsDuration) else { return }
+        let generation = durationGeneration
+        durationTask = Task { [weak self] in
+            var found: [UUID: Double] = [:]
+            var lastPublish = ContinuousClock.now
+            // Each pass snapshots the pending items once (O(n)); the next pass picks up items added
+            // meanwhile. Items removed or played in the meantime are skipped when publishing.
+            while !Task.isCancelled, let queue = self?.pendingDurationQueue(), !queue.isEmpty {
+                self?.durationAttempted.formUnion(queue.map(\.id))
+                for item in queue {
+                    guard !Task.isCancelled else { break }
+                    if let duration = await Self.wholeFileDuration(of: item, cache: durationCache) {
+                        found[item.id] = item.startTime.map { max(0, duration - $0) } ?? duration
+                    }
+                    if ContinuousClock.now - lastPublish >= Self.durationPublishInterval {
+                        self?.publishDurations(found, generation: generation)
+                        found.removeAll()
+                        lastPublish = .now
+                    }
+                }
+            }
+            self?.publishDurations(found, generation: generation)
+            if self?.durationGeneration == generation {
+                self?.durationTask = nil
+            }
+        }
+    }
+
+    private func needsDuration(_ item: PlaylistItem) -> Bool {
+        item.duration == nil && !durationAttempted.contains(item.id)
+    }
+
+    /// Items still needing a duration, local files first.
+    private func pendingDurationQueue() -> [PlaylistItem] {
+        let pending = items.filter(needsDuration)
+        return pending.filter(\.url.isFileURL) + pending.filter { !$0.url.isFileURL }
+    }
+
+    private func publishDurations(_ found: [UUID: Double], generation: Int) {
+        guard !found.isEmpty, generation == durationGeneration else { return }
+        var updated = items
+        var hasChanges = false
+        for index in updated.indices where updated[index].duration == nil {
+            if let duration = found[updated[index].id] {
+                updated[index].duration = duration
+                hasChanges = true
+            }
+        }
+        // Skip the assignment (and its filtering and UI refresh) when every found item is gone or
+        // already got its duration from playback.
+        if hasChanges {
+            items = updated
+        }
+    }
+
+    /// Local files, and LAN URLs that name a media file. Live sources (MPEG-TS, HLS, extension-less
+    /// IPTV/tuner URLs) are skipped: they have no duration, and opening every channel of a LAN
+    /// IPTV server would hold its connections or tuners.
+    nonisolated static func isProbeable(_ url: URL) -> Bool {
+        if url.isFileURL { return true }
+        let ext = url.pathExtension.lowercased()
+        return MediaDemuxer.isLocalNetworkURL(url.absoluteString) && ext != "ts" && mediaExtensions.contains(ext)
+    }
+
+    nonisolated private static func wholeFileDuration(
+        of item: PlaylistItem,
+        cache: MediaDurationCache
+    ) async -> Double? {
+        if let cached = cache.duration(for: item.url) {
+            return cached
+        }
+        guard isProbeable(item.url),
+            let probed = await MediaDurationProbe.duration(of: item.url, headers: item.customHeaders)
+        else { return nil }
+        cache.store(probed, for: item.url)
+        return probed
     }
 
     // MARK: - Modes: Shuffle & Repeat
@@ -563,21 +686,23 @@ public final class PlaylistManager: Sendable {
 
     // MARK: - Sorting
 
-    /// Sorts the playlist items according to the requested order.
-    public func sort(by order: PlaylistSortOrder) {
+    /// Sorts the playlist once by `key` in the given direction and remembers both as the last sort.
+    /// Items added or moved afterwards are not kept in order.
+    public func sort(by key: PlaylistSortKey, ascending: Bool) {
+        sortKey = key
+        sortAscending = ascending
         guard items.count > 1 else { return }
         let currentId = currentItem?.id
         var updatedItems = items
 
-        switch order {
-        case .titleAscending:
-            updatedItems.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        case .titleDescending:
-            updatedItems.sort { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
-        case .filenameAscending:
-            updatedItems.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
-        case .filenameDescending:
-            updatedItems.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedDescending }
+        let order: ComparisonResult = ascending ? .orderedAscending : .orderedDescending
+        switch key {
+        case .title:
+            updatedItems.sort { $0.title.localizedStandardCompare($1.title) == order }
+        case .filename:
+            updatedItems.sort { $0.filename.localizedStandardCompare($1.filename) == order }
+        case .duration:
+            updatedItems.sort { Self.isOrderedByDuration($0, $1, ascending: ascending) }
         }
 
         isShuffled = false
@@ -591,11 +716,25 @@ public final class PlaylistManager: Sendable {
         }
     }
 
+    /// Items with unknown duration go last in either direction; equal durations fall back to title order.
+    private static func isOrderedByDuration(_ lhs: PlaylistItem, _ rhs: PlaylistItem, ascending: Bool) -> Bool {
+        switch (lhs.duration, rhs.duration) {
+        case (let left?, let right?) where left != right:
+            return ascending ? left < right : left > right
+        case (.some, nil):
+            return true
+        case (nil, .some):
+            return false
+        default:
+            return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        }
+    }
+
     // MARK: - Folder Auto-Discovery
 
     /// Scans a directory URL for files with supported media extensions (non-recursive by default).
     /// Preserves natural alphanumeric sorting order.
-    public static func findPlayableMedia(in directoryURL: URL, recursive: Bool = false) -> [URL] {
+    nonisolated public static func findPlayableMedia(in directoryURL: URL, recursive: Bool = false) -> [URL] {
         guard directoryURL.isFileURL else {
             AppLog.warning(.playlist, "findPlayableMedia called with non-file URL: \(directoryURL)")
             return []
@@ -681,7 +820,7 @@ public final class PlaylistManager: Sendable {
     }
 
     /// Asynchronously scans directory siblings off the main actor and applies results to playlist.
-    public func loadSiblingsFromDirectoryAsync(for fileURL: URL) async {
+    nonisolated public func loadSiblingsFromDirectoryAsync(for fileURL: URL) async {
         guard fileURL.isFileURL else { return }
 
         let fm = FileManager.default
@@ -696,23 +835,16 @@ public final class PlaylistManager: Sendable {
         let playableURLs = Self.findPlayableMedia(in: directoryURL, recursive: false)
         guard !playableURLs.isEmpty else { return }
 
-        await MainActor.run { [weak self] in
+        // Siblings share the directory, so the name identifies the loaded file without
+        // resolving symlinks (a round trip per file on network volumes).
+        let newItems = playableURLs.enumerated().map { idx, url in PlaylistItem(url: url, originalIndex: idx) }
+        let activeIndex = playableURLs.firstIndex { $0.lastPathComponent == fileURL.lastPathComponent } ?? 0
+
+        await MainActor.run { [weak self, newItems] in
             guard let self else { return }
             // Only apply if the current item is still the one loaded or list has not been overwritten
             guard self.items.count <= 1 || self.items.first?.url.path == fileURL.path else { return }
-
-            var newItems: [PlaylistItem] = []
-            var activeIndex = 0
-
-            for (idx, url) in playableURLs.enumerated() {
-                let item = PlaylistItem(url: url, originalIndex: idx)
-                newItems.append(item)
-                if url.standardizedFileURL.resolvingSymlinksInPath().path
-                    == fileURL.standardizedFileURL.resolvingSymlinksInPath().path
-                {
-                    activeIndex = idx
-                }
-            }
+            var newItems = newItems
 
             if self.isShuffled && newItems.count > 1 {
                 // Keep the active item at the top, shuffle the remaining siblings
@@ -738,11 +870,10 @@ public final class PlaylistManager: Sendable {
         // If playlist already has multiple items (e.g. loaded from a playlist file),
         // check if url is already present or was selected from it. Never wipe the playlist!
         if items.count > 1 {
-            let targetPath = url.isFileURL ? url.standardizedFileURL.resolvingSymlinksInPath().path : url.absoluteString
+            // Plain path comparison: resolving symlinks per item stalls on large playlists on network volumes.
+            let targetPath = url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
             if let existingIndex = items.firstIndex(where: { item in
-                let itemPath =
-                    item.url.isFileURL
-                    ? item.url.standardizedFileURL.resolvingSymlinksInPath().path : item.url.absoluteString
+                let itemPath = item.url.isFileURL ? item.url.standardizedFileURL.path : item.url.absoluteString
                 return itemPath == targetPath
             }) {
                 self.currentIndex = existingIndex

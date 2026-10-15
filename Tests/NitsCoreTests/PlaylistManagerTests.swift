@@ -211,15 +211,35 @@ struct PlaylistManagerTests {
         ]
         manager.append(urls: urls)
 
-        manager.sort(by: .titleAscending)
+        manager.sort(by: .title, ascending: true)
         #expect(manager.items[0].title == "Alpha")
         #expect(manager.items[1].title == "Bravo")
         #expect(manager.items[2].title == "Charlie")
 
-        manager.sort(by: .titleDescending)
+        manager.sort(by: .title, ascending: false)
         #expect(manager.items[0].title == "Charlie")
         #expect(manager.items[1].title == "Bravo")
         #expect(manager.items[2].title == "Alpha")
+    }
+
+    @Test("Sorting by duration keeps unknown durations last and the current item selected")
+    func testSortingByDuration() {
+        let manager = PlaylistManager(items: [
+            PlaylistItem(url: URL(fileURLWithPath: "/tmp/Long.mp4"), duration: 300),
+            PlaylistItem(url: URL(fileURLWithPath: "/tmp/Unknown.mp4")),
+            PlaylistItem(url: URL(fileURLWithPath: "/tmp/Short.mp4"), duration: 60),
+            PlaylistItem(url: URL(fileURLWithPath: "/tmp/Bravo.mp4"), duration: 120),
+            PlaylistItem(url: URL(fileURLWithPath: "/tmp/Alpha.mp4"), duration: 120),
+        ])
+        _ = manager.selectItem(at: 0)
+
+        manager.sort(by: .duration, ascending: true)
+        #expect(manager.items.map(\.title) == ["Short", "Alpha", "Bravo", "Long", "Unknown"])
+        #expect(manager.currentItem?.title == "Long")
+
+        manager.sort(by: .duration, ascending: false)
+        #expect(manager.items.map(\.title) == ["Long", "Alpha", "Bravo", "Short", "Unknown"])
+        #expect(manager.currentItem?.title == "Long")
     }
 
     @Test("Directory sibling auto-loading with natural sorting")
@@ -720,5 +740,55 @@ struct PlaylistManagerTests {
             #expect(manager.items[i].originalIndex == i)
             #expect(manager.items[i].url == urls[i])
         }
+    }
+
+    @Test("Absolute playlist paths resolve without touching the file system")
+    func testResolveAbsoluteVolumePaths() throws {
+        let content = """
+            #EXTM3U
+            #EXTINF:-1,Movie
+            /Volumes/NitsNonexistentShare/Movies/Movie 1.mkv
+            Relative Folder/Movie 2.mp4
+            """
+        let base = URL(fileURLWithPath: "/Volumes/NitsNonexistentShare/Lists/list.m3u")
+        let items = PlaylistParser.parse(content: content, format: "m3u", baseURL: base)
+        #expect(
+            items.map(\.url.path) == [
+                "/Volumes/NitsNonexistentShare/Movies/Movie 1.mkv",
+                "/Volumes/NitsNonexistentShare/Lists/Relative Folder/Movie 2.mp4",
+            ])
+        #expect(items.allSatisfy { $0.url.isFileURL && !$0.url.hasDirectoryPath })
+    }
+
+    @Test("appendAsync expands folders and playlist files off the main actor")
+    func testAppendAsyncExpandsFoldersAndPlaylists() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NitsAppendAsync-\(UUID().uuidString)", isDirectory: true)
+        let folder = dir.appendingPathComponent("Season 1", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for name in ["E02.mkv", "E01.mkv", "notes.txt"] {
+            FileManager.default.createFile(atPath: folder.appendingPathComponent(name).path, contents: nil)
+        }
+        let m3u = dir.appendingPathComponent("list.m3u")
+        try "#EXTM3U\n/Volumes/Share/A.mkv\n/Volumes/Share/B.mkv\n".write(to: m3u, atomically: true, encoding: .utf8)
+
+        let manager = PlaylistManager()
+        await manager.appendAsync(urls: [folder, m3u])
+
+        #expect(manager.items.map(\.filename) == ["E01.mkv", "E02.mkv", "A.mkv", "B.mkv"])
+        #expect(!manager.isLoading)
+    }
+
+    @Test("Only local files and LAN media-file URLs are probed for duration")
+    func testDurationProbeFilter() throws {
+        #expect(PlaylistManager.isProbeable(URL(fileURLWithPath: "/Volumes/Share/Movie.mkv")))
+        #expect(PlaylistManager.isProbeable(try #require(URL(string: "http://192.168.1.5/media/Movie.mkv"))))
+        // Live / IPTV-style sources on the LAN
+        #expect(!PlaylistManager.isProbeable(try #require(URL(string: "http://192.168.1.5:9981/stream/channel/42"))))
+        #expect(!PlaylistManager.isProbeable(try #require(URL(string: "http://192.168.1.5:8080/live/7.ts"))))
+        #expect(!PlaylistManager.isProbeable(try #require(URL(string: "http://192.168.1.5/hls/index.m3u8"))))
+        // Internet sources
+        #expect(!PlaylistManager.isProbeable(try #require(URL(string: "https://example.com/media/Movie.mkv"))))
     }
 }

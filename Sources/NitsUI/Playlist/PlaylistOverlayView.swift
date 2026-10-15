@@ -120,86 +120,19 @@ public struct PlaylistOverlayView: View {
 
             Spacer()
 
-            // Repeat Mode Button
-            Button {
-                engine.playlist.cycleRepeatMode()
-            } label: {
-                Image(systemName: engine.playlist.repeatMode.iconName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(
-                        engine.playlist.repeatMode != .off ? Color.accentColor : Color.white.opacity(0.6)
-                    )
-                    .padding(5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(
-                                engine.playlist.repeatMode != .off
-                                    ? Color.accentColor.opacity(0.2)
-                                    : Color.white.opacity(0.06)
-                            )
-                    )
-            }
-            .buttonStyle(.plain)
-            .help(engine.playlist.repeatMode.title)
-
-            // Shuffle Button
-            Button {
-                engine.playlist.toggleShuffle()
-            } label: {
-                Image(systemName: "shuffle")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(
-                        engine.playlist.isShuffled ? Color.accentColor : Color.white.opacity(0.6)
-                    )
-                    .padding(5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(
-                                engine.playlist.isShuffled
-                                    ? Color.accentColor.opacity(0.2)
-                                    : Color.white.opacity(0.06)
-                            )
-                    )
-            }
-            .buttonStyle(.plain)
-            .help(engine.playlist.isShuffled ? "Shuffle: On" : "Shuffle: Off")
-
-            // Sort Menu
-            Menu {
-                ForEach(PlaylistSortOrder.allCases) { order in
-                    Button(order.rawValue) {
-                        engine.playlist.sort(by: order)
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.6))
-                    .padding(5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                    )
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Sort Playlist")
+            // Sort: key menu + direction toggle; either one re-sorts. Shuffle and repeat live in
+            // the control bar.
+            sortKeyMenu
+            sortDirectionButton
 
             // Add Menu
             Menu {
                 Button("Add Media Files…") {
-                    let urls = MediaOpenPanel.promptForMediaFiles()
-                    if !urls.isEmpty {
-                        engine.playlist.append(urls: urls)
-                    }
+                    appendInBackground(MediaOpenPanel.promptForMediaFiles())
                 }
 
                 Button("Add Folder…") {
-                    let folderURLs = MediaOpenPanel.promptForMediaFolders()
-                    if !folderURLs.isEmpty {
-                        engine.playlist.append(folderURLs: folderURLs)
-                    }
+                    appendInBackground(MediaOpenPanel.promptForMediaFolders())
                 }
 
                 Button("Add URL…") {
@@ -254,6 +187,61 @@ public struct PlaylistOverlayView: View {
         .padding(.top, 14)
         .padding(.bottom, 12)
         .background(Color.black.opacity(0.2))
+    }
+
+    // MARK: - Sort Controls
+
+    private var sortKeyMenu: some View {
+        let playlist = engine.playlist
+        return Menu {
+            // Toggles rather than a Picker: choosing the current key again must re-sort too
+            // (e.g. once more durations are known).
+            ForEach(PlaylistSortKey.allCases) { key in
+                Toggle(
+                    key.rawValue,
+                    isOn: Binding(
+                        get: { playlist.sortKey == key },
+                        set: { _ in playlist.sort(by: key, ascending: playlist.sortAscending) }
+                    )
+                )
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(playlist.sortKey.rawValue)
+                    .font(.system(size: 11, weight: .semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(Color.white.opacity(0.7))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort By")
+    }
+
+    private var sortDirectionButton: some View {
+        let playlist = engine.playlist
+        return Button {
+            playlist.sort(by: playlist.sortKey, ascending: !playlist.sortAscending)
+        } label: {
+            Image(systemName: playlist.sortAscending ? "arrow.up" : "arrow.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.7))
+                .padding(5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Sort \(playlist.sortKey.directionTitle(ascending: playlist.sortAscending))")
     }
 
     // MARK: - Filter Bar View
@@ -529,9 +517,11 @@ public struct PlaylistOverlayView: View {
             Button {
                 let urls = MediaOpenPanel.promptForMediaFiles()
                 if !urls.isEmpty {
-                    engine.playlist.append(urls: urls)
-                    if let firstItem = engine.playlist.currentItem {
-                        engine.load(item: firstItem)
+                    Task { @MainActor in
+                        await engine.playlist.appendAsync(urls: urls)
+                        if let firstItem = engine.playlist.currentItem {
+                            engine.load(item: firstItem)
+                        }
                     }
                 }
             } label: {
@@ -607,11 +597,15 @@ public struct PlaylistOverlayView: View {
 
             Spacer()
 
-            let totalDuration = engine.playlist.items.compactMap(\.duration).reduce(0, +)
+            let durations = engine.playlist.items.map(\.duration)
+            let totalDuration = durations.compactMap(\.self).reduce(0, +)
             if totalDuration > 0 {
-                Text(formatDuration(totalDuration))
+                // "≈" while some items (e.g. internet streams, or ones still being looked up) are unknown.
+                let isPartial = durations.contains(nil)
+                Text((isPartial ? "≈ " : "") + formatDuration(totalDuration))
                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.5))
+                    .help(isPartial ? "Some items' durations are not known yet" : "Total duration")
             }
         }
         .padding(.horizontal, 14)
@@ -636,14 +630,15 @@ public struct PlaylistOverlayView: View {
     private func handleDrop(urls: [URL]) -> Bool {
         guard !urls.isEmpty else { return false }
         AppLog.info(.playlist, "Dropped \(urls.count) item(s) onto playlist drawer")
-        let hasRemote = urls.contains { !$0.isFileURL }
-        if hasRemote {
-            Task { @MainActor in
-                await engine.playlist.appendAsync(urls: urls)
-            }
-        } else {
-            engine.playlist.append(urls: urls)
-        }
+        appendInBackground(urls)
         return true
+    }
+
+    /// Folder scans and playlist reads can take seconds on network volumes; keep them off the main actor.
+    private func appendInBackground(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        Task { @MainActor in
+            await engine.playlist.appendAsync(urls: urls)
+        }
     }
 }

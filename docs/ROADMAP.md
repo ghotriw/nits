@@ -14,7 +14,7 @@ The goal is to evolve the Apple Silicon dual-engine video rendering core into a 
 - **Modular SPM Decomposition:**
   - `NitsCore`: Headless engine core with zero SwiftUI dependencies (demuxing, decoding, ring buffers, Metal BT.2390 shaders, A/V synchronization, IOKit display sleep assertions, playback history, playlists, subtitle parsing).
   - `NitsKit`: Windowing, lifecycle, and macOS AppKit integration layer (`PlayerWindow`, `PlayerWindowController`, `PlayerCommands`, `NowPlayingController`, `LogViewerWindowController`).
-  - `NitsUI`: Pure declarative SwiftUI presentation layer (controls overlay, telemetry HUD, OSD notifications, Metal-outlined subtitles, quick settings and playlist drawer overlays, Jump to Time dialog, Open URL sheet).
+  - `NitsUI`: Pure declarative SwiftUI presentation layer (controls overlay, telemetry HUD, OSD notifications, Metal-outlined subtitles, shared side panel hosting playlist and quick settings, Jump to Time dialog, Open URL sheet).
   - `NitsApp`: Application lifecycle entry point (`NSApplicationDelegate`, LaunchServices document types, CLI arguments parsing).
 
 ---
@@ -178,6 +178,9 @@ flowchart TD
   - Playback loading state tracking (`isLoading`) and error presentation with dedicated banners.
   - "Open URL…" modal sheet with preset authentication headers and `⌘U` shortcut.
   - Command-line argument parsing for `--header="Key: Value"` in `PlayerConfiguration`.
+- [ ] **3.3. Fast Stream Start:**
+  - Measure `avformat_open_input` / `avformat_find_stream_info` time on live MPEG-TS / IPTV sources; probing currently runs with FFmpeg defaults (`probesize` 5 MB, `analyzeduration` 5 s).
+  - Tune `probesize` / `analyzeduration` for network streams without missing late-appearing audio streams (e.g. AC-3 in TS).
 
 ---
 
@@ -243,16 +246,19 @@ flowchart TD
   - User-configurable seek step (default 5s) and exact seek mode toggles.
 - [x] **5.3. On-Screen Display (OSD):**
   - Animated transient HUD overlay in the top-left corner reporting volume levels, seek offsets with duration progress bars, play/pause states, rate changes, and track switching.
-- [x] **5.4. Quick Settings Drawer:**
-  - Slide-out side drawer with categorized panes: Audio, Video, Subtitles, and Media Info.
+- [x] **5.4. Side Panel & Quick Settings:**
+  - Shared non-modal side panel (`SidePanelContainer`, `PlayerSidePanel`) sliding in from the trailing edge: one panel open at a time, the control bars shrink beside it instead of being covered, controls stay clickable, a click on the video or `Esc` closes it. Always dark so it stays legible over bright video.
+  - Quick Settings panel with categorized panes: Audio, Video, Subtitles, and Media Info.
   - Direct manipulation of tone-mapping parameters (exposure, shadow lift, target nits multiplier, CAS sharpness).
   - Detailed stream inspector: active video/audio codecs, color primaries, transfer functions, sample rates, channel configurations, and bitrates.
 - [x] **5.5. Playlist Management & Directory Scanning:**
   - Reactive `@Observable` playlist engine (`PlaylistManager`).
   - Parsing external playlist formats: M3U, M3U8, PLS, XSPF, CUE.
-  - Automatic recursive directory scanning when opening folders or single media files.
-  - Side drawer UI: search and filtering, active item indication, auto-scroll to current track, repeat modes (Off / All / One), and shuffle.
+  - Directory scanning (single folder level) when opening folders, or of the siblings when opening a single media file.
+  - Side panel UI: search and filtering, active item indication, auto-scroll to current track, sorting by title, filename or duration with a separate direction toggle. Repeat (Off / All / One) and shuffle live in the control bar (5.9).
   - Persistent playlist repeat and shuffle settings via `UserDefaults`.
+  - Non-blocking ingestion: playlist parsing and folder scans run off the main actor with a loading indicator, and path resolution never touches the file system, so playlists of thousands of files on network volumes open in a fraction of a second.
+  - Background durations for unplayed items: container-header probe (`MediaDurationProbe`, no decoding, 5 s per-item limit) for local files and LAN media files, persisted in `MediaDurationCache` together with durations learned during playback. The total shows `≈` while some are unknown.
 - [x] **5.6. Window Management & Display Sleep Prevention:**
   - `DisplaySleepManager`: IOKit power assertions (`IOPMAssertionCreateWithName`) preventing display sleep and screen savers during active video playback.
   - Cursor autohide (`NSCursor.setHiddenUntilMouseMoves`) and controls overlay fading after 2.5s of user inactivity.
@@ -281,6 +287,7 @@ flowchart TD
   - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers.
   - Chapter visual tick marks on `TimelineSlider` with hover title tooltips.
   - Previous/Next Chapter shortcuts (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`).
+  - Chapter list as a side panel (`PlayerSidePanel`), alongside the playlist and quick settings.
 - [x] **5.10.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
@@ -366,10 +373,10 @@ flowchart TD
 | **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
 | **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Planned 📋 | Subtitle delay offset (`±30s`), direct file drag-and-drop |
 | **Advanced Subtitles (ASS / PGS)** | `NitsCore` | Planned 📋 | `libass` integration and bitmap overlays |
-| **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, shuffle, repeat |
+| **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
-| **OSD & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, live tone-map & audio adjustments |
-| **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Planned 📋 | MKV/MP4 chapters, timeline preview hover, macOS PiP |
+| **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
+| **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | In Progress ⏳ | Timeline preview hover and macOS PiP done; MKV/MP4 chapters planned |
 | **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |

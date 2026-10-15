@@ -540,7 +540,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.playlist = PlaylistManager(
             repeatMode: configuration.playlistRepeatMode,
             isShuffled: configuration.playlistIsShuffled,
-            userDefaults: .standard
+            userDefaults: .standard,
+            durationCache: .shared
         )
 
         metalRenderer?.uniforms.targetNits = effectiveNits

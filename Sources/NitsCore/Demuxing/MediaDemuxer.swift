@@ -159,29 +159,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { if options != nil { av_dict_free(&options) } }
 
         if Self.isNetworkURL(url) {
-            if !headers.isEmpty {
-                var headerString = ""
-                for (key, value) in headers {
-                    let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                    let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(
-                        of: "\n", with: "")
-                    guard !cleanKey.isEmpty else { continue }
-                    if cleanKey.lowercased() == "user-agent" {
-                        _ = av_dict_set(&options, "user_agent", cleanVal, 0)
-                    } else {
-                        headerString += "\(cleanKey): \(cleanVal)\r\n"
-                    }
-                }
-                if !headerString.isEmpty {
-                    _ = av_dict_set(&options, "headers", headerString, 0)
-                }
-            }
-
-            _ = av_dict_set(&options, "reconnect", "1", 0)
-            _ = av_dict_set(&options, "reconnect_streamed", "1", 0)
-            _ = av_dict_set(&options, "reconnect_delay_max", "5", 0)
-            _ = av_dict_set(&options, "rw_timeout", "10000000", 0)
-            _ = av_dict_set(&options, "timeout", "10000000", 0)
+            Self.applyNetworkOptions(&options, headers: headers)
         } else {
             for (k, v) in headers {
                 av_dict_set(&options, k, v, 0)
@@ -514,6 +492,36 @@ public final class MediaDemuxer: @unchecked Sendable {
         return scheme == "http" || scheme == "https"
     }
 
+    /// Adds custom HTTP headers (CRLF-sanitized) plus reconnect and 10 s I/O timeout settings to
+    /// `avformat_open_input` options for a network URL.
+    static func applyNetworkOptions(_ options: inout OpaquePointer?, headers: [String: String]) {
+        if !headers.isEmpty {
+            var headerString = ""
+            for (key, value) in headers {
+                // Sanitize against CRLF injection
+                let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+                let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+                guard !cleanKey.isEmpty else { continue }
+
+                if cleanKey.lowercased() == "user-agent" {
+                    _ = av_dict_set(&options, "user_agent", cleanVal, 0)
+                } else {
+                    headerString += "\(cleanKey): \(cleanVal)\r\n"
+                }
+            }
+            if !headerString.isEmpty {
+                _ = av_dict_set(&options, "headers", headerString, 0)
+            }
+        }
+
+        _ = av_dict_set(&options, "reconnect", "1", 0)
+        _ = av_dict_set(&options, "reconnect_streamed", "1", 0)
+        _ = av_dict_set(&options, "reconnect_delay_max", "5", 0)
+        // 10-second timeout in microseconds for network I/O
+        _ = av_dict_set(&options, "rw_timeout", "10000000", 0)
+        _ = av_dict_set(&options, "timeout", "10000000", 0)
+    }
+
     /// Checks if a network URL points to a local area network (LAN) / private network address
     /// (e.g. 192.168.x.x, 10.x.x.x, 172.16-31.x.x, 127.0.0.1, localhost, .local, etc.)
     public static func isLocalNetworkURL(_ path: String) -> Bool {
@@ -613,34 +621,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         let isNetworkURL = Self.isNetworkURL(url)
         if isNetworkURL {
-            // Configure custom HTTP headers if present
-            if !headers.isEmpty {
-                var headerString = ""
-                for (key, value) in headers {
-                    // Sanitize against CRLF injection
-                    let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                    let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(
-                        of: "\n", with: "")
-                    guard !cleanKey.isEmpty else { continue }
-
-                    if cleanKey.lowercased() == "user-agent" {
-                        _ = av_dict_set(&avOptions, "user_agent", cleanVal, 0)
-                    } else {
-                        headerString += "\(cleanKey): \(cleanVal)\r\n"
-                    }
-                }
-                if !headerString.isEmpty {
-                    _ = av_dict_set(&avOptions, "headers", headerString, 0)
-                }
-            }
-
-            // Network reconnect and timeout settings
-            _ = av_dict_set(&avOptions, "reconnect", "1", 0)
-            _ = av_dict_set(&avOptions, "reconnect_streamed", "1", 0)
-            _ = av_dict_set(&avOptions, "reconnect_delay_max", "5", 0)
-            // 10-second timeout in microseconds for network I/O
-            _ = av_dict_set(&avOptions, "rw_timeout", "10000000", 0)
-            _ = av_dict_set(&avOptions, "timeout", "10000000", 0)
+            Self.applyNetworkOptions(&avOptions, headers: headers)
         }
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)

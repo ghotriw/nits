@@ -73,10 +73,23 @@ public enum PlaylistParser {
 
     /// Checks if M3U/M3U8 text content represents an HLS stream manifest rather than a track playlist.
     public static func isHLSManifest(content: String) -> Bool {
-        content.contains("#EXT-X-TARGETDURATION")
-            || content.contains("#EXT-X-STREAM-INF")
-            || content.contains("#EXT-X-MEDIA-SEQUENCE")
-            || content.contains("#EXT-X-VERSION")
+        var isHLS = false
+        content.enumerateLines { line, stop in
+            if isHLSTag(line.trimmingCharacters(in: .whitespaces)) {
+                isHLS = true
+                stop = true
+            }
+        }
+        return isHLS
+    }
+
+    private static let hlsTags = [
+        "#EXT-X-TARGETDURATION", "#EXT-X-STREAM-INF", "#EXT-X-MEDIA-SEQUENCE", "#EXT-X-VERSION",
+    ]
+
+    /// Whether a trimmed M3U line is a tag found only in HLS manifests.
+    private static func isHLSTag(_ line: String) -> Bool {
+        line.hasPrefix("#EXT-X-") && hlsTags.contains { line.hasPrefix($0) }
     }
 
     /// Parses playlist content string given a format hint or content auto-detection.
@@ -88,7 +101,6 @@ public enum PlaylistParser {
     public static func parse(content: String, format: String? = nil, baseURL: URL? = nil) -> [PlaylistItem] {
         let fmt = (format?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
         if fmt == "m3u" || fmt == "m3u8" {
-            guard !isHLSManifest(content: content) else { return [] }
             return parseM3U(content: content, baseURL: baseURL)
         } else if fmt == "pls" {
             return parsePLS(content: content, baseURL: baseURL)
@@ -107,24 +119,27 @@ public enum PlaylistParser {
         } else if trimmed.contains("FILE ") && trimmed.contains("TRACK ") {
             return parseCUE(content: content, baseURL: baseURL)
         } else {
-            guard !isHLSManifest(content: content) else { return [] }
             return parseM3U(content: content, baseURL: baseURL)
         }
     }
 
     // MARK: - M3U / M3U8 Parser
 
+    /// Returns no items for an HLS manifest (a single stream, not a track list); detected in the same pass.
     public static func parseM3U(content: String, baseURL: URL?) -> [PlaylistItem] {
-        guard !isHLSManifest(content: content) else { return [] }
         var items: [PlaylistItem] = []
         var pendingTitle: String? = nil
         var pendingDuration: Double? = nil
+        var isHLS = false
 
-        content.enumerateLines { line, _ in
+        content.enumerateLines { line, stop in
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
 
-            if trimmed.hasPrefix("#EXTINF:") {
+            if isHLSTag(trimmed) {
+                isHLS = true
+                stop = true
+            } else if trimmed.hasPrefix("#EXTINF:") {
                 // Example: #EXTINF:180,Artist - Track Title
                 // Example: #EXTINF:-1 tvg-id="..." group-title="...",Channel Name
                 let info = String(trimmed.dropFirst("#EXTINF:".count))
@@ -162,7 +177,7 @@ public enum PlaylistParser {
             }
         }
 
-        return items
+        return isHLS ? [] : items
     }
 
     // MARK: - PLS Parser
@@ -330,6 +345,8 @@ public enum PlaylistParser {
 
     // MARK: - Helper Methods
 
+    /// Never touches the file system: playlists often list thousands of files on network volumes,
+    /// where the directory check `URL(fileURLWithPath:)` makes per path costs milliseconds each.
     static func resolveURL(string: String, baseURL: URL?) -> URL? {
         let clean = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
@@ -349,15 +366,19 @@ public enum PlaylistParser {
             if let parsedURL = URL(string: clean) {
                 return parsedURL.standardizedFileURL
             }
-            let stripped = String(clean.dropFirst("file://".count))
+            var stripped = String(clean.dropFirst("file://".count))
+            // `file://localhost/path` names the same file as `file:///path`.
+            if stripped.lowercased().hasPrefix("localhost/") {
+                stripped.removeFirst("localhost".count)
+            }
             let decoded = stripped.removingPercentEncoding ?? stripped
-            return URL(fileURLWithPath: decoded).standardizedFileURL
+            return URL(filePath: decoded, directoryHint: .inferFromPath).standardizedFileURL
         }
 
         // Check absolute file path
         if clean.hasPrefix("/") {
             let decoded = clean.removingPercentEncoding ?? clean
-            return URL(fileURLWithPath: decoded).standardizedFileURL
+            return URL(filePath: decoded, directoryHint: .inferFromPath).standardizedFileURL
         }
 
         // Relative path: resolve against baseURL
@@ -366,7 +387,7 @@ public enum PlaylistParser {
                 let isFileWithExtension = !baseURL.pathExtension.isEmpty
                 let dirURL = isFileWithExtension ? baseURL.deletingLastPathComponent() : baseURL
                 let decoded = clean.removingPercentEncoding ?? clean
-                return dirURL.appendingPathComponent(decoded).standardizedFileURL
+                return dirURL.appending(path: decoded, directoryHint: .inferFromPath).standardizedFileURL
             } else {
                 // For remote network URLs, strip query/fragment to accurately determine directory path
                 let rawPath = baseURL.path
@@ -385,7 +406,7 @@ public enum PlaylistParser {
         }
 
         let decoded = clean.removingPercentEncoding ?? clean
-        return URL(fileURLWithPath: decoded).standardizedFileURL
+        return URL(filePath: decoded, directoryHint: .inferFromPath).standardizedFileURL
     }
 
     private static func parseCUEFileName(from line: String, baseURL: URL?) -> URL? {
