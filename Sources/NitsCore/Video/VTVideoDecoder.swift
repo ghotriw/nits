@@ -151,9 +151,12 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         let mediaSubType = CMFormatDescriptionGetMediaSubType(formatDescription)
         let depth = (extensions?[kCMFormatDescriptionExtension_Depth as String] as? NSNumber)?.intValue ?? 24
         let transfer = extensions?[kCVImageBufferTransferFunctionKey as String] as? String
+        let bitsPerComponent =
+            (extensions?[kCMFormatDescriptionExtension_BitsPerComponent as String] as? NSNumber)?.intValue ?? 8
 
         let is10Bit =
-            depth > 24 || transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+            depth > 24 || bitsPerComponent > 8
+            || transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
             || transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
             || mediaSubType == kCMVideoCodecType_HEVC || mediaSubType == kCMVideoCodecType_HEVCWithAlpha
             || mediaSubType == kCMVideoCodecType_DolbyVisionHEVC

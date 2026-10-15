@@ -242,4 +242,64 @@ struct VP9PlaybackTests {
         #expect(engine.isPlaying == false)
         engine.stop()
     }
+
+    // MARK: - Hardware (VideoToolbox) decoding
+
+    @Test(
+        "VTVideoDecoder decodes VP9 in hardware at the stream's bit depth",
+        arguments: [
+            (SyntheticTestMediaFactory.Preset.vp9SDR, false),
+            (.vp910BitHDR, true),
+            (.vp910BitSDRMP4, true),
+        ]
+    )
+    func videoToolboxDecodesVP9(preset: SyntheticTestMediaFactory.Preset, isTenBit: Bool) {
+        // Hardware VP9 is a supplemental VideoToolbox decoder (Apple Silicon); skip where it is missing.
+        guard VideoCodec.isVP9HardwareSupported else { return }
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return }
+        guard let demuxer = MediaDemuxer(url: path) else {
+            Issue.record("Failed to open \(preset.filename)")
+            return
+        }
+        #expect(VideoDecoderFactory.makeDecoder(for: .vp9, demuxer: demuxer) is VTVideoDecoder)
+
+        let decoder = VTVideoDecoder()
+        let decodedCount = LockIsolated(0)
+        let pixelFormats = LockIsolated<Set<OSType>>([])
+        decoder.setOutputHandler { frame in
+            decodedCount.withValue { $0 += 1 }
+            _ = pixelFormats.withValue { $0.insert(CVPixelBufferGetPixelFormatType(frame.pixelBuffer)) }
+        }
+
+        var fed = 0
+        while fed < 30, let sample = demuxer.nextVideoSample() {
+            decoder.decode(sampleBuffer: sample)
+            fed += 1
+        }
+        decoder.drain()
+
+        #expect(decodedCount.value == fed, "Decoded \(decodedCount.value) of \(fed) frames")
+        let expected: Set<OSType> =
+            isTenBit
+            ? [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange]
+            : [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
+        #expect(pixelFormats.value == expected)
+    }
+
+    @Test("Exact seek on hardware-decoded VP9 lands on the target frame")
+    @MainActor
+    func exactSeekLandsOnTarget() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .vp910BitSDRMP4) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        engine.load(path: path)
+        #expect(engine.isLoaded)
+
+        for target in [1.5, 0.75, 2.25] {
+            engine.seek(to: target, exact: true)
+            #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
+            let frame = engine.nominalFrameDuration
+            #expect(abs(engine.currentTime - target) < frame / 2, "Seek to \(target)s landed at \(engine.currentTime)s")
+        }
+        engine.stop()
+    }
 }

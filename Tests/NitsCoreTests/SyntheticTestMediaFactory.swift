@@ -28,6 +28,8 @@ public enum SyntheticTestMediaFactory {
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
         case vp910BitHDR
+        /// VP9 profile 2 video (3s, 640x360 @ 24fps) 10-bit SDR (BT.709) in MP4 (`vpcC` from the container)
+        case vp910BitSDRMP4
         /// Anamorphic H.264 (3s): 720x480 storage with 32:27 sample aspect ratio (16:9 display)
         case anamorphicH264
         /// HEVC 10-bit HLG video (3s) with BT.2020 primaries in MP4
@@ -61,6 +63,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
                 return "synth_vp9_10bit_hdr.webm"
+            case .vp910BitSDRMP4:
+                return "synth_vp9_10bit_sdr.mp4"
             case .anamorphicH264:
                 return "synth_anamorphic_h264.mp4"
             case .hevc10BitHLG:
@@ -382,6 +386,17 @@ public enum SyntheticTestMediaFactory {
                 "-color_trc", "smpte2084",
                 "-colorspace", "bt2020nc",
                 "-c:a", "libopus", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .vp910BitSDRMP4:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p10le", "-crf", "30", "-b:v", "0",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                "-colorspace", "bt709",
                 outputPath,
             ]
 

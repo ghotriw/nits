@@ -45,10 +45,18 @@ public enum VideoCodec: String, Sendable {
     }
 
     /// Cached detection of host AV1 hardware decoding capability.
-    public static let isAV1HardwareSupported: Bool = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+    public static let isAV1HardwareSupported: Bool = isHardwareDecodeSupported(kCMVideoCodecType_AV1)
 
     /// Cached detection of host VP9 hardware decoding capability.
-    public static let isVP9HardwareSupported: Bool = VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)
+    public static let isVP9HardwareSupported: Bool = isHardwareDecodeSupported(kCMVideoCodecType_VP9)
+
+    /// VP9 and AV1 hardware decoders ship as VideoToolbox *supplemental* decoders: until registered,
+    /// `VTIsHardwareDecodeSupported` reports `false` and sessions can't use them (VP9 on M1/M2 reads
+    /// `false` before and `true` after). Registering is a no-op when the hardware lacks the decoder.
+    private static func isHardwareDecodeSupported(_ codecType: CMVideoCodecType) -> Bool {
+        VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+        return VTIsHardwareDecodeSupported(codecType)
+    }
 
     /// Corresponding FFmpeg AVCodecID (package-internal to avoid leaking CFFmpeg to external modules).
     package var ffmpegCodecID: AVCodecID {

@@ -1320,6 +1320,9 @@ public final class MediaDemuxer: @unchecked Sendable {
             kCMFormatDescriptionExtension_FullRangeVideo as String: isFullRange,
             kCVImageBufferChromaLocationTopFieldKey as String: kCVImageBufferChromaLocation_Left as String,
             kCVImageBufferChromaLocationBottomFieldKey as String: kCVImageBufferChromaLocation_Left as String,
+            // Lets VTVideoDecoder pick a 10-bit output for high-bit-depth SDR (e.g. VP9 profile 2 / AV1 BT.709),
+            // which neither the transfer function nor the codec type reveals.
+            kCMFormatDescriptionExtension_BitsPerComponent as String: bitDepth,
         ]
 
         if !sampleAspectRatio.isSquare {
