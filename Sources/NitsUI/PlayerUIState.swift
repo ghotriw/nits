@@ -32,7 +32,10 @@ public final class PlayerUIState {
 
     public var isPlaylistPresented: Bool { sidePanel == .playlist }
 
-    /// Opens `panel`, replacing any other open panel, or closes it if it is already open.
+    public var isChaptersPresented: Bool { sidePanel == .chapters }
+
+    /// Opens `panel`, replacing any other open panel (or switching the playlist panel's tab), or
+    /// closes it if it is already open.
     public func toggleSidePanel(_ panel: PlayerSidePanel) {
         sidePanel = sidePanel == panel ? nil : panel
     }
@@ -43,6 +46,10 @@ public final class PlayerUIState {
 
     public func togglePlaylist() {
         toggleSidePanel(.playlist)
+    }
+
+    public func toggleChapters() {
+        toggleSidePanel(.chapters)
     }
 
     public func showControlsTemporarily() {

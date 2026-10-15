@@ -33,6 +33,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var selectedAudioTrackIndex: Int = -1
     public private(set) var audioExtraData: Data? = nil
     public private(set) var embeddedArtworkData: Data? = nil
+    public private(set) var chapters: [MediaChapter] = []
 
     public private(set) var subtitleTracks: [SubtitleTrack] = []
     public private(set) var selectedSubtitleTrackId: Int? = nil
@@ -1034,6 +1035,29 @@ public final class MediaDemuxer: @unchecked Sendable {
         } else {
             avformat_close_input(&self.formatCtx)
             return nil
+        }
+
+        self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
+    }
+
+    /// Container chapters as FFmpeg exports them (MKV default edition, flattened; MP4 chapter track or
+    /// Nero `chpl`). Chapters without a start are skipped; an unset end stays `nil`.
+    private static func readChapters(from formatCtx: UnsafeMutablePointer<AVFormatContext>) -> [MediaChapter.Raw] {
+        let count = Int(formatCtx.pointee.nb_chapters)
+        guard count > 0, let list = formatCtx.pointee.chapters else { return [] }
+        let noPTS = Int64.min  // AV_NOPTS_VALUE
+        return (0..<count).compactMap { index in
+            guard let chapter = list[index]?.pointee, chapter.start != noPTS,
+                chapter.time_base.num > 0, chapter.time_base.den > 0
+            else { return nil }
+            let num = Double(chapter.time_base.num)
+            let den = Double(chapter.time_base.den)
+            let title = av_dict_get(chapter.metadata, "title", nil, 0).map { String(cString: $0.pointee.value) }
+            return MediaChapter.Raw(
+                title: title,
+                start: Double(chapter.start) * num / den,
+                end: chapter.end != noPTS && chapter.end > chapter.start ? Double(chapter.end) * num / den : nil
+            )
         }
     }
 

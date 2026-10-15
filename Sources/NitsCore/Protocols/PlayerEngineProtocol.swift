@@ -112,6 +112,15 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor func loadExternalSubtitle(url: URL)
 }
 
+/// Container chapter markers and navigation.
+public protocol PlayerChapterControlling: AnyObject, Sendable {
+    @MainActor var chapters: [MediaChapter] { get }
+    @MainActor var currentChapterIndex: Int? { get }
+    @MainActor func seekToChapter(_ chapter: MediaChapter)
+    @MainActor @discardableResult func nextChapter() -> MediaChapter?
+    @MainActor @discardableResult func previousChapter() -> MediaChapter?
+}
+
 /// Visual formatting, styling, and text state for subtitle rendering.
 public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var currentSubtitleText: String? { get }
@@ -148,6 +157,7 @@ public protocol PlayerEngineProtocol:
     PlayerPlaybackControlling,
     PlayerVideoControlling,
     PlayerTrackControlling,
+    PlayerChapterControlling,
     PlayerSubtitleStyling,
     PlayerPlaylistControlling,
     PlayerUIOverlayControlling

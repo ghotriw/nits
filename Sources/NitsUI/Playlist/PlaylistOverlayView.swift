@@ -30,30 +30,40 @@ public struct PlaylistOverlayView: View {
             Divider()
                 .overlay(Color.white.opacity(0.1))
 
-            // MARK: - Filter Bar
-            filterBarView
-
-            Divider()
-                .overlay(Color.white.opacity(0.08))
-
-            // MARK: - Body / List
-            if engine.playlist.isLoading && engine.playlist.items.isEmpty {
-                loadingStateView
-            } else if engine.playlist.items.isEmpty {
-                emptyStateView
-            } else if engine.playlist.filteredItems.isEmpty {
-                noMatchStateView
+            if isShowingChapters {
+                ChapterListView(engine: engine)
             } else {
-                playlistListView
+                // MARK: - Filter Bar
+                filterBarView
+
+                Divider()
+                    .overlay(Color.white.opacity(0.08))
+
+                // MARK: - Body / List
+                if engine.playlist.isLoading && engine.playlist.items.isEmpty {
+                    loadingStateView
+                } else if engine.playlist.items.isEmpty {
+                    emptyStateView
+                } else if engine.playlist.filteredItems.isEmpty {
+                    noMatchStateView
+                } else {
+                    playlistListView
+                }
+
+                Divider()
+                    .overlay(Color.white.opacity(0.1))
+
+                // MARK: - Footer Summary
+                footerSummaryView
             }
-
-            Divider()
-                .overlay(Color.white.opacity(0.1))
-
-            // MARK: - Footer Summary
-            footerSummaryView
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Media without chapters (once loaded) falls back to the playlist tab.
+        .onChange(of: !engine.isLoading && engine.chapters.isEmpty, initial: true) { _, noChapters in
+            if noChapters && uiState.sidePanel == .chapters {
+                uiState.sidePanel = .playlist
+            }
+        }
         .overlay {
             if isTargetedForDrop {
                 RoundedRectangle(cornerRadius: 8)
@@ -100,93 +110,95 @@ public struct PlaylistOverlayView: View {
 
     // MARK: - Header View
 
-    private var headerView: some View {
-        HStack(spacing: 8) {
-            Text("Playlist")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
+    /// Chapters tab is open and the media has chapters; otherwise the panel shows the playlist.
+    private var isShowingChapters: Bool {
+        uiState.sidePanel == .chapters && !engine.chapters.isEmpty
+    }
 
-            if engine.playlist.isLoading {
-                ProgressView()
-                    .controlSize(.mini)
-            } else if !engine.playlist.items.isEmpty {
-                Text("\(engine.playlist.items.count)")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.white.opacity(0.12)))
-            }
-
-            Spacer()
-
-            // Sort: key menu + direction toggle; either one re-sorts. Shuffle and repeat live in
-            // the control bar.
-            sortKeyMenu
-            sortDirectionButton
-
-            // Add Menu
-            Menu {
-                Button("Add Media Files…") {
-                    appendInBackground(MediaOpenPanel.promptForMediaFiles())
-                }
-
-                Button("Add Folder…") {
-                    appendInBackground(MediaOpenPanel.promptForMediaFolders())
-                }
-
-                Button("Add URL…") {
-                    isShowingAddURLAlert = true
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.8))
-                    .padding(5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.white.opacity(0.1))
-                    )
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Add Media to Playlist")
-
-            // Clear Button
-            Button {
-                isShowingClearConfirmation = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(engine.playlist.items.isEmpty)
-            .help("Clear Playlist")
-
-            // Close Button
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding(6)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
-            }
-            .buttonStyle(.plain)
-            .help("Close (Esc)")
+    private var headerTabs: [SidePanelTab<PlayerSidePanel>] {
+        let playlist = engine.playlist
+        var tabs = [
+            SidePanelTab(
+                id: PlayerSidePanel.playlist,
+                title: "Playlist",
+                iconName: "list.bullet",
+                badge: playlist.items.isEmpty ? nil : "\(playlist.items.count)",
+                isBusy: playlist.isLoading
+            )
+        ]
+        if !engine.chapters.isEmpty {
+            tabs.append(
+                SidePanelTab(
+                    id: PlayerSidePanel.chapters,
+                    title: "Chapters",
+                    iconName: "list.and.film",
+                    badge: "\(engine.chapters.count)"
+                )
+            )
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-        .background(Color.black.opacity(0.2))
+        return tabs
+    }
+
+    private var headerView: some View {
+        SidePanelTabBar(
+            tabs: headerTabs,
+            selection: isShowingChapters ? .chapters : .playlist,
+            onSelect: { uiState.sidePanel = $0 },
+            onClose: onClose,
+            accessory: {
+                if !isShowingChapters {
+                    addMenu
+                    clearButton
+                }
+            }
+        )
+    }
+
+    private var addMenu: some View {
+        Menu {
+            Button("Add Media Files…") {
+                appendInBackground(MediaOpenPanel.promptForMediaFiles())
+            }
+
+            Button("Add Folder…") {
+                appendInBackground(MediaOpenPanel.promptForMediaFolders())
+            }
+
+            Button("Add URL…") {
+                isShowingAddURLAlert = true
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.8))
+                .padding(5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.1))
+                )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Add Media to Playlist")
+    }
+
+    private var clearButton: some View {
+        Button {
+            isShowingClearConfirmation = true
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.6))
+                .padding(5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(engine.playlist.items.isEmpty)
+        .help("Clear Playlist")
     }
 
     // MARK: - Sort Controls
@@ -402,23 +414,30 @@ public struct PlaylistOverlayView: View {
 
     private var filterBarView: some View {
         HStack(spacing: 6) {
-            SearchBarView(
-                text: Binding(
-                    get: { engine.playlist.searchQuery },
-                    set: { engine.playlist.searchQuery = $0 }
+            HStack(spacing: 6) {
+                SearchBarView(
+                    text: Binding(
+                        get: { engine.playlist.searchQuery },
+                        set: { engine.playlist.searchQuery = $0 }
+                    )
                 )
-            )
-            .frame(height: 28)
+                .frame(height: 28)
 
-            if !engine.playlist.searchQuery.isEmpty {
-                Text("\(engine.playlist.filteredItems.count) of \(engine.playlist.items.count)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .padding(.trailing, 6)
+                if !engine.playlist.searchQuery.isEmpty {
+                    Text("\(engine.playlist.filteredItems.count) of \(engine.playlist.items.count)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .padding(.trailing, 6)
+                }
             }
+            .background(Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            // Sort: key menu + direction toggle; either one re-sorts. Shuffle and repeat live in
+            // the control bar.
+            sortKeyMenu
+            sortDirectionButton
         }
-        .background(Color.white.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.black.opacity(0.1))

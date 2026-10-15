@@ -57,6 +57,14 @@ public final class PlayerWindow: NSWindow {
         case 0x7C:  // Right Arrow
             actionHandler.seekForward()
             return true
+        case 0x79:  // Page Down (fn+↓ on laptop keyboards) -> Next Chapter
+            guard actionHandler.hasChapters else { return false }
+            actionHandler.nextChapter()
+            return true
+        case 0x74:  // Page Up (fn+↑) -> Previous Chapter
+            guard actionHandler.hasChapters else { return false }
+            actionHandler.previousChapter()
+            return true
         case 0x7E:  // Up Arrow
             actionHandler.stepVolume(by: 0.05)
             return true

@@ -10,7 +10,20 @@ import os
 @Observable
 @MainActor
 public final class PlayerEngine: PlayerEngineProtocol {
-    public var currentTime: Double = 0
+    public var currentTime: Double = 0 {
+        didSet {
+            updateCurrentChapterIndex()
+        }
+    }
+    /// Container chapters of the loaded media, sorted by start; empty when it has none.
+    public internal(set) var chapters: [MediaChapter] = [] {
+        didSet {
+            currentChapterIndex = nil
+            updateCurrentChapterIndex()
+        }
+    }
+    /// Index into `chapters` of the chapter at `currentTime`; `nil` before the first one or without chapters.
+    public internal(set) var currentChapterIndex: Int?
     public var pendingSeekTime: Double? { chaseTargetTime }
     public var duration: Double = 0
     public var isPlaying: Bool = false {

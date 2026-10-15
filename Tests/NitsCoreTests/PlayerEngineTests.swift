@@ -643,6 +643,8 @@ struct PlayerEngineTests {
             var selectedAudioTrackId: Int = 0
             var subtitleTracks: [SubtitleTrack] = []
             var selectedSubtitleTrackId: Int? = nil
+            var chapters: [MediaChapter] = []
+            var currentChapterIndex: Int? = nil
             var currentSubtitleText: String? = nil
             var currentSubtitleCue: SubtitleCue? = nil
             var currentSubtitleCues: [SubtitleCue] = []
@@ -671,6 +673,9 @@ struct PlayerEngineTests {
             func toggleDebugHUD() {}
             func renderCurrentFrame() {}
             func selectAudioTrack(id: Int) {}
+            func seekToChapter(_ chapter: MediaChapter) {}
+            func nextChapter() -> MediaChapter? { nil }
+            func previousChapter() -> MediaChapter? { nil }
             func playNext() {}
             func playPrevious() {}
             func playPlaylistItem(id: UUID) {}

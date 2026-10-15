@@ -11,6 +11,7 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
     case volume = "volume"
     case audioTrack = "audioTrack"
     case subtitleTrack = "subtitleTrack"
+    case chapters = "chapters"
     case playlist = "playlist"
     case playlistRepeat = "playlistRepeat"
     case playlistShuffle = "playlistShuffle"
@@ -40,6 +41,8 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
             return "Audio Tracks"
         case .subtitleTrack:
             return "Subtitles"
+        case .chapters:
+            return "Chapters"
         case .playlist:
             return "Playlist Panel"
         case .playlistRepeat:
@@ -74,6 +77,8 @@ public enum ControlBarItem: String, CaseIterable, Identifiable, Codable, Sendabl
             return "waveform.circle"
         case .subtitleTrack:
             return "captions.bubble"
+        case .chapters:
+            return "list.and.film"
         case .playlist:
             return "list.bullet"
         case .playlistRepeat:

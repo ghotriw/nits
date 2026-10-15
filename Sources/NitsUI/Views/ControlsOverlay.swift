@@ -130,6 +130,8 @@ public struct ControlsOverlay: View {
             ControlAudioTrackButton(engine: engine, uiState: uiState)
         case .subtitleTrack:
             ControlSubtitleTrackButton(engine: engine, uiState: uiState)
+        case .chapters:
+            ControlChaptersToggleButton(engine: engine, uiState: uiState)
         case .playlist:
             ControlPlaylistToggleButton(uiState: uiState)
         case .playlistRepeat:

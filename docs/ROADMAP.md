@@ -283,11 +283,14 @@ flowchart TD
 
 > Reference desktop player ergonomics: chapter jumps, visual timeline scrubbing, HDR screenshots, and floating window playback.
 
-- [ ] **5.10.1. Container Chapters Navigation:**
-  - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers.
-  - Chapter visual tick marks on `TimelineSlider` with hover title tooltips.
-  - Previous/Next Chapter shortcuts (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`).
-  - Chapter list as a side panel (`PlayerSidePanel`), alongside the playlist and quick settings.
+- [x] **5.10.1. Container Chapters Navigation:**
+  - Demuxing chapter markers (`AVChapter`) from MKV/MP4 containers, normalized into `MediaChapter` (sorted,
+    missing ends filled, duplicates such as MP4's Nero `chpl` copy dropped).
+  - Chapter gaps on the timeline track; the hover preview shows the chapter title above the thumbnail.
+  - Previous/Next Chapter (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`); "previous" restarts the current chapter
+    when more than 5 s into it (mpv's `chapter-seek-threshold`); "next" stops on the last chapter.
+  - Chapter list as a tab of the playlist panel (shown only when the media has chapters), `⌥⌘C` and an
+    optional control bar button; side panel headers share one tab bar (`SidePanelTabBar`).
 - [x] **5.10.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
@@ -376,7 +379,7 @@ flowchart TD
 | **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
-| **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | In Progress ⏳ | Timeline preview hover and macOS PiP done; MKV/MP4 chapters planned |
+| **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
 | **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |

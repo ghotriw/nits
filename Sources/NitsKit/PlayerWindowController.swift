@@ -661,6 +661,49 @@ extension PlayerWindowController: PlayerActions {
         }
     }
 
+    public var hasChapters: Bool {
+        engine.isLoaded && !engine.chapters.isEmpty
+    }
+
+    public var isChaptersPresented: Bool {
+        uiState.isChaptersPresented
+    }
+
+    public func toggleChapters() {
+        guard hasChapters else { return }
+        withAnimation(.spring(duration: 0.25)) {
+            uiState.toggleChapters()
+        }
+    }
+
+    public func nextChapter() {
+        guard hasChapters else { return }
+        guard let chapter = engine.nextChapter() else {
+            showChapterOSD(symbol: "forward.end", text: "Last Chapter")
+            return
+        }
+        showChapterOSD(for: chapter, symbol: "forward.end.fill")
+    }
+
+    public func previousChapter() {
+        guard hasChapters, let chapter = engine.previousChapter() else { return }
+        showChapterOSD(for: chapter, symbol: "backward.end.fill")
+    }
+
+    private func showChapterOSD(for chapter: MediaChapter, symbol: String) {
+        showChapterOSD(
+            symbol: symbol,
+            text: chapter.displayTitle,
+            subtext:
+                "Chapter \(chapter.id + 1) of \(engine.chapters.count) · \(TimeParser.format(seconds: chapter.start))"
+        )
+    }
+
+    private func showChapterOSD(symbol: String, text: String, subtext: String? = nil) {
+        guard engine.enableOSD else { return }
+        uiState.osd.show(.custom(symbol: symbol, text: text, subtext: subtext))
+    }
+
     public func promptJumpToTime() {
         guard canJumpToTime else { return }
         if uiState.isJumpToPresented {

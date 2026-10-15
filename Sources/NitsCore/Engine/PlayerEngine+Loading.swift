@@ -56,6 +56,7 @@ extension PlayerEngine {
         self.currentPath = nil
         self.currentTime = 0
         self.duration = 0
+        self.chapters = []
         self.isLoaded = false
         self.isLoading = true
 
@@ -347,6 +348,7 @@ extension PlayerEngine {
         currentPath = nil
         currentTime = 0
         duration = 0
+        chapters = []
         isLoading = false
         playbackState = .idle
         thumbnailManager.reset()
@@ -551,6 +553,10 @@ extension PlayerEngine {
         // Fall back to embedded container artwork if no explicit artwork data was provided
         if self.artworkData == nil, let embedded = demuxer.embeddedArtworkData {
             self.artworkData = embedded
+        }
+        self.chapters = demuxer.chapters
+        if !demuxer.chapters.isEmpty {
+            AppLog.info(.demuxer, "Loaded \(demuxer.chapters.count) chapter(s)")
         }
         // Track selection priority chain (per kind):
         // 1. Explicit request (CLI, host app, deep link)

@@ -32,6 +32,10 @@ public enum SyntheticTestMediaFactory {
         case anamorphicH264
         /// HEVC 10-bit HLG video (3s) with BT.2020 primaries in MP4
         case hevc10BitHLG
+        /// H.264 + AAC MKV (20s, keyframe every second) with the chapters in `chapterMetadata`
+        case chaptersMKV
+        /// Same as `chaptersMKV` in MP4 (QuickTime chapter track + Nero `chpl`)
+        case chaptersMP4
 
         public var filename: String {
             switch self {
@@ -61,8 +65,34 @@ public enum SyntheticTestMediaFactory {
                 return "synth_anamorphic_h264.mp4"
             case .hevc10BitHLG:
                 return "synth_hevc_10bit_hlg.mp4"
+            case .chaptersMKV:
+                return "synth_chapters_h264.mkv"
+            case .chaptersMP4:
+                return "synth_chapters_h264.mp4"
             }
         }
+    }
+
+    /// Chapters muxed into the chapter presets: (start, end, title) in seconds; the third has no title.
+    public static let chapterMarkers: [(start: Double, end: Double, title: String?)] = [
+        (0, 4, "Opening"),
+        (4, 9, "Глава вторая"),
+        (9, 14, nil),
+        (14, 20, "Finale"),
+    ]
+
+    /// `chapterMarkers` as an FFMETADATA1 document, fed to FFmpeg with `-map_chapters`.
+    static var chapterMetadata: String {
+        var lines = [";FFMETADATA1"]
+        for marker in chapterMarkers {
+            lines += [
+                "[CHAPTER]", "TIMEBASE=1/1000", "START=\(Int(marker.start * 1000))", "END=\(Int(marker.end * 1000))",
+            ]
+            if let title = marker.title {
+                lines.append("title=\(title)")
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     /// Resolves the absolute path to `ffmpeg` binary on the machine.
@@ -119,9 +149,20 @@ public enum SyntheticTestMediaFactory {
             tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-\(preset.filename)").path
         }
 
+        // Private per run for the same reason as the partial output file.
+        let metadataPath = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString).ffmeta").path
+        defer { try? FileManager.default.removeItem(atPath: metadataPath) }
+        if preset == .chaptersMKV || preset == .chaptersMP4 {
+            guard FileManager.default.createFile(atPath: metadataPath, contents: Data(chapterMetadata.utf8)) else {
+                print("[SyntheticTestMediaFactory] Failed to write chapter metadata for \(preset.rawValue)")
+                return nil
+            }
+        }
+
         let encodedPath = partialPath()
         defer { try? FileManager.default.removeItem(atPath: encodedPath) }
-        guard runFFmpeg(ffmpeg, arguments: arguments(for: preset, outputPath: encodedPath), preset: preset) else {
+        let encodeArguments = arguments(for: preset, outputPath: encodedPath, metadataPath: metadataPath)
+        guard runFFmpeg(ffmpeg, arguments: encodeArguments, preset: preset) else {
             return nil
         }
 
@@ -180,8 +221,19 @@ public enum SyntheticTestMediaFactory {
         return true
     }
 
-    private static func arguments(for preset: Preset, outputPath: String) -> [String] {
+    private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
+        case .chaptersMKV, .chaptersMP4:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=20",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+                "-f", "ffmetadata", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:a", "-map_chapters", "2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "24",
+                "-c:a", "aac", "-b:a", "128k",
+                outputPath,
+            ]
         case .multiTrackH264:
             // 30 seconds H.264 (640x360 @ 24fps, GOP=24 with B-frames)
             // Track 1: 5.1 Surround AC3 (384k)

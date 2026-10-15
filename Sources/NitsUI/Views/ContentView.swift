@@ -325,7 +325,8 @@ public struct ContentView: View {
     @ViewBuilder
     private func sidePanelContent(_ panel: PlayerSidePanel) -> some View {
         switch panel {
-        case .playlist:
+        case .playlist, .chapters:
+            // One view for both tabs, so switching tabs keeps the panel's state.
             PlaylistOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)
         case .quickSettings:
             QuickSettingsOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)

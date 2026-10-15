@@ -317,6 +317,36 @@ public struct ControlPlaylistToggleButton: View {
     }
 }
 
+// MARK: - Chapters Toggle Button
+/// Opens the playlist panel on its chapters tab; shown only when the media has chapters.
+public struct ControlChaptersToggleButton: View {
+    let engine: PlayerEngine
+    let uiState: PlayerUIState?
+
+    public init(engine: PlayerEngine, uiState: PlayerUIState?) {
+        self.engine = engine
+        self.uiState = uiState
+    }
+
+    public var body: some View {
+        if let uiState, !engine.chapters.isEmpty {
+            Button {
+                withAnimation(.spring(duration: 0.25)) {
+                    uiState.toggleChapters()
+                }
+            } label: {
+                Image(systemName: "list.and.film")
+                    .font(.system(size: 16))
+                    .foregroundStyle(uiState.isChaptersPresented ? Color.accentColor : Color.white.opacity(0.85))
+                    .padding(.all, 7)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Chapters (⌥⌘C)")
+        }
+    }
+}
+
 // MARK: - Picture in Picture Toggle Button
 public struct ControlPictureInPictureButton: View {
     let engine: PlayerEngine
@@ -509,6 +539,11 @@ public struct ControlTimelineSection: View {
                         .fill(.tint)
                         .frame(width: geo.size.width * progress, height: 6)
 
+                    if !engine.chapters.isEmpty {
+                        ChapterTickMarks(chapters: engine.chapters, duration: engine.duration)
+                            .frame(height: 6)
+                    }
+
                     Circle()
                         .fill(.white)
                         .frame(width: 14, height: 14)
@@ -519,11 +554,14 @@ public struct ControlTimelineSection: View {
                     if (isTimelineHovered || isDragging) && engine.duration > 0 {
                         let previewTime: Double = isDragging ? dragPosition : (timelineHoverRatio * engine.duration)
                         let previewThumbnail = engine.thumbnailManager.thumbnail(at: previewTime)
+                        let chapterTitle = ChapterNavigator.index(at: previewTime, in: engine.chapters)
+                            .map { engine.chapters[$0].displayTitle }
                         let rawX: CGFloat = isDragging ? (progress * geo.size.width) : timelineHoverLocation.x
                         let clampedCursorX: CGFloat = min(max(rawX, 0), max(geo.size.width, 0))
                         let cardWidth = TimelineThumbnailPreviewView.size(
                             thumbnail: previewThumbnail,
-                            duration: engine.duration
+                            duration: engine.duration,
+                            hasChapterTitle: chapterTitle != nil
                         ).width
                         // Allowed range for the card's leading edge, in slider coordinates.
                         let (minCardX, maxCardX): (CGFloat, CGFloat) = {
@@ -539,7 +577,8 @@ public struct ControlTimelineSection: View {
                         TimelineThumbnailPreviewView(
                             thumbnail: previewThumbnail,
                             time: previewTime,
-                            duration: engine.duration
+                            duration: engine.duration,
+                            chapterTitle: chapterTitle
                         )
                         .fixedSize()
                         .offset(x: cardX, y: -31)
@@ -596,6 +635,27 @@ public struct ControlTimelineSection: View {
                 .padding(.all, 7)
                 .frame(minWidth: 48, alignment: .leading)
         }
+    }
+}
+
+// MARK: - Chapter Tick Marks
+/// Chapter boundaries drawn as thin dark gaps across the timeline track (none at the very start).
+struct ChapterTickMarks: View {
+    let chapters: [MediaChapter]
+    let duration: Double
+
+    private static let gapWidth: CGFloat = 2
+
+    var body: some View {
+        Canvas { context, size in
+            guard duration > 0 else { return }
+            for chapter in chapters where chapter.start > 0 && chapter.start < duration {
+                let x = size.width * chapter.start / duration
+                let rect = CGRect(x: x - Self.gapWidth / 2, y: 0, width: Self.gapWidth, height: size.height)
+                context.fill(Path(rect), with: .color(.black.opacity(0.55)))
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 

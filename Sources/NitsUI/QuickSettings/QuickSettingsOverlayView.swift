@@ -14,57 +14,12 @@ public struct QuickSettingsOverlayView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Header: Tabs + Close Button
-            HStack(spacing: 0) {
-                ForEach(QuickSettingsTab.allCases) { tab in
-                    let isSelected = uiState.selectedQuickSettingsTab == tab
-                    Button {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                            uiState.selectedQuickSettingsTab = tab
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: tab.iconName)
-                                .font(.system(size: 13, weight: .semibold))
-
-                            if isSelected {
-                                Text(tab.title)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                            }
-                        }
-                        .frame(minWidth: 24, minHeight: 30)
-                        .padding(.horizontal, isSelected ? 10 : 8)
-                        .foregroundStyle(isSelected ? .white : .white.opacity(0.6))
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSelected ? Color.white.opacity(0.16) : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                        .padding(.horizontal, isSelected ? 4 : 0)
-                    }
-                    .buttonStyle(.plain)
-                    .help(tab.title)
-                }
-
-                Spacer()
-
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .padding(6)
-                        .background(Circle().fill(Color.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-                .help("Close (Esc)")
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
-            .background(Color.black.opacity(0.2))
+            SidePanelTabBar(
+                tabs: QuickSettingsTab.allCases.map { SidePanelTab(id: $0, title: $0.title, iconName: $0.iconName) },
+                selection: uiState.selectedQuickSettingsTab,
+                onSelect: { uiState.selectedQuickSettingsTab = $0 },
+                onClose: onClose
+            )
 
             Divider()
                 .overlay(Color.white.opacity(0.1))

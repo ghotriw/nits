@@ -33,6 +33,19 @@ public struct PlayerCommands: Commands {
             .keyboardShortcut(.leftArrow, modifiers: .command)
             .disabled(playerActions == nil || !(playerActions?.hasPreviousTrack ?? false))
 
+            // Also PageDown / PageUp, handled by `PlayerWindow`.
+            Button("Next Chapter") {
+                playerActions?.nextChapter()
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.option, .command])
+            .disabled(!(playerActions?.hasChapters ?? false))
+
+            Button("Previous Chapter") {
+                playerActions?.previousChapter()
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.option, .command])
+            .disabled(!(playerActions?.hasChapters ?? false))
+
             Divider()
 
             Button("Step Forward (1 Frame)") {
@@ -149,6 +162,16 @@ public struct PlayerCommands: Commands {
             )
             .keyboardShortcut("p", modifiers: [.option, .command])
             .disabled(playerActions == nil)
+
+            Toggle(
+                "Chapters",
+                isOn: Binding(
+                    get: { playerActions?.isChaptersPresented ?? false },
+                    set: { _ in playerActions?.toggleChapters() }
+                )
+            )
+            .keyboardShortcut("c", modifiers: [.option, .command])
+            .disabled(!(playerActions?.hasChapters ?? false))
 
             Toggle(
                 "Quick Settings",

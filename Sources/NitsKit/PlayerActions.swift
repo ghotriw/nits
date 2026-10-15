@@ -17,6 +17,8 @@ public protocol PlayerActions: AnyObject {
     var isSidePanelPresented: Bool { get }
     var hasNextTrack: Bool { get }
     var hasPreviousTrack: Bool { get }
+    var hasChapters: Bool { get }
+    var isChaptersPresented: Bool { get }
 
     var seekStepSeconds: Double { get }
 
@@ -40,6 +42,9 @@ public protocol PlayerActions: AnyObject {
     func closeSidePanel()
     func playNextTrack()
     func playPreviousTrack()
+    func toggleChapters()
+    func nextChapter()
+    func previousChapter()
     func toggleFullscreen()
     func exitFullscreen()
     var isPictureInPictureActive: Bool { get }
@@ -61,6 +66,8 @@ extension PlayerActions {
     public var isSidePanelPresented: Bool { false }
     public var hasNextTrack: Bool { false }
     public var hasPreviousTrack: Bool { false }
+    public var hasChapters: Bool { false }
+    public var isChaptersPresented: Bool { false }
     public func seekForward() {
         seekRelative(by: seekStepSeconds)
     }
@@ -77,6 +84,9 @@ extension PlayerActions {
     public func closeSidePanel() {}
     public func playNextTrack() {}
     public func playPreviousTrack() {}
+    public func toggleChapters() {}
+    public func nextChapter() {}
+    public func previousChapter() {}
     public func play() {}
     public func pause() {}
     public func seek(to seconds: Double) {}
