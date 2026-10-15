@@ -19,10 +19,18 @@ public enum VideoCodec: String, Sendable {
     case h263 = "H.263"
     case mpeg1 = "MPEG-1 Video"
     case mpeg2 = "MPEG-2 Video / H.262"
+    case flv1 = "Sorenson Spark (FLV1)"
+    case vp6 = "On2 VP6"
+    case vp8 = "VP8"
+    case theora = "Theora"
+    case rv10 = "RealVideo 1.0"
+    case rv20 = "RealVideo 2.0"
+    case rv30 = "RealVideo 3.0"
+    case rv40 = "RealVideo 4.0"
     case unknown = "Unknown"
 
     /// FourCC representation for CoreMedia format description.
-    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1', 'mp41', 'mp42', 'mp43') are used
+    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1', 'mp41', 'mp42', 'mp43', 'flv1', 'vp60', 'vp08', 'theo', 'rv10'-'rv40') are used
     /// internally to carry format descriptions for software-decoded streams into CMSampleBuffers.
     public var cmVideoCodecType: CMVideoCodecType {
         switch self {
@@ -63,6 +71,30 @@ public enum VideoCodec: String, Sendable {
             return kCMVideoCodecType_MPEG1Video
         case .mpeg2:
             return kCMVideoCodecType_MPEG2Video
+        case .flv1:
+            // 'flv1' = 0x666c7631
+            return 0x666C_7631
+        case .vp6:
+            // 'vp60' = 0x76703630
+            return 0x7670_3630
+        case .vp8:
+            // 'vp08' = 0x76703038
+            return 0x7670_3038
+        case .theora:
+            // 'theo' = 0x7468656f
+            return 0x7468_656F
+        case .rv10:
+            // 'rv10' = 0x72763130
+            return 0x7276_3130
+        case .rv20:
+            // 'rv20' = 0x72763230
+            return 0x7276_3230
+        case .rv30:
+            // 'rv30' = 0x72763330
+            return 0x7276_3330
+        case .rv40:
+            // 'rv40' = 0x72763430
+            return 0x7276_3430
         case .unknown:
             return 0
         }
@@ -86,6 +118,14 @@ public enum VideoCodec: String, Sendable {
         case .h263: "H.263"
         case .mpeg1: "MPEG-1"
         case .mpeg2: "MPEG-2"
+        case .flv1: "Sorenson Spark"
+        case .vp6: "VP6"
+        case .vp8: "VP8"
+        case .theora: "Theora"
+        case .rv10: "RealVideo 1"
+        case .rv20: "RealVideo 2"
+        case .rv30: "RealVideo 3"
+        case .rv40: "RealVideo 4"
         case .unknown: "Unknown"
         }
     }
@@ -137,12 +177,29 @@ public enum VideoCodec: String, Sendable {
             return AV_CODEC_ID_MPEG1VIDEO
         case .mpeg2:
             return AV_CODEC_ID_MPEG2VIDEO
+        case .flv1:
+            return AV_CODEC_ID_FLV1
+        case .vp6:
+            return AV_CODEC_ID_VP6
+        case .vp8:
+            return AV_CODEC_ID_VP8
+        case .theora:
+            return AV_CODEC_ID_THEORA
+        case .rv10:
+            return AV_CODEC_ID_RV10
+        case .rv20:
+            return AV_CODEC_ID_RV20
+        case .rv30:
+            return AV_CODEC_ID_RV30
+        case .rv40:
+            return AV_CODEC_ID_RV40
         case .unknown:
             return AV_CODEC_ID_NONE
         }
     }
 
     /// Indicates whether hardware decoding via Apple VideoToolbox is available on the current host.
+    /// Every other codec is decoded in software by `FFmpegVideoDecoder`.
     public var isHardwareAccelerated: Bool {
         switch self {
         case .hevc, .h264:
@@ -151,32 +208,19 @@ public enum VideoCodec: String, Sendable {
             return Self.isAV1HardwareSupported
         case .vp9:
             return Self.isVP9HardwareSupported
-        case .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
-            .unknown:
+        default:
             return false
         }
     }
 
     /// Whether the video bitstream requires NAL unit parameter sets (SPS/PPS/VPS) for CMVideoFormatDescription.
     public var requiresParameterSets: Bool {
-        switch self {
-        case .hevc, .h264:
-            return true
-        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
-            .unknown:
-            return false
-        }
+        self == .hevc || self == .h264
     }
 
     /// Whether the video bitstream requires NAL unit rewriting to HVCC length-prefixed format for VideoToolbox.
     public var requiresHVCC: Bool {
-        switch self {
-        case .hevc, .h264:
-            return true
-        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
-            .unknown:
-            return false
-        }
+        self == .hevc || self == .h264
     }
 
     /// Resolves a known VideoCodec from an FFmpeg AVCodecID (package-internal).
@@ -213,6 +257,23 @@ public enum VideoCodec: String, Sendable {
             return .mpeg1
         case AV_CODEC_ID_MPEG2VIDEO:
             return .mpeg2
+        case AV_CODEC_ID_FLV1:
+            return .flv1
+        // VP6F is VP6 as Flash stores it (flipped, with its own header); VP6A adds an alpha plane.
+        case AV_CODEC_ID_VP6, AV_CODEC_ID_VP6F, AV_CODEC_ID_VP6A:
+            return .vp6
+        case AV_CODEC_ID_VP8:
+            return .vp8
+        case AV_CODEC_ID_THEORA:
+            return .theora
+        case AV_CODEC_ID_RV10:
+            return .rv10
+        case AV_CODEC_ID_RV20:
+            return .rv20
+        case AV_CODEC_ID_RV30:
+            return .rv30
+        case AV_CODEC_ID_RV40:
+            return .rv40
         default:
             return nil
         }

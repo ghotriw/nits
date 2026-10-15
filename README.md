@@ -9,7 +9,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 
 **Video & HDR**
 - [x] Codecs: AV1, VP9, HEVC, H.264
-- [x] Legacy codecs: WMV/VC-1, MPEG-1/2, MPEG-4 Part 2 (DivX/Xvid), MS-MPEG4, H.263
+- [x] Legacy codecs: WMV/VC-1, MPEG-1/2, MPEG-4 Part 2 (DivX/Xvid), MS-MPEG4, H.263, Sorenson Spark, VP6, VP8, Theora, RealVideo
 - [x] HDR output on Apple XDR displays, custom tone mapping to SDR on standard screens
 
 **Dolby Vision**

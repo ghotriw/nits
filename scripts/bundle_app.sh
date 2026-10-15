@@ -306,6 +306,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
                 <string>m2v</string>
                 <string>m2ts</string>
                 <string>mts</string>
+                <string>rm</string>
+                <string>rmvb</string>
             </array>
         </dict>
         <dict>

@@ -75,15 +75,14 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         ctx.pointee.pkt_timebase = timebase
         ctx.pointee.flags |= Int32(AV_CODEC_FLAG_COPY_OPAQUE)
 
-        // Multi-threading configuration:
-        // Only set multi-threading if the decoder explicitly advertises frame/slice thread capabilities.
-        // Legacy codecs (WMV1, WMV2, etc.) do not support multi-threading and require thread_count = 1.
-        // Frame threading delays output by one frame per thread, while seek previews and frame steps decode
-        // only a few packets past the target. MPEG-4 Part 2 is cheap enough to decode on one thread.
+        // Slice threading only. Frame threading delays output by one frame per thread, while seek previews
+        // and frame steps decode only a few packets past the target, so the target frame would never come
+        // out. Decoders without slice threads (MPEG-4 Part 2, WMV, H.263) run on one thread; libdav1d
+        // manages its own.
         let caps = codec.pointee.capabilities
-        let supportsThreading = (caps & (AV_CODEC_CAP_FRAME_THREADS | AV_CODEC_CAP_SLICE_THREADS)) != 0
-        if supportsThreading && codecId != AV_CODEC_ID_MPEG4 {
+        if (caps & AV_CODEC_CAP_SLICE_THREADS) != 0 {
             let cpuCount = ProcessInfo.processInfo.activeProcessorCount
+            ctx.pointee.thread_type = FF_THREAD_SLICE
             ctx.pointee.thread_count = Int32(min(max(cpuCount, 2), 10))
         } else {
             ctx.pointee.thread_count = 1
@@ -505,6 +504,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             format == AV_PIX_FMT_YUV420P.rawValue
                 || format == AV_PIX_FMT_YUVJ420P.rawValue
                 || format == AV_PIX_FMT_YUV420P10LE.rawValue
+                // VP6A (Flash VP6 with alpha): the first three planes are plain 4:2:0; alpha is dropped.
+                || format == AV_PIX_FMT_YUVA420P.rawValue
         else {
             let desc: String
             switch format {

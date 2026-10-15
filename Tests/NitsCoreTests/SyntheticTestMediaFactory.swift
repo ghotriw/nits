@@ -39,6 +39,14 @@ public enum SyntheticTestMediaFactory {
         case mpeg2InterlacedTS
         /// VCD-style MPEG-1 (4s, 352x240 @ 29.97fps, 2 B-frames) with MP2 audio in MPEG-PS
         case mpeg1MPG
+        /// Sorenson Spark / FLV1 (4s, 320x240 @ 25fps) with MP3 audio in FLV
+        case flvSpark
+        /// VP8 (4s, 640x360 @ 30fps, libvpx defaults incl. hidden alt-ref frames) with Vorbis audio in WebM
+        case vp8WebM
+        /// RealVideo 1.0 (4s, 320x240 @ 15fps) with RealAudio 1.0 (14.4K, 8 kHz mono) in RealMedia
+        case rv10RM
+        /// RealVideo 2.0 (4s, CIF 352x288 @ 25fps) in RealMedia
+        case rv20RM
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
@@ -88,6 +96,14 @@ public enum SyntheticTestMediaFactory {
                 return "synth_mpeg2_pal_interlaced.ts"
             case .mpeg1MPG:
                 return "synth_mpeg1_vcd.mpg"
+            case .flvSpark:
+                return "synth_flv1_spark.flv"
+            case .vp8WebM:
+                return "synth_vp8_vorbis.webm"
+            case .rv10RM:
+                return "synth_rv10_ra144.rm"
+            case .rv20RM:
+                return "synth_rv20.rm"
             case .vp9SDR:
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
@@ -463,6 +479,44 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
                 "-c:v", "mpeg1video", "-b:v", "1150k", "-bf", "2", "-g", "15",
                 "-c:a", "mp2", "-b:a", "224k",
+                outputPath,
+            ]
+
+        case .flvSpark:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-c:v", "flv", "-q:v", "5", "-g", "25",
+                "-c:a", "libmp3lame", "-ar", "22050", "-b:a", "64k",
+                outputPath,
+            ]
+
+        case .vp8WebM:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-c:v", "libvpx", "-b:v", "1M", "-g", "30",
+                "-c:a", "vorbis", "-strict", "experimental", "-ac", "2",
+                outputPath,
+            ]
+
+        case .rv10RM:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-c:v", "rv10", "-q:v", "5", "-g", "15",
+                "-c:a", "real_144", "-ar", "8000", "-ac", "1",
+                outputPath,
+            ]
+
+        case .rv20RM:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25:duration=4",
+                "-c:v", "rv20", "-q:v", "5", "-g", "25",
                 outputPath,
             ]
 

@@ -35,11 +35,19 @@ struct LegacyVideoPlaybackTests {
             sampleAspectRatio: RationalAspectRatio(numerator: 16, denominator: 15),
             primaries: kCVImageBufferColorPrimaries_EBU_3213 as String),
         Case(preset: .mpeg1MPG, codec: .mpeg1, width: 352, height: 240),
+        Case(preset: .flvSpark, codec: .flv1, width: 320, height: 240),
+        Case(preset: .vp8WebM, codec: .vp8, width: 640, height: 360),
+        Case(
+            preset: .rv10RM, codec: .rv10, width: 320, height: 240,
+            primaries: kCVImageBufferColorPrimaries_SMPTE_C as String),
+        Case(
+            preset: .rv20RM, codec: .rv20, width: 352, height: 288,
+            primaries: kCVImageBufferColorPrimaries_EBU_3213 as String),
     ]
 
     /// Presets with B-frames, where decode and presentation order differ.
     static let reorderedPresets: [SyntheticTestMediaFactory.Preset] = [
-        .mpeg4XvidAVI, .mpeg2DVDVOB, .mpeg2InterlacedTS, .mpeg1MPG,
+        .mpeg4XvidAVI, .mpeg2DVDVOB, .mpeg2InterlacedTS, .mpeg1MPG, .vp8WebM,
     ]
 
     @Test(
