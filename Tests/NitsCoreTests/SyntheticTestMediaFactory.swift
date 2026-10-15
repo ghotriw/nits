@@ -24,6 +24,21 @@ public enum SyntheticTestMediaFactory {
         case av1SDR
         /// WMV2 video (3s) encoded with wmv2 (640x360 @ 24fps) with WMAv2 audio in ASF container
         case wmv2SDR
+        /// MPEG-4 Part 2 / Xvid (5s, 640x360 @ 24fps, 2 B-frames, keyframe every second) with MP3 audio in AVI:
+        /// AVI carries only decode timestamps, so presentation order comes from the decoder
+        case mpeg4XvidAVI
+        /// Microsoft MPEG-4 v3 / DivX 3 (3s, 640x360 @ 24fps) with MP2 audio in AVI
+        case msmpeg4v3AVI
+        /// H.263 baseline (3s, CIF 352x288 @ 15fps) with AAC audio in 3GP
+        case h263CIF3GP
+        /// H.263+ (3s, 640x360 @ 24fps) in MKV
+        case h263pMKV
+        /// DVD-style MPEG-2 (4s, 720x480 anamorphic 16:9 @ 29.97fps, GOP 15, 2 B-frames) with AC-3 audio in VOB
+        case mpeg2DVDVOB
+        /// Interlaced (top field first) PAL MPEG-2 (4s, 720x576 4:3 @ 25fps) with MP2 audio in MPEG-TS
+        case mpeg2InterlacedTS
+        /// VCD-style MPEG-1 (4s, 352x240 @ 29.97fps, 2 B-frames) with MP2 audio in MPEG-PS
+        case mpeg1MPG
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
@@ -59,6 +74,20 @@ public enum SyntheticTestMediaFactory {
                 return "synth_av1_sdr.mkv"
             case .wmv2SDR:
                 return "synth_wmv2_sdr.wmv"
+            case .mpeg4XvidAVI:
+                return "synth_mpeg4_xvid_bframes.avi"
+            case .msmpeg4v3AVI:
+                return "synth_msmpeg4v3.avi"
+            case .h263CIF3GP:
+                return "synth_h263_cif.3gp"
+            case .h263pMKV:
+                return "synth_h263p.mkv"
+            case .mpeg2DVDVOB:
+                return "synth_mpeg2_dvd.vob"
+            case .mpeg2InterlacedTS:
+                return "synth_mpeg2_pal_interlaced.ts"
+            case .mpeg1MPG:
+                return "synth_mpeg1_vcd.mpg"
             case .vp9SDR:
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
@@ -363,6 +392,77 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
                 "-c:v", "wmv2", "-b:v", "2000k",
                 "-c:a", "wmav2", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .mpeg4XvidAVI:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=5",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=5",
+                "-c:v", "mpeg4", "-vtag", "XVID", "-q:v", "4", "-bf", "2", "-g", "24",
+                "-c:a", "libmp3lame", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .msmpeg4v3AVI:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "msmpeg4", "-vtag", "DIV3", "-q:v", "4", "-g", "24",
+                "-c:a", "mp2", "-b:a", "192k",
+                outputPath,
+            ]
+
+        case .h263CIF3GP:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=352x288:rate=15:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "h263", "-q:v", "5", "-g", "15",
+                "-c:a", "aac", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+                outputPath,
+            ]
+
+        case .h263pMKV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "h263p", "-q:v", "5", "-g", "24",
+                outputPath,
+            ]
+
+        case .mpeg2DVDVOB:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-c:v", "mpeg2video", "-b:v", "6000k", "-maxrate", "9000k", "-bufsize", "1835k",
+                "-bf", "2", "-g", "15", "-aspect", "16:9",
+                "-c:a", "ac3", "-b:a", "192k", "-ar", "48000",
+                outputPath,
+            ]
+
+        case .mpeg2InterlacedTS:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x576:rate=25:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-vf", "setfield=tff",
+                "-c:v", "mpeg2video", "-b:v", "5000k", "-bf", "2", "-g", "12", "-aspect", "4:3",
+                "-flags", "+ilme+ildct",
+                "-c:a", "mp2", "-b:a", "192k",
+                outputPath,
+            ]
+
+        case .mpeg1MPG:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=352x240:rate=30000/1001:duration=4",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+                "-c:v", "mpeg1video", "-b:v", "1150k", "-bf", "2", "-g", "15",
+                "-c:a", "mp2", "-b:a", "224k",
                 outputPath,
             ]
 

@@ -211,6 +211,9 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         guard let frame, let packet else { return [] }
 
         var seenKeyPackets = Set<Int64>()
+        // Same zero-based timeline as MediaDemuxer (MPEG-TS / MPEG-PS start wherever the source clock was).
+        let timelineOrigin = MediaDemuxer.timelineOrigin(of: activeFormatCtx)
+        let timelineOffset = MediaDemuxer.timelineOffset(timelineOrigin, in: timebase)
         var seenFramePts = Set<Int64>()
 
         /// Pulls decoded frames and returns the first one not produced before.
@@ -226,8 +229,8 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                 else { continue }
 
                 let seconds =
-                    pts != Int64.min && pts >= 0
-                    ? Double(pts) * Double(timebase.num) / Double(timebase.den)
+                    pts != Int64.min && pts - timelineOffset >= 0
+                    ? Double(pts - timelineOffset) * Double(timebase.num) / Double(timebase.den)
                     : fallbackTime
                 return ThumbnailItem(
                     time: seconds,
@@ -286,12 +289,12 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             guard !isCancelled else { break }
 
             let targetTime = Double(i) * interval
-            let targetPts = Int64(round(targetTime * Double(timebase.den) / Double(timebase.num)))
+            let targetPts = Int64(round(targetTime * Double(timebase.den) / Double(timebase.num))) + timelineOffset
 
             // Seek backward to keyframe (try stream-level seek first, then format-level)
             let seekRet = av_seek_frame(activeFormatCtx, streamIndex, targetPts, AVSEEK_FLAG_BACKWARD)
             if seekRet < 0 {
-                let targetPtsAV = Int64(round(targetTime * Double(AV_TIME_BASE)))
+                let targetPtsAV = Int64(round(targetTime * Double(AV_TIME_BASE))) + timelineOrigin
                 _ = av_seek_frame(activeFormatCtx, -1, targetPtsAV, AVSEEK_FLAG_BACKWARD)
             }
             avcodec_flush_buffers(codecCtx)

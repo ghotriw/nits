@@ -6,7 +6,7 @@ import Foundation
 import os
 
 /// High-performance software video decoder powered by FFmpeg libavcodec (including VideoLAN's `libdav1d`).
-/// Decodes multi-threaded software bitstreams (AV1, WMV1, WMV2, WMV3, VC-1, and future legacy codecs)
+/// Decodes software bitstreams (AV1, VP9, WMV1-3, VC-1, MPEG-4 Part 2, MS-MPEG4, H.263 and future legacy codecs)
 /// and converts planar YUV420P / YUVJ420P / YUV420P10 frames directly into hardware-backed `CVPixelBuffer`s
 /// (NV12 / P010) via a pre-allocated `CVPixelBufferPool` with Metal and IOSurface backing.
 public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
@@ -25,12 +25,19 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     private var outputHandler: OutputHandler?
     private let timebase: AVRational
 
-    // Tracking metadata across frame-threading latency
+    // Tracking metadata across frame-threading latency and B-frame reordering. Keyed by a packet
+    // serial that FFmpeg carries from packet to frame (`AV_CODEC_FLAG_COPY_OPAQUE`), so matching
+    // doesn't depend on the container having presentation timestamps.
     private struct PacketMeta: Sendable {
         let duration: CMTime
         let doNotDisplay: Bool
+        /// `MediaDemuxer.exactSeekTargetAttachmentKey`: overrides `doNotDisplay` once the frame PTS is known.
+        let exactSeekTarget: Double?
     }
-    private var inFlightMetadata: [Int64: PacketMeta] = [:]
+    private var inFlightMetadata: [UInt: PacketMeta] = [:]
+    private var nextPacketSerial: UInt = 1
+    /// PTS + duration of the last emitted frame, for frames the decoder outputs without a timestamp.
+    private var lastFrameEnd: CMTime = .invalid
 
     // Cached color metadata dictionary to preserve attributes across drain() / EOF
     private var cachedColorAttachments: [CFString: CFTypeRef] = [:]
@@ -66,13 +73,16 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
 
         ctx.pointee.pkt_timebase = timebase
+        ctx.pointee.flags |= Int32(AV_CODEC_FLAG_COPY_OPAQUE)
 
         // Multi-threading configuration:
         // Only set multi-threading if the decoder explicitly advertises frame/slice thread capabilities.
         // Legacy codecs (WMV1, WMV2, etc.) do not support multi-threading and require thread_count = 1.
+        // Frame threading delays output by one frame per thread, while seek previews and frame steps decode
+        // only a few packets past the target. MPEG-4 Part 2 is cheap enough to decode on one thread.
         let caps = codec.pointee.capabilities
         let supportsThreading = (caps & (AV_CODEC_CAP_FRAME_THREADS | AV_CODEC_CAP_SLICE_THREADS)) != 0
-        if supportsThreading {
+        if supportsThreading && codecId != AV_CODEC_ID_MPEG4 {
             let cpuCount = ProcessInfo.processInfo.activeProcessorCount
             ctx.pointee.thread_count = Int32(min(max(cpuCount, 2), 10))
         } else {
@@ -162,12 +172,15 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let duration = CMSampleBufferGetDuration(sampleBuffer)
 
         var doNotDisplay = false
+        var ptsUnknown = false
+        var exactSeekTarget: Double?
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [NSDictionary],
-            let first = attachments.first,
-            let val = first[kCMSampleAttachmentKey_DoNotDisplay] as? Bool
+            let first = attachments.first
         {
-            doNotDisplay = val
+            doNotDisplay = first[kCMSampleAttachmentKey_DoNotDisplay] as? Bool ?? false
+            ptsUnknown = first[MediaDemuxer.presentationTimeUnknownAttachmentKey] as? Bool ?? false
+            exactSeekTarget = first[MediaDemuxer.exactSeekTargetAttachmentKey] as? Double
         }
 
         var receivedFrames: [RawReceivedFrame] = []
@@ -182,20 +195,18 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
         // Convert CMTime (value * timebase.num) into FFmpeg stream units (pts.value / timebase.num)
         let num64 = Int64(max(timebase.num, 1))
-        let ffmpegPts = pts.isValid ? (pts.value / num64) : Int64.min
+        let ffmpegPts = pts.isValid && !ptsUnknown ? (pts.value / num64) : Int64.min
         let ffmpegDts = dts.isValid ? (dts.value / num64) : (ffmpegPts != Int64.min ? ffmpegPts : Int64.min)
         let ffmpegDuration = duration.isValid ? (duration.value / num64) : 0
 
-        // Record in-flight metadata keyed by ffmpegPts
-        if ffmpegPts != Int64.min {
-            inFlightMetadata[ffmpegPts] = PacketMeta(duration: duration, doNotDisplay: doNotDisplay)
-            // Prune map if it exceeds reasonable buffering window
-            if inFlightMetadata.count > 120 {
-                let sortedKeys = inFlightMetadata.keys.sorted()
-                let dropCount = inFlightMetadata.count - 60
-                for k in sortedKeys.prefix(dropCount) {
-                    inFlightMetadata.removeValue(forKey: k)
-                }
+        let serial = nextPacketSerial
+        nextPacketSerial &+= 1
+        inFlightMetadata[serial] = PacketMeta(
+            duration: duration, doNotDisplay: doNotDisplay, exactSeekTarget: exactSeekTarget)
+        // Packets that never produce a frame (dropped, skip_frame) leave entries behind: keep the newest.
+        if inFlightMetadata.count > 120 {
+            for k in inFlightMetadata.keys.sorted().prefix(inFlightMetadata.count - 60) {
+                inFlightMetadata.removeValue(forKey: k)
             }
         }
 
@@ -203,6 +214,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         // Note: pkt.pointee.data points to CMBlockBuffer memory, valid synchronously for avcodec_send_packet
         pkt.pointee.data = UnsafeMutablePointer<UInt8>(OpaquePointer(dataPtr))
         pkt.pointee.size = Int32(totalLength)
+        pkt.pointee.opaque = UnsafeMutableRawPointer(bitPattern: serial)
         if ffmpegPts != Int64.min {
             pkt.pointee.pts = ffmpegPts
         }
@@ -219,6 +231,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         pkt.pointee.size = 0
         pkt.pointee.pts = Int64.min
         pkt.pointee.dts = Int64.min
+        pkt.pointee.opaque = nil
 
         if sendRet < 0 {
             codecLock.unlock()
@@ -256,6 +269,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         codecLock.lock()
         defer { codecLock.unlock() }
         inFlightMetadata.removeAll(keepingCapacity: true)
+        lastFrameEnd = .invalid
         if let ctx = codecCtx {
             avcodec_flush_buffers(ctx)
         }
@@ -308,6 +322,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         flushGenerationLock.withLock { $0 &+= 1 }
         codecLock.lock()
         inFlightMetadata.removeAll()
+        lastFrameEnd = .invalid
         if let ctx = codecCtx {
             avcodec_flush_buffers(ctx)
         }
@@ -403,7 +418,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         if rawPts == Int64.min || rawPts < 0 {
             rawPts = avFrame.pointee.pkt_dts
         }
-        let framePts: CMTime
+        var framePts: CMTime
         if rawPts != Int64.min && rawPts >= 0 && timebase.den > 0 {
             framePts = CMTime(value: rawPts * Int64(timebase.num), timescale: timebase.den)
         } else {
@@ -413,23 +428,24 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         var frameDuration: CMTime = .invalid
         var frameDoNotDisplay: Bool = false
 
-        // Match metadata across candidate timestamp keys: rawPts (best_effort_timestamp), pts, and pkt_dts
-        var meta: PacketMeta?
-        if rawPts != Int64.min {
-            meta = inFlightMetadata.removeValue(forKey: rawPts)
-        }
-        if meta == nil && avFrame.pointee.pts != Int64.min && avFrame.pointee.pts != rawPts {
-            meta = inFlightMetadata.removeValue(forKey: avFrame.pointee.pts)
-        }
-        if meta == nil && avFrame.pointee.pkt_dts != Int64.min && avFrame.pointee.pkt_dts != rawPts {
-            meta = inFlightMetadata.removeValue(forKey: avFrame.pointee.pkt_dts)
-        }
-
-        if let found = meta {
+        let serial = UInt(bitPattern: avFrame.pointee.opaque)
+        if let found = serial != 0 ? inFlightMetadata.removeValue(forKey: serial) : nil {
             frameDuration = found.duration
             frameDoNotDisplay = found.doNotDisplay
+            if let target = found.exactSeekTarget, framePts.isValid {
+                frameDoNotDisplay = framePts.seconds < target
+            }
         } else if avFrame.pointee.duration > 0 && timebase.den > 0 {
             frameDuration = CMTime(value: avFrame.pointee.duration * Int64(timebase.num), timescale: timebase.den)
+        }
+
+        // Without container PTS (AVI) the last reordered frame flushed at EOF carries no timestamp
+        // at all: it follows the previous one.
+        if !framePts.isValid, lastFrameEnd.isValid {
+            framePts = lastFrameEnd
+        }
+        if framePts.isValid {
+            lastFrameEnd = frameDuration.isValid ? framePts + frameDuration : .invalid
         }
 
         return (framePts, frameDuration, frameDoNotDisplay)
@@ -740,6 +756,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         flushGenerationLock.withLock { $0 &+= 1 }
         codecLock.lock()
         inFlightMetadata.removeAll()
+        lastFrameEnd = .invalid
         if codecCtx != nil {
             avcodec_free_context(&self.codecCtx)
         }

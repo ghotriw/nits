@@ -702,19 +702,7 @@ extension PlayerEngine {
                 return nil
             }()
 
-            let codecDisplay: String =
-                switch demuxer.codec {
-                case .hevc: "HEVC"
-                case .h264: "H.264"
-                case .av1: "AV1"
-                case .vp9: "VP9"
-                case .wmv1: "WMV1"
-                case .wmv2: "WMV2"
-                case .wmv3: "WMV3"
-                case .vc1: "VC-1"
-                case .unknown: "Unknown"
-                }
-            self.videoCodecName = codecDisplay
+            self.videoCodecName = demuxer.codec.displayName
             self.videoBitDepth = demuxer.bitDepth
             self.videoColorPrimaries = primariesStr
             self.videoTransferFunction = transferStr
@@ -723,7 +711,7 @@ extension PlayerEngine {
 
             self.performanceMonitor.updateStreamMetadata(
                 resolution: "\(demuxer.width)x\(demuxer.height)",
-                codecName: codecDisplay,
+                codecName: demuxer.codec.displayName,
                 bitDepth: demuxer.bitDepth,
                 colorPrimaries: primariesStr,
                 transferFunction: transferStr,

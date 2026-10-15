@@ -131,6 +131,15 @@ flowchart TD
   - Multi-threaded software decoder `FFmpegVideoDecoder` supporting Windows Media Video (WMV1, WMV2, WMV3) and VC-1 (SMPTE 421M).
   - Conversion of planar YUV420P / YUVJ420P / YUV420P10 frames directly into hardware-backed `CVPixelBuffer`s (NV12 / P010).
   - Generation token tagging (`generation token`) in frame queues, atomically discarding stale pre-seek frames during concurrent decode and flush cycles.
+- [x] **2.5.4. Legacy MPEG-4 Family (DivX / Xvid / MS-MPEG4 / H.263):**
+  - `FFmpegVideoDecoder` support for MPEG-4 Part 2, Microsoft MPEG-4 v1–3 and H.263 / H.263+ (AVI, 3GP, MKV, MP4).
+  - AVI streams without presentation timestamps: packet metadata travels with `AV_CODEC_FLAG_COPY_OPAQUE`, PTS come from the decoder's reordering, and exact-seek preroll is decided on the real frame PTS.
+- [x] **2.5.5. MPEG-1 / MPEG-2 (VCD, DVD VOB, MPEG-PS, MPEG-TS / M2TS):**
+  - `FFmpegVideoDecoder` support for MPEG-1 and MPEG-2 video (4:2:0); anamorphic DVD aspect ratios from the sequence header.
+  - Index-less containers (MPEG-TS / MPEG-PS): seeks sync to the next video keyframe, backing off until it precedes an exact-seek target.
+  - MPEG-TS / MPEG-PS timestamps are rebased onto a zero-based timeline (`start_time`), including subtitles and thumbnails.
+  - Untagged streams get BT.601 colorimetry at SD resolutions (SMPTE C / EBU primaries by line count) and BT.709 at HD.
+  - Interlaced content is decoded as is; deinterlacing remains 1.8.3.
 
 ---
 
@@ -363,7 +372,7 @@ flowchart TD
 | **Hardware VideoToolbox (HEVC / H.264)** | `NitsCore` | Completed ✓ | P010/NV12, MSB normalization, parameter set extraction |
 | **Dolby Vision P5 / P8.1 / P8.4** | `NitsCore` | Completed ✓ | Hardware `dvh1`, NAL 62 RPU parser, L1/L2 SDR SOP trims |
 | **AV1 Hybrid Decoder** | `NitsCore` | Completed ✓ | M3/M4+ VideoToolbox, M1/M2 fallback to `libdav1d` NEON |
-| **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | Multi-threaded WMV1–3, VC-1 into `CVPixelBufferPool` |
+| **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263 into `CVPixelBufferPool` |
 | **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
 | **Professional Production Codecs** | `NitsCore` | Planned 📋 | Apple ProRes VideoToolbox, Avid DNxHR |
 | **Metal Deinterlacer (YADIF/BWDIF)** | `NitsCore` | Planned 📋 | Compute shader deinterlacing for 1080i/576i streams |

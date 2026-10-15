@@ -59,7 +59,8 @@ public final class PlaylistManager: Sendable {
 
     /// Supported media extensions for directory scanning.
     nonisolated public static let mediaExtensions: Set<String> = [
-        "mkv", "mp4", "m4v", "mov", "webm", "avi", "ts", "flv", "ogv", "wmv",
+        "mkv", "mp4", "m4v", "mov", "webm", "avi", "ts", "flv", "ogv", "wmv", "divx", "3gp",
+        "mpg", "mpeg", "vob", "m2v", "m2ts", "mts",
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "alac", "aif", "aiff", "wma", "ape",
     ]
 

@@ -20,7 +20,8 @@ public enum MediaOpenPanel {
         // Add common video, audio, and playlist formats supported by Nits that may not be covered by system presets
         let extensions = [
             // Video
-            "mkv", "webm", "flv", "wmv", "ts", "m4v", "mov", "mp4", "ogv",
+            "mkv", "webm", "flv", "wmv", "ts", "m4v", "mov", "mp4", "ogv", "divx", "3gp",
+            "mpg", "mpeg", "vob", "m2v", "m2ts", "mts",
             // Audio
             "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "alac", "aif", "aiff", "wma", "ape",
             // Playlists

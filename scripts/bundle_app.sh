@@ -280,6 +280,9 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
                 <string>public.mpeg-4</string>
                 <string>com.apple.quicktime-movie</string>
                 <string>public.avi</string>
+                <string>public.mpeg</string>
+                <string>public.mpeg-2-video</string>
+                <string>public.mpeg-2-transport-stream</string>
                 <string>org.matroska.mkv</string>
                 <string>org.webmproject.webm</string>
             </array>
@@ -295,6 +298,14 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
                 <string>wmv</string>
                 <string>ts</string>
                 <string>ogv</string>
+                <string>divx</string>
+                <string>3gp</string>
+                <string>mpg</string>
+                <string>mpeg</string>
+                <string>vob</string>
+                <string>m2v</string>
+                <string>m2ts</string>
+                <string>mts</string>
             </array>
         </dict>
         <dict>

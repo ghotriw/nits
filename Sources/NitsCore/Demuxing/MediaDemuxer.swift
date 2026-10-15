@@ -6,6 +6,14 @@ import os
 
 public final class MediaDemuxer: @unchecked Sendable {
     public static let dolbyVisionMetadataAttachmentKey: String = "Nits.DolbyVisionMetadata"
+    /// Sample attachment set when the container had no PTS for the packet (AVI stores decode order
+    /// only). The sample's PTS then falls back to its DTS; software decoders must not pass it on as
+    /// a real PTS or B-frame reordering skews every presentation timestamp.
+    public static let presentationTimeUnknownAttachmentKey: String = "Nits.PresentationTimeUnknown"
+    /// Exact-seek target (seconds) on preroll samples without a PTS. `DoNotDisplay` is decided from the
+    /// DTS there, which is too early for reordered frames; a decoder that knows the frame's real PTS
+    /// should compare it against this instead.
+    public static let exactSeekTargetAttachmentKey: String = "Nits.ExactSeekTarget"
 
     private var formatCtx: UnsafeMutablePointer<AVFormatContext>?
     private var videoStreamIndex: Int = -1
@@ -193,7 +201,9 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         var pkt = AVPacket()
 
+        let origin = Self.timelineOrigin(of: ctx)
         while !Task.isCancelled && av_read_frame(ctx, &pkt) >= 0 {
+            Self.rebase(&pkt, origin: origin, in: ctx)
             if pkt.stream_index == streamIndex {
                 if let cue = Self.parseSubtitleCue(pkt: &pkt, timebase: timebase, codecId: codecId, cueIndex: cueIndex)
                 {
@@ -645,6 +655,13 @@ public final class MediaDemuxer: @unchecked Sendable {
             return nil
         }
 
+        self.timelineOrigin = Self.timelineOrigin(of: formatCtx)
+        if timelineOrigin != 0 {
+            AppLog.info(
+                .demuxer,
+                "Rebasing timestamps to a zero timeline (start_time \(Double(timelineOrigin) / Double(AV_TIME_BASE))s)")
+        }
+
         for i in 0..<Int(formatCtx.pointee.nb_streams) {
             let stream = formatCtx.pointee.streams[i]!
             let codecId = stream.pointee.codecpar.pointee.codec_id
@@ -701,6 +718,9 @@ public final class MediaDemuxer: @unchecked Sendable {
                 self.nominalFrameDuration =
                     (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
 
+                // Untagged streams: SD resolutions are BT.601 (DVD, DV, DivX rips), everything else BT.709.
+                let sdPrimaries = Self.standardDefinitionPrimaries(width: self.width, height: self.height)
+
                 // Dynamically map color primaries
                 if let primaries = CVColorPrimariesGetStringForIntegerCodePoint(
                     Int32(stream.pointee.codecpar.pointee.color_primaries.rawValue))
@@ -717,7 +737,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                     case AVCOL_PRI_SMPTE432:
                         self.colorPrimaries = kCVImageBufferColorPrimaries_P3_D65
                     default:
-                        self.colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_709_2
+                        self.colorPrimaries = sdPrimaries ?? kCVImageBufferColorPrimaries_ITU_R_709_2
                     }
                 }
 
@@ -754,10 +774,14 @@ public final class MediaDemuxer: @unchecked Sendable {
                         self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2
                     case AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT2020_CL:
                         self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
-                    case AVCOL_SPC_SMPTE170M, AVCOL_SPC_SMPTE240M:
+                    case AVCOL_SPC_BT470BG, AVCOL_SPC_SMPTE170M:
+                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4
+                    case AVCOL_SPC_SMPTE240M:
                         self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995
                     default:
-                        self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2
+                        self.yCbCrMatrix =
+                            sdPrimaries != nil
+                            ? kCVImageBufferYCbCrMatrix_ITU_R_601_4 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
                     }
                 }
 
@@ -1061,6 +1085,53 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
     }
 
+    /// Start of the playback timeline in `AV_TIME_BASE` units. MPEG-TS / MPEG-PS timestamps continue the
+    /// source's clock (a DVD starts around 0.5 s, a broadcast capture hours in), so their first timestamp
+    /// becomes zero. Other containers already start near zero (or slightly before, via edit lists) and
+    /// are left as they are.
+    package static func timelineOrigin(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Int64 {
+        guard let iformat = ctx.pointee.iformat, (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0,
+            ctx.pointee.start_time != Int64.min, ctx.pointee.start_time > 0
+        else { return 0 }
+        return ctx.pointee.start_time
+    }
+
+    /// `origin` (`AV_TIME_BASE` units) in the time base of `stream`.
+    package static func timelineOffset(_ origin: Int64, in timebase: AVRational) -> Int64 {
+        guard origin != 0, timebase.num > 0, timebase.den > 0 else { return 0 }
+        return av_rescale_q(origin, AVRational(num: 1, den: AV_TIME_BASE), timebase)
+    }
+
+    /// Moves a packet's timestamps onto the zero-based timeline (see `timelineOrigin(of:)`).
+    package static func rebase(
+        _ pkt: inout AVPacket, origin: Int64, in ctx: UnsafeMutablePointer<AVFormatContext>
+    ) {
+        guard origin != 0, pkt.stream_index >= 0, pkt.stream_index < Int32(ctx.pointee.nb_streams),
+            let stream = ctx.pointee.streams[Int(pkt.stream_index)]
+        else { return }
+        let offset = timelineOffset(origin, in: stream.pointee.time_base)
+        if pkt.pts != Int64.min { pkt.pts -= offset }
+        if pkt.dts != Int64.min { pkt.dts -= offset }
+    }
+
+    /// `av_read_frame` with timestamps on the zero-based timeline.
+    private func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
+        let ret = av_read_frame(ctx, &pkt)
+        if ret >= 0 {
+            Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
+        }
+        return ret
+    }
+
+    /// Primaries assumed for a stream that doesn't signal its colorimetry, or `nil` for HD (BT.709). Standard
+    /// definition (≤ 576 lines, narrower than 1280) is BT.601: EBU primaries for 625-line systems
+    /// (576/288 lines), SMPTE C for 525-line ones (480/486/240).
+    nonisolated static func standardDefinitionPrimaries(width: Int, height: Int) -> CFString? {
+        guard width > 0, height > 0, width < 1280, height <= 576 else { return nil }
+        let isPAL = height == 576 || height == 288
+        return isPAL ? kCVImageBufferColorPrimaries_EBU_3213 : kCVImageBufferColorPrimaries_SMPTE_C
+    }
+
     /// Parses an ISOBMFF dvcC/dvvC Dolby Vision configuration box from extradata.
     public static func parseDolbyVisionConfigurationBox(from data: Data) -> (
         profile: Int, compatibilityId: Int, configData: Data
@@ -1251,7 +1322,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         let maxPacketsToScan = hasExtradataParams ? 30 : 120
         var pkt = AVPacket()
 
-        while packetsScanned < maxPacketsToScan && av_read_frame(ctx, &pkt) >= 0 {
+        while packetsScanned < maxPacketsToScan && readPacket(ctx, &pkt) >= 0 {
             packetsScanned += 1
             if pkt.stream_index == videoStreamIndex {
                 let data = Data(bytes: pkt.data, count: Int(pkt.size))
@@ -1308,7 +1379,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         // Rewind to beginning of stream
-        av_seek_frame(ctx, Int32(videoStreamIndex), 0, AVSEEK_FLAG_BACKWARD)
+        av_seek_frame(
+            ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
@@ -1550,6 +1622,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     }
 
     private var targetPts: Int64 = -1
+    /// `timelineOrigin(of:)` of this file; subtracted from every packet read, added back when seeking.
+    private var timelineOrigin: Int64 = 0
     private var targetAudioPts: Int64 = -1
 
     private func createVideoSample(from rawData: Data, pts: Int64, dts: Int64, duration: Int64) -> CMSampleBuffer? {
@@ -1661,7 +1735,11 @@ public final class MediaDemuxer: @unchecked Sendable {
         )
 
         let isBeforeTarget = targetPts >= 0 && ptsVal < targetPts
-        if targetPts >= 0 && ptsVal >= targetPts {
+        // In decode order the first sample past the target is often a P-frame, followed by B-frames that
+        // still precede it, so keep flagging preroll for a second past the target. Bounded so that a
+        // timestamp discontinuity (MPEG-TS) can't hide every following frame.
+        let reorderWindow = Int64(timebaseDen) / max(timebaseNum, 1)
+        if targetPts >= 0 && ptsVal >= targetPts + reorderWindow {
             targetPts = -1
         }
 
@@ -1702,11 +1780,20 @@ public final class MediaDemuxer: @unchecked Sendable {
                 )
             }
 
-            if isBeforeTarget {
+            if isBeforeTarget || pts == noPtsValue {
                 if let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: true)
                     as? [NSMutableDictionary], let first = attachments.first
                 {
-                    first[kCMSampleAttachmentKey_DoNotDisplay] = true
+                    if isBeforeTarget {
+                        first[kCMSampleAttachmentKey_DoNotDisplay] = true
+                    }
+                    if pts == noPtsValue {
+                        first[Self.presentationTimeUnknownAttachmentKey] = true
+                        if isBeforeTarget {
+                            first[Self.exactSeekTargetAttachmentKey] =
+                                Double(targetPts) * Double(timebaseNum) / Double(timebaseDen)
+                        }
+                    }
                 }
             }
             return sb
@@ -1728,7 +1815,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         guard let ctx = formatCtx, formatDescription != nil else { return nil }
 
         var pkt = AVPacket()
-        while av_read_frame(ctx, &pkt) >= 0 {
+        while readPacket(ctx, &pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
                 let sample = createVideoSample(
                     bytes: pkt.data,
@@ -1794,7 +1881,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var pkt = AVPacket()
-        while av_read_frame(ctx, &pkt) >= 0 {
+        while readPacket(ctx, &pkt) >= 0 {
             if pkt.stream_index == audioStreamIndex {
                 let pktPts = pkt.pts
                 let pktDuration = pkt.duration
@@ -1866,18 +1953,64 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.targetPts = exact ? target : -1
         let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
         let useForward = forward && !exact
+        let rawTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
         var ret: Int32 = -1
         if useForward {
-            ret = av_seek_frame(ctx, Int32(streamIdx), target, 0)
+            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, 0)
         }
         if ret < 0 {
             // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
-            ret = av_seek_frame(ctx, Int32(streamIdx), target, AVSEEK_FLAG_BACKWARD)
+            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, AVSEEK_FLAG_BACKWARD)
         }
         AppLog.debug(
             .demuxer,
             "av_seek_frame to targetPts: \(target) (exact: \(exact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
+        if ret >= 0, videoStreamIndex >= 0, let iformat = ctx.pointee.iformat,
+            (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0
+        {
+            syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: exact)
+        }
+    }
+
+    /// MPEG-TS / MPEG-PS have no index: `av_seek_frame` bisects on timestamps and lands on whatever
+    /// packet is nearest, usually mid-GOP, which the decoder can't start from. Skips ahead to the next
+    /// video keyframe and queues it; for exact seeks, backs off further each time that keyframe is past
+    /// the target. Packets skipped here precede the keyframe, so nothing playback needs is dropped.
+    private func syncToVideoKeyframe(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64, requireAtOrBeforeTarget: Bool
+    ) {
+        let oneSecond = Int64(Double(timebase.den) / Double(timebase.num))
+        let maxAttempts = 5
+        var seekTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
+        for attempt in 0..<maxAttempts {
+            var pkt = AVPacket()
+            var landed = false
+            var budget = 20_000
+            while budget > 0, readPacket(ctx, &pkt) >= 0 {
+                budget -= 1
+                defer { av_packet_unref(&pkt) }
+                guard pkt.stream_index == videoStreamIndex, (pkt.flags & AV_PKT_FLAG_KEY) != 0 else { continue }
+                let keyPts = pkt.pts != Int64.min ? pkt.pts : pkt.dts
+                let isLastChance = attempt == maxAttempts - 1
+                if requireAtOrBeforeTarget && keyPts > target && !isLastChance {
+                    break
+                }
+                videoQueue.append(
+                    DemuxedVideoPacket(
+                        data: Data(bytes: pkt.data, count: Int(pkt.size)),
+                        pts: pkt.pts, dts: pkt.dts, duration: pkt.duration, flags: pkt.flags))
+                landed = true
+                break
+            }
+            if landed { return }
+            seekTarget -= oneSecond << attempt
+            // Before the first timestamp the bisection fails: restart from the first byte instead.
+            if av_seek_frame(ctx, Int32(videoStreamIndex), seekTarget, AVSEEK_FLAG_BACKWARD) < 0 {
+                _ = avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
+            }
+        }
+        AppLog.warning(.demuxer, "No video keyframe found while syncing seek to \(target)")
     }
 
     /// Adjusts the target audio presentation timestamp (e.g. to align with the actual decoded keyframe PTS).

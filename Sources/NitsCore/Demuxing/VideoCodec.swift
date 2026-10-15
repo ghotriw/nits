@@ -12,11 +12,18 @@ public enum VideoCodec: String, Sendable {
     case wmv2 = "Windows Media Video 8 (WMV2)"
     case wmv3 = "Windows Media Video 9 (WMV3)"
     case vc1 = "VC-1 / SMPTE 421M"
+    case mpeg4 = "MPEG-4 Part 2 (DivX / Xvid)"
+    case msmpeg4v1 = "Microsoft MPEG-4 v1"
+    case msmpeg4v2 = "Microsoft MPEG-4 v2"
+    case msmpeg4v3 = "Microsoft MPEG-4 v3 (DivX 3)"
+    case h263 = "H.263"
+    case mpeg1 = "MPEG-1 Video"
+    case mpeg2 = "MPEG-2 Video / H.262"
     case unknown = "Unknown"
 
     /// FourCC representation for CoreMedia format description.
-    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1') are used internally to carry
-    /// format descriptions for software-decoded streams into CMSampleBuffers.
+    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1', 'mp41', 'mp42', 'mp43') are used
+    /// internally to carry format descriptions for software-decoded streams into CMSampleBuffers.
     public var cmVideoCodecType: CMVideoCodecType {
         switch self {
         case .hevc:
@@ -39,8 +46,47 @@ public enum VideoCodec: String, Sendable {
         case .vc1:
             // 'vc-1' = 0x76632d31
             return 0x7663_2D31
+        case .mpeg4:
+            return kCMVideoCodecType_MPEG4Video
+        case .msmpeg4v1:
+            // 'mp41' = 0x6d703431
+            return 0x6D70_3431
+        case .msmpeg4v2:
+            // 'mp42' = 0x6d703432
+            return 0x6D70_3432
+        case .msmpeg4v3:
+            // 'mp43' = 0x6d703433
+            return 0x6D70_3433
+        case .h263:
+            return kCMVideoCodecType_H263
+        case .mpeg1:
+            return kCMVideoCodecType_MPEG1Video
+        case .mpeg2:
+            return kCMVideoCodecType_MPEG2Video
         case .unknown:
             return 0
+        }
+    }
+
+    /// Short label for the stream info panel.
+    public var displayName: String {
+        switch self {
+        case .hevc: "HEVC"
+        case .h264: "H.264"
+        case .av1: "AV1"
+        case .vp9: "VP9"
+        case .wmv1: "WMV1"
+        case .wmv2: "WMV2"
+        case .wmv3: "WMV3"
+        case .vc1: "VC-1"
+        case .mpeg4: "MPEG-4 Part 2"
+        case .msmpeg4v1: "MS-MPEG4 v1"
+        case .msmpeg4v2: "MS-MPEG4 v2"
+        case .msmpeg4v3: "MS-MPEG4 v3"
+        case .h263: "H.263"
+        case .mpeg1: "MPEG-1"
+        case .mpeg2: "MPEG-2"
+        case .unknown: "Unknown"
         }
     }
 
@@ -77,6 +123,20 @@ public enum VideoCodec: String, Sendable {
             return AV_CODEC_ID_WMV3
         case .vc1:
             return AV_CODEC_ID_VC1
+        case .mpeg4:
+            return AV_CODEC_ID_MPEG4
+        case .msmpeg4v1:
+            return AV_CODEC_ID_MSMPEG4V1
+        case .msmpeg4v2:
+            return AV_CODEC_ID_MSMPEG4V2
+        case .msmpeg4v3:
+            return AV_CODEC_ID_MSMPEG4V3
+        case .h263:
+            return AV_CODEC_ID_H263
+        case .mpeg1:
+            return AV_CODEC_ID_MPEG1VIDEO
+        case .mpeg2:
+            return AV_CODEC_ID_MPEG2VIDEO
         case .unknown:
             return AV_CODEC_ID_NONE
         }
@@ -91,7 +151,8 @@ public enum VideoCodec: String, Sendable {
             return Self.isAV1HardwareSupported
         case .vp9:
             return Self.isVP9HardwareSupported
-        case .wmv1, .wmv2, .wmv3, .vc1, .unknown:
+        case .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
+            .unknown:
             return false
         }
     }
@@ -101,7 +162,8 @@ public enum VideoCodec: String, Sendable {
         switch self {
         case .hevc, .h264:
             return true
-        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .unknown:
+        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
+            .unknown:
             return false
         }
     }
@@ -111,7 +173,8 @@ public enum VideoCodec: String, Sendable {
         switch self {
         case .hevc, .h264:
             return true
-        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .unknown:
+        case .av1, .vp9, .wmv1, .wmv2, .wmv3, .vc1, .mpeg4, .msmpeg4v1, .msmpeg4v2, .msmpeg4v3, .h263, .mpeg1, .mpeg2,
+            .unknown:
             return false
         }
     }
@@ -135,6 +198,21 @@ public enum VideoCodec: String, Sendable {
             return .wmv3
         case AV_CODEC_ID_VC1:
             return .vc1
+        case AV_CODEC_ID_MPEG4:
+            return .mpeg4
+        case AV_CODEC_ID_MSMPEG4V1:
+            return .msmpeg4v1
+        case AV_CODEC_ID_MSMPEG4V2:
+            return .msmpeg4v2
+        case AV_CODEC_ID_MSMPEG4V3:
+            return .msmpeg4v3
+        // Containers report H.263+ as plain H.263 (only RTP keeps H263P apart); one decoder handles both.
+        case AV_CODEC_ID_H263, AV_CODEC_ID_H263P:
+            return .h263
+        case AV_CODEC_ID_MPEG1VIDEO:
+            return .mpeg1
+        case AV_CODEC_ID_MPEG2VIDEO:
+            return .mpeg2
         default:
             return nil
         }
