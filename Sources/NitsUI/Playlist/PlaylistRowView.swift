@@ -35,13 +35,16 @@ public struct PlaylistRowView: View {
             // Index or Play/Pause Status Indicator
             ZStack {
                 if isCurrent {
-                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "pause.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Color.accentColor)
+                    // Neutral, not accent-coloured: the panel sits over arbitrary video, and
+                    // white on the dark panel is the only pairing that always reads.
+                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .symbolEffect(.variableColor.iterative, isActive: isPlaying)
                 } else {
                     Text("\(index + 1)")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(minWidth: 17, alignment: .trailing)
@@ -50,7 +53,7 @@ public struct PlaylistRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
-                    .foregroundStyle(isCurrent ? Color.accentColor : Color.white.opacity(0.9))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -58,17 +61,15 @@ public struct PlaylistRowView: View {
                     if let duration = item.formattedDuration {
                         Text(duration)
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.5))
                     } else if item.isNetworkStream {
                         Text("Stream")
                             .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.4))
                     } else {
                         Text(item.url.pathExtension.uppercased())
                             .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.4))
                     }
                 }
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -80,7 +81,7 @@ public struct PlaylistRowView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(.secondary)
                         .padding(4)
                         .background(Circle().fill(Color.white.opacity(0.1)))
                 }
@@ -91,11 +92,7 @@ public struct PlaylistRowView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(
-            isCurrent
-                ? Color.white.opacity(0.12)
-                : (isHovered ? Color.white.opacity(0.06) : Color.clear)
-        )
+        .background(Color.white.opacity(isCurrent ? 0.15 : (isHovered ? 0.06 : 0)))
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
