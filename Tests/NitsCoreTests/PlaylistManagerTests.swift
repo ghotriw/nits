@@ -574,8 +574,7 @@ struct PlaylistManagerTests {
 
     @Test("Playlist repeat mode and shuffle persistence")
     func testRepeatAndShufflePersistence() {
-        let testDefaults = UserDefaults(suiteName: "NitsTestPlaylistPersistence_\(UUID().uuidString)")!
-        defer { testDefaults.removePersistentDomain(forName: testDefaults.description) }
+        let testDefaults = InMemoryUserDefaults()
 
         var config = PlayerConfiguration.loadFromUserDefaults(userDefaults: testDefaults)
         #expect(config.playlistRepeatMode == .off)

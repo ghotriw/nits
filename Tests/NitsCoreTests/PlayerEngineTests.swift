@@ -115,7 +115,7 @@ struct PlayerEngineTests {
 
     @Test("Engine loads reference media file if present")
     @MainActor
-    func testLoadReferenceMedia() {
+    func testLoadReferenceMedia() throws {
         guard let referencePath = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles) else { return }
         guard FileManager.default.fileExists(atPath: referencePath) else {
             return
@@ -132,7 +132,7 @@ struct PlayerEngineTests {
         #expect(!engine.audioTracks.isEmpty)
 
         // Subtitles verification: synthetic uhdHDRSubtitles media contains 5 subrip tracks
-        #expect(engine.subtitleTracks.count == 5)
+        try #require(engine.subtitleTracks.count == 5)
         #expect(engine.selectedSubtitleTrackId == nil)
 
         // Select first track and verify track selection
@@ -510,7 +510,7 @@ struct PlayerEngineTests {
             let path2 = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264)
         else { return }
 
-        let defaults = UserDefaults(suiteName: "PlayerEngineResumeTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let historyStore = PlaybackHistoryStore(userDefaults: defaults)
         let config = PlayerConfiguration(
             resumePlayback: true,

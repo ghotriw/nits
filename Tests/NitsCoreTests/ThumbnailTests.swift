@@ -334,8 +334,7 @@ struct ThumbnailTests {
         #expect(parsedLAN.networkThumbnailPolicy == .localNetworkOnly)
 
         // UserDefaults save and load
-        let suite = UserDefaults(suiteName: "TestThumbnailPolicySuite_\(UUID().uuidString)")!
-        defer { suite.removePersistentDomain(forName: suite.description) }
+        let suite = InMemoryUserDefaults()
 
         var config = PlayerConfiguration()
         config.networkThumbnailPolicy = .always

@@ -119,8 +119,7 @@ struct PlayerConfigurationTests {
 
     @Test("UserDefaults roundtrip preserves subtitle font name")
     func testUserDefaultsSubtitleFont() {
-        let defaults = UserDefaults(suiteName: "test.subtitle.font")!
-        defaults.removePersistentDomain(forName: "test.subtitle.font")
+        let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration()
         config.subtitleFontName = "Avenir Next"
         config.saveToUserDefaults(userDefaults: defaults)
@@ -138,8 +137,7 @@ struct PlayerConfigurationTests {
 
     @Test("UserDefaults roundtrip preserves subtitle font weight")
     func testUserDefaultsSubtitleWeight() {
-        let defaults = UserDefaults(suiteName: "test.subtitle.weight")!
-        defaults.removePersistentDomain(forName: "test.subtitle.weight")
+        let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration()
         config.subtitleFontWeight = "Heavy"
         config.saveToUserDefaults(userDefaults: defaults)
@@ -166,8 +164,7 @@ struct PlayerConfigurationTests {
 
     @Test("UserDefaults roundtrip preserves Picture in Picture settings")
     func testUserDefaultsPictureInPicture() {
-        let defaults = UserDefaults(suiteName: "test.pip.settings")!
-        defaults.removePersistentDomain(forName: "test.pip.settings")
+        let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration()
         config.pictureInPictureWindowBehavior = .doNothing
         config.pausesOnPictureInPicture = true
@@ -182,8 +179,7 @@ struct PlayerConfigurationTests {
 
     @Test("UserDefaults roundtrip preserves enableOSD flag")
     func testUserDefaultsOSD() {
-        let defaults = UserDefaults(suiteName: "test.osd.flag")!
-        defaults.removePersistentDomain(forName: "test.osd.flag")
+        let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration()
         config.enableOSD = false
         config.saveToUserDefaults(userDefaults: defaults)
@@ -220,8 +216,7 @@ struct DebugOSDConfigurationTests {
 
     @Test("UserDefaults roundtrip preserves debug OSD settings")
     func testUserDefaultsRoundtrip() {
-        let defaults = UserDefaults(suiteName: "test.debug.osd")!
-        defaults.removePersistentDomain(forName: "test.debug.osd")
+        let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration()
         config.enableDebugOSD = true
         config.debugOSDMinimumLevel = .debug

@@ -8,7 +8,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore saves and retrieves eligible playback positions")
     func testSaveAndRetrieveEligiblePosition() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path = "/Users/test/Movies/feature_film.mkv"
 
@@ -21,7 +21,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore discards position under startThreshold")
     func testDiscardsUnderStartThreshold() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path = "/Users/test/Movies/short_preview.mkv"
 
@@ -34,7 +34,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore discards position exceeding end completion threshold")
     func testDiscardsExceedingEndThreshold() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path = "/Users/test/Movies/finished_movie.mkv"
 
@@ -47,7 +47,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore normalizes HTTP URLs by stripping query parameters")
     func testNormalizesURLQueryParameters() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
 
         let sessionUrl1 = "https://media.server/stream.mkv?token=alpha123&session=456"
@@ -62,7 +62,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore clearPosition and clearAll remove records")
     func testClearRecords() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path1 = "/movies/film1.mkv"
         let path2 = "/movies/film2.mkv"
@@ -80,7 +80,7 @@ struct PlaybackHistoryStoreTests {
 
     @Test("PlaybackHistoryStore preserves and decodes audio and subtitle track selections")
     func testTrackSelectionPersistenceAndBackwardCompatibility() {
-        let defaults = UserDefaults(suiteName: "PlaybackHistoryStoreTests.\(UUID().uuidString)")!
+        let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path = "/movies/film_with_tracks.mkv"
 

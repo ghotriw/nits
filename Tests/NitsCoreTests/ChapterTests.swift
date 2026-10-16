@@ -120,7 +120,7 @@ struct ChapterTests {
 
     @Test("Engine exposes chapters, tracks the current one and jumps between them")
     @MainActor
-    func testEngineNavigation() async {
+    func testEngineNavigation() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .chaptersMKV) else { return }
         let engine = PlayerEngine.makeForTesting()
         engine.load(path: path)
@@ -148,7 +148,7 @@ struct ChapterTests {
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
         #expect(engine.currentChapterIndex == 1)
 
-        engine.seekToChapter(engine.chapters[3])
+        engine.seekToChapter(try #require(engine.chapters.last))
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
         #expect(engine.currentChapterIndex == 3)
         #expect(engine.nextChapter() == nil)
