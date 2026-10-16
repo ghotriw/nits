@@ -40,16 +40,19 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
     public let streamIndex: Int
     public let title: String
     public let language: String
-    public let isExternal: Bool
+    /// The subtitle file of an external track; `nil` for a stream of the media.
+    public let externalURL: URL?
     public let isForced: Bool
     public let isSDH: Bool
+
+    public var isExternal: Bool { externalURL != nil }
 
     public init(
         id: Int,
         streamIndex: Int = -1,
         title: String,
         language: String,
-        isExternal: Bool = false,
+        externalURL: URL? = nil,
         isForced: Bool = false,
         isSDH: Bool = false
     ) {
@@ -57,7 +60,7 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
         self.streamIndex = streamIndex
         self.title = title
         self.language = language
-        self.isExternal = isExternal
+        self.externalURL = externalURL
         self.isForced = isForced
         self.isSDH = isSDH
     }

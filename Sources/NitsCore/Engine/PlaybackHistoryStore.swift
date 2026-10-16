@@ -9,41 +9,79 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let lastUpdated: Date
     /// Selected audio track id (`nil` if unknown / not recorded).
     public let audioTrackId: Int?
-    /// Selected subtitle track id. `nil` means no recorded preference; `PlaybackRecord.subtitlesOff` means disabled.
+    /// Selected subtitle track id. `nil` means no recorded preference; `PlaybackRecord.subtitlesOff` means disabled,
+    /// `PlaybackRecord.externalSubtitle` the file at `externalSubtitlePath`.
     public let subtitleTrackId: Int?
-    /// Subtitle delay in seconds for the file's embedded tracks (`nil` if never set).
+    /// Subtitle delay in seconds (`nil` if never set).
     public let subtitleDelay: Double?
+    /// Path of the selected external subtitle file, when `subtitleTrackId` is `externalSubtitle`.
+    public let externalSubtitlePath: String?
 
     /// Sentinel value for `subtitleTrackId` meaning the user explicitly disabled subtitles.
     public static let subtitlesOff = -1
+    /// Sentinel value for `subtitleTrackId` meaning the external subtitle file at `externalSubtitlePath`.
+    public static let externalSubtitle = -2
 
     public init(
         position: Double,
         duration: Double,
         lastUpdated: Date = Date(),
-        audioTrackId: Int? = nil,
-        subtitleTrackId: Int? = nil,
-        subtitleDelay: Double? = nil
+        preferences: PlaybackPreferences = PlaybackPreferences()
     ) {
         self.position = position
         self.duration = duration
         self.lastUpdated = lastUpdated
-        self.audioTrackId = audioTrackId
-        self.subtitleTrackId = subtitleTrackId
-        self.subtitleDelay = subtitleDelay
+        self.audioTrackId = preferences.audioTrackId
+        self.subtitleTrackId = preferences.subtitleTrackId
+        self.subtitleDelay = preferences.subtitleDelay
+        self.externalSubtitlePath = preferences.externalSubtitlePath
     }
 
-    /// Whether the record holds a preference worth keeping without a resume position.
-    var hasPreferences: Bool {
-        audioTrackId != nil || subtitleTrackId != nil || (subtitleDelay ?? 0) != 0
+    public var preferences: PlaybackPreferences {
+        PlaybackPreferences(
+            audioTrackId: audioTrackId,
+            subtitleTrackId: subtitleTrackId,
+            subtitleDelay: subtitleDelay,
+            externalSubtitlePath: externalSubtitlePath
+        )
     }
 }
 
-/// Per-file preferences restored on load, independent of the resume position.
+/// Per-file preferences restored on load, independent of the resume position. When saving, a `nil` field keeps the
+/// previously saved value.
 public struct PlaybackPreferences: Sendable, Equatable {
-    public let audioTrackId: Int?
-    public let subtitleTrackId: Int?
-    public let subtitleDelay: Double?
+    public var audioTrackId: Int?
+    /// See `PlaybackRecord.subtitleTrackId`.
+    public var subtitleTrackId: Int?
+    public var subtitleDelay: Double?
+    public var externalSubtitlePath: String?
+
+    public init(
+        audioTrackId: Int? = nil,
+        subtitleTrackId: Int? = nil,
+        subtitleDelay: Double? = nil,
+        externalSubtitlePath: String? = nil
+    ) {
+        self.audioTrackId = audioTrackId
+        self.subtitleTrackId = subtitleTrackId
+        self.subtitleDelay = subtitleDelay
+        self.externalSubtitlePath = externalSubtitlePath
+    }
+
+    /// These preferences with the fields left `nil` taken from `saved`.
+    func merged(over saved: PlaybackPreferences?) -> PlaybackPreferences {
+        PlaybackPreferences(
+            audioTrackId: audioTrackId ?? saved?.audioTrackId,
+            subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
+            subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
+            externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath
+        )
+    }
+
+    /// Whether there is a preference worth keeping without a resume position.
+    var isEmpty: Bool {
+        audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0
+    }
 }
 
 /// Thread-safe storage manager for recording and restoring media playback positions (Watch Later / Resume Playback).
@@ -79,19 +117,16 @@ public final class PlaybackHistoryStore: Sendable {
         return keyPrefix + hexString
     }
 
-    /// Saves the current playback position for a media resource, respecting start and end thresholds.
-    /// Preferences (tracks, subtitle delay) passed as `nil` keep the previously saved value. A position under
-    /// `startThreshold` or past completion is stored as 0, so a finished file keeps its preferences; a record with
-    /// neither a position nor preferences is removed.
+    /// Saves the current playback position for a media resource, respecting start and end thresholds, along with
+    /// `preferences` (`nil` fields keep the saved value). A position under `startThreshold` or past completion is
+    /// stored as 0, so a finished file keeps its preferences; a record with neither is removed.
     public func savePosition(
         for path: String,
         position: Double,
         duration: Double,
         startThreshold: Double = 15.0,
         endThresholdRatio: Double = 0.95,
-        audioTrackId: Int? = nil,
-        subtitleTrackId: Int? = nil,
-        subtitleDelay: Double? = nil
+        preferences: PlaybackPreferences = PlaybackPreferences()
     ) {
         guard duration > 0 else { return }
 
@@ -103,46 +138,25 @@ public final class PlaybackHistoryStore: Sendable {
         let key = storageKey(for: path)
 
         lock.withLock {
-            let existingRecord = record(forKey: key)
-            let record = PlaybackRecord(
-                position: effectivePosition,
-                duration: duration,
-                lastUpdated: Date(),
-                audioTrackId: audioTrackId ?? existingRecord?.audioTrackId,
-                subtitleTrackId: subtitleTrackId ?? existingRecord?.subtitleTrackId,
-                subtitleDelay: subtitleDelay ?? existingRecord?.subtitleDelay
-            )
-
-            guard effectivePosition > 0 || record.hasPreferences else {
+            let merged = preferences.merged(over: record(forKey: key)?.preferences)
+            guard effectivePosition > 0 || !merged.isEmpty else {
                 userDefaults.removeObject(forKey: key)
                 return
             }
-            store(record, forKey: key)
+            store(PlaybackRecord(position: effectivePosition, duration: duration, preferences: merged), forKey: key)
         }
     }
 
-    /// Explicitly updates or saves user preferences (tracks, subtitle delay) for a media resource
-    /// regardless of current playback position. `nil` keeps the previously saved value.
-    public func saveTrackSelection(
-        for path: String,
-        duration: Double,
-        audioTrackId: Int?,
-        subtitleTrackId: Int?,
-        subtitleDelay: Double? = nil
-    ) {
+    /// Saves `preferences` (`nil` fields keep the saved value) for a media resource, keeping its saved position.
+    public func savePreferences(for path: String, duration: Double, _ preferences: PlaybackPreferences) {
         let key = storageKey(for: path)
 
         lock.withLock {
             let existingRecord = record(forKey: key)
-            let effectiveDuration = duration > 0 ? duration : (existingRecord?.duration ?? 0.0)
-
             let record = PlaybackRecord(
                 position: existingRecord?.position ?? 0.0,
-                duration: effectiveDuration,
-                lastUpdated: Date(),
-                audioTrackId: audioTrackId ?? existingRecord?.audioTrackId,
-                subtitleTrackId: subtitleTrackId ?? existingRecord?.subtitleTrackId,
-                subtitleDelay: subtitleDelay ?? existingRecord?.subtitleDelay
+                duration: duration > 0 ? duration : (existingRecord?.duration ?? 0.0),
+                preferences: preferences.merged(over: existingRecord?.preferences)
             )
             store(record, forKey: key)
         }
@@ -161,15 +175,7 @@ public final class PlaybackHistoryStore: Sendable {
     /// Does not require playback position to be past `startThreshold`.
     public func savedPreferences(for path: String) -> PlaybackPreferences? {
         let key = storageKey(for: path)
-        return lock.withLock {
-            record(forKey: key).map {
-                PlaybackPreferences(
-                    audioTrackId: $0.audioTrackId,
-                    subtitleTrackId: $0.subtitleTrackId,
-                    subtitleDelay: $0.subtitleDelay
-                )
-            }
-        }
+        return lock.withLock { record(forKey: key)?.preferences }
     }
 
     /// Reads a record; the caller holds `lock`.

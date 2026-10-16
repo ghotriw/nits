@@ -678,7 +678,6 @@ public final class MediaDemuxer: @unchecked Sendable {
             streamIndex: index,
             title: displayTitle,
             language: lang,
-            isExternal: false,
             isForced: isForced,
             isSDH: isSDH
         )

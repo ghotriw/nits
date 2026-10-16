@@ -162,6 +162,41 @@ struct PlayerEngineTests {
         engine.stop()
     }
 
+    @Test("An external subtitle file and the subtitle delay are restored when the media is opened again")
+    @MainActor
+    func testExternalSubtitleRestoredOnReload() throws {
+        guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles) else { return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let subtitleURL = directory.appendingPathComponent("external.srt")
+        try "1\n00:00:00,000 --> 00:00:02,000\nExternal line\n".write(
+            to: subtitleURL, atomically: true, encoding: .utf8)
+
+        let engine = PlayerEngine.makeForTesting()
+        engine.load(path: mediaPath)
+        try #require(engine.isLoaded)
+        let embeddedCount = engine.subtitleTracks.count
+
+        engine.loadExternalSubtitle(url: subtitleURL)
+        engine.loadExternalSubtitle(url: subtitleURL)  // the same file again selects its track, adds none
+        #expect(engine.subtitleTracks.count == embeddedCount + 1)
+        engine.setSubtitleDelay(0.5)
+
+        engine.load(path: mediaPath)
+        try #require(engine.isLoaded)
+        let selected = engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }
+        #expect(selected?.externalURL == subtitleURL.standardizedFileURL)
+        #expect(engine.subtitleDelay == 0.5)
+
+        // A file that's gone falls back to the media's own tracks.
+        try FileManager.default.removeItem(at: subtitleURL)
+        engine.load(path: mediaPath)
+        try #require(engine.isLoaded)
+        #expect(!engine.subtitleTracks.contains { $0.isExternal })
+        engine.stop()
+    }
+
     @Test("Engine handles unavailable network URL gracefully with loadError and not loading")
     @MainActor
     func testLoadAsyncNetworkError() async {

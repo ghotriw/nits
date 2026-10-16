@@ -100,6 +100,17 @@ extension PlayerEngine {
     }
 
     public func loadExternalSubtitle(url: URL) {
+        guard let trackId = addExternalSubtitle(url: url) else { return }
+        selectSubtitleTrack(id: trackId)
+    }
+
+    /// Adds a subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
+    func addExternalSubtitle(url: URL) -> Int? {
+        let url = url.isFileURL ? url.standardizedFileURL : url
+        if let existing = subtitleTracks.first(where: { $0.externalURL == url }) {
+            return existing.id
+        }
+
         var content: String? = nil
         let encodings: [String.Encoding] = [.utf8, .windowsCP1251, .windowsCP1252, .isoLatin1, .utf16]
         for enc in encodings {
@@ -111,7 +122,7 @@ extension PlayerEngine {
 
         guard let validContent = content else {
             AppLog.error(.subtitles, "Unable to decode subtitle file with supported encodings: \(url)")
-            return
+            return nil
         }
 
         let isVTT = url.pathExtension.lowercased() == "vtt" || validContent.hasPrefix("WEBVTT")
@@ -124,16 +135,15 @@ extension PlayerEngine {
             streamIndex: -1,
             title: "\(trackName) (External)",
             language: "und",
-            isExternal: true
+            externalURL: url
         )
         subtitleTracks.append(track)
         loadedSubtitleDocuments[trackId] = document
-        selectSubtitleTrack(id: trackId)
+        return trackId
     }
 
     /// Shifts subtitles by `seconds` (clamped to `subtitleDelayRange`, rounded to milliseconds) and saves the delay
-    /// for the file. The delay belongs to the file's embedded tracks: while an external track is selected it applies
-    /// but isn't saved, as that track isn't restored on the next load.
+    /// for the file. One delay serves all of the file's subtitle tracks.
     public func setSubtitleDelay(_ seconds: Double) {
         guard seconds.isFinite else { return }
         let range = Self.subtitleDelayRange

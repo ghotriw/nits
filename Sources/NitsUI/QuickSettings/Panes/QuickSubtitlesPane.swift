@@ -324,7 +324,7 @@ public struct QuickSubtitlesPane: View {
                 delayStepButton(systemImage: "plus", delta: 0.1)
             }
 
-            Text("Positive shows subtitles later. Z / X shift by 0.2 s while playing.")
+            Text("Positive shows subtitles later. Z / X shift by 0.1 s while playing.")
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.5))
         }

@@ -90,8 +90,7 @@ struct PlaybackHistoryStoreTests {
             for: path,
             position: 120.0,
             duration: 1000.0,
-            audioTrackId: 2,
-            subtitleTrackId: 1
+            preferences: PlaybackPreferences(audioTrackId: 2, subtitleTrackId: 1)
         )
 
         let tracks = store.savedPreferences(for: path)
@@ -99,11 +98,10 @@ struct PlaybackHistoryStoreTests {
         #expect(tracks?.subtitleTrackId == 1)
 
         // 2. Explicitly update tracks at position 0 / start of video
-        store.saveTrackSelection(
+        store.savePreferences(
             for: path,
             duration: 1000.0,
-            audioTrackId: 3,
-            subtitleTrackId: PlaybackRecord.subtitlesOff
+            PlaybackPreferences(audioTrackId: 3, subtitleTrackId: PlaybackRecord.subtitlesOff)
         )
         let updatedTracks = store.savedPreferences(for: path)
         #expect(updatedTracks?.audioTrackId == 3)
@@ -138,8 +136,7 @@ struct PlaybackHistoryStoreTests {
         let path = "/movies/out_of_sync.mkv"
 
         // A delay alone keeps the record even at the start of the file.
-        store.saveTrackSelection(
-            for: path, duration: 1000.0, audioTrackId: nil, subtitleTrackId: nil, subtitleDelay: 1.4)
+        store.savePreferences(for: path, duration: 1000.0, PlaybackPreferences(subtitleDelay: 1.4))
         #expect(store.savedPreferences(for: path)?.subtitleDelay == 1.4)
 
         // `nil` keeps the saved delay.
@@ -147,7 +144,8 @@ struct PlaybackHistoryStoreTests {
         #expect(store.savedPreferences(for: path)?.subtitleDelay == 1.4)
         #expect(store.savedPosition(for: path) == 120.0)
 
-        store.savePosition(for: path, position: 130.0, duration: 1000.0, subtitleDelay: 0)
+        store.savePosition(
+            for: path, position: 130.0, duration: 1000.0, preferences: PlaybackPreferences(subtitleDelay: 0))
         #expect(store.savedPreferences(for: path)?.subtitleDelay == 0)
     }
 
@@ -157,7 +155,9 @@ struct PlaybackHistoryStoreTests {
         let store = PlaybackHistoryStore(userDefaults: defaults)
         let path = "/movies/watched.mkv"
 
-        store.savePosition(for: path, position: 300.0, duration: 1000.0, subtitleTrackId: 2, subtitleDelay: -0.6)
+        store.savePosition(
+            for: path, position: 300.0, duration: 1000.0,
+            preferences: PlaybackPreferences(subtitleTrackId: 2, subtitleDelay: -0.6))
         store.savePosition(for: path, position: 990.0, duration: 1000.0)
 
         #expect(store.savedPosition(for: path) == nil)
@@ -167,8 +167,27 @@ struct PlaybackHistoryStoreTests {
 
         // Without preferences, a finished or barely started file leaves no record.
         let plainPath = "/movies/plain.mkv"
-        store.savePosition(for: plainPath, position: 300.0, duration: 1000.0, subtitleDelay: 0)
+        store.savePosition(
+            for: plainPath, position: 300.0, duration: 1000.0, preferences: PlaybackPreferences(subtitleDelay: 0))
         store.savePosition(for: plainPath, position: 990.0, duration: 1000.0)
         #expect(store.savedPreferences(for: plainPath) == nil)
+    }
+
+    @Test("PlaybackHistoryStore saves an external subtitle selection by path")
+    func testExternalSubtitlePersistence() {
+        let defaults = InMemoryUserDefaults()
+        let store = PlaybackHistoryStore(userDefaults: defaults)
+        let path = "/movies/with_sidecar.mkv"
+        let external = PlaybackPreferences(
+            subtitleTrackId: PlaybackRecord.externalSubtitle,
+            externalSubtitlePath: "/movies/with_sidecar.en.srt"
+        )
+
+        store.savePreferences(for: path, duration: 1000.0, external)
+        #expect(store.savedPreferences(for: path) == external)
+
+        // Switching to an embedded track replaces the selection; the stale path is ignored on restore.
+        store.savePreferences(for: path, duration: 1000.0, PlaybackPreferences(subtitleTrackId: 1))
+        #expect(store.savedPreferences(for: path)?.subtitleTrackId == 1)
     }
 }

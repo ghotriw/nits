@@ -367,18 +367,10 @@ extension PlayerEngine {
                 duration: duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
-                audioTrackId: hasAudioTrackSelection ? selectedAudioTrackId : nil,
-                subtitleTrackId: subtitleTrackIdForHistory,
-                subtitleDelay: subtitleDelayForHistory
+                preferences: preferencesForHistory
             )
         } else {
-            historyStore.saveTrackSelection(
-                for: path,
-                duration: duration,
-                audioTrackId: hasAudioTrackSelection ? selectedAudioTrackId : nil,
-                subtitleTrackId: subtitleTrackIdForHistory,
-                subtitleDelay: subtitleDelayForHistory
-            )
+            historyStore.savePreferences(for: path, duration: duration, preferencesForHistory)
         }
     }
 
@@ -387,25 +379,28 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Subtitle selection to persist: `subtitlesOff` when disabled, `nil` for external files (not restorable).
-    private var subtitleTrackIdForHistory: Int? {
-        guard let id = selectedSubtitleTrackId else { return PlaybackRecord.subtitlesOff }
-        if let track = subtitleTracks.first(where: { $0.id == id }), !track.isExternal {
-            return id
+    /// Track selection and subtitle delay to persist. Subtitles are `subtitlesOff` when disabled, and an external
+    /// file is saved by its path; one that isn't a local file can't be restored and keeps the saved selection.
+    private var preferencesForHistory: PlaybackPreferences {
+        var preferences = PlaybackPreferences(
+            audioTrackId: selectedAudioTrackId >= 0 ? selectedAudioTrackId : nil,
+            subtitleDelay: subtitleDelay
+        )
+        if let id = selectedSubtitleTrackId {
+            let track = subtitleTracks.first { $0.id == id }
+            if let url = track?.externalURL {
+                if url.isFileURL {
+                    preferences.subtitleTrackId = PlaybackRecord.externalSubtitle
+                    preferences.externalSubtitlePath = url.path
+                }
+            } else if track != nil {
+                preferences.subtitleTrackId = id
+            }
+        } else {
+            preferences.subtitleTrackId = PlaybackRecord.subtitlesOff
         }
-        return nil
+        return preferences
     }
-
-    /// Subtitle delay to persist: `nil` (keep the saved one) while an external track is selected, since the delay
-    /// was set for that file's timing and the track isn't restored.
-    private var subtitleDelayForHistory: Double? {
-        if let id = selectedSubtitleTrackId, subtitleTracks.first(where: { $0.id == id })?.isExternal == true {
-            return nil
-        }
-        return subtitleDelay
-    }
-
-    private var hasAudioTrackSelection: Bool { selectedAudioTrackId >= 0 }
 
     /// Extracts an explicit stream index from strings formatted as `stream:N` or `s:N`.
     private nonisolated static func parseStreamIndex(from key: String) -> Int? {
@@ -622,6 +617,19 @@ extension PlayerEngine {
         } else if let saved = savedTracks?.subtitleTrackId {
             if saved == PlaybackRecord.subtitlesOff {
                 selectSubtitleTrack(id: nil, persistHistory: false)
+            } else if saved == PlaybackRecord.externalSubtitle {
+                // A moved or deleted file falls back to the demuxer default.
+                if let path = savedTracks?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
+                    let trackId = addExternalSubtitle(url: URL(fileURLWithPath: path))
+                {
+                    selectSubtitleTrack(id: trackId, persistHistory: false)
+                    AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")
+                } else {
+                    AppLog.warning(
+                        .subtitles,
+                        "Saved external subtitle file is missing: \(savedTracks?.externalSubtitlePath ?? "no path")"
+                    )
+                }
             } else if demuxer.subtitleTracks.contains(where: { $0.id == saved }) {
                 selectSubtitleTrack(id: saved, persistHistory: false)
                 AppLog.info(.subtitles, "Restored subtitle track from saved history: \(saved)")
