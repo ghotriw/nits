@@ -60,7 +60,7 @@ public enum TimeParser: Sendable {
     /// - `hh:mm:ss` (e.g. `1:23:45`, `01:23:45`) with strict validation (m < 60, s < 60)
     /// - `mm:ss` (e.g. `14:30`, `05:12`) with strict validation (s < 60)
     /// - Pure seconds (e.g. `90`, `120.5`, `120,5`)
-    /// - Units in English or Ukrainian (e.g. `1h 30m 10s`, `1.5ч`, `45s`, `30сек`)
+    /// - Units in English or Ukrainian (e.g. `1h 30m 10s`, `1.5г`, `15хв`, `45s`, `30сек`)
     /// - Relative offsets (e.g. `+10`, `+10s`, `-1:30`, `+5m`, `-30сек`)
     /// - Percentage (e.g. `50%`, `25.5%`, `+10%`)
     public static func parse(input: String, currentTime: Double, duration: Double) -> Double? {
@@ -166,28 +166,36 @@ public enum TimeParser: Sendable {
                 return nil
             }
             let u = unit.lowercased()
-            if u == "h" || u == "hr" || u == "hrs" || u == "hour" || u == "hours" || u == "ч" || u == "час"
-                || u == "часа" || u == "часов"
-            {
+            if hourUnits.contains(u) {
                 total += number * 3600.0
-                foundAny = true
-            } else if u == "m" || u == "min" || u == "mins" || u == "minute" || u == "minutes" || u == "м" || u == "мин"
-                || u == "минут" || u == "минуты"
-            {
+            } else if minuteUnits.contains(u) {
                 total += number * 60.0
-                foundAny = true
-            } else if u == "s" || u == "sec" || u == "secs" || u == "second" || u == "seconds" || u == "с" || u == "сек"
-                || u == "секунд" || u == "секунды"
-            {
+            } else if secondUnits.contains(u) {
                 total += number
-                foundAny = true
             } else {
                 return nil
             }
+            foundAny = true
         }
 
         return foundAny ? total : nil
     }
+
+    private static let hourUnits: Set<String> = [
+        "h", "hr", "hrs", "hour", "hours",
+        "г", "год", "година", "години", "годин",
+        "ч", "час", "часа", "часов",
+    ]
+    private static let minuteUnits: Set<String> = [
+        "m", "min", "mins", "minute", "minutes",
+        "хв", "хвилина", "хвилини", "хвилин",
+        "м", "мин", "минут", "минуты",
+    ]
+    private static let secondUnits: Set<String> = [
+        "s", "sec", "secs", "second", "seconds",
+        "с", "сек", "секунда", "секунди", "секунд",
+        "секунды",
+    ]
 
     private static func clamp(_ value: Double, duration: Double) -> Double {
         let maxDuration = duration > 0 ? duration : Double.greatestFiniteMagnitude

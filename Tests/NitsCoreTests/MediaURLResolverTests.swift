@@ -72,6 +72,18 @@ struct MediaURLResolverTests {
         #expect(result.skippedCount == 0)
     }
 
+    @Test("Subtitle files are never taken for media, even alone")
+    func subtitleFilesAreSkipped() throws {
+        let box = try Sandbox(files: ["movie.mkv", "movie.srt", "extra.vtt"])
+        let result = MediaURLResolver.resolve([box.url("movie.mkv"), box.url("movie.srt")])
+        #expect(result.urls == [box.url("movie.mkv")])
+        #expect(result.skippedCount == 1)
+
+        let alone = MediaURLResolver.resolve([box.url("extra.vtt")])
+        #expect(alone.urls.isEmpty)
+        #expect(alone.skippedCount == 1)
+    }
+
     @Test("Nothing playable resolves to an empty list")
     func nothingPlayable() throws {
         let box = try Sandbox(files: [".DS_Store", "Docs/readme.md"], folders: ["Docs"])

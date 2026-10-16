@@ -6,6 +6,11 @@ public enum SidecarSubtitles {
     /// Extensions of the formats `SubtitleDocument` parses.
     static let extensions: Set<String> = ["srt", "vtt"]
 
+    /// Whether the URL names a subtitle file of a format `SubtitleDocument` parses.
+    public static func isSubtitleFile(_ url: URL) -> Bool {
+        url.isFileURL && extensions.contains(url.pathExtension.lowercased())
+    }
+
     /// Language and flags read from the trailing dot-separated tags of a subtitle file name.
     public struct NameTags: Equatable, Sendable {
         public var language: String?

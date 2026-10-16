@@ -1,7 +1,7 @@
 import Foundation
 
 /// Turns the URLs of a drop or an open request into the items worth loading: folders become the playable
-/// media they contain, hidden and missing files are dropped, and files with an unknown extension are kept only
+/// media they contain, hidden, missing and subtitle files are dropped, and files with an unknown extension are kept only
 /// when nothing recognisable came with them (so a lone `.y4m` still gets a chance, a stray `.zsh_sessions`
 /// next to a movie does not). Remote URLs pass through unchanged.
 public enum MediaURLResolver {
@@ -35,6 +35,9 @@ public enum MediaURLResolver {
                 recognized.append(contentsOf: media)
             } else if PlaylistManager.supportedExtensions.contains(url.pathExtension.lowercased()) {
                 recognized.append(url)
+            } else if SidecarSubtitles.isSubtitleFile(url) {
+                // FFmpeg opens a subtitle file as media with no video; it is never something to play.
+                skipped += 1
             } else {
                 unrecognized.append(url)
             }

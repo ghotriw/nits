@@ -371,14 +371,20 @@ public struct ContentView: View {
     }
 
     private func loadMedia(urls: [URL]) {
-        guard !urls.isEmpty else { return }
+        // Subtitle files attach to the media: the one playing, or the one dropped with them.
+        let (subtitleURLs, mediaURLs) = SubtitleFileDrop.split(urls)
+        guard !mediaURLs.isEmpty else {
+            SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
+            return
+        }
         Task {
-            let resolution = await MediaURLResolver.resolveAsync(urls, source: "Drop / open")
-            guard !resolution.urls.isEmpty else {
+            let resolution = await MediaURLResolver.resolveAsync(mediaURLs, source: "Drop / open")
+            if resolution.urls.isEmpty {
                 uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
-                return
+            } else {
+                loadResolvedMedia(urls: resolution.urls)
             }
-            loadResolvedMedia(urls: resolution.urls)
+            SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
         }
     }
 
