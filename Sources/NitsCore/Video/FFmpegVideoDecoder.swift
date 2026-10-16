@@ -24,6 +24,9 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     private var poolPixelFormat: OSType = 0
     private var outputHandler: OutputHandler?
     private let timebase: AVRational
+    /// Converts frames the NV12 / P010 copy can't take (4:2:2, 4:4:4, RGB…) to planar 4:2:0.
+    private let frameFormatNormalizer = FrameFormatNormalizer()
+    private var loggedNormalizationFailure = false
 
     // Tracking metadata across frame-threading latency and B-frame reordering. Keyed by a packet
     // serial that FFmpeg carries from packet to frame (`AV_CODEC_FLAG_COPY_OPAQUE`), so matching
@@ -495,30 +498,36 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     private func convertAVFrameToPixelBuffer(
         _ avFrame: UnsafeMutablePointer<AVFrame>
     ) -> CVPixelBuffer? {
+        guard !FrameFormatNormalizer.isDirectlySupported(avFrame.pointee.format) else {
+            return copyPlanar420(avFrame)
+        }
+        guard let normalized = frameFormatNormalizer.convert(avFrame) else {
+            if !loggedNormalizationFailure {
+                loggedNormalizationFailure = true
+                let name = av_get_pix_fmt_name(AVPixelFormat(rawValue: avFrame.pointee.format)).map {
+                    String(cString: $0)
+                }
+                AppLog.error(
+                    .video, "FFmpegVideoDecoder: cannot convert pixel format \(name ?? "\(avFrame.pointee.format)")")
+            }
+            return nil
+        }
+        var normalizedFrame: UnsafeMutablePointer<AVFrame>? = normalized.frame
+        defer { av_frame_free(&normalizedFrame) }
+        let pixelBuffer = copyPlanar420(normalized.frame)
+        if let pixelBuffer, let matrix = normalized.yCbCrMatrix {
+            CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
+        }
+        return pixelBuffer
+    }
+
+    /// Copies a planar 4:2:0 frame (see `FrameFormatNormalizer.isDirectlySupported`) into an NV12 / P010 buffer.
+    private func copyPlanar420(_ avFrame: UnsafeMutablePointer<AVFrame>) -> CVPixelBuffer? {
         let width = Int(avFrame.pointee.width)
         let height = Int(avFrame.pointee.height)
         guard width > 0 && height > 0 else { return nil }
 
         let format = avFrame.pointee.format
-        guard
-            format == AV_PIX_FMT_YUV420P.rawValue
-                || format == AV_PIX_FMT_YUVJ420P.rawValue
-                || format == AV_PIX_FMT_YUV420P10LE.rawValue
-                // VP6A (Flash VP6 with alpha): the first three planes are plain 4:2:0; alpha is dropped.
-                || format == AV_PIX_FMT_YUVA420P.rawValue
-        else {
-            let desc: String
-            switch format {
-            case AV_PIX_FMT_YUV422P.rawValue, AV_PIX_FMT_YUV422P10LE.rawValue:
-                desc = "4:2:2 planar YUV is not supported by bi-planar hardware renderer"
-            case AV_PIX_FMT_YUV444P.rawValue, AV_PIX_FMT_YUV444P10LE.rawValue:
-                desc = "4:4:4 planar YUV is not supported by bi-planar hardware renderer"
-            default:
-                desc = "format id \(format)"
-            }
-            AppLog.error(.video, "FFmpegVideoDecoder: Unsupported pixel format (\(desc))")
-            return nil
-        }
 
         // Both AVCOL_RANGE_JPEG and AV_PIX_FMT_YUVJ420P represent full range color
         let isFullRange = (avFrame.pointee.color_range == AVCOL_RANGE_JPEG) || (format == AV_PIX_FMT_YUVJ420P.rawValue)

@@ -3,35 +3,70 @@ import CoreMedia
 import Foundation
 import VideoToolbox
 
-public enum VideoCodec: String, Sendable {
-    case hevc = "HEVC / H.265"
-    case h264 = "AVC / H.264"
-    case av1 = "AV1"
-    case vp9 = "VP9"
-    case wmv1 = "Windows Media Video 7 (WMV1)"
-    case wmv2 = "Windows Media Video 8 (WMV2)"
-    case wmv3 = "Windows Media Video 9 (WMV3)"
-    case vc1 = "VC-1 / SMPTE 421M"
-    case mpeg4 = "MPEG-4 Part 2 (DivX / Xvid)"
-    case msmpeg4v1 = "Microsoft MPEG-4 v1"
-    case msmpeg4v2 = "Microsoft MPEG-4 v2"
-    case msmpeg4v3 = "Microsoft MPEG-4 v3 (DivX 3)"
-    case h263 = "H.263"
-    case mpeg1 = "MPEG-1 Video"
-    case mpeg2 = "MPEG-2 Video / H.262"
-    case flv1 = "Sorenson Spark (FLV1)"
-    case vp6 = "On2 VP6"
-    case vp8 = "VP8"
-    case theora = "Theora"
-    case rv10 = "RealVideo 1.0"
-    case rv20 = "RealVideo 2.0"
-    case rv30 = "RealVideo 3.0"
-    case rv40 = "RealVideo 4.0"
-    case unknown = "Unknown"
+public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
+    case hevc
+    case h264
+    case av1
+    case vp9
+    case wmv1
+    case wmv2
+    case wmv3
+    case vc1
+    case mpeg4
+    case msmpeg4v1
+    case msmpeg4v2
+    case msmpeg4v3
+    case h263
+    case mpeg1
+    case mpeg2
+    case flv1
+    case vp6
+    case vp8
+    case theora
+    case rv10
+    case rv20
+    case rv30
+    case rv40
+    /// Any other video codec FFmpeg can decode (Motion JPEG, DV, Cinepak, ProRes…), by its raw `AVCodecID`.
+    /// Decoded by `FFmpegVideoDecoder`; frames that aren't 4:2:0 are converted with libswscale.
+    case software(ffmpegCodecID: UInt32)
+    case unknown
+
+    /// Full name for logs.
+    public var description: String {
+        switch self {
+        case .hevc: "HEVC / H.265"
+        case .h264: "AVC / H.264"
+        case .av1: "AV1"
+        case .vp9: "VP9"
+        case .wmv1: "Windows Media Video 7 (WMV1)"
+        case .wmv2: "Windows Media Video 8 (WMV2)"
+        case .wmv3: "Windows Media Video 9 (WMV3)"
+        case .vc1: "VC-1 / SMPTE 421M"
+        case .mpeg4: "MPEG-4 Part 2 (DivX / Xvid)"
+        case .msmpeg4v1: "Microsoft MPEG-4 v1"
+        case .msmpeg4v2: "Microsoft MPEG-4 v2"
+        case .msmpeg4v3: "Microsoft MPEG-4 v3 (DivX 3)"
+        case .h263: "H.263"
+        case .mpeg1: "MPEG-1 Video"
+        case .mpeg2: "MPEG-2 Video / H.262"
+        case .flv1: "Sorenson Spark (FLV1)"
+        case .vp6: "On2 VP6"
+        case .vp8: "VP8"
+        case .theora: "Theora"
+        case .rv10: "RealVideo 1.0"
+        case .rv20: "RealVideo 2.0"
+        case .rv30: "RealVideo 3.0"
+        case .rv40: "RealVideo 4.0"
+        case .software: "\(displayName) (FFmpeg \(Self.ffmpegName(of: ffmpegCodecID)))"
+        case .unknown: "Unknown"
+        }
+    }
 
     /// FourCC representation for CoreMedia format description.
-    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1', 'mp41', 'mp42', 'mp43', 'flv1', 'vp60', 'vp08', 'theo', 'rv10'-'rv40') are used
-    /// internally to carry format descriptions for software-decoded streams into CMSampleBuffers.
+    /// Note: Custom FourCCs ('wmv1', 'wmv2', 'wmv3', 'vc-1', 'mp41', 'mp42', 'mp43', 'flv1', 'vp60', 'vp08', 'theo',
+    /// 'rv10'-'rv40', 'ffsw') are used internally to carry format descriptions for software-decoded streams into
+    /// CMSampleBuffers.
     public var cmVideoCodecType: CMVideoCodecType {
         switch self {
         case .hevc:
@@ -95,6 +130,9 @@ public enum VideoCodec: String, Sendable {
         case .rv40:
             // 'rv40' = 0x72763430
             return 0x7276_3430
+        case .software:
+            // 'ffsw' = 0x66667377
+            return 0x6666_7377
         case .unknown:
             return 0
         }
@@ -126,6 +164,7 @@ public enum VideoCodec: String, Sendable {
         case .rv20: "RealVideo 2"
         case .rv30: "RealVideo 3"
         case .rv40: "RealVideo 4"
+        case .software(let id): Self.ffmpegLongName(of: AVCodecID(rawValue: id))
         case .unknown: "Unknown"
         }
     }
@@ -193,6 +232,8 @@ public enum VideoCodec: String, Sendable {
             return AV_CODEC_ID_RV30
         case .rv40:
             return AV_CODEC_ID_RV40
+        case .software(let id):
+            return AVCodecID(rawValue: id)
         case .unknown:
             return AV_CODEC_ID_NONE
         }
@@ -275,7 +316,22 @@ public enum VideoCodec: String, Sendable {
         case AV_CODEC_ID_RV40:
             return .rv40
         default:
-            return nil
+            // Anything else FFmpeg has a video decoder for plays in software.
+            guard let decoder = avcodec_find_decoder(codecId), decoder.pointee.type == AVMEDIA_TYPE_VIDEO else {
+                return nil
+            }
+            return .software(ffmpegCodecID: codecId.rawValue)
         }
+    }
+
+    /// FFmpeg's short codec name (e.g. "mjpeg").
+    private static func ffmpegName(of id: AVCodecID) -> String {
+        String(cString: avcodec_get_name(id))
+    }
+
+    /// FFmpeg's descriptive codec name (e.g. "Motion JPEG"), or its short name when it has none.
+    private static func ffmpegLongName(of id: AVCodecID) -> String {
+        guard let longName = avcodec_descriptor_get(id)?.pointee.long_name else { return ffmpegName(of: id) }
+        return String(cString: longName)
     }
 }

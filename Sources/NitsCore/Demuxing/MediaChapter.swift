@@ -71,9 +71,10 @@ public enum ChapterNavigator {
     /// "Previous chapter" restarts the current chapter when playback is further into it than this.
     public static let restartThreshold: Double = 5
 
-    /// A position this close before a chapter start counts as that chapter. An exact seek to a chapter can
-    /// settle a few frames early (decoder output delay, e.g. frame-threaded software VP9 lands 60–80 ms short); without the
-    /// tolerance the chapter just jumped to would read as the previous one, and "next" would repeat it.
+    /// A position this close before a chapter start counts as that chapter. An exact seek settles on the frame
+    /// whose display interval contains the target, so a chapter starting between frame boundaries lands up to half a
+    /// frame early (over 40 ms at 12 fps); without the tolerance the chapter just jumped to would read as the
+    /// previous one, and "next" would repeat it.
     static let startTolerance: Double = 0.25
 
     /// Index of the chapter playing at `time`, or `nil` before the first chapter.

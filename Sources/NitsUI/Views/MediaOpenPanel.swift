@@ -21,7 +21,7 @@ public enum MediaOpenPanel {
         let extensions = [
             // Video
             "mkv", "webm", "flv", "wmv", "ts", "m4v", "mov", "mp4", "ogv", "divx", "3gp",
-            "mpg", "mpeg", "vob", "m2v", "m2ts", "mts", "rm", "rmvb",
+            "mpg", "mpeg", "vob", "m2v", "m2ts", "mts", "rm", "rmvb", "dv",
             // Audio
             "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "alac", "aif", "aiff", "wma", "ape",
             // Playlists

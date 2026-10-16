@@ -16,24 +16,24 @@ public enum VideoDecoderFactory {
             // fall through to FFmpeg when that happens.
             let needsProbe = codec == .av1 || codec == .vp9
             if !needsProbe || canCreateVTSession(for: codec, formatDescription: demuxer.formatDescription) {
-                AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec.rawValue)")
+                AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec)")
                 return VTVideoDecoder()
             }
             AppLog.warning(
                 .video,
-                "VTDecompressionSession probe failed for \(codec.rawValue) — falling back to software decoder"
+                "VTDecompressionSession probe failed for \(codec) — falling back to software decoder"
             )
         }
 
         if let params = demuxer.getVideoCodecParameters() {
-            AppLog.info(.video, "Using Software FFmpeg decoder for \(codec.rawValue)")
+            AppLog.info(.video, "Using Software FFmpeg decoder for \(codec)")
             if let softwareDecoder = FFmpegVideoDecoder(codecParameters: params, timebase: demuxer.timebase) {
                 return softwareDecoder
             }
-            AppLog.error(.video, "FFmpegVideoDecoder initialization failed: cannot decode \(codec.rawValue) stream")
+            AppLog.error(.video, "FFmpegVideoDecoder initialization failed: cannot decode \(codec) stream")
             return nil
         } else {
-            AppLog.error(.video, "Cannot obtain video codec parameters for \(codec.rawValue) stream")
+            AppLog.error(.video, "Cannot obtain video codec parameters for \(codec) stream")
             return nil
         }
     }
@@ -64,7 +64,7 @@ public enum VideoDecoderFactory {
             VTDecompressionSessionInvalidate(session)
         }
         if status != noErr {
-            AppLog.warning(.video, "VT probe session failed for \(codec.rawValue): \(status)")
+            AppLog.warning(.video, "VT probe session failed for \(codec): \(status)")
         }
         return status == noErr
     }

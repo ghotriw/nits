@@ -1,10 +1,11 @@
+import CFFmpeg
 import CoreMedia
 import Foundation
 import Testing
 
 @testable import NitsCore
 
-@Suite("Legacy Software-Decoded Video (MPEG-1/2, MPEG-4 Part 2, MS-MPEG4, H.263)")
+@Suite("Legacy & Software-Decoded Video (FFmpegVideoDecoder)")
 struct LegacyVideoPlaybackTests {
 
     struct Case: Sendable, CustomTestStringConvertible {
@@ -43,6 +44,14 @@ struct LegacyVideoPlaybackTests {
         Case(
             preset: .rv20RM, codec: .rv20, width: 352, height: 288,
             primaries: kCVImageBufferColorPrimaries_EBU_3213 as String),
+        // libswscale fallback: 4:2:2 full range, 4:1:1 anamorphic, RGB, and 10-bit 4:2:2
+        Case(preset: .mjpegAVI, codec: .software(ffmpegCodecID: AV_CODEC_ID_MJPEG.rawValue), width: 640, height: 360),
+        Case(
+            preset: .dvNTSC, codec: .software(ffmpegCodecID: AV_CODEC_ID_DVVIDEO.rawValue), width: 720, height: 480,
+            sampleAspectRatio: RationalAspectRatio(numerator: 8, denominator: 9)),
+        Case(
+            preset: .cinepakMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_CINEPAK.rawValue), width: 320, height: 240),
+        Case(preset: .proresMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_PRORES.rawValue), width: 640, height: 360),
     ]
 
     /// Presets with B-frames, where decode and presentation order differ.

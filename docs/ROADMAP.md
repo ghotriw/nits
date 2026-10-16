@@ -147,6 +147,10 @@ flowchart TD
 - [x] **2.5.7. RealMedia (RealVideo 1–4, RealAudio):**
   - `FFmpegVideoDecoder` support for RealVideo 1.0–4.0 in `.rm` / `.rmvb`; RealAudio (14.4K, G2 Cook, SIPR, ATRAC3) through `FFAudioDecoder`.
   - RealVideo 3/4 (`.rmvb`) and Cook have no FFmpeg encoder, so they lack synthetic test media.
+- [x] **2.5.8. Any FFmpeg-Decodable Video (libswscale fallback):**
+  - `VideoCodec.software(ffmpegCodecID:)` covers every video codec FFmpeg can decode without a dedicated case (Motion JPEG, DV, Cinepak, QuickTime Animation, Indeo, HuffYUV, ProRes, DNxHD…); the stream info panel shows FFmpeg's codec name.
+  - `FrameFormatNormalizer` converts frames that aren't planar 4:2:0 (4:2:2, 4:4:4, 4:1:1, RGB, palette, gray) with libswscale to 8- or 10-bit 4:2:0; RGB is encoded and tagged BT.601 at SD, BT.709 above.
+  - `StreamColorimetry` accepts only real CoreVideo constants from `CV*GetStringForIntegerCodePoint`: its placeholders (e.g. "YCbCrMatrix#5" for BT.470BG / PAL BT.601) fall back to the FFmpeg mapping.
 
 ---
 
@@ -161,6 +165,7 @@ flowchart TD
 - [ ] **1.8.2. Professional Production Codecs (Apple ProRes & Avid DNxHR):**
   - Native hardware/framework VideoToolbox decoding for Apple ProRes family (`kCMVideoCodecType_AppleProRes422`, `ProRes422HQ`, `ProRes422LT`, `ProRes422Proxy`, `ProRes4444`, `ProRes4444XQ`).
   - FFmpeg software decoding for Avid DNxHD / DNxHR with high-bitdepth P010/NV12 pool allocation.
+  - Until then ProRes and DNxHD play through `FFmpegVideoDecoder` (2.5.8), with chroma reduced to 4:2:0.
 - [ ] **1.8.3. Metal Compute Shader Deinterlacing (YADIF / BWDIF):**
   - Field order detection (`interlaced_frame`, `top_field_first`) from `AVCodecParameters` and `AVFrame` flags.
   - Custom Metal compute deinterlacing pass (YADIF / BWDIF directional interpolation) for broadcast streams (1080i, 576i) and DVD/MPEG-2 remuxes, eliminating combing artifacts.
@@ -379,7 +384,7 @@ flowchart TD
 | **Hardware VideoToolbox (HEVC / H.264)** | `NitsCore` | Completed ✓ | P010/NV12, MSB normalization, parameter set extraction |
 | **Dolby Vision P5 / P8.1 / P8.4** | `NitsCore` | Completed ✓ | Hardware `dvh1`, NAL 62 RPU parser, L1/L2 SDR SOP trims |
 | **AV1 Hybrid Decoder** | `NitsCore` | Completed ✓ | M3/M4+ VideoToolbox, M1/M2 fallback to `libdav1d` NEON |
-| **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263, FLV1, VP6, VP8, Theora, RealVideo 1–4 into `CVPixelBufferPool` |
+| **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263, FLV1, VP6, VP8, Theora, RealVideo 1–4 and any other FFmpeg video codec (libswscale fallback) into `CVPixelBufferPool` |
 | **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
 | **Professional Production Codecs** | `NitsCore` | Planned 📋 | Apple ProRes VideoToolbox, Avid DNxHR |
 | **Metal Deinterlacer (YADIF/BWDIF)** | `NitsCore` | Planned 📋 | Compute shader deinterlacing for 1080i/576i streams |

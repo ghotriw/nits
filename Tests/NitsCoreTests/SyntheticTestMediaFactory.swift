@@ -47,6 +47,14 @@ public enum SyntheticTestMediaFactory {
         case rv10RM
         /// RealVideo 2.0 (4s, CIF 352x288 @ 25fps) in RealMedia
         case rv20RM
+        /// Motion JPEG 4:2:2 full range (3s, 640x360 @ 25fps) with PCM audio in AVI, as early digital cameras wrote it
+        case mjpegAVI
+        /// NTSC DV 4:1:1 (3s, 720x480 4:3 @ 29.97fps) with 48 kHz PCM in a raw DV stream
+        case dvNTSC
+        /// Cinepak, decoded as RGB (3s, 320x240 @ 15fps) in QuickTime
+        case cinepakMOV
+        /// Apple ProRes 422 10-bit 4:2:2 (3s, 640x360 @ 24fps) in QuickTime
+        case proresMOV
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
@@ -104,6 +112,14 @@ public enum SyntheticTestMediaFactory {
                 return "synth_rv10_ra144.rm"
             case .rv20RM:
                 return "synth_rv20.rm"
+            case .mjpegAVI:
+                return "synth_mjpeg_422.avi"
+            case .dvNTSC:
+                return "synth_dv_ntsc_411.dv"
+            case .cinepakMOV:
+                return "synth_cinepak_rgb.mov"
+            case .proresMOV:
+                return "synth_prores_422_10bit.mov"
             case .vp9SDR:
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
@@ -517,6 +533,42 @@ public enum SyntheticTestMediaFactory {
                 "-y",
                 "-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25:duration=4",
                 "-c:v", "rv20", "-q:v", "5", "-g", "25",
+                outputPath,
+            ]
+
+        case .mjpegAVI:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "mjpeg", "-pix_fmt", "yuvj422p", "-q:v", "4",
+                "-c:a", "pcm_s16le",
+                outputPath,
+            ]
+
+        case .dvNTSC:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x480:rate=30000/1001:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-c:v", "dvvideo", "-pix_fmt", "yuv411p",
+                "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
+                outputPath,
+            ]
+
+        case .cinepakMOV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=3",
+                "-c:v", "cinepak",
+                outputPath,
+            ]
+
+        case .proresMOV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
                 outputPath,
             ]
 

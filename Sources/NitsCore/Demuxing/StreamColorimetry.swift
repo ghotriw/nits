@@ -17,10 +17,11 @@ struct StreamColorimetry {
         let sdPrimaries = Self.standardDefinitionPrimaries(width: width, height: height)
 
         // Dynamically map color primaries
-        if let primaries = CVColorPrimariesGetStringForIntegerCodePoint(
-            Int32(codecpar.pointee.color_primaries.rawValue))
+        if let primaries = Self.known(
+            CVColorPrimariesGetStringForIntegerCodePoint(
+                Int32(codecpar.pointee.color_primaries.rawValue)), in: Self.knownPrimaries)
         {
-            self.colorPrimaries = primaries.takeUnretainedValue()
+            self.colorPrimaries = primaries
         } else {
             switch codecpar.pointee.color_primaries {
             case AVCOL_PRI_BT709:
@@ -37,8 +38,11 @@ struct StreamColorimetry {
         }
 
         // Dynamically map transfer characteristics (TRC)
-        if let trc = CVTransferFunctionGetStringForIntegerCodePoint(Int32(codecpar.pointee.color_trc.rawValue)) {
-            self.transferFunction = trc.takeUnretainedValue()
+        if let trc = Self.known(
+            CVTransferFunctionGetStringForIntegerCodePoint(Int32(codecpar.pointee.color_trc.rawValue)),
+            in: Self.knownTransferFunctions)
+        {
+            self.transferFunction = trc
         } else {
             switch codecpar.pointee.color_trc {
             case AVCOL_TRC_BT709, AVCOL_TRC_SMPTE170M, AVCOL_TRC_SMPTE240M:
@@ -57,8 +61,11 @@ struct StreamColorimetry {
         }
 
         // Dynamically map YCbCr color matrix / colorspace
-        if let matrix = CVYCbCrMatrixGetStringForIntegerCodePoint(Int32(codecpar.pointee.color_space.rawValue)) {
-            self.yCbCrMatrix = matrix.takeUnretainedValue()
+        if let matrix = Self.known(
+            CVYCbCrMatrixGetStringForIntegerCodePoint(Int32(codecpar.pointee.color_space.rawValue)),
+            in: Self.knownMatrices)
+        {
+            self.yCbCrMatrix = matrix
         } else {
             switch codecpar.pointee.color_space {
             case AVCOL_SPC_BT709:
@@ -91,6 +98,33 @@ struct StreamColorimetry {
         } else {
             self.bitDepth = 8
         }
+    }
+
+    /// The CoreVideo constants `CV*GetStringForIntegerCodePoint` maps H.273 code points to. For the rest it returns
+    /// placeholders such as "YCbCrMatrix#5" (BT.470BG, i.e. PAL BT.601) that no CoreVideo consumer understands;
+    /// those fall through to the FFmpeg mapping below them instead.
+    private static let knownPrimaries: Set<String> = [
+        kCVImageBufferColorPrimaries_ITU_R_709_2 as String, kCVImageBufferColorPrimaries_EBU_3213 as String,
+        kCVImageBufferColorPrimaries_SMPTE_C as String, kCVImageBufferColorPrimaries_ITU_R_2020 as String,
+        kCVImageBufferColorPrimaries_DCI_P3 as String, kCVImageBufferColorPrimaries_P3_D65 as String,
+    ]
+    private static let knownTransferFunctions: Set<String> = [
+        kCVImageBufferTransferFunction_ITU_R_709_2 as String, kCVImageBufferTransferFunction_SMPTE_240M_1995 as String,
+        kCVImageBufferTransferFunction_Linear as String, kCVImageBufferTransferFunction_sRGB as String,
+        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String,
+        kCVImageBufferTransferFunction_SMPTE_ST_428_1 as String,
+        kCVImageBufferTransferFunction_ITU_R_2100_HLG as String,
+    ]
+    /// ICtCp and IPT (Dolby Vision profile 5) have no public constant; these are the strings CoreVideo returns.
+    private static let knownMatrices: Set<String> = [
+        kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String, kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String,
+        kCVImageBufferYCbCrMatrix_SMPTE_240M_1995 as String, kCVImageBufferYCbCrMatrix_ITU_R_2020 as String,
+        "ITU_R_2100_ICtCp", "IPT_C2",
+    ]
+
+    private static func known(_ value: Unmanaged<CFString>?, in constants: Set<String>) -> CFString? {
+        guard let value = value?.takeUnretainedValue(), constants.contains(value as String) else { return nil }
+        return value
     }
 
     /// Primaries assumed for a stream that doesn't signal its colorimetry, or `nil` for HD (BT.709). Standard
