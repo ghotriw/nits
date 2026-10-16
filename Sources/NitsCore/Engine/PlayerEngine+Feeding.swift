@@ -98,27 +98,88 @@ extension PlayerEngine {
     /// The stalled decoder is left alone: flushing or invalidating a VideoToolbox session starts by waiting for
     /// its frames, which would block the caller the same way. Its feeder stays parked in the stalled call.
     func recoverFromStalledDecoder(blockedFor: Duration) {
-        guard let demuxer else { return }
-        decoderStallRecoveries += 1
-        let preferSoftware = decoderStallRecoveries > 1
-        AppLog.error(
-            .video,
-            "Video decoder stalled: a decode call has not returned for \(blockedFor). Replacing it with a \(preferSoftware ? "software" : "new") decoder"
-        )
-
+        logDecoderStall("a decode call has not returned for \(blockedFor)")
         // Frames the stalled decoder might still emit must not reach the queue the new one fills.
         decoder.setOutputHandler { _ in }
         stopFeedingVideo()
         videoDecodeWatch = nil
+        guard replaceStalledDecoder() else { return }
+        seek(to: currentFramePTS >= 0 ? currentFramePTS : currentTime, exact: true)
+    }
+
+    /// The engine's decoder for work on `seekQueue` (seek previews, frame-step pumps, the flush after a load), with
+    /// its blocking calls limited to `decoderStallTimeout`: the queue is serial, so a call that never returned
+    /// would hold every later seek behind it. A stalled call lets the work finish without the decoder (a seek
+    /// lands without a preview frame) and `recoverFromStalledSeekDecoder` takes over.
+    func stallGuardedDecoderForSeekQueue() -> StallGuardedVideoDecoder {
+        let current = decoder
+        return StallGuardedVideoDecoder(wrapping: current, timeout: Self.decoderStallTimeout) {
+            [weak self] blockedFor in
+            DispatchQueue.main.async {
+                self?.recoverFromStalledSeekDecoder(current, blockedFor: blockedFor)
+            }
+        }
+    }
+
+    /// Replaces a decoder that stalled during work on `seekQueue` and repeats the interrupted positioning with
+    /// the replacement. The guarded wrapper has already silenced it, and the interrupted seek or step completes on
+    /// its own; this seek supersedes it, as a newer target would.
+    func recoverFromStalledSeekDecoder(_ stalled: any VideoDecoderProtocol, blockedFor: Duration) {
+        // Already replaced (e.g. by the feeder's recovery), or another media was loaded meanwhile.
+        guard stalled === decoder else { return }
+        logDecoderStall("a call on the seek queue has not returned for \(blockedFor)")
+        stopFeedingVideo()
+        videoDecodeWatch = nil
+        guard replaceStalledDecoder() else { return }
+        let target = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
+        seek(to: target, exact: true)
+    }
+
+    /// Installs a new decoder in place of a stalled one: a fresh session the first time, software decoding for
+    /// the rest of the media after that. Returns `false` when there is none, leaving video stopped.
+    private func replaceStalledDecoder() -> Bool {
+        guard let demuxer else { return false }
+        decoderStallRecoveries += 1
+        let preferSoftware = decoderStallRecoveries > 1
         guard
             let replacement = VideoDecoderFactory.makeDecoder(
                 for: demuxer.codec, demuxer: demuxer, preferSoftware: preferSoftware)
         else {
             AppLog.error(.video, "No replacement video decoder for \(demuxer.codec); video stays stopped")
-            return
+            return false
         }
+        AppLog.error(.video, "Replacing the stalled video decoder with a \(preferSoftware ? "software" : "new") one")
         installVideoDecoder(replacement)
-        seek(to: currentFramePTS >= 0 ? currentFramePTS : currentTime, exact: true)
+        return true
+    }
+
+    /// Logs a stall with the state that tells its possible causes apart:
+    /// whether the display layer still holds or rejects frames, whether the session owes output, and where
+    /// playback and the queue stood.
+    private func logDecoderStall(_ what: String) {
+        let renderer = displayLayer.sampleBufferRenderer
+        let layerStatus: String
+        switch renderer.status {
+        case .rendering: layerStatus = "rendering"
+        case .failed: layerStatus = "failed (\(renderer.error.map { "\($0)" } ?? "no error"))"
+        case .unknown: layerStatus = "unknown"
+        @unknown default: layerStatus = "status \(renderer.status.rawValue)"
+        }
+        let decoderDescription: String
+        if let session = decoder as? VTVideoDecoder {
+            decoderDescription = "VideoToolbox, \(session.pendingFrameCount) frame(s) in flight"
+        } else {
+            decoderDescription = String(describing: type(of: decoder))
+        }
+        let codec = demuxer.map { "\($0.codec)" } ?? "?"
+        let layer = "display layer \(layerStatus), requires flush: \(renderer.requiresFlushToResumeDecoding)"
+        let position = "frame \(currentFramePTS)s, clock \(synchronizer.currentTime().seconds)s"
+        let state = "playing \(isPlaying), seeking \(isSeeking), stepping \(isStepPumping)"
+        AppLog.error(
+            .video,
+            "Video decoder stalled: \(what). Decoder: \(decoderDescription), codec \(codec); \(layer); queue "
+                + "\(frameQueue.count) frame(s); \(position); \(state); recoveries so far \(decoderStallRecoveries)"
+        )
     }
 
     /// Makes `newDecoder` the engine's video decoder, feeding the frame queue.

@@ -142,4 +142,128 @@ struct DecoderStallRecoveryTests {
 
         engine.stop()
     }
+
+    @Test("A decoder that stalls inside a paused seek is replaced and the seek still lands")
+    func stallDuringPausedSeek() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        engine.load(path: path)
+        #expect(await engine.waitForPlayback())
+        engine.pause()
+        #expect(await engine.waitUntil { !engine.isPlaying && !engine.isSeeking && engine.pendingSeekTime == nil })
+
+        let stalling = StallingVideoDecoder(wrapping: engine.decoder)
+        engine.installVideoDecoder(stalling)
+        defer { stalling.release() }
+        stalling.stall()
+
+        // The seek's first decoder call (the flush) blocks; without the guard the serial seek queue would be held
+        // for good and this seek, and every later one, would never settle.
+        engine.seek(to: 12, exact: true)
+        #expect(
+            await engine.waitUntil(timeout: .seconds(15)) { engine.decoder !== stalling },
+            "The decoder stalled in the seek was not replaced")
+        #expect(await engine.waitForSeekToSettle(), "The seek did not settle after the replacement")
+        #expect(abs(engine.currentFramePTS - 12) < 0.1, "Landed at \(engine.currentFramePTS)s instead of 12s")
+        #expect(!engine.isPlaying)
+
+        // The seek queue is free again.
+        engine.seek(to: 5, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(abs(engine.currentFramePTS - 5) < 0.1, "Landed at \(engine.currentFramePTS)s instead of 5s")
+        #expect(engine.decoderStallRecoveries == 1)
+
+        engine.stop()
+    }
+
+    @Test("A decoder that stalls inside a seek during playback is replaced and playback resumes at the target")
+    func stallDuringPlayingSeek() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        engine.load(path: path)
+        #expect(await engine.waitForPlayback())
+
+        let stalling = await installStallingDecoder(in: engine)
+        defer { stalling.release() }
+        stalling.stall()
+        engine.seek(to: 15, exact: true)
+
+        #expect(
+            await engine.waitUntil(timeout: .seconds(15)) { engine.decoder !== stalling },
+            "The decoder stalled in the seek was not replaced")
+        #expect(await engine.waitForPlayback(), "Playback did not resume after the replacement")
+        #expect(
+            engine.currentFramePTS >= 15 && engine.currentFramePTS < 18,
+            "Resumed at \(engine.currentFramePTS)s, expected just past 15s")
+
+        engine.stop()
+    }
+}
+
+@Suite("StallGuardedVideoDecoder")
+struct StallGuardedVideoDecoderTests {
+    /// Counts calls; `decode` blocks while `blocking` is set, until `release()`.
+    private final class BlockingDecoder: VideoDecoderProtocol, @unchecked Sendable {
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let blocking = OSAllocatedUnfairLock(initialState: false)
+        let handler = OSAllocatedUnfairLock<OutputHandler?>(initialState: nil)
+        private let gate = DispatchSemaphore(value: 0)
+
+        func release() { gate.signal() }
+        func setOutputHandler(_ handler: @escaping OutputHandler) { self.handler.withLock { $0 = handler } }
+        func decode(sampleBuffer: CMSampleBuffer) {
+            calls.withLock { $0 += 1 }
+            if blocking.withLock({ $0 }) { gate.wait() }
+        }
+        func flush() { calls.withLock { $0 += 1 } }
+        func waitForPendingFrames() { calls.withLock { $0 += 1 } }
+        func drain() {}
+        func resetSession() {}
+    }
+
+    private func makeSample() throws -> CMSampleBuffer {
+        var sample: CMSampleBuffer?
+        CMSampleBufferCreate(
+            allocator: nil, dataBuffer: nil, dataReady: true, makeDataReadyCallback: nil, refcon: nil,
+            formatDescription: nil, sampleCount: 0, sampleTimingEntryCount: 0, sampleTimingArray: nil,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample)
+        return try #require(sample)
+    }
+
+    @Test("Calls pass through until one overruns; then the decoder is silenced and reported once")
+    func overrunMarksStalled() throws {
+        let inner = BlockingDecoder()
+        let stalls = LockIsolated(0)
+        let guarded = StallGuardedVideoDecoder(wrapping: inner, timeout: .milliseconds(200)) { _ in
+            stalls.withValue { $0 += 1 }
+        }
+        defer { inner.release() }
+        let sample = try makeSample()
+
+        guarded.setOutputHandler { _ in }
+        guarded.decode(sampleBuffer: sample)
+        guarded.waitForPendingFrames()
+        #expect(inner.calls.withLock { $0 } == 2)
+        #expect(!guarded.isStalled)
+
+        inner.blocking.withLock { $0 = true }
+        let started = ContinuousClock.now
+        guarded.decode(sampleBuffer: sample)
+        #expect(ContinuousClock.now - started < .seconds(2), "The overrunning call held the caller")
+        #expect(guarded.isStalled)
+        #expect(stalls.value == 1)
+
+        // Later calls return at once without reaching the stalled decoder, and output stays silenced.
+        guarded.flush()
+        guarded.decode(sampleBuffer: sample)
+        #expect(inner.calls.withLock { $0 } == 3)
+        #expect(stalls.value == 1)
+        let delivered = LockIsolated(false)
+        guarded.setOutputHandler { _ in delivered.withValue { $0 = true } }
+        let silenced = try #require(inner.handler.withLock { $0 })
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 16, 16, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+        silenced(DecodedFrame(pixelBuffer: try #require(pixelBuffer), pts: .zero, duration: .invalid))
+        #expect(!delivered.value)
+    }
 }

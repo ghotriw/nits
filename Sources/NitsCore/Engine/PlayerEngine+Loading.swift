@@ -820,7 +820,7 @@ extension PlayerEngine {
         self.startSynchronizerClock(at: targetCMTime, rate: 0.0, armGuard: false)
         self.frameQueue.clear(resetDroppedFrames: true)
 
-        let decoder = self.decoder
+        let decoder = self.stallGuardedDecoderForSeekQueue()
         let hasVideo = demuxer.hasVideo
         let loadID = self.currentLoadID
         let seekId = self.currentSeekId

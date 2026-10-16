@@ -33,6 +33,13 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         return _lastCallbackStatus
     }
 
+    /// Frames submitted whose output callback has not run yet.
+    public var pendingFrameCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return inFlightFrames.count
+    }
+
     public var hasActiveSession: Bool {
         lock.lock()
         defer { lock.unlock() }

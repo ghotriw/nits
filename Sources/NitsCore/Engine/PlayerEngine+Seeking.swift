@@ -121,7 +121,7 @@ extension PlayerEngine {
         didStepSincePause = false
         stepFrameCache.clear()
 
-        let decoder = self.decoder
+        let decoder = stallGuardedDecoderForSeekQueue()
         let audioDecoder = self.audioDecoder
         let audioSink = self.audioSink
         let hasVideo = self.hasVideo
@@ -573,7 +573,7 @@ extension PlayerEngine {
     /// appending decoded frames to the step cache. Falls back to a full exact seek if progress stalls.
     private func fastStepFrameForwardByDecoding(from baseTime: Double) {
         guard let demuxer = self.demuxer else { return }
-        let decoder = self.decoder
+        let decoder = stallGuardedDecoderForSeekQueue()
         let frameQueue = self.frameQueue
         let stepCache = self.stepFrameCache
 
