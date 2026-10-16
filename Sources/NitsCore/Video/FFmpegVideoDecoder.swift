@@ -29,6 +29,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     private var loggedNormalizationFailure = false
     /// Whether interlaced frames are deinterlaced; tests turn it off to compare against the woven frames.
     private let deinterlaces: Bool
+    /// Whether an interlaced frame becomes a progressive frame per field (50 / 60 fps) rather than one.
+    private let fieldRate: Bool
     private let deinterlacerLock = OSAllocatedUnfairLock()
     /// Created on the first interlaced frame; `nil` afterwards only if Metal is unavailable.
     private var deinterlacer: MetalDeinterlacer?
@@ -40,7 +42,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     private struct PacketMeta: Sendable {
         let duration: CMTime
         let doNotDisplay: Bool
-        /// `MediaDemuxer.exactSeekTargetAttachmentKey`: overrides `doNotDisplay` once the frame PTS is known.
+        /// `MediaDemuxer.exactSeekTargetAttachmentKey`: overrides `doNotDisplay` once the frame (and field) PTS is known.
         let exactSeekTarget: Double?
     }
     private var inFlightMetadata: [UInt: PacketMeta] = [:]
@@ -55,14 +57,19 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     ///   - formatDescription: the samples' format description. H.264 / HEVC samples arrive length-prefixed (the
     ///     demuxer rewrites Annex B for VideoToolbox), so their `avcC` / `hvcC` replaces the container extradata.
     ///   - deinterlace: whether interlaced frames are deinterlaced; tests turn it off to compare.
+    ///   - fieldRate: whether a deinterlaced frame becomes one progressive frame per field, at the field's time,
+    ///     instead of one frame per interlaced frame. Pass it for streams declared interlaced, whose player then
+    ///     paces at the field rate (`outputsFieldRate`).
     public init?(
         codecParameters: UnsafePointer<AVCodecParameters>,
         timebase: AVRational,
         formatDescription: CMFormatDescription? = nil,
-        deinterlace: Bool = true
+        deinterlace: Bool = true,
+        fieldRate: Bool = false
     ) {
         self.timebase = timebase
         self.deinterlaces = deinterlace
+        self.fieldRate = fieldRate
         let codecId = codecParameters.pointee.codec_id
 
         let codec: UnsafePointer<AVCodec>? = {
@@ -161,6 +168,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         ctx.pointee.extradata_size = Int32(data.count)
     }
 
+    public var outputsFieldRate: Bool { deinterlaces && fieldRate }
+
     public func setOutputHandler(_ handler: @escaping OutputHandler) {
         outputLock.lock()
         outputHandler = handler
@@ -200,6 +209,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let pts: CMTime
         let duration: CMTime
         let doNotDisplay: Bool
+        let exactSeekTarget: Double?
     }
 
     public func decode(sampleBuffer: CMSampleBuffer) {
@@ -301,7 +311,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                             managedFrame: managed,
                             pts: timing.pts,
                             duration: timing.duration,
-                            doNotDisplay: timing.doNotDisplay
+                            doNotDisplay: timing.doNotDisplay,
+                            exactSeekTarget: timing.exactSeekTarget
                         )
                     )
                 } else {
@@ -355,7 +366,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                             managedFrame: managed,
                             pts: timing.pts,
                             duration: timing.duration,
-                            doNotDisplay: timing.doNotDisplay
+                            doNotDisplay: timing.doNotDisplay,
+                            exactSeekTarget: timing.exactSeekTarget
                         )
                     )
                 } else {
@@ -422,19 +434,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 continue
             }
 
-            if let rawPtr = raw.managedFrame.rawPointer,
-                let pixelBuffer = convertAVFrameToPixelBuffer(rawPtr).map({ deinterlaceIfNeeded($0, frame: rawPtr) })
-            {
-                decodedFrames.append(
-                    DecodedFrame(
-                        pixelBuffer: pixelBuffer,
-                        pts: raw.pts,
-                        duration: raw.duration,
-                        doNotDisplay: raw.doNotDisplay,
-                        doviMetadata: nil,
-                        generation: generation
-                    )
-                )
+            if let rawPtr = raw.managedFrame.rawPointer, let pixelBuffer = convertAVFrameToPixelBuffer(rawPtr) {
+                decodedFrames += progressiveFrames(of: raw, pixelBuffer: pixelBuffer, generation: generation)
             }
             raw.managedFrame.free()
         }
@@ -461,7 +462,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     // MARK: - Internal Conversion & Frame Construction
 
     private func extractTimingAndMetadata(from avFrame: UnsafeMutablePointer<AVFrame>) -> (
-        pts: CMTime, duration: CMTime, doNotDisplay: Bool
+        pts: CMTime, duration: CMTime, doNotDisplay: Bool, exactSeekTarget: Double?
     ) {
         var rawPts = avFrame.pointee.best_effort_timestamp
         if rawPts == Int64.min || rawPts < 0 {
@@ -479,11 +480,13 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
         var frameDuration: CMTime = .invalid
         var frameDoNotDisplay: Bool = false
+        var exactSeekTarget: Double?
 
         let serial = UInt(bitPattern: avFrame.pointee.opaque)
         if let found = serial != 0 ? inFlightMetadata.removeValue(forKey: serial) : nil {
             frameDuration = found.duration
             frameDoNotDisplay = found.doNotDisplay
+            exactSeekTarget = found.exactSeekTarget
             if let target = found.exactSeekTarget, framePts.isValid {
                 frameDoNotDisplay = framePts.seconds < target
             }
@@ -500,7 +503,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             lastFrameEnd = frameDuration.isValid ? framePts + frameDuration : .invalid
         }
 
-        return (framePts, frameDuration, frameDoNotDisplay)
+        return (framePts, frameDuration, frameDoNotDisplay, exactSeekTarget)
     }
 
     private func getOrCreatePool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
@@ -545,23 +548,62 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         return pool
     }
 
-    /// A progressive version of an interlaced frame (`AV_FRAME_FLAG_INTERLACED`), keeping its first field;
-    /// progressive frames, and all frames when Metal is unavailable, pass through.
-    private func deinterlaceIfNeeded(
-        _ pixelBuffer: CVPixelBuffer, frame: UnsafeMutablePointer<AVFrame>
-    ) -> CVPixelBuffer {
-        guard deinterlaces, (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0 else { return pixelBuffer }
+    /// The frames to deliver for a decoded frame. Progressive frames, and all frames when Metal is unavailable,
+    /// pass through. An interlaced frame (`AV_FRAME_FLAG_INTERLACED`) becomes a progressive frame per field in
+    /// field-rate mode, the second one presenting a field later; otherwise (or without a usable timestamp and
+    /// duration to place the second field) a single frame keeping the first field.
+    private func progressiveFrames(
+        of raw: RawReceivedFrame, pixelBuffer: CVPixelBuffer, generation: UInt64
+    ) -> [DecodedFrame] {
+        let passThrough = [
+            DecodedFrame(
+                pixelBuffer: pixelBuffer, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
+                generation: generation)
+        ]
+        guard deinterlaces, let frame = raw.managedFrame.rawPointer,
+            (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0
+        else { return passThrough }
         deinterlacerLock.lock()
         if !didCreateDeinterlacer {
             didCreateDeinterlacer = true
             deinterlacer = MetalDeinterlacer()
-            AppLog.info(.video, "FFmpegVideoDecoder: interlaced frames, deinterlacing on the GPU")
+            let rate = fieldRate ? "a frame per field" : "a frame per frame"
+            AppLog.info(.video, "FFmpegVideoDecoder: interlaced frames, deinterlacing on the GPU to \(rate)")
         }
         let deinterlacer = self.deinterlacer
         deinterlacerLock.unlock()
+        guard let deinterlacer else { return passThrough }
 
         let topFieldFirst = (frame.pointee.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) != 0
-        return deinterlacer?.deinterlace(pixelBuffer, topFieldFirst: topFieldFirst) ?? pixelBuffer
+        let fields: [MetalDeinterlacer.Field] = topFieldFirst ? [.top, .bottom] : [.bottom, .top]
+        let durations =
+            fieldRate && raw.pts.isValid
+            ? FieldTiming.durations(ofFrame: raw.duration, repeatedFields: Int(frame.pointee.repeat_pict)) : nil
+
+        guard let durations else {
+            guard let first = deinterlacer.deinterlace(pixelBuffer, keeping: [fields[0]])?.first else {
+                return passThrough
+            }
+            return [
+                DecodedFrame(
+                    pixelBuffer: first, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
+                    generation: generation)
+            ]
+        }
+        guard let buffers = deinterlacer.deinterlace(pixelBuffer, keeping: fields), buffers.count == 2 else {
+            return passThrough
+        }
+        let secondPts = raw.pts + durations.first
+        // An exact seek may land between the fields: the second one shows even when the first is before the target.
+        let secondDoNotDisplay = raw.exactSeekTarget.map { secondPts.seconds < $0 } ?? raw.doNotDisplay
+        return [
+            DecodedFrame(
+                pixelBuffer: buffers[0], pts: raw.pts, duration: durations.first, doNotDisplay: raw.doNotDisplay,
+                generation: generation),
+            DecodedFrame(
+                pixelBuffer: buffers[1], pts: secondPts, duration: durations.second,
+                doNotDisplay: secondDoNotDisplay, generation: generation),
+        ]
     }
 
     private func convertAVFrameToPixelBuffer(

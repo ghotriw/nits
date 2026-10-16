@@ -756,6 +756,13 @@ extension PlayerEngine {
                 return
             }
             self.decoder = videoDecoder
+            if videoDecoder.outputsFieldRate {
+                // A frame per field: pacing, the exact-seek floor and frame steps follow the field rate.
+                let fieldDuration = FieldTiming.fieldDuration(ofFrameDuration: demuxer.nominalFrameDuration)
+                self.nominalFrameDuration = fieldDuration
+                self.nominalFrameDurationLock.withLock { $0 = fieldDuration }
+                updateDisplayLinkFrameRate()
+            }
             let queue = self.frameQueue
             self.decoder.setOutputHandler { frame in
                 if !frame.doNotDisplay {

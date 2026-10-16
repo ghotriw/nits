@@ -10,8 +10,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// only). The sample's PTS then falls back to its DTS; software decoders must not pass it on as
     /// a real PTS or B-frame reordering skews every presentation timestamp.
     public static let presentationTimeUnknownAttachmentKey: String = "Nits.PresentationTimeUnknown"
-    /// Exact-seek target (seconds) on preroll samples without a PTS. `DoNotDisplay` is decided from the
-    /// DTS there, which is too early for reordered frames; a decoder that knows the frame's real PTS
+    /// Exact-seek target (seconds) on preroll samples. `DoNotDisplay` is decided from the sample's PTS, or
+    /// its DTS without one, which is too early for reordered frames; and a frame-per-field deinterlacer's
+    /// second field may already reach the target. A decoder that knows the real PTS of what it outputs
     /// should compare it against this instead.
     public static let exactSeekTargetAttachmentKey: String = "Nits.ExactSeekTarget"
 
@@ -23,8 +24,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var codec: VideoCodec = .hevc
     public private(set) var hasVideo: Bool = false
     public private(set) var nominalFrameDuration: Double = 1.0 / 24.0
-    /// The stream signals interlaced field order (`field_order` TT / BB / TB / BT). Frames may still be flagged
-    /// interlaced individually when it is unknown (e.g. DV).
+    /// The stream is interlaced: it signals a field order (`field_order` TT / BB / TB / BT), or it is standard
+    /// definition DV, interlaced by format but without a field order. Frames may still be flagged interlaced
+    /// individually when this is `false`.
     public private(set) var isInterlaced: Bool = false
     public private(set) var hasAudio: Bool = false
     public private(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
@@ -501,22 +503,21 @@ public final class MediaDemuxer: @unchecked Sendable {
             self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
         }
 
-        // Compute nominal frame duration from stream frame rate with sanity clamp (1 to 240 fps)
-        let avg = stream.pointee.avg_frame_rate
-        let r = stream.pointee.r_frame_rate
-        let rawDuration: Double =
-            if avg.num > 0 && avg.den > 0 {
-                Double(avg.den) / Double(avg.num)
-            } else if r.num > 0 && r.den > 0 {
-                Double(r.den) / Double(r.num)
-            } else {
-                1.0 / 24.0
-            }
+        // Nominal frame duration from the average frame rate, else the base rate (DV can report an average of
+        // 60000 fps), within a sanity range of 1 to 240 fps.
+        let plausibleDuration = { (rate: AVRational) -> Double? in
+            guard rate.num > 0 && rate.den > 0 else { return nil }
+            let duration = Double(rate.den) / Double(rate.num)
+            return duration >= (1.0 / 240.0) && duration <= 1.0 ? duration : nil
+        }
         self.nominalFrameDuration =
-            (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
+            plausibleDuration(stream.pointee.avg_frame_rate) ?? plausibleDuration(stream.pointee.r_frame_rate)
+            ?? (1.0 / 24.0)
 
         let fieldOrder = codecpar.pointee.field_order
-        self.isInterlaced = fieldOrder != AV_FIELD_UNKNOWN && fieldOrder != AV_FIELD_PROGRESSIVE
+        let isStandardDefinitionDV = codecpar.pointee.codec_id == AV_CODEC_ID_DVVIDEO && height <= 576
+        self.isInterlaced =
+            fieldOrder == AV_FIELD_UNKNOWN ? isStandardDefinitionDV : fieldOrder != AV_FIELD_PROGRESSIVE
 
         let colorimetry = StreamColorimetry(codecParameters: codecpar, width: width, height: height)
         self.colorPrimaries = colorimetry.colorPrimaries
@@ -1059,12 +1060,12 @@ public final class MediaDemuxer: @unchecked Sendable {
                     if isBeforeTarget {
                         first[kCMSampleAttachmentKey_DoNotDisplay] = true
                     }
+                    if isBeforeTarget {
+                        first[Self.exactSeekTargetAttachmentKey] =
+                            Double(targetPts) * Double(timebaseNum) / Double(timebaseDen)
+                    }
                     if pts == noPtsValue {
                         first[Self.presentationTimeUnknownAttachmentKey] = true
-                        if isBeforeTarget {
-                            first[Self.exactSeekTargetAttachmentKey] =
-                                Double(targetPts) * Double(timebaseNum) / Double(timebaseDen)
-                        }
                     }
                 }
             }

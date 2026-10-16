@@ -140,7 +140,10 @@ struct LegacyVideoPlaybackTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let decoder = try #require(VideoDecoderFactory.makeDecoder(for: demuxer.codec, demuxer: demuxer))
-        let frameDuration = demuxer.nominalFrameDuration
+        // Interlaced presets come out a frame per field.
+        let frameDuration =
+            decoder.outputsFieldRate
+            ? FieldTiming.fieldDuration(ofFrameDuration: demuxer.nominalFrameDuration) : demuxer.nominalFrameDuration
         let target = 1.5
 
         demuxer.seek(to: target, exact: true)

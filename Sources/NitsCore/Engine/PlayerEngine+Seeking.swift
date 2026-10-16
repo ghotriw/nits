@@ -677,7 +677,8 @@ extension PlayerEngine {
 
     func stepFrame(forward: Bool) {
         if isPlaying { pause() }
-        let stepDuration = demuxer?.nominalFrameDuration ?? (hasVideo ? (1.0 / 24.0) : 1.0)
+        // The engine's frame duration, not the demuxer's: field-rate deinterlacing steps a field at a time.
+        let stepDuration = demuxer != nil ? nominalFrameDuration : (hasVideo ? (1.0 / 24.0) : 1.0)
         resumePlaybackAfterChase = false
         let baseTime = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
         let targetTime = forward ? (baseTime + stepDuration) : (baseTime - stepDuration * 1.05)

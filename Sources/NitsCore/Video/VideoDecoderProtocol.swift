@@ -27,8 +27,14 @@ public protocol VideoDecoderProtocol: AnyObject, Sendable {
 
     /// Dynamically instructs the decoder to skip non-reference frames (e.g. during exact seek preroll).
     func setDiscardNonReferenceFrames(_ discard: Bool)
+
+    /// Whether interlaced frames come out as one progressive frame per field, so the stream presents at twice
+    /// its frame rate and the player paces it at the field rate.
+    var outputsFieldRate: Bool { get }
 }
 
 extension VideoDecoderProtocol {
     public func setDiscardNonReferenceFrames(_ discard: Bool) {}
+
+    public var outputsFieldRate: Bool { false }
 }

@@ -4,11 +4,19 @@ import Metal
 import os
 
 /// Deinterlaces NV12 / P010 frames on the GPU (`deinterlacePlane` in `Deinterlace.metal`): one progressive
-/// frame per interlaced frame, at the time of its first field, with no latency and no frame history.
+/// frame per kept field, each built from that field and the other one of the same frame, so there is no
+/// latency and no frame history.
 ///
 /// Decoders call it on frames they know are interlaced (FFmpeg's `AV_FRAME_FLAG_INTERLACED`), before the
 /// frame reaches the queue, the seek preview or the step cache, so every consumer sees progressive frames.
 final class MetalDeinterlacer: @unchecked Sendable {
+    enum Field {
+        /// Even rows.
+        case top
+        /// Odd rows.
+        case bottom
+    }
+
     /// A woven sample may stray this far outside its neighbours (about 8 of 255 levels) before it counts as
     /// combing: enough to ignore noise and compression ringing, small enough to catch slow motion.
     static let combThreshold: Float = 0.03
@@ -43,9 +51,9 @@ final class MetalDeinterlacer: @unchecked Sendable {
         self.textureCache = cache
     }
 
-    /// A progressive copy of `source`, keeping the temporally first field, or `nil` for unsupported
+    /// A progressive copy of `source` per entry of `fields`, keeping that field, or `nil` for unsupported
     /// formats (anything but NV12 / P010) and on GPU failure.
-    func deinterlace(_ source: CVPixelBuffer, topFieldFirst: Bool) -> CVPixelBuffer? {
+    func deinterlace(_ source: CVPixelBuffer, keeping fields: [Field]) -> [CVPixelBuffer]? {
         let format = CVPixelBufferGetPixelFormatType(source)
         let is8Bit: Bool
         switch format {
@@ -62,14 +70,12 @@ final class MetalDeinterlacer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let destination = makeBuffer(format: format, width: width, height: height),
+        let destinations = fields.compactMap { _ in makeBuffer(format: format, width: width, height: height) }
+        guard !fields.isEmpty, destinations.count == fields.count,
             let commandBuffer = commandQueue.makeCommandBuffer(),
             let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
-
-        var params = Params(keptParity: topFieldFirst ? 0 : 1, combThreshold: Self.combThreshold)
         encoder.setComputePipelineState(pipeline)
-        encoder.setBytes(&params, length: MemoryLayout<Params>.stride, index: 0)
 
         // Plane 0 is luma; plane 1 is CbCr at half resolution, whose rows alternate between fields too.
         let planes: [(index: Int, format: MTLPixelFormat)] = [
@@ -78,18 +84,25 @@ final class MetalDeinterlacer: @unchecked Sendable {
         ]
         var textureRefs: [CVMetalTexture] = []
         for plane in planes {
-            guard let input = texture(source, plane: plane.index, format: plane.format),
-                let output = texture(destination, plane: plane.index, format: plane.format)
-            else {
+            guard let input = texture(source, plane: plane.index, format: plane.format) else {
                 encoder.endEncoding()
                 return nil
             }
-            textureRefs += [input.ref, output.ref]
+            textureRefs.append(input.ref)
             encoder.setTexture(input.texture, index: 0)
-            encoder.setTexture(output.texture, index: 1)
-            let threads = MTLSize(width: 16, height: 16, depth: 1)
-            let grid = MTLSize(width: input.texture.width, height: input.texture.height, depth: 1)
-            encoder.dispatchThreads(grid, threadsPerThreadgroup: threads)
+            for (field, destination) in zip(fields, destinations) {
+                guard let output = texture(destination, plane: plane.index, format: plane.format) else {
+                    encoder.endEncoding()
+                    return nil
+                }
+                textureRefs.append(output.ref)
+                var params = Params(keptParity: field == .top ? 0 : 1, combThreshold: Self.combThreshold)
+                encoder.setBytes(&params, length: MemoryLayout<Params>.stride, index: 0)
+                encoder.setTexture(output.texture, index: 1)
+                let threads = MTLSize(width: 16, height: 16, depth: 1)
+                let grid = MTLSize(width: input.texture.width, height: input.texture.height, depth: 1)
+                encoder.dispatchThreads(grid, threadsPerThreadgroup: threads)
+            }
         }
         encoder.endEncoding()
         commandBuffer.commit()
@@ -97,10 +110,12 @@ final class MetalDeinterlacer: @unchecked Sendable {
         withExtendedLifetime(textureRefs) {}
         guard commandBuffer.status == .completed else { return nil }
 
-        CVBufferPropagateAttachments(source, destination)
-        CVBufferSetAttachment(destination, kCVImageBufferFieldCountKey, 1 as CFNumber, .shouldPropagate)
-        CVBufferRemoveAttachment(destination, kCVImageBufferFieldDetailKey)
-        return destination
+        for destination in destinations {
+            CVBufferPropagateAttachments(source, destination)
+            CVBufferSetAttachment(destination, kCVImageBufferFieldCountKey, 1 as CFNumber, .shouldPropagate)
+            CVBufferRemoveAttachment(destination, kCVImageBufferFieldDetailKey)
+        }
+        return destinations
     }
 
     private func texture(
