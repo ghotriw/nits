@@ -190,37 +190,10 @@ extension PlayerEngine {
 
     nonisolated func presentToDisplayLayer(pixelBuffer: CVPixelBuffer) {
         nonisolated(unsafe) let pb = pixelBuffer
-        let formatDesc: CMVideoFormatDescription? = cachedVideoFormatDescription.withLock { cached in
-            if let cached, CMVideoFormatDescriptionMatchesImageBuffer(cached, imageBuffer: pb) {
-                return cached
-            }
-            var newDesc: CMVideoFormatDescription?
-            let err = CMVideoFormatDescriptionCreateForImageBuffer(
-                allocator: kCFAllocatorDefault,
-                imageBuffer: pb,
-                formatDescriptionOut: &newDesc
-            )
-            if err == noErr, let newDesc {
-                cached = newDesc
-                return newDesc
-            }
-            return nil
+        // Unchecked: the sample never leaves this thread.
+        let sampleBuffer = cachedVideoFormatDescription.withLockUnchecked { cached in
+            Self.makeDisplaySampleBuffer(for: pb, formatDescription: &cached).sample
         }
-        guard let formatDesc else { return }
-
-        let timing = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: .zero,
-            decodeTimeStamp: .invalid
-        )
-        var sampleBuffer: CMSampleBuffer?
-        CMSampleBufferCreateReadyWithImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescription: formatDesc,
-            sampleTiming: [timing],
-            sampleBufferOut: &sampleBuffer
-        )
         guard let sample = sampleBuffer else { return }
 
         if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true)
@@ -231,6 +204,44 @@ extension PlayerEngine {
         }
 
         enqueueToDisplayLayer(sample)
+    }
+
+    /// Wraps `pixelBuffer` in a sample buffer, reusing `formatDescription` while it still fits and replacing it
+    /// when it does not; `rebuilt` tells which.
+    ///
+    /// Creating the sample checks the description against the buffer's attachments itself (dimensions, pixel
+    /// format and the extensions in `CMVideoFormatDescriptionGetExtensionKeysCommonWithImageBuffers`) and fails
+    /// with `kCMSampleBufferError_InvalidMediaFormat` on a mismatch. Reading an IOSurface-backed buffer's
+    /// attachments is a kernel round trip, so a separate `CMVideoFormatDescriptionMatchesImageBuffer` per frame
+    /// would make two.
+    nonisolated static func makeDisplaySampleBuffer(
+        for pixelBuffer: CVPixelBuffer, formatDescription: inout CMVideoFormatDescription?
+    ) -> (sample: CMSampleBuffer?, rebuilt: Bool) {
+        func makeSample(_ description: CMVideoFormatDescription) -> CMSampleBuffer? {
+            let timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+            var sampleBuffer: CMSampleBuffer?
+            let status = CMSampleBufferCreateReadyWithImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: pixelBuffer,
+                formatDescription: description,
+                sampleTiming: [timing],
+                sampleBufferOut: &sampleBuffer
+            )
+            return status == noErr ? sampleBuffer : nil
+        }
+
+        if let formatDescription, let sample = makeSample(formatDescription) {
+            return (sample, false)
+        }
+        var newDescription: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &newDescription
+        )
+        guard status == noErr, let newDescription else { return (nil, true) }
+        formatDescription = newDescription
+        return (makeSample(newDescription), true)
     }
 
     /// - Parameter targetTimestamp: Host time of the vsync at which the frame picked in this tick reaches the screen.

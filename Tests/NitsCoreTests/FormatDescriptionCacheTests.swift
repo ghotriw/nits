@@ -6,11 +6,11 @@ import os
 
 @testable import NitsCore
 
-/// Diagnostic tests validating that the per-frame `CMVideoFormatDescription` cache in
+/// Tests that the per-frame `CMVideoFormatDescription` cache in
 /// `PlayerEngine.presentToDisplayLayer` actually HITS across consecutive decoded frames.
 ///
-/// If `CMVideoFormatDescriptionMatchesImageBuffer` returned false frame-to-frame, the cache would be
-/// a no-op (recreating the descriptor every tick, exactly like before) PLUS the added match cost.
+/// If sample creation rejected the cached descriptor frame-to-frame, the cache would be a no-op (recreating the
+/// descriptor every tick) plus a failed creation per frame.
 @Suite("Format Description Cache Hit Tests")
 struct FormatDescriptionCacheTests {
 
@@ -54,26 +54,46 @@ struct FormatDescriptionCacheTests {
         return (box.buffers, diagnostics)
     }
 
-    /// Replicates the exact caching logic from `presentToDisplayLayer` and counts how many frames
-    /// reused the cached descriptor versus how many forced a recreate.
+    /// Runs frames through the caching in `presentToDisplayLayer` and counts how many reused the cached
+    /// descriptor versus how many forced a recreate.
     private func measureCacheHits(_ buffers: [CVPixelBuffer]) -> (hits: Int, recreates: Int) {
         var cached: CMVideoFormatDescription?
         var hits = 0
         var recreates = 0
         for pb in buffers {
-            if let c = cached, CMVideoFormatDescriptionMatchesImageBuffer(c, imageBuffer: pb) {
-                hits += 1
-                continue
-            }
-            var newDesc: CMVideoFormatDescription?
-            let err = CMVideoFormatDescriptionCreateForImageBuffer(
-                allocator: kCFAllocatorDefault, imageBuffer: pb, formatDescriptionOut: &newDesc)
-            if err == noErr, let newDesc {
-                cached = newDesc
-                recreates += 1
-            }
+            let (sample, rebuilt) = PlayerEngine.makeDisplaySampleBuffer(for: pb, formatDescription: &cached)
+            guard sample != nil else { continue }
+            if rebuilt { recreates += 1 } else { hits += 1 }
         }
         return (hits, recreates)
+    }
+
+    @Test("A changed colour attachment replaces the cached descriptor instead of reusing it")
+    func attachmentChangeRebuildsDescriptor() throws {
+        var created: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]]
+        CVPixelBufferCreate(
+            nil, 64, 64, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, attributes as CFDictionary, &created)
+        let buffer = try #require(created)
+        CVBufferSetAttachment(
+            buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+
+        var cached: CMVideoFormatDescription?
+        #expect(PlayerEngine.makeDisplaySampleBuffer(for: buffer, formatDescription: &cached).rebuilt)
+        let first = try #require(cached)
+        #expect(PlayerEngine.makeDisplaySampleBuffer(for: buffer, formatDescription: &cached).rebuilt == false)
+
+        // Mid-stream colour change: the stale descriptor must not be reused for the new frames.
+        CVBufferSetAttachment(
+            buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+        let (sample, rebuilt) = PlayerEngine.makeDisplaySampleBuffer(for: buffer, formatDescription: &cached)
+        #expect(rebuilt)
+        #expect(sample != nil)
+        let primaries = cached.flatMap {
+            CMFormatDescriptionGetExtension($0, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries)
+        }
+        #expect(primaries as? String == kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String)
+        #expect(cached != first)
     }
 
     @Test("HDR HEVC: cache hits on every frame after the first")
