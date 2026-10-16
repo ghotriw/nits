@@ -464,9 +464,34 @@ public final class PlayerEngine: PlayerEngineProtocol {
         var lastTargetTimestamp: CFTimeInterval = 0
         var unloggedDrops = 0
         var lastLogInstant: ContinuousClock.Instant = .now - .seconds(10)
+        /// Clock read at the previous tick: unchanged while the synchronizer waits for audio after a start.
+        var lastClockSeconds: Double = .nan
+        var lastCallbackHost: CFTimeInterval = 0
+        /// Target vsync of the last frame put up; 0 after a pause of the link.
+        var lastPopTarget: CFTimeInterval = 0
+        var sincePop = TicksSincePop()
+    }
+
+    /// What the display link did between two frames, logged when a frame stays up two ticks or more past its cadence:
+    /// tells a link that stopped calling, a tick blocked on our side, and an empty queue (decoder or network) apart.
+    struct TicksSincePop {
+        var ticks = 0
+        var emptyQueueTicks = 0
+        var settlingHoldTicks = 0
+        /// Ticks at which the clock had not moved since the previous one (paused, or waiting for audio to start).
+        var stoppedClockTicks = 0
+        var maxCallbackGap: CFTimeInterval = 0
+        var maxTickDuration: CFTimeInterval = 0
+        var maxClockRead: CFTimeInterval = 0
     }
     @ObservationIgnored
     let tickDiagnosticsLock = OSAllocatedUnfairLock(initialState: TickDiagnostics())
+    /// Clock projected to the target vsync, with the per-tick jitter filtered out (see `DisplayClockSmoother`).
+    @ObservationIgnored
+    let displayClockSmootherLock = OSAllocatedUnfairLock(initialState: DisplayClockSmoother())
+    /// Frame cadence on screen, logged every few seconds of playback (see `FrameCadenceStats`).
+    @ObservationIgnored
+    let frameCadenceLock = OSAllocatedUnfairLock(initialState: FrameCadenceStats())
 
     /// Tracks whether a rapid relative seek burst sequence is currently active.
     @ObservationIgnored
@@ -565,7 +590,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
 
         @objc func onTick(_ link: CADisplayLink) {
-            engine?.displayLinkTick(targetTimestamp: link.targetTimestamp)
+            engine?.displayLinkTick(targetTimestamp: link.targetTimestamp, tickInterval: link.duration)
         }
     }
 

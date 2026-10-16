@@ -334,6 +334,10 @@ extension PlayerEngine {
         videoHeight = 0
         nominalFrameDuration = 1.0 / 24.0
         nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
+        // Display timing of the previous media must not leak into the new one's cadence reports or phase lock.
+        frameCadenceLock.withLock { $0 = FrameCadenceStats() }
+        displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
+        tickDiagnosticsLock.withLock { $0 = TickDiagnostics() }
         sampleAspectRatio = .square
         videoCodecName = ""
         videoBitDepth = 8

@@ -200,6 +200,27 @@ Frames are chosen for the clock at the vsync they will appear on — `synchroniz
 `link.targetTimestamp` — because callback latency jitters by milliseconds; sampling the clock at callback
 time skips frames whenever content fps is close to the link rate.
 
+When no rate is a whole multiple of the content (25p on a 60 Hz-only external monitor: 2.4 ticks per frame),
+frames are held 2 and 3 ticks in a fixed pattern; that judder is inherent to the screen. Their boundaries fall
+on a lattice of phases against vsync (tick / 5 apart for 2.4), and as the audio clock drifts against the display a
+lattice point passes over a vsync every few tens of seconds. The projected clock still wobbles by about a
+millisecond from tick to tick, so the frame at that point used to flip between two vsyncs for seconds at a time
+(shown a tick late, the next one held a single tick). `DisplayClockSmoother` stands between the projection and
+`FrameQueue.popFrame`:
+- **Smoothing.** `content time − host time × rate` is low-pass filtered (time constant 0.5 s). A step beyond 8 ms
+  (seek, clock restart, rate change, a gap in ticks) restarts the filter from the raw value and is logged. A clock
+  that has not moved since the previous tick — paused, or the synchronizer waiting for audio after a start while
+  its rate is already 1 — is treated as stopped: returned raw, never projected or smoothed into motion.
+- **Phase lock.** A bias of at most half a lattice step keeps the lattice centred between vsyncs. Each pick
+  (slack past its threshold, modulo the step) nudges it towards the centre, so it follows the drift; past half a
+  step it moves by a whole step, shifting one frame boundary across a vsync once. The bias is the only A/V offset
+  added: ±1.7 ms for 25p on 60 Hz, ±8.3 ms at most. Rates without a lattice of ≤ 12 points are not locked.
+
+On an LG UltraFine at 60 Hz with 25p this took the frames sitting on a vsync from about one in five to none in
+steady playback. What remains is the audio clock stepping by ±10–13 ms early in playback (see `OPEN_ISSUES.md`):
+each step makes the lock re-centre for a few seconds. The cadence diagnostics that measure all this are described
+in `docs/LOGGING.md`.
+
 ### Picture in Picture
 
 `NitsKit/PictureInPictureController` drives the public `AVPictureInPictureController` with a

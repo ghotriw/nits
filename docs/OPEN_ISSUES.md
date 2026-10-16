@@ -33,6 +33,30 @@ feeders. To check in the app:
 
 The UI does not show `isBuffering` yet.
 
+## Audio clock steps early in playback
+
+**Observed** (October 2026, 25p Dolby Vision over HTTP from Emby, LG UltraFine at 60 Hz, Metal tone mapping): in
+the first tens of seconds the synchronizer clock steps against the display by ±10–13 ms, usually in pairs — e.g.
+`+10.0 ms` at 12 s and `−13.0 ms` at 16 s, or `+11.7 ms` then `−11.3 ms` half a second later. A 4-minute run
+had none after the start; smaller steps (under the 8 ms discontinuity threshold) seem to occur as well. Each step
+makes the display-clock phase lock re-centre, and for a few seconds frames sitting on a vsync flip between ticks
+(`side flips` in the `Cadence` lines).
+
+Unknown whether the steps are the synchronizer correcting its timebase (output latency estimate settling, device
+clock correction) or come from our audio pipeline. **To investigate:** correlate the `Display clock … jumped`
+lines with audio enqueue timing and `AVSampleBufferAudioRenderer` / synchronizer state, on a local file and on
+another output device, to see whether they follow the device or the stream.
+
+## A 200 ms frame hold on the display link
+
+**Observed once** (same setup): one frame stayed up 12 ticks (200 ms) and the next four frames never showed
+(`held 12×1`, `skipped 4`), with no buffering, network or drop messages; it followed a `−8.6 ms` clock jump. A
+negative jump of that kind is what a tick blocked between reading the synchronizer clock and `CACurrentMediaTime()`
+produces, so the display-link thread may have been blocked. Not seen in 6 minutes of later runs.
+
+**If it recurs:** the `Frame held …` line (see `docs/LOGGING.md`) tells a link that stopped calling, a tick blocked
+on our side (`max tick`, `max clock read`) and an empty frame queue apart.
+
 ## Flaky tests to watch
 
 - **`BackwardFrameSteppingTests`** failed once locally with `engine.stepFrameCache.count → 0` after a paused

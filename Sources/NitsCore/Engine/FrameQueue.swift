@@ -180,6 +180,12 @@ public final class FrameQueue: @unchecked Sendable {
     /// - `speedSkippedFrames`: When playing faster than 1.0x (e.g. 1.7x), effective video FPS ($50 \times 1.7 = 85\text{ fps}$) may exceed
     ///   display refresh rate (60Hz). When lookahead replacement discards intermediate frames to keep up with the master clock at rate > 1.01,
     ///   they are counted as `speedSkippedFrames` instead of `pipelineDroppedFrames`.
+    /// Dynamic lead window in movie PTS: half the frame interval so future frames wait for the next VSYNC tick.
+    /// Clamped between 2ms (supporting HFR up to 240fps) and 35ms (~28fps half-frame max).
+    static func leadWindowSeconds(nominalFrameDuration: Double) -> Double {
+        max(0.002, min(nominalFrameDuration * 0.5, 0.035))
+    }
+
     public func popFrame(
         forSyncTime syncTime: CMTime,
         nominalFrameDuration: Double = 1.0 / 24.0,
@@ -203,15 +209,13 @@ public final class FrameQueue: @unchecked Sendable {
 
             let safePlaybackRate = (playbackRate.isFinite && playbackRate > 0) ? playbackRate : 1.0
 
-            // Dynamic lead window in movie PTS: half the frame interval so future frames wait for the next VSYNC tick.
-            // Clamped between 2ms (supporting HFR up to 240fps) and 35ms (~28fps half-frame max).
-            let leadSeconds = max(0.002, min(safeFrameDuration * 0.5, 0.035))
-            let maxLeadTime = CMTime(seconds: leadSeconds, preferredTimescale: 1000)
+            let maxLeadTime = CMTime(
+                seconds: Self.leadWindowSeconds(nominalFrameDuration: safeFrameDuration), preferredTimescale: 1_000_000)
 
             // Late drop tolerance: base host-time tolerance scaled to movie PTS by max(1.0, playbackRate)
             let baseToleranceSeconds = max(0.040, min(safeFrameDuration * 1.5, 0.100))
             let lateToleranceSeconds = baseToleranceSeconds * max(1.0, safePlaybackRate)
-            let lateThreshold = syncTime - CMTime(seconds: lateToleranceSeconds, preferredTimescale: 1000)
+            let lateThreshold = syncTime - CMTime(seconds: lateToleranceSeconds, preferredTimescale: 1_000_000)
 
             var chosen: CVPixelBuffer?
             var chosenPts: CMTime = .invalid

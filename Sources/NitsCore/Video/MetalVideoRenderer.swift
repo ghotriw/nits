@@ -138,7 +138,11 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         }
     }
 
-    public func render(pixelBuffer: CVPixelBuffer) {
+    /// - Parameter onGPUCompleted: Called with the command buffer's `gpuEndTime` (host seconds) once the GPU finished
+    ///   the frame, 0 if it failed.
+    public func render(
+        pixelBuffer: CVPixelBuffer, onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)? = nil
+    ) {
         renderLock.lock()
         defer { renderLock.unlock() }
 
@@ -221,6 +225,9 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         // Retain textures in renderer slot until next frame without allocating a heap closure
         lastRenderedTextures = (yTextureRef, uvTextureRef)
 
+        if let onGPUCompleted {
+            commandBuffer.addCompletedHandler { onGPUCompleted($0.status == .completed ? $0.gpuEndTime : 0) }
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }

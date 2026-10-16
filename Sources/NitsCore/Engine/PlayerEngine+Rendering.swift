@@ -244,21 +244,49 @@ extension PlayerEngine {
         return (makeSample(newDescription), true)
     }
 
-    /// - Parameter targetTimestamp: Host time of the vsync at which the frame picked in this tick reaches the screen.
-    nonisolated func displayLinkTick(targetTimestamp: CFTimeInterval) {
+    /// - Parameters:
+    ///   - targetTimestamp: Host time of the vsync at which the frame picked in this tick reaches the screen.
+    ///   - tickInterval: The link's vsync spacing, for the cadence statistics.
+    nonisolated func displayLinkTick(targetTimestamp: CFTimeInterval, tickInterval: CFTimeInterval) {
+        let tickStart = CACurrentMediaTime()
+        defer {
+            let duration = CACurrentMediaTime() - tickStart
+            tickDiagnosticsLock.withLock { $0.sincePop.maxTickDuration = max($0.sincePop.maxTickDuration, duration) }
+        }
         pendingClockStartLock.withLock { $0?.displayLinkTicks += 1 }
         alignPendingClockStartWithFirstFrame()
+        let clockReadStart = CACurrentMediaTime()
         let clockNow = synchronizer.currentTime()
         guard clockNow.isNumeric else { return }
         let now = CACurrentMediaTime()
+        let clockAdvanced = tickDiagnosticsLock.withLock { state -> Bool in
+            defer { state.lastClockSeconds = clockNow.seconds }
+            return clockNow.seconds != state.lastClockSeconds
+        }
+        recordTickTiming(tickStart: tickStart, clockRead: now - clockReadStart, clockAdvanced: clockAdvanced)
 
         // Pick frames for the clock at the target vsync, not at callback time. The callback runs on the main run
         // loop and its latency varies by milliseconds (UI work, cursor moves, ProMotion rate changes); sampling the
         // clock there turns that jitter into skipped frames whenever content fps is close to the link rate
         // (50 fps on 60 Hz tolerates only ~3 ms). Target timestamps are vsync-spaced, so the jitter cancels out.
+        // The projection still wobbles by about a millisecond from tick to tick, enough to flip a frame whose boundary
+        // sits on a vsync between two ticks; `DisplayClockSmoother` filters that out and keeps boundaries off vsyncs.
         let lookahead = min(max(targetTimestamp - now, 0), Self.maxVsyncLookaheadSeconds)
-        let clockRate = CMTimebaseGetRate(synchronizer.timebase)
-        let currentSyncTime = clockNow + CMTime(seconds: lookahead * clockRate, preferredTimescale: 1_000_000)
+        // While the synchronizer waits for audio after a start, its clock stands still at a running rate: treat it as
+        // stopped, so it is neither projected forward nor smoothed into motion, and the filter starts on the first
+        // tick it moves.
+        let clockRate = clockAdvanced ? CMTimebaseGetRate(synchronizer.timebase) : 0
+        let projectedSyncTime = clockNow + CMTime(seconds: lookahead * clockRate, preferredTimescale: 1_000_000)
+        let (pickSeconds, discontinuity) = displayClockSmootherLock.withLock {
+            $0.pickTime(rawTime: projectedSyncTime.seconds, hostTime: targetTimestamp, rate: clockRate)
+        }
+        if let discontinuity {
+            AppLog.debug(
+                .video,
+                "Display clock restarted from the raw clock at \(String(format: "%.3f", projectedSyncTime.seconds))s: \(discontinuity)"
+            )
+        }
+        let currentSyncTime = CMTime(seconds: pickSeconds, preferredTimescale: 1_000_000)
 
         let droppedBefore = frameQueue.pipelineDroppedFramesCount
         let vsyncIntervalMs = tickDiagnosticsLock.withLock { state -> Double in
@@ -289,6 +317,7 @@ extension PlayerEngine {
             return false
         }
         if shouldHoldFrame {
+            tickDiagnosticsLock.withLock { $0.sincePop.settlingHoldTicks += 1 }
             return
         }
 
@@ -325,9 +354,15 @@ extension PlayerEngine {
             let speedSkipped = frameQueue.speedSkippedFramesCount
 
             let mode = activeRenderMode
+            let renderStart = CACurrentMediaTime()
             if mode == .metalToneMap {
                 let currentModeName = applyDynamicToneMap(doviMetadata: popped.doviMetadata)
-                metalRenderer?.render(pixelBuffer: popped.pixelBuffer)
+                let cadence = frameCadenceLock
+                metalRenderer?.render(pixelBuffer: popped.pixelBuffer) { gpuEndTime in
+                    cadence.withLock {
+                        $0.recordGPUCompletion(targetTimestamp: targetTimestamp, gpuEndTime: gpuEndTime)
+                    }
+                }
                 performanceMonitor.recordRenderedFrame(
                     durationMs: durationMs,
                     queueCount: qCount,
@@ -378,6 +413,15 @@ extension PlayerEngine {
                     }
                 }
             }
+            recordFrameCadence(
+                popped, syncTime: currentSyncTime, targetTimestamp: targetTimestamp, tickInterval: tickInterval,
+                frameDuration: frameDuration, playbackRate: currentRate, clockRunning: clockRate != 0,
+                renderCall: CACurrentMediaTime() - renderStart)
+            recordPopTiming(
+                pts: popped.pts, targetTimestamp: targetTimestamp, tickInterval: tickInterval,
+                frameDuration: frameDuration, playbackRate: currentRate, clockSeconds: currentSyncTime.seconds)
+        } else if frameQueue.count == 0 {
+            tickDiagnosticsLock.withLock { $0.sincePop.emptyQueueTicks += 1 }
         }
 
         // Single drops stay below FrameQueue's per-tick warning threshold; log them with the link timing that
@@ -407,6 +451,72 @@ extension PlayerEngine {
         // Backpressure check: if feeding was paused due to full frame buffer, resume when queue drops to <= 25 frames
         if frameQueue.count <= 25 && isVideoDrainPaused.withLock({ $0 }) {
             checkBackpressureAndResumeIfNeeded()
+        }
+    }
+
+    /// Notes when this tick's callback ran and how long reading the synchronizer clock took.
+    private nonisolated func recordTickTiming(tickStart: CFTimeInterval, clockRead: CFTimeInterval, clockAdvanced: Bool)
+    {
+        tickDiagnosticsLock.withLock { state in
+            let gap = state.lastCallbackHost > 0 ? tickStart - state.lastCallbackHost : 0
+            state.lastCallbackHost = tickStart
+            // A link paused for longer than any stall (playback paused, window hidden) starts over.
+            if gap > 1 {
+                state.lastPopTarget = 0
+                state.sincePop = TicksSincePop()
+            }
+            state.sincePop.ticks += 1
+            state.sincePop.maxCallbackGap = max(state.sincePop.maxCallbackGap, gap)
+            state.sincePop.maxClockRead = max(state.sincePop.maxClockRead, clockRead)
+            if !clockAdvanced { state.sincePop.stoppedClockTicks += 1 }
+        }
+    }
+
+    /// Logs what the link did since the previous frame when this one came two ticks or more past its cadence.
+    private nonisolated func recordPopTiming(
+        pts: CMTime, targetTimestamp: CFTimeInterval, tickInterval: CFTimeInterval, frameDuration: Double,
+        playbackRate: Double, clockSeconds: Double
+    ) {
+        let (hold, sample) = tickDiagnosticsLock.withLock { state -> (CFTimeInterval, TicksSincePop) in
+            defer {
+                state.lastPopTarget = targetTimestamp
+                state.sincePop = TicksSincePop()
+            }
+            return (state.lastPopTarget > 0 ? targetTimestamp - state.lastPopTarget : 0, state.sincePop)
+        }
+        guard tickInterval > 0, playbackRate > 0 else { return }
+        let cadenceTicks = (frameDuration / (tickInterval * playbackRate)).rounded(.up)
+        // A clock that stood still (start waiting for audio, pause) holds the frame by design, not by a stall.
+        guard hold >= (cadenceTicks + 2) * tickInterval, sample.stoppedClockTicks == 0 else { return }
+        func ms(_ seconds: Double) -> String { String(format: "%.1f", seconds * 1000) }
+        AppLog.debug(
+            .video,
+            "Frame held \(ms(hold)) ms (\(Int((hold / tickInterval).rounded())) ticks, cadence \(Int(cadenceTicks))) before PTS \(String(format: "%.3f", pts.seconds))s at clock \(String(format: "%.3f", clockSeconds))s: \(sample.ticks) callbacks, max gap \(ms(sample.maxCallbackGap)) ms; clock stopped in \(sample.stoppedClockTicks), queue empty in \(sample.emptyQueueTicks), settling hold in \(sample.settlingHoldTicks); max tick \(ms(sample.maxTickDuration)) ms, max clock read \(ms(sample.maxClockRead)) ms; queue now \(frameQueue.count)"
+        )
+    }
+
+    private nonisolated func recordFrameCadence(
+        _ frame: FrameQueue.PoppedFrame, syncTime: CMTime, targetTimestamp: CFTimeInterval,
+        tickInterval: CFTimeInterval, frameDuration: Double, playbackRate: Double, clockRunning: Bool,
+        renderCall: CFTimeInterval
+    ) {
+        guard frame.pts.isNumeric, syncTime.isNumeric else { return }
+        let slack =
+            syncTime.seconds + FrameQueue.leadWindowSeconds(nominalFrameDuration: frameDuration) - frame.pts.seconds
+        // The anchor frame of a start goes up before the clock runs: its slack says nothing about the cadence phase.
+        if clockRunning {
+            displayClockSmootherLock.withLock {
+                $0.recordPick(
+                    slack: slack, tickInterval: tickInterval, frameDuration: frameDuration, playbackRate: playbackRate)
+            }
+        }
+        let report = frameCadenceLock.withLock {
+            $0.recordFrame(
+                targetTimestamp: targetTimestamp, tickInterval: tickInterval, pts: frame.pts.seconds, slack: slack,
+                frameDuration: frameDuration, playbackRate: playbackRate, renderCall: renderCall)
+        }
+        if let report {
+            AppLog.debug(.video, report)
         }
     }
 
