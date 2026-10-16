@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Provides automated, deterministic synthetic test media generation via FFmpeg.
 /// Generates test assets dynamically into the temporary directory if not already cached.
@@ -204,10 +205,25 @@ public enum SyntheticTestMediaFactory {
     /// Ensures that the specified media preset is generated and available on disk.
     /// Returns the absolute path to the ready file, or `nil` if FFmpeg is unavailable.
     ///
-    /// Tests run in parallel and share the cache, so FFmpeg writes to a private partial file that is
-    /// renamed into place only once complete: a reader never sees a half-written file (an MP4's
-    /// `moov` atom is written last). Concurrent callers may both generate; the last rename wins.
+    /// Tests run in parallel and share the cache. Within a process each preset is generated once: other callers
+    /// wait for it instead of running their own encode, which on a 3-core CI runner starved every test for over a
+    /// minute. Across processes (the test targets) FFmpeg writes to a private partial file that is renamed into
+    /// place only once complete, so a reader never sees a half-written file (an MP4's `moov` atom is written last).
     public static func ensureMedia(preset: Preset = .multiTrackH264) -> String? {
+        let gate = generationGates.withLock { gates in
+            if let gate = gates[preset] { return gate }
+            let gate = DispatchSemaphore(value: 1)
+            gates[preset] = gate
+            return gate
+        }
+        gate.wait()
+        defer { gate.signal() }
+        return generateMedia(preset: preset)
+    }
+
+    private static let generationGates = OSAllocatedUnfairLock(initialState: [Preset: DispatchSemaphore]())
+
+    private static func generateMedia(preset: Preset) -> String? {
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NitsSyntheticMedia")
         let targetPath = tmpDir.appendingPathComponent(preset.filename).path
 

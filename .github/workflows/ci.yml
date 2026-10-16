@@ -77,6 +77,11 @@ jobs:
       - name: Typecheck and build targets
         run: ./scripts/format.sh typecheck
 
+      # Encoding the presets takes over a minute on a cold runner; done inside the test run, it starves the
+      # parallel tests and eats into their waits and time limits.
+      - name: Generate synthetic test media
+        run: swift test --disable-sandbox --filter SyntheticMediaWarmupTests
+
       - name: Run fast unit tests (Push / PR)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_stress_tests != true }}
         run: swift test --disable-sandbox --skip PlaybackStressTests --skip AudioReferenceComparisonTests --skip PlayerLifecycleTests
