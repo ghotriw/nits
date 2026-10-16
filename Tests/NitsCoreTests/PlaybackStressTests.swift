@@ -494,36 +494,54 @@ extension PlaybackStressTests {
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
-        // Seek forward deep into media
+        // Seek deep into the media; load autoplays, so playback resumes from there.
         engine.seek(to: 10.0, exact: true)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        engine.play()
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil && engine.isPlaying })
+        #expect(await engine.waitForClock(toPass: 10.5), "Clock did not run from the seek target")
 
-        #expect(engine.currentTime >= 9.0)
-
-        // Only drops caused by the backward seek count; the forward seek and start may skip a tick under load.
-        let droppedBeforeSeek = engine.droppedFramesCount
-
-        // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut); wait until the clock runs from there
+        // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut). The seek resets the drop counter.
         engine.seek(to: 0.0, exact: true)
-        // Right after the seek the clock still reads the old ~11s; the chase seek restarts it near 0.0s.
-        _ = await engine.waitUntil {
+        #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil && engine.isPlaying })
+        // From the moment playback resumes the clock must read the new position. A stale ~11s reading (the
+        // synchronizer keeps it until the audio device restarts) makes the display link drop every frame from 0s.
+        var staleReadings: [Double] = []
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < deadline {
             let clock = engine.synchronizer.currentTime().seconds
-            return clock > 0.2 && clock < 9.0
+            if clock > 2.0 { staleReadings.append(clock) }
+            if clock > 0.5 { break }
+            try? await Task.sleep(for: .milliseconds(5))
         }
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(staleReadings.isEmpty, "Clock read the pre-seek position after resuming: \(staleReadings)")
 
-        // Must settle close to 0.0s and resume smoothly without frame bursts. A stale clock (~11s) drops every
-        // frame queued from 0s (the queue holds up to 60); a few skipped VSYNC ticks under parallel test load don't.
-        let droppedAfterSeek = engine.droppedFramesCount - droppedBeforeSeek
+        // A stale clock drops every frame queued from 0s (the queue holds up to 60); a few skipped VSYNC ticks under
+        // parallel test load don't.
         #expect(
-            droppedAfterSeek <= 4,
-            "Stale clock caused frame drop burst on backward seek: \(droppedAfterSeek)")
+            engine.droppedFramesCount <= 4,
+            "Stale clock caused frame drop burst on backward seek: \(engine.droppedFramesCount)")
         #expect(
             engine.currentTime >= 0.2 && engine.currentTime <= 2.0,
             "Expected currentTime progressing near 0.0s, got \(engine.currentTime)")
         #expect(engine.isPlaying == true)
+
+        engine.stop()
+    }
+
+    @Test("Starting the clock at a new position reads that position immediately, not the paused one")
+    @MainActor
+    func testClockStartIsImmediatelyAtTarget() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        engine.play()
+        #expect(await engine.waitForClock(toPass: 1.0), "Clock did not advance past 1.0s")
+
+        // What a backward seek while playing does: pause the clock where it is, then restart it at the target.
+        engine.synchronizer.setRate(0, time: engine.synchronizer.currentTime())
+        engine.startSynchronizerClock(at: .zero, rate: 1.0)
+        let clock = engine.synchronizer.currentTime().seconds
+        #expect(clock < 0.5, "Clock still reads the paused position \(clock)s after restarting at 0s")
 
         engine.stop()
     }
