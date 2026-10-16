@@ -27,17 +27,31 @@ func makeAudioRendererSink(
 /// macOS 27+: the synchronizer's `Receiver`, which provides backpressure through `await enqueue`.
 /// `@unchecked`: AVFoundation does not mark `Receiver` `Sendable`, but it is built for use from the feeding task.
 @available(macOS 27.0, *)
-private final class ReceiverAudioSink: AudioRendererSink, @unchecked Sendable {
+final class ReceiverAudioSink: AudioRendererSink, @unchecked Sendable {
     private let receiver: AVSampleBufferAudioRenderer.Receiver
 
     init(receiver: AVSampleBufferAudioRenderer.Receiver) {
         self.receiver = receiver
     }
 
+    /// A cancelled wait does not throw: `enqueue` returns `.cancelledDueToFlush` (also when the feeding task is
+    /// cancelled on pause) and the buffer was not taken. Treated as accepted, it was dropped and left a gap that
+    /// became audible once the renderer played up to it, about a second after resuming.
     func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
         nonisolated(unsafe) let sBuf = sampleBuffer
         let ready: CMReadySampleBuffer<CMSampleBuffer.DynamicContent> = CMReadySampleBuffer(unsafeBuffer: sBuf)
-        _ = try await receiver.enqueue(ready)
+        switch try await receiver.enqueue(ready) {
+        case .enqueued:
+            break
+        case .enqueuedWithSuggestedFlush(let reasons):
+            AppLog.warning(.audio, "Audio renderer suggests a flush after enqueuing: \(reasons)")
+        case .cancelledDueToFlush:
+            throw CancellationError()
+        case .cancelledDueToError(let error):
+            throw error
+        @unknown default:
+            break
+        }
     }
 
     func flush() {
