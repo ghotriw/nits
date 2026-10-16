@@ -4,17 +4,17 @@ import AppKit
 import Foundation
 
 extension PlayerEngine {
+    /// Switches the audio track and re-reads the media from the current frame.
+    ///
+    /// The demuxer reads all tracks from one position, ahead of the clock by what is buffered (decoded video, queued
+    /// packets). Packets of the new track before that position were skipped, so continuing from there started the
+    /// new track up to a second ahead of the picture, further with every switch. An exact seek to the current frame
+    /// re-reads both from there (as mpv does); the seek keeps playing or paused as it was.
     public func selectAudioTrack(id: Int) {
         guard let demuxer = self.demuxer else { return }
         AppLog.info(.audio, "Switching to audio track: \(id)")
-        let wasPlaying = isPlaying
-        pause()
 
-        // Stop requesting data and flush renderers
         stopFeedingAudio()
-        audioSink.flush()
-        audioDecoder?.flush()
-
         demuxer.selectAudioTrack(trackId: id)
         self.selectedAudioTrackId = id
         saveCurrentPlaybackProgress()
@@ -26,9 +26,11 @@ extension PlayerEngine {
             self.audioDecoder = nil
         }
 
-        if wasPlaying {
-            play()
-        }
+        // A seek still in flight keeps its target: the switch must not pull playback back to the frame before it.
+        let position =
+            chaseTargetTime
+            ?? (hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
+        seek(to: position, exact: true)
     }
 
     public func selectSubtitleTrack(id: Int?) {

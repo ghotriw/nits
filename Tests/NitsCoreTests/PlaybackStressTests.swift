@@ -277,6 +277,38 @@ struct PlaybackStressTests {
 }
 
 extension PlaybackStressTests {
+    // MARK: - 4b. Audio Track Switch Position
+    @Test("Switching the audio track while playing resumes the new track at the playback position")
+    @MainActor
+    func testAudioTrackSwitchResumesAtPlaybackPosition() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        #expect(await engine.waitForPlayback(advancingBy: 1.0))
+        let tracks = engine.audioTracks
+        guard tracks.count > 1 else {
+            engine.stop()
+            return
+        }
+
+        // The demuxer reads all tracks from one position, ahead of the clock by what is buffered. A new track that
+        // simply continued from there would start up to a second ahead, and more with every switch.
+        for track in [tracks[1], tracks[0], tracks[1]] {
+            engine.firstFedAudioPTS.withLock { $0 = nil }
+            engine.selectAudioTrack(id: track.id)
+            #expect(await engine.waitUntil { engine.firstFedAudioPTS.withLock { $0 } != nil })
+            let audioStart = engine.firstFedAudioPTS.withLock { $0 }?.seconds ?? -1
+            let clock = engine.synchronizer.currentTime().seconds
+            #expect(
+                abs(audioStart - clock) < 0.3,
+                "Track \(track.id) audio resumed at \(audioStart)s with the clock at \(clock)s")
+            #expect(await engine.waitForPlayback(), "Playback did not resume after switching to track \(track.id)")
+        }
+
+        engine.stop()
+    }
+
     // MARK: - 5. Exotic Audio Codecs (AC3 fltp / DTS / FLAC s16) Switching
     @Test("Switching between AC3, DTS and 16-bit FLAC tracks under playback does not hang or crash")
     @MainActor

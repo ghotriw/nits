@@ -468,6 +468,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let isMetalLayerVisibleLock = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored
     let isVideoDrainPaused = OSAllocatedUnfairLock(initialState: false)
+    /// Presentation time of the first buffer the current audio feeding run handed to the renderer; `nil` until it
+    /// has. Compared with the clock, it shows where audio resumed after a seek, track switch or pause.
+    @ObservationIgnored
+    let firstFedAudioPTS = OSAllocatedUnfairLock<CMTime?>(initialState: nil)
     /// Clock start deferred until the display-link tick has presented the anchor frame
     /// (see `startSynchronizerClockAfterPreroll`). Claimed exactly once by the tick or by the timeout.
     struct PendingClockStart: Sendable {

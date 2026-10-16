@@ -195,6 +195,8 @@ extension PlayerEngine {
         let feedingLock = self.isFeeding
         let sink = self.audioSink
         let audioTimebase = demuxer.audioTimebase
+        let firstFedPTS = self.firstFedAudioPTS
+        firstFedPTS.withLock { $0 = nil }
 
         audioFeedingTask = Task.detached(priority: .userInitiated) {
             await previousRun?.value
@@ -203,7 +205,8 @@ extension PlayerEngine {
                 audioDecoder: aDecoder,
                 sink: sink,
                 feedingLock: feedingLock,
-                audioTimebase: audioTimebase
+                audioTimebase: audioTimebase,
+                firstFedPTS: firstFedPTS
             )
         }
     }
@@ -218,7 +221,8 @@ extension PlayerEngine {
         audioDecoder: FFAudioDecoder,
         sink: any AudioRendererSink,
         feedingLock: OSAllocatedUnfairLock<Bool>,
-        audioTimebase: AVRational
+        audioTimebase: AVRational,
+        firstFedPTS: OSAllocatedUnfairLock<CMTime?>
     ) async {
         var hasLoggedFirstAudioBuffer = false
         var pendingGeneration = audioDecoder.generation
@@ -254,6 +258,7 @@ extension PlayerEngine {
             if !hasLoggedFirstAudioBuffer {
                 hasLoggedFirstAudioBuffer = true
                 let pts = CMSampleBufferGetPresentationTimeStamp(buf)
+                firstFedPTS.withLock { $0 = pts }
                 AppLog.debug(
                     .audio,
                     "First audio buffer enqueued to renderer: pts = \(pts.isValid ? String(format: "%.3f", pts.seconds) : "invalid")s"
