@@ -66,6 +66,7 @@ extension PlayerEngine {
         isSeeking = false
         chaseTargetTime = nil
         minStepFramePTS = nil
+        decoderStallRecoveries = 0
         stepDecodeContiguous = false
         isStepPumping = false
         didStepSincePause = false
@@ -757,14 +758,7 @@ extension PlayerEngine {
                 self.playbackState = .failed(err)
                 return
             }
-            self.decoder = videoDecoder
-            applyDeinterlaceMode(refresh: false)
-            let queue = self.frameQueue
-            self.decoder.setOutputHandler { frame in
-                if !frame.doNotDisplay {
-                    queue.push(frame)
-                }
-            }
+            installVideoDecoder(videoDecoder)
         }
 
         // Initialize audio decoder if audio stream is present

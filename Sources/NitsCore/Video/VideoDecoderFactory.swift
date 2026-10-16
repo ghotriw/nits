@@ -4,9 +4,12 @@ import VideoToolbox
 /// Factory creating the optimal video decoder (hardware VideoToolbox or software FFmpegVideoDecoder)
 /// based on the video codec and host Apple Silicon capabilities.
 public enum VideoDecoderFactory {
+    /// - Parameter preferSoftware: Skip VideoToolbox even where it has hardware for the codec, e.g. after its
+    ///   decoder stopped answering for this media.
     public static func makeDecoder(
         for codec: VideoCodec,
-        demuxer: MediaDemuxer
+        demuxer: MediaDemuxer,
+        preferSoftware: Bool = false
     ) -> (any VideoDecoderProtocol)? {
         // Apple Silicon's hardware H.264 decoder rejects field-coded (interlaced) streams: every frame fails with
         // kVTVideoDecoderBadDataErr, so 1080i broadcasts and AVCHD camcorder footage would show nothing.
@@ -14,7 +17,7 @@ public enum VideoDecoderFactory {
         if isInterlacedH264 {
             AppLog.info(.video, "Interlaced H.264: VideoToolbox can't decode field-coded streams, using FFmpeg")
         }
-        if codec.isHardwareAccelerated && !isInterlacedH264 {
+        if codec.isHardwareAccelerated && !isInterlacedH264 && !preferSoftware {
             // H.264 and HEVC have guaranteed VT hardware on Apple Silicon — no probe needed.
             // AV1 and VP9 report hardware support via VTIsHardwareDecodeSupported, but on
             // virtualised CI runners the hypervisor exposes the flag without the actual decoder
