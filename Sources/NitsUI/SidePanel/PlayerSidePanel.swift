@@ -7,6 +7,11 @@ public enum PlayerSidePanel: Sendable, Equatable {
     case chapters
     case quickSettings
 
+    /// A tab of the playlist panel (`.playlist` or `.chapters`).
+    public var isPlaylistPanelTab: Bool {
+        self == .playlist || self == .chapters
+    }
+
     public var width: CGFloat {
         switch self {
         case .playlist, .chapters:

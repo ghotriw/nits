@@ -9,6 +9,11 @@ import os
 public struct PlaylistOverlayView: View {
     public let engine: PlayerEngine
     @Bindable public var uiState: PlayerUIState
+    /// The tab to show, `.playlist` or `.chapters`. Passed in rather than read from `uiState.sidePanel`: a closing
+    /// panel slides out while still observing `uiState`, and with `sidePanel` already `nil` it switched itself to
+    /// the playlist tab. The playing row's repeating symbol effect then started inside the removal, which never
+    /// finished, so the panel stayed rendered just past the trailing edge (visible once the window grew).
+    public let tab: PlayerSidePanel
     public var onClose: () -> Void
 
     @State private var isShowingAddURLAlert: Bool = false
@@ -16,9 +21,13 @@ public struct PlaylistOverlayView: View {
     @State private var inputURLString: String = ""
     @State private var isTargetedForDrop: Bool = false
 
-    public init(engine: PlayerEngine, uiState: PlayerUIState, onClose: @escaping () -> Void) {
+    public init(
+        engine: PlayerEngine, uiState: PlayerUIState, tab: PlayerSidePanel = .playlist,
+        onClose: @escaping () -> Void
+    ) {
         self.engine = engine
         self.uiState = uiState
+        self.tab = tab
         self.onClose = onClose
     }
 
@@ -112,7 +121,7 @@ public struct PlaylistOverlayView: View {
 
     /// Chapters tab is open and the media has chapters; otherwise the panel shows the playlist.
     private var isShowingChapters: Bool {
-        uiState.sidePanel == .chapters && !engine.chapters.isEmpty
+        tab == .chapters && !engine.chapters.isEmpty
     }
 
     private var headerTabs: [SidePanelTab<PlayerSidePanel>] {

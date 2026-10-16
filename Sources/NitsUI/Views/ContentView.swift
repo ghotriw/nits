@@ -327,7 +327,7 @@ public struct ContentView: View {
         switch panel {
         case .playlist, .chapters:
             // One view for both tabs, so switching tabs keeps the panel's state.
-            PlaylistOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)
+            PlaylistOverlayView(engine: engine, uiState: uiState, tab: panel, onClose: closeSidePanel)
         case .quickSettings:
             QuickSettingsOverlayView(engine: engine, uiState: uiState, onClose: closeSidePanel)
         }

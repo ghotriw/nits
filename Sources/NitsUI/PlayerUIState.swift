@@ -9,7 +9,15 @@ public final class PlayerUIState {
     public var isJumpToPresented: Bool = false
     public var wasPlayingBeforeJumpTo: Bool = false
     /// The side panel currently open, if any.
-    public var sidePanel: PlayerSidePanel?
+    public var sidePanel: PlayerSidePanel? {
+        didSet {
+            if let sidePanel, sidePanel.isPlaylistPanelTab {
+                lastPlaylistPanelTab = sidePanel
+            }
+        }
+    }
+    /// The playlist panel's tab last shown this session; see `togglePlaylist()`.
+    public private(set) var lastPlaylistPanelTab: PlayerSidePanel = .playlist
     /// Picture in Picture can start now (reported by the host that owns PiP).
     public var isPictureInPicturePossible: Bool = false
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
@@ -30,9 +38,16 @@ public final class PlayerUIState {
 
     public var isQuickSettingsPresented: Bool { sidePanel == .quickSettings }
 
-    public var isPlaylistPresented: Bool { sidePanel == .playlist }
+    /// Whether the playlist entry point (control bar button, `P`, View menu) shows as active: its tab is open, or
+    /// either tab while it stands for the whole panel.
+    public var isPlaylistPresented: Bool {
+        opensWholePlaylistPanel(.playlist) ? sidePanel?.isPlaylistPanelTab == true : sidePanel == .playlist
+    }
 
-    public var isChaptersPresented: Bool { sidePanel == .chapters }
+    /// Whether the chapters entry point shows as active; see `isPlaylistPresented`.
+    public var isChaptersPresented: Bool {
+        opensWholePlaylistPanel(.chapters) ? sidePanel?.isPlaylistPanelTab == true : sidePanel == .chapters
+    }
 
     /// Opens `panel`, replacing any other open panel (or switching the playlist panel's tab), or
     /// closes it if it is already open.
@@ -44,12 +59,32 @@ public final class PlayerUIState {
         toggleSidePanel(.quickSettings)
     }
 
+    /// Toggles the playlist panel from its playlist entry point (control bar button, `P`, View menu).
+    ///
+    /// With both tab buttons on the control bar each opens its own tab. When the other tab's button isn't there,
+    /// this one stands for the whole panel, like the quick settings button: it reopens the tab last shown this
+    /// session and closes the panel on either tab.
     public func togglePlaylist() {
-        toggleSidePanel(.playlist)
+        togglePlaylistPanel(from: .playlist)
     }
 
+    /// Toggles the playlist panel from its chapters entry point; see `togglePlaylist()`.
     public func toggleChapters() {
-        toggleSidePanel(.chapters)
+        togglePlaylistPanel(from: .chapters)
+    }
+
+    private func togglePlaylistPanel(from tab: PlayerSidePanel) {
+        guard opensWholePlaylistPanel(tab) else {
+            toggleSidePanel(tab)
+            return
+        }
+        sidePanel = sidePanel?.isPlaylistPanelTab == true ? nil : lastPlaylistPanelTab
+    }
+
+    /// Whether `tab`'s entry point stands for the whole playlist panel: the other tab has no control bar button.
+    private func opensWholePlaylistPanel(_ tab: PlayerSidePanel) -> Bool {
+        let otherTabButton: ControlBarItem = tab == .chapters ? .playlist : .chapters
+        return !controlsConfig.isEnabled(otherTabButton)
     }
 
     public func showControlsTemporarily() {

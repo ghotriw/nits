@@ -83,6 +83,10 @@ public final class PlayerWindow: NSWindow {
         case 0x23:  // Physical 'P' (ANSI P) -> Toggle Playlist on any layout
             actionHandler.togglePlaylist()
             return true
+        case 0x08:  // Physical 'C' (ANSI C) -> Toggle Chapters on any layout, when the media has them
+            guard actionHandler.hasChapters else { return false }
+            actionHandler.toggleChapters()
+            return true
         case 0x21:  // Physical '[' (ANSI LeftBracket, 0x21 / 33) -> Decrease Speed by 0.1x
             actionHandler.stepPlaybackRate(by: -0.1)
             return true

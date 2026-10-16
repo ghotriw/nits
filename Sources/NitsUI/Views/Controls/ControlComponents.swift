@@ -342,7 +342,7 @@ public struct ControlChaptersToggleButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Chapters (⌥⌘C)")
+            .help("Chapters (⌥⌘C / C)")
         }
     }
 }

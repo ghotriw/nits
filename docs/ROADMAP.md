@@ -318,7 +318,7 @@ flowchart TD
   - Chapter gaps on the timeline track; the hover preview shows the chapter title above the thumbnail.
   - Previous/Next Chapter (`⌥⌘←`, `⌥⌘→` / `PageUp`, `PageDown`); "previous" restarts the current chapter
     when more than 5 s into it (mpv's `chapter-seek-threshold`); "next" stops on the last chapter.
-  - Chapter list as a tab of the playlist panel (shown only when the media has chapters), `⌥⌘C` and an
+  - Chapter list as a tab of the playlist panel (shown only when the media has chapters), `⌥⌘C` / `C` and an
     optional control bar button; side panel headers share one tab bar (`SidePanelTabBar`).
 - [x] **5.10.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.

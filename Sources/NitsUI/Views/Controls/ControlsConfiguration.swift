@@ -37,25 +37,21 @@ public final class ControlsConfiguration {
         }
     }
 
-    public init() {
-        if let data = UserDefaults.standard.string(forKey: Self.userDefaultsKey),
-            let saved = Self.decode(from: data)
-        {
-            self.items = saved
-        } else {
-            self.items = Self.defaultItems
-        }
+    /// Where the layout persists; `nil` keeps it in memory (tests, previews).
+    private let userDefaults: UserDefaults?
+
+    public init(userDefaults: UserDefaults? = .standard) {
+        self.userDefaults = userDefaults
+        self.items = Self.load(from: userDefaults) ?? Self.defaultItems
     }
 
     /// Reloads current values from UserDefaults.
     public func reload() {
-        if let data = UserDefaults.standard.string(forKey: Self.userDefaultsKey),
-            let saved = Self.decode(from: data)
-        {
-            self.items = saved
-        } else {
-            self.items = Self.defaultItems
-        }
+        items = Self.load(from: userDefaults) ?? Self.defaultItems
+    }
+
+    private static func load(from userDefaults: UserDefaults?) -> [ControlBarItem]? {
+        userDefaults?.string(forKey: userDefaultsKey).flatMap(decode(from:))
     }
 
     /// Checks if a specific item is currently present in the active items list.
@@ -104,7 +100,7 @@ public final class ControlsConfiguration {
         if let data = try? JSONEncoder().encode(rawValues),
             let string = String(data: data, encoding: .utf8)
         {
-            UserDefaults.standard.set(string, forKey: Self.userDefaultsKey)
+            userDefaults?.set(string, forKey: Self.userDefaultsKey)
         }
     }
 
