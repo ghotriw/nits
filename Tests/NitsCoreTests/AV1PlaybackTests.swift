@@ -82,7 +82,7 @@ struct AV1PlaybackTests {
         #expect(lastPts.value >= 0)
     }
 
-    @Test("PlayerEngine seamlessly loads, plays and seeks AV1 media")
+    @Test("PlayerEngine seamlessly loads, plays and seeks AV1 media", .realtimePlayback)
     @MainActor
     func playerEnginePlaysAV1() async throws {
         guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else {
@@ -99,55 +99,23 @@ struct AV1PlaybackTests {
         engine.play()
         #expect(engine.isPlaying == true)
 
-        // Wait for playback to start progressing
-        var played = false
-        for _ in 0..<30 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if engine.currentTime > 0 {
-                played = true
-                break
-            }
-        }
-        #expect(played == true)
-        #expect(engine.currentTime > 0)
+        #expect(await engine.waitUntil { engine.currentTime > 0 }, "Playback did not progress")
 
         // Test seek
         engine.seek(to: 1.0)
-        // Wait for seek to complete and settle
-        for _ in 0..<40 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if !engine.isSeeking && engine.pendingSeekTime == nil {
-                break
-            }
-        }
+        #expect(await engine.waitForSeekToSettle())
 
         engine.pause()
         #expect(engine.isPlaying == false)
-
-        // Ensure engine has a valid presented frame before relative seek
-        for _ in 0..<20 {
-            if engine.currentFramePTS >= 0 && engine.getLastRenderedBuffer() != nil {
-                break
-            }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        #expect(
+            await engine.waitUntil { engine.currentFramePTS >= 0 && engine.getLastRenderedBuffer() != nil },
+            "No frame presented before the relative seek")
 
         // Test exact seek on pause for AV1
         let initialPTS = engine.currentFramePTS
         engine.seekRelative(by: 1.0, exact: true)
-
-        // Poll for seek & decode to settle up to 3 seconds (generous for busy CI runners)
-        var settled = false
-        for _ in 0..<60 {
-            try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms intervals
-            if !engine.isSeeking && engine.pendingSeekTime == nil
-                && engine.currentFramePTS != initialPTS && engine.getLastRenderedBuffer() != nil
-            {
-                settled = true
-                break
-            }
-        }
-        #expect(settled == true)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(await engine.waitUntil { engine.currentFramePTS != initialPTS })
         #expect(engine.getLastRenderedBuffer() != nil)
         #expect(engine.currentFramePTS != initialPTS)
 

@@ -259,7 +259,7 @@ struct ThumbnailTests {
         return Double(sum) / Double(width * height * 3)
     }
 
-    @Test("PlayerEngine prepareThumbnails populates thumbnails on load")
+    @Test("PlayerEngine prepareThumbnails populates thumbnails on load", .realtimePlayback)
     @MainActor
     func testPlayerEngineThumbnailsOnLoad() async throws {
         guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else {
@@ -268,12 +268,7 @@ struct ThumbnailTests {
         let engine = PlayerEngine.makeForTesting()
         engine.load(path: mediaPath)
 
-        for _ in 0..<50 {
-            if !engine.thumbnailManager.thumbnails.isEmpty { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-
-        #expect(!engine.thumbnailManager.thumbnails.isEmpty)
+        #expect(await engine.waitUntil { !engine.thumbnailManager.thumbnails.isEmpty })
         #expect(engine.thumbnailManager.thumbnail(at: 1.0) != nil)
     }
 

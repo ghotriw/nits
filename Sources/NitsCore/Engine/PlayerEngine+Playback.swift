@@ -27,8 +27,9 @@ extension PlayerEngine {
             return
         }
 
-        // A preroll already owns the pending clock start; restarting it would only re-anchor the timeline.
-        if isPlaying && isPrerolling { return }
+        // Already playing, or prerolling towards it: restarting would re-anchor the clock to the last periodic time
+        // update (up to 50 ms back) and, aligned with buffered audio, hold it for an output latency — a stutter.
+        if isPlaying { return }
 
         let feedingActive = isFeeding.withLock { $0 }
         if !feedingActive {
@@ -197,7 +198,7 @@ extension PlayerEngine {
             else { return }
             AppLog.warning(
                 .engine,
-                "Preroll timed out after \(Self.prerollTimeout) (queued frames: \(self.frameQueue.count)); starting clock anyway"
+                "Preroll timed out after \(Self.prerollTimeout); starting clock anyway. \(self.prerollDiagnostics(pending))"
             )
             self.startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
         }
@@ -221,6 +222,25 @@ extension PlayerEngine {
             .engine,
             "Preroll complete in \(String(format: "%.1f", elapsedMs))ms (queued frames: \(frameQueue.count)); starting clock at \(String(format: "%.3f", pending.targetTime.seconds))s"
         )
+    }
+
+    /// What the preroll was waiting for: the anchor frame is presented only by a display-link tick, so a timeout
+    /// means the link did not tick (hidden or occluded host window, paused link), the decoder delivered nothing,
+    /// or the first queued frame lies beyond the anchor time.
+    private func prerollDiagnostics(_ pending: PendingClockStart) -> String {
+        let windowState: String
+        if let window = displayLinkHostView?.window {
+            windowState = window.occlusionState.contains(.visible) ? "visible" : "occluded"
+        } else {
+            windowState = "none"
+        }
+        let linkState = displayLink.map { $0.isPaused ? "paused" : "running" } ?? "none"
+        let head = frameQueue.headFramePTS.map { String(format: "%.3fs", $0.seconds) } ?? "none"
+        let presentedPTS = frameQueue.getLastRenderedPTS()
+        let presented = presentedPTS >= 0 ? String(format: "%.3fs", presentedPTS) : "none"
+        let anchor = String(format: "%.3fs", pending.targetTime.seconds)
+        return "Display link: \(linkState), \(pending.displayLinkTicks) ticks; host window: \(windowState); "
+            + "queued frames: \(frameQueue.count), first at \(head); presented: \(presented); anchor: \(anchor)"
     }
 
     func cancelPreroll() {

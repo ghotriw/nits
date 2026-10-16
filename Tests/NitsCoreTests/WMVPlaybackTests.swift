@@ -99,7 +99,7 @@ struct WMVPlaybackTests {
         #expect(decoder is FFmpegVideoDecoder)
     }
 
-    @Test("PlayerEngine seamlessly loads, plays and seeks WMV2 media")
+    @Test("PlayerEngine seamlessly loads, plays and seeks WMV2 media", .realtimePlayback)
     @MainActor
     func playerEnginePlaysWMV2() async throws {
         guard let wmvPath = SyntheticTestMediaFactory.ensureMedia(preset: .wmv2SDR) else {
@@ -117,34 +117,20 @@ struct WMVPlaybackTests {
         engine.play()
         #expect(engine.isPlaying == true)
 
-        // Wait for playback progress
-        var progressed = false
-        for _ in 0..<30 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if engine.currentTime > 0 {
-                progressed = true
-                break
-            }
-        }
-        #expect(progressed == true)
+        #expect(await engine.waitUntil { engine.currentTime > 0 }, "Playback did not progress")
 
         // Test seeking in WMV file
         engine.seek(to: 1.0)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        #expect(await engine.waitForSeekToSettle())
 
         // Test step-frame forward progression while paused
         engine.pause()
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        let ptsBeforeStep = engine.currentFramePTS >= 0 ? engine.currentFramePTS : engine.currentTime
-        engine.stepFrameForward()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        let ptsAfterStep1 = engine.currentFramePTS >= 0 ? engine.currentFramePTS : engine.currentTime
-        #expect(ptsAfterStep1 > ptsBeforeStep)
-
-        engine.stepFrameForward()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        let ptsAfterStep2 = engine.currentFramePTS >= 0 ? engine.currentFramePTS : engine.currentTime
-        #expect(ptsAfterStep2 > ptsAfterStep1)
+        #expect(await engine.waitUntil { engine.currentFramePTS >= 0 }, "No frame presented after the seek")
+        for step in 1...2 {
+            let ptsBeforeStep = engine.currentFramePTS
+            #expect(
+                await engine.stepFrameForwardAndWait(), "Frame step \(step) did not advance from \(ptsBeforeStep)s")
+        }
 
         engine.stop()
     }

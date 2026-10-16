@@ -155,7 +155,7 @@ struct DeinterlaceTests {
         #expect(abs(demuxer.nominalFrameDuration - 1001.0 / 30000.0) < 0.0001, "\(demuxer.nominalFrameDuration)")
     }
 
-    @Test("The engine paces interlaced video at the field rate")
+    @Test("The engine paces interlaced video at the field rate", .realtimePlayback)
     @MainActor
     func enginePacesAtFieldRate() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .h264InterlacedTS) else { return }
@@ -166,7 +166,7 @@ struct DeinterlaceTests {
         #expect(abs(engine.nominalFrameDuration - 0.020) < 0.0001, "\(engine.nominalFrameDuration)")
     }
 
-    @Test("Exact seeks land on the field at the target and frame steps move a field at a time")
+    @Test("Exact seeks land on the field at the target and frame steps move a field at a time", .realtimePlayback)
     @MainActor
     func seeksAndStepsByField() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .h264InterlacedTS) else { return }
@@ -194,8 +194,7 @@ struct DeinterlaceTests {
 
         for _ in 0..<3 {
             let before = engine.currentFramePTS
-            engine.stepFrameForward()
-            #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.currentFramePTS > before + 0.001 })
+            #expect(await engine.stepFrameForwardAndWait())
             let step = engine.currentFramePTS - before
             #expect(abs(step - 0.020) < 0.005, "Stepped \(step)s from \(before)s")
         }
@@ -251,7 +250,7 @@ struct DeinterlaceTests {
         #expect(output.count == frames.count + 1)
     }
 
-    @Test("The deinterlace mode switches pacing between field and frame rate")
+    @Test("The deinterlace mode switches pacing between field and frame rate", .realtimePlayback)
     @MainActor
     func modeSwitchesPacing() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .h264InterlacedTS) else { return }
@@ -275,7 +274,7 @@ struct DeinterlaceTests {
         #expect(engine.nominalFrameDuration == frameDuration)
     }
 
-    @Test("Frame steps skip repeated fields of still interlaced video")
+    @Test("Frame steps skip repeated fields of still interlaced video", .realtimePlayback)
     @MainActor
     func stepsOverMergedFields() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .interlacedStaticDetailTS) else { return }
@@ -290,8 +289,7 @@ struct DeinterlaceTests {
 
         for _ in 0..<3 {
             let before = engine.currentFramePTS
-            engine.stepFrameForward()
-            #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.currentFramePTS > before + 0.001 })
+            #expect(await engine.stepFrameForwardAndWait())
             let step = engine.currentFramePTS - before
             #expect(abs(step - 0.040) < 0.005, "Stepped \(step)s from \(before)s")
         }

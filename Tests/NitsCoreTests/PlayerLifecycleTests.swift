@@ -11,7 +11,7 @@ import os
 /// 2. Cleanly cancels async tasks (feeding loops, display links, observers) without crashes.
 /// 3. Safely handles rapid reload without explicit stop calls.
 /// 4. Handles immediate deallocation while playback is running.
-@Suite("Player Lifecycle & Repeated Recreation Tests", .serialized)
+@Suite("Player Lifecycle & Repeated Recreation Tests", .serialized, .realtimePlayback)
 struct PlayerLifecycleTests {
 
     private static func findTestMedia() -> String? {
@@ -65,10 +65,8 @@ struct PlayerLifecycleTests {
             engine.stop()
         }
 
-        // Allow any scheduled main-thread callbacks (e.g. from feedQueue) to flush
-        try? await Task.sleep(nanoseconds: 50_000_000)
-
-        #expect(box.value == nil, "Loaded PlayerEngine must cleanly deallocate after stop()")
+        // Main-thread callbacks scheduled before stop() (e.g. from feedQueue) may hold the engine briefly.
+        await assertEventuallyDeallocated(box, message: "Loaded PlayerEngine must cleanly deallocate after stop()")
     }
 
     // MARK: - 2. Rapid Sequential Create -> Load -> Play -> Deinit Loop

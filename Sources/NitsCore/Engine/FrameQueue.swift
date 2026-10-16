@@ -67,6 +67,14 @@ public final class FrameQueue: @unchecked Sendable {
         return countInternal
     }
 
+    /// Presentation timestamp of the next frame `popFrame` would consider, or `nil` when the queue is empty.
+    public var headFramePTS: CMTime? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard countInternal > 0 else { return nil }
+        return buffer[head]?.pts
+    }
+
     /// Sets (or with `.invalid` clears) the exact-seek display floor; see `displayFloorPts`.
     public func setDisplayFloor(_ floor: CMTime) {
         lock.lock()

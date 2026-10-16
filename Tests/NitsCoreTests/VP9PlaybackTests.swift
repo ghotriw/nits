@@ -199,7 +199,7 @@ struct VP9PlaybackTests {
         )
     }
 
-    @Test("PlayerEngine seamlessly loads, plays and seeks VP9 WebM media")
+    @Test("PlayerEngine seamlessly loads, plays and seeks VP9 WebM media", .realtimePlayback)
     @MainActor
     func playerEnginePlaysVP9() async throws {
         guard let vp9Path = SyntheticTestMediaFactory.ensureMedia(preset: .vp9SDR) else {
@@ -217,26 +217,12 @@ struct VP9PlaybackTests {
         engine.play()
         #expect(engine.isPlaying == true)
 
-        var played = false
-        for _ in 0..<40 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if engine.currentTime > 0 {
-                played = true
-                break
-            }
-        }
-        #expect(played == true)
-        #expect(engine.currentTime > 0)
+        #expect(await engine.waitUntil { engine.currentTime > 0 }, "Playback did not progress")
 
         // Test seeking
         engine.seek(to: 1.5, exact: true)
-        for _ in 0..<40 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if !engine.isSeeking && engine.pendingSeekTime == nil {
-                break
-            }
-        }
-        #expect(engine.currentTime >= 0)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(engine.currentTime >= 1.5 - engine.nominalFrameDuration)
 
         engine.pause()
         #expect(engine.isPlaying == false)
@@ -286,7 +272,7 @@ struct VP9PlaybackTests {
         #expect(pixelFormats.value == expected)
     }
 
-    @Test("Exact seek on hardware-decoded VP9 lands on the target frame")
+    @Test("Exact seek on hardware-decoded VP9 lands on the target frame", .realtimePlayback)
     @MainActor
     func exactSeekLandsOnTarget() async {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .vp910BitSDRMP4) else { return }

@@ -235,6 +235,7 @@ extension PlayerEngine {
 
     /// - Parameter targetTimestamp: Host time of the vsync at which the frame picked in this tick reaches the screen.
     nonisolated func displayLinkTick(targetTimestamp: CFTimeInterval) {
+        pendingClockStartLock.withLock { $0?.displayLinkTicks += 1 }
         let clockNow = synchronizer.currentTime()
         guard clockNow.isNumeric else { return }
         let now = CACurrentMediaTime()

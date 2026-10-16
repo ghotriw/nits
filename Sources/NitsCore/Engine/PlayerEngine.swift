@@ -468,6 +468,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let targetTime: CMTime
         var rate: Double
         let requestHostTime: Double
+        /// Display-link callbacks since the request; explains a preroll timeout (0 → the link is not ticking).
+        var displayLinkTicks = 0
     }
     @ObservationIgnored
     let pendingClockStartLock = OSAllocatedUnfairLock<PendingClockStart?>(initialState: nil)

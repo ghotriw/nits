@@ -118,7 +118,7 @@ struct ChapterTests {
 
     // MARK: - Engine
 
-    @Test("Engine exposes chapters, tracks the current one and jumps between them")
+    @Test("Engine exposes chapters, tracks the current one and jumps between them", .realtimePlayback)
     @MainActor
     func testEngineNavigation() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .chaptersMKV) else { return }

@@ -7,7 +7,7 @@ import os
 
 @testable import NitsCore
 
-@Suite("PlayerEngine Tests", .serialized)
+@Suite("PlayerEngine Tests", .serialized, .realtimePlayback)
 struct PlayerEngineTests {
     @Test("Engine initializes with expected defaults from configuration")
     @MainActor
@@ -524,8 +524,7 @@ struct PlayerEngineTests {
         engine.seek(to: 25.0)
         #expect(engine.currentTime == 25.0)
 
-        // Give settle loop a moment
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await engine.waitForSeekToSettle())
 
         // 2. Switch to second file (30s)
         engine.load(path: path2)
@@ -540,7 +539,7 @@ struct PlayerEngineTests {
         // Seek in file 2 to 18.0s
         engine.seek(to: 18.0)
         #expect(engine.currentTime == 18.0)
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await engine.waitForSeekToSettle())
 
         // 3. Switch back to file 1 -> should restore to ~25.0s
         engine.load(path: path1)

@@ -6,7 +6,7 @@ import os
 
 @testable import NitsCore
 
-@Suite("Playback Stress & Reliability Tests", .serialized)
+@Suite("Playback Stress & Reliability Tests", .serialized, .realtimePlayback)
 struct PlaybackStressTests {
 
     private static func findTestMedia() -> String? {
@@ -48,20 +48,17 @@ struct PlaybackStressTests {
         // Final settling seek
         let finalTarget = 15.0
         engine.seek(to: finalTarget)
+        #expect(await engine.waitForSeekToSettle(), "Scrub burst never settled")
 
-        // Wait for asynchronous seek pipeline to settle
-        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2.0s
-
-        print("[Test] Settled currentTime:", engine.currentTime, "expected:", finalTarget)
         #expect(engine.isLoaded == true)
-        #expect(abs(engine.currentTime - finalTarget) <= 3.0)
+        #expect(abs(engine.currentTime - finalTarget) <= 3.0, "Settled at \(engine.currentTime)s")
 
         // Ensure engine is responsive and can resume playing cleanly after scrub burst
         engine.play()
         #expect(engine.isPlaying == true)
         #expect(engine.playbackState == .playing)
+        #expect(await engine.waitForPlayback(), "Playback did not run after the scrub burst")
 
-        try? await Task.sleep(nanoseconds: 200_000_000)
         engine.pause()
         #expect(engine.isPlaying == false)
 
@@ -90,9 +87,7 @@ struct PlaybackStressTests {
         engine.seekRelative(by: 5.0)
         try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
         engine.seekRelative(by: 5.0)
-
-        // Wait for the asynchronous seek pipeline to finish and settle
-        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2.0s
+        #expect(await engine.waitForPlayback(), "Playback did not resume after rapid forward seeks")
 
         #expect(engine.isPlaying == true, "Engine must resume playing after rapid forward seeks")
         #expect(engine.playbackState == .playing, "Playback state must remain .playing")
@@ -114,7 +109,7 @@ struct PlaybackStressTests {
 
         // Seek forward to 18 seconds first so we have room to seek backward
         engine.seek(to: 18.0)
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        #expect(await engine.waitForSeekToSettle())
 
         engine.play()
         #expect(engine.isPlaying == true)
@@ -127,9 +122,7 @@ struct PlaybackStressTests {
         engine.seekRelative(by: -4.0)
         try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
         engine.seekRelative(by: -4.0)
-
-        // Wait for asynchronous chase seek pipeline to settle
-        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2.0s
+        #expect(await engine.waitForPlayback(), "Playback did not resume after rapid backward seeks")
 
         #expect(engine.isPlaying == true, "Engine must resume playing after rapid backward seeks")
         #expect(engine.playbackState == .playing, "Playback state must remain .playing")
@@ -154,28 +147,23 @@ struct PlaybackStressTests {
         #expect(engine.isPlaying == true)
         #expect(engine.playbackState == .playing)
 
-        // Wait for playback and feeders to start
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        #expect(await engine.waitForPlayback(), "Playback did not start")
 
-        // Trigger first seek
+        // The demuxer seek runs on seekQueue and reports back on the main actor, so it is still in flight when the
+        // second seek arrives in the same main-actor turn.
+        engine.seekRelative(by: 5.0)
+        #expect(engine.isSeeking)
         engine.seekRelative(by: 5.0)
 
-        // Wait past the 75ms debounce window so demuxer seek starts on background seekQueue and isSeeking becomes true
-        try? await Task.sleep(nanoseconds: 90_000_000)  // 90ms
-
-        // Trigger second seek while first demuxer seek is actively in-flight
-        engine.seekRelative(by: 5.0)
-
-        // Wait for chase seek sequence to fully settle
-        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2.0s
-
+        #expect(await engine.waitForPlayback(), "Playback did not resume after the in-flight chase seek")
         #expect(engine.isPlaying == true, "Engine must resume playback after in-flight chase seek")
         #expect(engine.playbackState == .playing, "Playback state must be .playing")
 
-        // Record time and verify that the clock and playback are actively advancing (no freeze)
+        // Verify that the clock and playback keep advancing (no freeze)
         let timeAfterSeek = engine.currentTime
-        try? await Task.sleep(nanoseconds: 500_000_000)  // 500ms
-        #expect(engine.currentTime > timeAfterSeek, "Playback clock must continue advancing after chase seek settles")
+        #expect(
+            await engine.waitUntil { engine.currentTime > timeAfterSeek + 0.2 },
+            "Playback clock must continue advancing after chase seek settles")
 
         // Verify pause and play responsiveness
         engine.pause()
@@ -243,7 +231,7 @@ struct PlaybackStressTests {
             try? await Task.sleep(nanoseconds: 20_000_000)  // 20ms
         }
 
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        #expect(await engine.waitForSeekToSettle(), "Seeks never settled after the control race")
         engine.pause()
         #expect(engine.isPlaying == false)
         #expect(engine.playbackState == .paused)
@@ -309,8 +297,7 @@ extension PlaybackStressTests {
             }
         }
         engine.seek(to: 5.0)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        #expect(engine.isPlaying == true)
+        #expect(await engine.waitForPlayback(), "Playback did not resume after switching codecs and seeking")
         engine.stop()
     }
 
@@ -325,13 +312,11 @@ extension PlaybackStressTests {
         #expect(engine.isLoaded == true)
         #expect(engine.duration >= 50.0)
 
-        // Start playing from 45.0 seconds and wait for initial position to be stable
+        // Start playing from 45.0 seconds
         engine.seek(to: 45.0)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1.0s to fully settle initial seek
-
+        #expect(await engine.waitForSeekToSettle())
         engine.play()
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        #expect(engine.isPlaying == true, "Engine should be playing prior to seek burst")
+        #expect(await engine.waitForPlayback(), "Engine should be playing prior to seek burst")
 
         var seekBurstTrajectory: [Double] = [engine.currentTime]
         var allTimeUpdates: [Double] = [engine.currentTime]
@@ -387,9 +372,8 @@ extension PlaybackStressTests {
             )
         }
 
-        // 3. Wait for seek burst to settle and playback to resume naturally
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        #expect(engine.isPlaying == true, "Engine should resume playback after seek burst settles")
+        // 3. Playback must resume once the burst settles
+        #expect(await engine.waitForPlayback(), "Engine should resume playback after seek burst settles")
 
         engine.stop()
     }
@@ -471,7 +455,7 @@ extension PlaybackStressTests {
         #expect(await engine.waitForClock(toPass: 0.0), "Clock did not start after reload")
         let restartedAt = engine.synchronizer.currentTime().seconds
         #expect(restartedAt < 0.3, "Clock resumed from the previous run at \(restartedAt)s")
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        #expect(await engine.waitForClock(toPass: 0.5))
 
         // With ClockSettlingGuard in place, the engine must NOT discard a burst of frames.
         // (At most 1-2 frames may be skipped due to display VSYNC vs media cadence quantization).
@@ -594,7 +578,7 @@ extension PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         engine.play()
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        #expect(await engine.waitForPlayback(advancingBy: 1.0))
 
         for cycle in 0..<3 {
             engine.pause()
@@ -618,6 +602,38 @@ extension PlaybackStressTests {
         engine.stop()
     }
 
+    @Test("play() while already playing leaves the running clock alone")
+    @MainActor
+    func testPlayWhilePlayingDoesNotRestartClock() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        #expect(await engine.waitForPlayback(advancingBy: 0.5))
+
+        // Hosts re-issue play() on stale state (remote commands, PiP). Restarting the clock would move it back to
+        // the last periodic time update and hold it for the output latency; the timebase applies that a moment
+        // later, so compare readings across calls, not around one.
+        let wallStart = ContinuousClock.now
+        let clockStart = engine.synchronizer.currentTime().seconds
+        var readings = [clockStart]
+        for _ in 0..<10 {
+            engine.play()
+            #expect(engine.isPrerolling == false)
+            try? await Task.sleep(for: .milliseconds(40))
+            readings.append(engine.synchronizer.currentTime().seconds)
+        }
+        let elapsed = (ContinuousClock.now - wallStart).components
+        let wallElapsed = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+        let clockElapsed = readings[readings.count - 1] - clockStart
+        #expect(zip(readings, readings.dropFirst()).allSatisfy { $1 >= $0 }, "Clock moved back: \(readings)")
+        #expect(
+            clockElapsed > wallElapsed * 0.8,
+            "Clock advanced \(clockElapsed)s in \(wallElapsed)s of repeated play() calls")
+
+        engine.stop()
+    }
+
     // MARK: - 15. Mid-GOP Start Position (resume from history / explicit start time)
     @Test("Starting playback mid-GOP never presents or drops reordered pre-target B-frames")
     @MainActor
@@ -632,11 +648,8 @@ extension PlaybackStressTests {
         engine.load(MediaLoadRequest(path: path, startTime: startTime))
         engine.play()
 
-        var firstPresentedPts = -1.0
-        for _ in 0..<100 where firstPresentedPts < 0 {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-            firstPresentedPts = engine.frameQueue.getLastRenderedPTS()
-        }
+        _ = await engine.waitUntil { engine.frameQueue.getLastRenderedPTS() >= 0 }
+        let firstPresentedPts = engine.frameQueue.getLastRenderedPTS()
         let isMonotonic = await Self.isClockMonotonic(engine, samples: 30)
 
         #expect(

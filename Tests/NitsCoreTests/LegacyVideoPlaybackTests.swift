@@ -172,7 +172,7 @@ struct LegacyVideoPlaybackTests {
             "Gap after exact seek: \(frames)")
     }
 
-    @Test("PlayerEngine loads, plays, seeks and steps", arguments: cases)
+    @Test("PlayerEngine loads, plays, seeks and steps", .realtimePlayback, arguments: cases)
     @MainActor
     func playerEnginePlays(_ testCase: Case) async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: testCase.preset) else { return }
@@ -185,26 +185,15 @@ struct LegacyVideoPlaybackTests {
         #expect(engine.videoCodecName == testCase.codec.displayName)
 
         engine.play()
-        var progressed = false
-        for _ in 0..<30 {
-            try await Task.sleep(for: .milliseconds(50))
-            if engine.currentTime > 0 {
-                progressed = true
-                break
-            }
-        }
-        #expect(progressed)
+        #expect(await engine.waitUntil { engine.currentTime > 0 }, "Playback did not progress")
 
         engine.seek(to: 1.5)
-        try await Task.sleep(for: .milliseconds(200))
+        #expect(await engine.waitForSeekToSettle())
 
         engine.pause()
-        try await Task.sleep(for: .milliseconds(100))
-        let ptsBeforeStep = engine.currentFramePTS >= 0 ? engine.currentFramePTS : engine.currentTime
-        engine.stepFrameForward()
-        try await Task.sleep(for: .milliseconds(300))
-        let ptsAfterStep = engine.currentFramePTS >= 0 ? engine.currentFramePTS : engine.currentTime
-        #expect(ptsAfterStep > ptsBeforeStep)
+        #expect(await engine.waitUntil { engine.currentFramePTS >= 0 }, "No frame presented after the seek")
+        let ptsBeforeStep = engine.currentFramePTS
+        #expect(await engine.stepFrameForwardAndWait(), "Frame step did not advance from \(ptsBeforeStep)s")
 
         engine.stop()
     }
