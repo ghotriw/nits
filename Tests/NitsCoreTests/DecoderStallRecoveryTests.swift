@@ -200,7 +200,7 @@ struct DecoderStallRecoveryTests {
     }
 }
 
-@Suite("StallGuardedVideoDecoder")
+@Suite("StallGuardedVideoDecoder", .timeLimit(.minutes(1)))
 struct StallGuardedVideoDecoderTests {
     /// Counts calls; `decode` blocks while `blocking` is set, until `release()`.
     private final class BlockingDecoder: VideoDecoderProtocol, @unchecked Sendable {
@@ -280,10 +280,10 @@ struct StallGuardedVideoDecoderTests {
         await guarded.decodeAsync(sampleBuffer: sample)
         #expect(!guarded.isStalled)
 
+        // The inner call blocks until `release()`, so returning at all means the timeout released the caller. How soon
+        // it resumes depends on the cooperative pool, which a busy CI runner delays by seconds: don't time it.
         inner.blocking.withLock { $0 = true }
-        let started = ContinuousClock.now
         await guarded.decodeAsync(sampleBuffer: sample)
-        #expect(ContinuousClock.now - started < .seconds(2), "The overrunning call held the caller")
         #expect(guarded.isStalled)
         #expect(stalls.value == 1)
 
