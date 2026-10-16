@@ -128,19 +128,18 @@ struct ChapterTests {
         #expect(engine.chapters.count == SyntheticTestMediaFactory.chapterMarkers.count)
         #expect(engine.currentChapterIndex == 0)
 
-        // Load autoplays, so by the time the seek has settled the clock has moved on from the chapter start, by
-        // however long the main actor was busy. The engine reports the landing itself: its first time update
-        // after a seek is the settled position (the periodic one is silent while a seek is pending).
-        let landings = LockIsolated<[Double]>([])
-        engine.onTimeUpdate = { time, _ in landings.withValue { $0.append(time) } }
+        // Load autoplays; navigate paused so the position stays where a seek lands. Playing, a busy CI runner
+        // resumed the test seconds after the landing, with the clock already in the next chapter.
+        engine.pause()
+        #expect(
+            await engine.waitUntil { !engine.isPlaying && !engine.isSeeking && engine.pendingSeekTime == nil },
+            "Pause did not settle")
 
         #expect(engine.nextChapter()?.start == 4)
         // A second press while the first seek is in flight chains from its target.
         #expect(engine.nextChapter()?.start == 9)
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
-        let landing = landings.value.first
-        #expect(
-            landing.map { abs($0 - 9) < 0.05 } == true, "Expected to land on 9s, got \(String(describing: landing))")
+        #expect(abs(engine.currentTime - 9) < 0.05, "Expected to land on 9s, got \(engine.currentTime)s")
         #expect(engine.currentChapterIndex == 2)
 
         // Right at the chapter start "previous" goes back a chapter.

@@ -16,11 +16,14 @@ struct FormatDescriptionCacheTests {
 
     /// Decodes real frames through VTVideoDecoder (the decoder that feeds the system render path)
     /// and returns the decoded pixel buffers in decode order.
-    private func decodePixelBuffers(preset: SyntheticTestMediaFactory.Preset, maxFrames: Int) -> [CVPixelBuffer] {
+    /// `diagnostics` describes how VideoToolbox answered, for a failure message: CI once got 1–3 frames of 30.
+    private func decodePixelBuffers(
+        preset: SyntheticTestMediaFactory.Preset, maxFrames: Int
+    ) -> (buffers: [CVPixelBuffer], diagnostics: String) {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset),
             let demuxer = MediaDemuxer(url: path)
         else {
-            return []
+            return ([], "media unavailable")
         }
 
         final class Box: @unchecked Sendable {
@@ -36,14 +39,19 @@ struct FormatDescriptionCacheTests {
         }
 
         var fed = 0
+        var decodeErrors: [OSStatus: Int] = [:]
         while fed < maxFrames, let sample = demuxer.nextVideoSample() {
             decoder.decode(sampleBuffer: sample)
+            if decoder.lastDecodeStatus != noErr { decodeErrors[decoder.lastDecodeStatus, default: 0] += 1 }
             fed += 1
         }
         decoder.drain()
+        let diagnostics =
+            "fed \(fed), session creation \(decoder.sessionStatus), decode errors \(decodeErrors), "
+            + "last callback status \(decoder.lastCallbackStatus)"
         box.lock.lock()
         defer { box.lock.unlock() }
-        return box.buffers
+        return (box.buffers, diagnostics)
     }
 
     /// Replicates the exact caching logic from `presentToDisplayLayer` and counts how many frames
@@ -70,8 +78,8 @@ struct FormatDescriptionCacheTests {
 
     @Test("HDR HEVC: cache hits on every frame after the first")
     func hdrCacheHits() throws {
-        let buffers = decodePixelBuffers(preset: .hevc10BitHDR, maxFrames: 30)
-        try #require(buffers.count >= 5, "Need several decoded frames to measure cache behavior")
+        let (buffers, diagnostics) = decodePixelBuffers(preset: .hevc10BitHDR, maxFrames: 30)
+        try #require(buffers.count >= 5, "Need several decoded frames to measure cache behavior (\(diagnostics))")
 
         let (hits, recreates) = measureCacheHits(buffers)
         print("[FmtCache][HDR] frames=\(buffers.count) hits=\(hits) recreates=\(recreates)")
@@ -85,8 +93,8 @@ struct FormatDescriptionCacheTests {
 
     @Test("SDR H.264: cache hits on every frame after the first")
     func sdrCacheHits() throws {
-        let buffers = decodePixelBuffers(preset: .multiTrackH264, maxFrames: 30)
-        try #require(buffers.count >= 5, "Need several decoded frames to measure cache behavior")
+        let (buffers, diagnostics) = decodePixelBuffers(preset: .multiTrackH264, maxFrames: 30)
+        try #require(buffers.count >= 5, "Need several decoded frames to measure cache behavior (\(diagnostics))")
 
         let (hits, recreates) = measureCacheHits(buffers)
         print("[FmtCache][SDR] frames=\(buffers.count) hits=\(hits) recreates=\(recreates)")
