@@ -8,12 +8,12 @@ import Testing
 @Suite("Subtitle file drop")
 @MainActor
 struct SubtitleFileDropTests {
-    @Test("Dropped subtitle files are split from media, keeping order")
+    @Test("Dropped subtitle files, supported or not, are split from media, keeping order")
     func testSplit() {
         let urls = ["/m/a.mkv", "/m/a.srt", "/m/b.MP4", "/m/b.VTT", "/m/c.ass"].map { URL(fileURLWithPath: $0) }
         let (subtitles, others) = SubtitleFileDrop.split(urls)
-        #expect(subtitles.map(\.lastPathComponent) == ["a.srt", "b.VTT"])
-        #expect(others.map(\.lastPathComponent) == ["a.mkv", "b.MP4", "c.ass"])
+        #expect(subtitles.map(\.lastPathComponent) == ["a.srt", "b.VTT", "c.ass"])
+        #expect(others.map(\.lastPathComponent) == ["a.mkv", "b.MP4"])
         #expect(SubtitleFileDrop.split([URL(string: "https://example.com/a.srt")!]).subtitles.isEmpty)
     }
 

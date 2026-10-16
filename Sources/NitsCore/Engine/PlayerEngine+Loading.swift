@@ -165,6 +165,15 @@ extension PlayerEngine {
         }
     }
 
+    /// Waits for a load `load(_:)` left running in the background (files on network volumes, playlist files), including
+    /// the one it hands on to, such as a playlist's first item. Returns at once after a synchronous load.
+    public func waitForPendingLoad() async {
+        while let task = loadingTask {
+            await task.value
+            if loadingTask == task { break }
+        }
+    }
+
     public func loadAsync(_ request: MediaLoadRequest) async {
         let path = request.path
         let (loadID, interruptContext) = resetPlaybackTrackingState(

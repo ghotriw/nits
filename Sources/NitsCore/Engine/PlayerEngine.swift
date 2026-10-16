@@ -481,7 +481,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
     var configuration: PlayerConfiguration
-    var currentPath: String?
+    /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
+    public internal(set) var currentPath: String?
     public let historyStore: PlaybackHistoryStore
     public let playlist: PlaylistManager
     public let thumbnailManager = ThumbnailManager()

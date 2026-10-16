@@ -261,7 +261,8 @@ flowchart TD
 - [x] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - Dropping `.srt` or `.vtt` on the video or the playlist drawer attaches the file to the media playing and selects
     it, with an OSD confirmation (`SubtitleFileDrop`); dropped together with a video, it attaches to that video.
-  - `MediaURLResolver` never takes a subtitle file for media. `.ass` / `.ssa` wait for a parser of their own.
+  - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` included;
+    dropped, these say on the OSD that the format isn't supported yet.
 - [x] **4.6.3. Sidecar Subtitle Discovery:**
   - `movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to a local `movie.mkv` are added as tracks on load
     (`SidecarSubtitles`); language, forced and SDH tags come from the file name.

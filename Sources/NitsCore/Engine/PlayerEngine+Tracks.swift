@@ -100,7 +100,12 @@ extension PlayerEngine {
     }
 
     public func loadExternalSubtitle(url: URL) {
-        guard let trackId = addExternalSubtitle(url: url) else { return }
+        loadExternalSubtitles(urls: [url])
+    }
+
+    /// Adds subtitle files as tracks and selects the last one that could be read; files already added are reused.
+    public func loadExternalSubtitles(urls: [URL]) {
+        guard let trackId = urls.compactMap({ addExternalSubtitle(url: $0) }).last else { return }
         selectSubtitleTrack(id: trackId)
     }
 

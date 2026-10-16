@@ -82,6 +82,10 @@ struct MediaURLResolverTests {
         let alone = MediaURLResolver.resolve([box.url("extra.vtt")])
         #expect(alone.urls.isEmpty)
         #expect(alone.skippedCount == 1)
+
+        // Formats not parsed yet aren't media either.
+        let styled = try Sandbox(files: ["movie.ass"])
+        #expect(MediaURLResolver.resolve([styled.url("movie.ass")]).urls.isEmpty)
     }
 
     @Test("Nothing playable resolves to an empty list")

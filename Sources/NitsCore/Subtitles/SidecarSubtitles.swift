@@ -6,9 +6,17 @@ public enum SidecarSubtitles {
     /// Extensions of the formats `SubtitleDocument` parses.
     static let extensions: Set<String> = ["srt", "vtt"]
 
-    /// Whether the URL names a subtitle file of a format `SubtitleDocument` parses.
+    /// Extensions of subtitle formats `SubtitleDocument` doesn't parse yet (styled, bitmap, frame-based).
+    static let unsupportedExtensions: Set<String> = ["ass", "ssa", "sub", "idx", "sup"]
+
+    /// Whether the URL names a local subtitle file of a format `SubtitleDocument` parses.
     public static func isSubtitleFile(_ url: URL) -> Bool {
         url.isFileURL && extensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// Whether the URL names a local subtitle file of a format not supported yet: never media, but not loadable.
+    public static func isUnsupportedSubtitleFile(_ url: URL) -> Bool {
+        url.isFileURL && unsupportedExtensions.contains(url.pathExtension.lowercased())
     }
 
     /// Language and flags read from the trailing dot-separated tags of a subtitle file name.

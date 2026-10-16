@@ -379,17 +379,25 @@ public struct ContentView: View {
         }
         Task {
             let resolution = await MediaURLResolver.resolveAsync(mediaURLs, source: "Drop / open")
-            if resolution.urls.isEmpty {
+            // Subtitles dropped with a video belong to it: none for the media already playing if it can't be opened.
+            guard let path = loadResolvedMedia(urls: resolution.urls) else {
                 uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
-            } else {
-                loadResolvedMedia(urls: resolution.urls)
+                return
+            }
+            guard !subtitleURLs.isEmpty else { return }
+            // A file on a network volume loads in the background; attach once it is in, unless another took its place.
+            await engine.waitForPendingLoad()
+            guard engine.isLoaded, engine.currentPath == PlayerEngine.normalizeMediaPath(path) else {
+                AppLog.info(.subtitles, "Dropped subtitles not attached: '\(path)' isn't what is loaded")
+                return
             }
             SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
         }
     }
 
-    private func loadResolvedMedia(urls: [URL]) {
-        guard let firstURL = urls.first else { return }
+    /// Loads the first URL (the rest become the playlist) and returns the path it loads, `nil` if there are none.
+    private func loadResolvedMedia(urls: [URL]) -> String? {
+        guard let firstURL = urls.first else { return nil }
         if urls.count > 1 {
             engine.playlist.clear()
             engine.playlist.append(urls: urls)
@@ -398,5 +406,6 @@ public struct ContentView: View {
         engine.load(path: filePath)
         onFileLoaded?(firstURL)
         scheduleControlsHide()
+        return filePath
     }
 }

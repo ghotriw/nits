@@ -126,6 +126,8 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor var selectedSubtitleTrackId: Int? { get }
     @MainActor func selectSubtitleTrack(id: Int?)
     @MainActor func loadExternalSubtitle(url: URL)
+    /// Adds subtitle files as tracks and selects the last one that could be read.
+    @MainActor func loadExternalSubtitles(urls: [URL])
 
     /// Seconds subtitles are shifted by: positive shows them later, negative earlier.
     @MainActor var subtitleDelay: Double { get }

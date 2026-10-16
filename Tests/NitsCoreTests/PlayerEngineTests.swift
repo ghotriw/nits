@@ -181,6 +181,15 @@ struct PlayerEngineTests {
         engine.loadExternalSubtitle(url: subtitleURL)
         engine.loadExternalSubtitle(url: subtitleURL)  // the same file again selects its track, adds none
         #expect(engine.subtitleTracks.count == embeddedCount + 1)
+
+        // Several at once: the last readable one is selected, an unreadable one is skipped.
+        let secondURL = directory.appendingPathComponent("second.srt")
+        try "1\n00:00:00,000 --> 00:00:02,000\nSecond line\n".write(to: secondURL, atomically: true, encoding: .utf8)
+        engine.loadExternalSubtitles(urls: [secondURL, directory.appendingPathComponent("missing.srt")])
+        #expect(engine.subtitleTracks.count == embeddedCount + 2)
+        #expect(engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }?.externalURL == secondURL)
+
+        engine.loadExternalSubtitle(url: subtitleURL)
         engine.setSubtitleDelay(0.5)
 
         engine.load(path: mediaPath)
@@ -737,6 +746,7 @@ struct PlayerEngineTests {
             func stepSubtitleDelay(by delta: Double) {}
             func resetSubtitleDelay() {}
             func loadExternalSubtitle(url: URL) {}
+            func loadExternalSubtitles(urls: [URL]) {}
             func stop() {}
             func play() {}
             func pause() {}
