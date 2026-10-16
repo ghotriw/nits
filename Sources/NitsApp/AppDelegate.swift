@@ -77,6 +77,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func openMediaFiles(
         at urls: [URL], startTime: Double? = nil, audioTrack: String? = nil, subtitleTrack: String? = nil
     ) {
+        guard !urls.isEmpty else { return }
+        Task {
+            let resolution = await MediaURLResolver.resolveAsync(urls, source: "Open")
+            guard !resolution.urls.isEmpty else {
+                if let player = playerWindowController, player.window?.isVisible == true {
+                    player.uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
+                } else {
+                    NSSound.beep()
+                }
+                return
+            }
+            openResolvedMediaFiles(
+                at: resolution.urls, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
+        }
+    }
+
+    private func openResolvedMediaFiles(
+        at urls: [URL], startTime: Double?, audioTrack: String?, subtitleTrack: String?
+    ) {
         guard let firstURL = urls.first else { return }
         if urls.count > 1 {
             AppLog.info(

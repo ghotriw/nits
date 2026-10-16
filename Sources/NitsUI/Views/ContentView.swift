@@ -371,6 +371,18 @@ public struct ContentView: View {
     }
 
     private func loadMedia(urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        Task {
+            let resolution = await MediaURLResolver.resolveAsync(urls, source: "Drop / open")
+            guard !resolution.urls.isEmpty else {
+                uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
+                return
+            }
+            loadResolvedMedia(urls: resolution.urls)
+        }
+    }
+
+    private func loadResolvedMedia(urls: [URL]) {
         guard let firstURL = urls.first else { return }
         if urls.count > 1 {
             engine.playlist.clear()
