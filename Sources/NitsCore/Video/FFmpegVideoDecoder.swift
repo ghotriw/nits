@@ -27,14 +27,14 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     /// Converts frames the NV12 / P010 copy can't take (4:2:2, 4:4:4, RGB…) to planar 4:2:0.
     private let frameFormatNormalizer = FrameFormatNormalizer()
     private var loggedNormalizationFailure = false
-    /// Whether interlaced frames are deinterlaced; tests turn it off to compare against the woven frames.
-    private let deinterlaces: Bool
-    /// Whether an interlaced frame becomes a progressive frame per field (50 / 60 fps) rather than one.
-    private let fieldRate: Bool
     private let deinterlacerLock = OSAllocatedUnfairLock()
+    private var deinterlaceMode: DeinterlaceMode
     /// Created on the first interlaced frame; `nil` afterwards only if Metal is unavailable.
     private var deinterlacer: MetalDeinterlacer?
     private var didCreateDeinterlacer = false
+    /// The last interlaced source frame and where it ends, which tells the next one's static detail from motion.
+    /// Cleared on flush; used only when the next frame starts where it ends.
+    private var previousInterlacedFrame: (pixelBuffer: CVPixelBuffer, end: CMTime)?
 
     // Tracking metadata across frame-threading latency and B-frame reordering. Keyed by a packet
     // serial that FFmpeg carries from packet to frame (`AV_CODEC_FLAG_COPY_OPAQUE`), so matching
@@ -56,20 +56,17 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     /// - Parameters:
     ///   - formatDescription: the samples' format description. H.264 / HEVC samples arrive length-prefixed (the
     ///     demuxer rewrites Annex B for VideoToolbox), so their `avcC` / `hvcC` replaces the container extradata.
-    ///   - deinterlace: whether interlaced frames are deinterlaced; tests turn it off to compare.
-    ///   - fieldRate: whether a deinterlaced frame becomes one progressive frame per field, at the field's time,
-    ///     instead of one frame per interlaced frame. Pass it for streams declared interlaced, whose player then
-    ///     paces at the field rate (`outputsFieldRate`).
+    ///   - deinterlaceMode: how frames flagged interlaced are deinterlaced. `.auto` (a frame per field) suits
+    ///     streams declared interlaced, whose player then paces at the field rate (`outputsFieldRate`); tests use
+    ///     `.off` to compare against the woven frames.
     public init?(
         codecParameters: UnsafePointer<AVCodecParameters>,
         timebase: AVRational,
         formatDescription: CMFormatDescription? = nil,
-        deinterlace: Bool = true,
-        fieldRate: Bool = false
+        deinterlaceMode: DeinterlaceMode = .frameRate
     ) {
         self.timebase = timebase
-        self.deinterlaces = deinterlace
-        self.fieldRate = fieldRate
+        self.deinterlaceMode = deinterlaceMode
         let codecId = codecParameters.pointee.codec_id
 
         let codec: UnsafePointer<AVCodec>? = {
@@ -168,7 +165,11 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         ctx.pointee.extradata_size = Int32(data.count)
     }
 
-    public var outputsFieldRate: Bool { deinterlaces && fieldRate }
+    public var outputsFieldRate: Bool { deinterlacerLock.withLock { deinterlaceMode == .auto } }
+
+    public func setDeinterlaceMode(_ mode: DeinterlaceMode) {
+        deinterlacerLock.withLock { deinterlaceMode = mode }
+    }
 
     public func setOutputHandler(_ handler: @escaping OutputHandler) {
         outputLock.lock()
@@ -329,6 +330,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
     public func flush() {
         flushGenerationLock.withLock { $0 &+= 1 }
+        deinterlacerLock.withLock { previousInterlacedFrame = nil }
         codecLock.lock()
         defer { codecLock.unlock() }
         inFlightMetadata.removeAll(keepingCapacity: true)
@@ -384,6 +386,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
     public func resetSession() {
         flushGenerationLock.withLock { $0 &+= 1 }
+        deinterlacerLock.withLock { previousInterlacedFrame = nil }
         codecLock.lock()
         inFlightMetadata.removeAll()
         lastFrameEnd = .invalid
@@ -549,9 +552,10 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     }
 
     /// The frames to deliver for a decoded frame. Progressive frames, and all frames when Metal is unavailable,
-    /// pass through. An interlaced frame (`AV_FRAME_FLAG_INTERLACED`) becomes a progressive frame per field in
-    /// field-rate mode, the second one presenting a field later; otherwise (or without a usable timestamp and
-    /// duration to place the second field) a single frame keeping the first field.
+    /// pass through. An interlaced frame (`AV_FRAME_FLAG_INTERLACED`) becomes, in `.auto` mode, a progressive
+    /// frame per field, the second one presenting a field later, or one frame for the whole interlaced frame when
+    /// both fields show the same moment; in `.frameRate` mode (or without a usable timestamp and duration to place
+    /// the second field) a single frame keeping the first field.
     private func progressiveFrames(
         of raw: RawReceivedFrame, pixelBuffer: CVPixelBuffer, generation: UInt64
     ) -> [DecodedFrame] {
@@ -560,48 +564,67 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 pixelBuffer: pixelBuffer, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
                 generation: generation)
         ]
-        guard deinterlaces, let frame = raw.managedFrame.rawPointer,
-            (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0
-        else { return passThrough }
+        guard let frame = raw.managedFrame.rawPointer, (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0 else {
+            return passThrough
+        }
         deinterlacerLock.lock()
-        if !didCreateDeinterlacer {
+        let mode = deinterlaceMode
+        if mode != .off && !didCreateDeinterlacer {
             didCreateDeinterlacer = true
             deinterlacer = MetalDeinterlacer()
-            let rate = fieldRate ? "a frame per field" : "a frame per frame"
-            AppLog.info(.video, "FFmpegVideoDecoder: interlaced frames, deinterlacing on the GPU to \(rate)")
+            AppLog.info(.video, "FFmpegVideoDecoder: interlaced frames, deinterlacing on the GPU (\(mode.rawValue))")
         }
         let deinterlacer = self.deinterlacer
+        // A non-positive duration is as unusable as a missing one.
+        let hasDuration = raw.duration.isNumeric && raw.duration.value > 0
+        // The previous frame only counts if this one follows it directly (not after a seek or skipped frames).
+        let previous = previousInterlacedFrame.flatMap { previous -> CVPixelBuffer? in
+            guard previous.end.isValid, raw.pts.isValid else { return nil }
+            let tolerance = hasDuration ? raw.duration.seconds / 4 : 0.010
+            return abs((raw.pts - previous.end).seconds) <= tolerance ? previous.pixelBuffer : nil
+        }
+        previousInterlacedFrame = (pixelBuffer, raw.pts.isValid && hasDuration ? raw.pts + raw.duration : .invalid)
         deinterlacerLock.unlock()
-        guard let deinterlacer else { return passThrough }
+        guard mode != .off, let deinterlacer else { return passThrough }
 
         let topFieldFirst = (frame.pointee.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) != 0
         let fields: [MetalDeinterlacer.Field] = topFieldFirst ? [.top, .bottom] : [.bottom, .top]
         let durations =
-            fieldRate && raw.pts.isValid
+            mode == .auto && raw.pts.isValid
             ? FieldTiming.durations(ofFrame: raw.duration, repeatedFields: Int(frame.pointee.repeat_pict)) : nil
 
         guard let durations else {
-            guard let first = deinterlacer.deinterlace(pixelBuffer, keeping: [fields[0]])?.first else {
-                return passThrough
-            }
+            guard
+                let first = deinterlacer.deinterlace(pixelBuffer, previous: previous, keeping: [fields[0]])?.frames
+                    .first
+            else { return passThrough }
             return [
                 DecodedFrame(
                     pixelBuffer: first, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
                     generation: generation)
             ]
         }
-        guard let buffers = deinterlacer.deinterlace(pixelBuffer, keeping: fields), buffers.count == 2 else {
-            return passThrough
-        }
+        guard let output = deinterlacer.deinterlace(pixelBuffer, previous: previous, keeping: fields),
+            output.frames.count == 2
+        else { return passThrough }
         let secondPts = raw.pts + durations.first
         // An exact seek may land between the fields: the second one shows even when the first is before the target.
         let secondDoNotDisplay = raw.exactSeekTarget.map { secondPts.seconds < $0 } ?? raw.doNotDisplay
+        guard output.fieldsDiffer else {
+            // Both fields show one moment: a frame per field would repeat it, and frame steps would stall on the
+            // repeat. One frame covers both fields, shown while either of them would have been.
+            return [
+                DecodedFrame(
+                    pixelBuffer: output.frames[0], pts: raw.pts, duration: raw.duration,
+                    doNotDisplay: secondDoNotDisplay, generation: generation)
+            ]
+        }
         return [
             DecodedFrame(
-                pixelBuffer: buffers[0], pts: raw.pts, duration: durations.first, doNotDisplay: raw.doNotDisplay,
-                generation: generation),
+                pixelBuffer: output.frames[0], pts: raw.pts, duration: durations.first,
+                doNotDisplay: raw.doNotDisplay, generation: generation),
             DecodedFrame(
-                pixelBuffer: buffers[1], pts: secondPts, duration: durations.second,
+                pixelBuffer: output.frames[1], pts: secondPts, duration: durations.second,
                 doNotDisplay: secondDoNotDisplay, generation: generation),
         ]
     }

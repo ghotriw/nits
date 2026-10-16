@@ -90,6 +90,23 @@ extension PlayerEngine {
         )
     }
 
+    /// Hands `deinterlaceMode` to the decoder of interlaced content and paces at the rate it then delivers: a
+    /// frame per field moves the display link, the frame-queue lead window, the exact-seek floor and frame steps
+    /// to the field rate. With `refresh`, frames already decoded in the old mode are replaced by re-seeking to
+    /// the current frame.
+    func applyDeinterlaceMode(refresh: Bool) {
+        guard isInterlacedContent, let demuxer else { return }
+        decoder.setDeinterlaceMode(deinterlaceMode)
+        let frameDuration =
+            decoder.outputsFieldRate
+            ? FieldTiming.fieldDuration(ofFrameDuration: demuxer.nominalFrameDuration) : demuxer.nominalFrameDuration
+        nominalFrameDuration = frameDuration
+        nominalFrameDurationLock.withLock { $0 = frameDuration }
+        updateDisplayLinkFrameRate()
+        guard refresh, isLoaded else { return }
+        seek(to: currentFramePTS >= 0 ? currentFramePTS : currentTime, exact: true)
+    }
+
     /// The display link only delivers rates that divide the screen's maximum refresh rate (120 Hz ProMotion:
     /// 120/60/40/30/24). Picks the lowest such rate, not below `minimumSmoothDisplayLinkRate`, that is a whole
     /// multiple of the content rate (23.976 → 120, 29.97 → 60, 24 on 144 Hz → 48); otherwise the screen maximum,

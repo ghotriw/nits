@@ -12,6 +12,18 @@ public struct QuickVideoPane: View {
         engine.activeRenderMode == .metalToneMap
     }
 
+    private var deinterlaceDescription: String {
+        let fps = String(format: "%.4g", 1.0 / max(engine.nominalFrameDuration, 0.001))
+        switch engine.deinterlaceMode {
+        case .auto:
+            return "A frame per field, \(fps) fps. Fields of still scenes and film stay one frame."
+        case .frameRate:
+            return "A frame per interlaced frame, \(fps) fps."
+        case .off:
+            return "Frames are shown woven, as stored."
+        }
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             // Playback Speed Section (First Item)
@@ -95,6 +107,30 @@ public struct QuickVideoPane: View {
                 )
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.55))
+            }
+
+            // Deinterlacing - only for interlaced video
+            if engine.isInterlacedContent {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Deinterlacing", systemImage: "line.3.horizontal")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+
+                    Picker("Deinterlacing", selection: $engine.deinterlaceMode) {
+                        ForEach(DeinterlaceMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+
+                    Text(deinterlaceDescription)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
             }
 
             // Tone Mapping Parameters (BT.2390 EETF) - only shown when Metal Tone Mapping is active

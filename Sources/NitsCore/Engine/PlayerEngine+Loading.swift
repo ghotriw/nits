@@ -319,6 +319,7 @@ extension PlayerEngine {
         stopPlaybackPipeline()
         clearVideoSurface()
         hasVideo = false
+        isInterlacedContent = false
         videoWidth = 0
         videoHeight = 0
         nominalFrameDuration = 1.0 / 24.0
@@ -509,6 +510,7 @@ extension PlayerEngine {
         self.duration = demuxer.durationSeconds
         self.videoWidth = demuxer.width
         self.videoHeight = demuxer.height
+        self.isInterlacedContent = demuxer.hasVideo && demuxer.isInterlaced
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }
@@ -756,13 +758,7 @@ extension PlayerEngine {
                 return
             }
             self.decoder = videoDecoder
-            if videoDecoder.outputsFieldRate {
-                // A frame per field: pacing, the exact-seek floor and frame steps follow the field rate.
-                let fieldDuration = FieldTiming.fieldDuration(ofFrameDuration: demuxer.nominalFrameDuration)
-                self.nominalFrameDuration = fieldDuration
-                self.nominalFrameDurationLock.withLock { $0 = fieldDuration }
-                updateDisplayLinkFrameRate()
-            }
+            applyDeinterlaceMode(refresh: false)
             let queue = self.frameQueue
             self.decoder.setOutputHandler { frame in
                 if !frame.doNotDisplay {

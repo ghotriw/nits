@@ -618,6 +618,8 @@ struct PlayerEngineTests {
             var videoDolbyVisionProfile: String? = nil
             var videoSourcePeakNits: Float = 1000.0
             var renderMode: RenderMode = .auto
+            var isInterlacedContent: Bool = false
+            var deinterlaceMode: DeinterlaceMode = .auto
             var isHDRDisplay: Bool = false
             var isToneMappingPermitted: Bool = true
             nonisolated var activeRenderMode: RenderMode { .metalToneMap }

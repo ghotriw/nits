@@ -174,7 +174,9 @@ flowchart TD
   - Streams declared interlaced (`field_order`, or standard-definition DV, interlaced by format) get a progressive frame per field: `MetalDeinterlacer` runs `deinterlacePlane` once per field in one command buffer, the second frame presenting a field later (`FieldTiming`, honouring `repeat_pict`). Each frame still comes from its own interlaced frame, so there is no latency or frame history and seek previews and frame steps work as before. Frames flagged interlaced in streams that don't declare it keep one frame per frame.
   - The engine paces such streams at the field rate (`outputsFieldRate`): display-link rate, frame-queue lead window, exact-seek floor and frame steps (a field per step).
   - Exact seeks can land on a second field: the demuxer attaches the seek target to every preroll sample and `FFmpegVideoDecoder` decides visibility per field.
-  - Still open: motion detection against temporal neighbours (yadif / BWDIF-style) to stop bob flicker on static fine detail that looks combed; it costs a frame of latency and a frame history across seeks.
+  - Motion is confirmed against the previous frame (causal, so still no latency): a line that looks combed but hasn't changed since that frame is woven, so fine still detail (thin horizontal lines) no longer flickers between the two fields' frames. The history is one source frame, dropped on flush and ignored unless the next frame follows it directly.
+  - Fields that show the same moment (film in 50i / 60i, PsF, DV shot progressive, still scenes) stay one frame for the whole interlaced frame, so frame steps don't stall on repeats. The shader counts moving samples whose rows alternate over three lines between the fields and within one field; fields differ only when the first clearly outnumbers the second, which moving texture and noise produce alike.
+  - The Video pane of Quick Settings offers the mode for interlaced content: Auto (frame per field), Frame per Frame, Off. Switching re-seeks to the current frame; the choice lasts the session.
 
 ---
 

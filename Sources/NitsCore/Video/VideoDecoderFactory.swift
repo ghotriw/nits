@@ -35,7 +35,7 @@ public enum VideoDecoderFactory {
             AppLog.info(.video, "Using Software FFmpeg decoder for \(codec)")
             if let softwareDecoder = FFmpegVideoDecoder(
                 codecParameters: params, timebase: demuxer.timebase, formatDescription: demuxer.formatDescription,
-                fieldRate: demuxer.isInterlaced)
+                deinterlaceMode: demuxer.isInterlaced ? .auto : .frameRate)
             {
                 return softwareDecoder
             }

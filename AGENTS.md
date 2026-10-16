@@ -103,7 +103,9 @@ selectors (see Video pipeline).
   without a CoreVideo constant; `StreamColorimetry` accepts only real constants.
 - **Interlaced video** is deinterlaced inside the decoder (`FFmpegVideoDecoder` → `MetalDeinterlacer`), so
   every consumer of decoded frames gets progressive ones: a frame per field for streams declared interlaced,
-  which the engine then paces at the field rate (`outputsFieldRate` halves `nominalFrameDuration`). Interlaced H.264 must not go to VideoToolbox
+  which the engine then paces at the field rate (`outputsFieldRate` halves `nominalFrameDuration`). The
+  deinterlacer may only look back (the previous frame), never ahead: seek previews and frame steps decode just
+  a few packets, so a frame of latency would lose their target. Interlaced H.264 must not go to VideoToolbox
   (Apple Silicon rejects field-coded H.264); `VideoDecoderFactory` routes it to FFmpeg.
 - **Metal output** stays `.bgr10a2Unorm` / Display P3 (8-bit bands). Shader changes must stay
   NaN-free at `outputSharpness = 1.0`.

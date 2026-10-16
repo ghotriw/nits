@@ -91,6 +91,14 @@ public final class PlayerEngine: PlayerEngineProtocol {
             updateEffectiveRenderMode()
         }
     }
+    public internal(set) var isInterlacedContent: Bool = false
+    /// Kept across files for the session, like `renderMode`.
+    public var deinterlaceMode: DeinterlaceMode = .auto {
+        didSet {
+            guard oldValue != deinterlaceMode else { return }
+            applyDeinterlaceMode(refresh: true)
+        }
+    }
     /// Set by the host while Picture in Picture mirrors `displayLayer`. PiP only sees the display layer, so Metal
     /// tone mapping falls back to `.system`, and the display link follows the screen instead of a possibly hidden
     /// host view.

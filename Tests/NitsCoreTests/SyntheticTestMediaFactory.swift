@@ -59,6 +59,10 @@ public enum SyntheticTestMediaFactory {
         /// Interlaced H.264 (MBAFF, top field first) as DVB broadcasts it (3s, 720x576 4:3 @ 25i from 50p, so moving
         /// areas comb) with MP2 audio in MPEG-TS. VideoToolbox can't decode field-coded H.264.
         case h264InterlacedTS
+        /// Interlaced MPEG-2 (2s, 720x576 @ 25i, top field first) of a still picture whose rows alternate between
+        /// light and dark, one row each: every field is uniform and the frame looks combed throughout, yet nothing
+        /// moves, so the fields show the same moment. Video only, in MPEG-TS.
+        case interlacedStaticDetailTS
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
@@ -126,6 +130,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_prores_422_10bit.mov"
             case .h264InterlacedTS:
                 return "synth_h264_576i.ts"
+            case .interlacedStaticDetailTS:
+                return "synth_mpeg2_576i_static_stripes.ts"
             case .vp9SDR:
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
@@ -587,6 +593,17 @@ public enum SyntheticTestMediaFactory {
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-flags", "+ildct+ilme", "-x264-params", "tff=1",
                 "-g", "25", "-aspect", "4:3",
                 "-c:a", "mp2", "-b:a", "192k",
+                outputPath,
+            ]
+
+        case .interlacedStaticDetailTS:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=720x576:rate=50:duration=2",
+                "-vf",
+                "format=yuv420p,geq=lum='if(mod(Y,2),64,192)':cb=128:cr=128,tinterlace=mode=interleave_top,"
+                    + "setfield=tff",
+                "-c:v", "mpeg2video", "-q:v", "2", "-g", "12", "-flags", "+ilme+ildct", "-aspect", "4:3",
                 outputPath,
             ]
 

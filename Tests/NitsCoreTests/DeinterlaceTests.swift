@@ -13,8 +13,14 @@ struct DeinterlaceTests {
         let width: Int
         let height: Int
         let bytes: [UInt8]
+        /// How long the frame is shown, in seconds.
+        var duration: Double = 0
 
         subscript(x: Int, y: Int) -> Int { Int(bytes[y * width + x]) }
+
+        func meanDifference(from other: LumaPlane) -> Double {
+            Double(zip(bytes, other.bytes).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }) / Double(bytes.count)
+        }
 
         /// Mean over the image of how far each sample sticks out past both vertical neighbours, the
         /// signature of combing: max(0, (c - up) * (c - down)), in squared 8-bit levels.
@@ -31,8 +37,7 @@ struct DeinterlaceTests {
 
     /// Luma of the frames decoded from the first `frameCount` packets, keyed by PTS.
     private static func decodeLuma(
-        _ preset: SyntheticTestMediaFactory.Preset, deinterlace: Bool, fieldRate: Bool = false,
-        frameCount: Int = 12
+        _ preset: SyntheticTestMediaFactory.Preset, mode: DeinterlaceMode, frameCount: Int = 12
     ) throws -> [Double: LumaPlane]? {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return nil }
         let demuxer = try #require(MediaDemuxer(url: path))
@@ -40,7 +45,7 @@ struct DeinterlaceTests {
         let decoder = try #require(
             FFmpegVideoDecoder(
                 codecParameters: params, timebase: demuxer.timebase, formatDescription: demuxer.formatDescription,
-                deinterlace: deinterlace, fieldRate: fieldRate))
+                deinterlaceMode: mode))
 
         let planes = LockIsolated<[Double: LumaPlane]>([:])
         decoder.setOutputHandler { frame in
@@ -58,7 +63,7 @@ struct DeinterlaceTests {
                         from: base.advanced(by: row * stride), byteCount: width)
                 }
             }
-            let plane = LumaPlane(width: width, height: height, bytes: bytes)
+            let plane = LumaPlane(width: width, height: height, bytes: bytes, duration: frame.duration.seconds)
             planes.withValue { $0[frame.pts.seconds] = plane }
         }
         for _ in 0..<frameCount {
@@ -73,8 +78,8 @@ struct DeinterlaceTests {
         "Combing from motion between the fields is removed and the first field is kept exactly",
         arguments: [SyntheticTestMediaFactory.Preset.mpeg2InterlacedTS, .h264InterlacedTS])
     func removesCombingAndKeepsFirstField(_ preset: SyntheticTestMediaFactory.Preset) throws {
-        guard let woven = try Self.decodeLuma(preset, deinterlace: false),
-            let progressive = try Self.decodeLuma(preset, deinterlace: true)
+        guard let woven = try Self.decodeLuma(preset, mode: .off),
+            let progressive = try Self.decodeLuma(preset, mode: .frameRate)
         else { return }
         #expect(!woven.isEmpty)
         #expect(Set(woven.keys) == Set(progressive.keys))
@@ -100,8 +105,8 @@ struct DeinterlaceTests {
         "Field rate: a progressive frame per field, a field apart, each keeping its own field",
         arguments: [SyntheticTestMediaFactory.Preset.mpeg2InterlacedTS, .h264InterlacedTS])
     func emitsFramePerField(_ preset: SyntheticTestMediaFactory.Preset) throws {
-        guard let woven = try Self.decodeLuma(preset, deinterlace: false),
-            let fields = try Self.decodeLuma(preset, deinterlace: true, fieldRate: true)
+        guard let woven = try Self.decodeLuma(preset, mode: .off),
+            let fields = try Self.decodeLuma(preset, mode: .auto)
         else { return }
         #expect(!woven.isEmpty)
         #expect(fields.count == woven.count * 2, "\(fields.count) field frames from \(woven.count) frames")
@@ -199,16 +204,96 @@ struct DeinterlaceTests {
     /// DV marks every frame interlaced; this one comes from progressive video, so its fields don't differ in time.
     @Test("Interlaced-flagged frames without motion between the fields stay as they are")
     func leavesStaticFieldsWoven() throws {
-        guard let woven = try Self.decodeLuma(.dvNTSC, deinterlace: false),
-            let progressive = try Self.decodeLuma(.dvNTSC, deinterlace: true)
+        guard let woven = try Self.decodeLuma(.dvNTSC, mode: .off),
+            let progressive = try Self.decodeLuma(.dvNTSC, mode: .frameRate)
         else { return }
         #expect(!woven.isEmpty)
         for (pts, plane) in progressive {
             let source = try #require(woven[pts])
-            let meanDifference =
-                Double(zip(plane.bytes, source.bytes).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) })
-                / Double(plane.bytes.count)
+            let meanDifference = plane.meanDifference(from: source)
             #expect(meanDifference < 1.0, "Static frame at \(pts)s altered by \(meanDifference) levels on average")
+        }
+    }
+
+    @Test("Fields showing the same moment stay one frame lasting the whole interlaced frame")
+    func mergesFieldsWithoutMotion() throws {
+        guard let woven = try Self.decodeLuma(.dvNTSC, mode: .off),
+            let output = try Self.decodeLuma(.dvNTSC, mode: .auto)
+        else { return }
+        #expect(!woven.isEmpty)
+        #expect(Set(output.keys) == Set(woven.keys), "\(output.count) frames from \(woven.count)")
+        for (pts, plane) in output {
+            #expect(abs(plane.duration - 1001.0 / 30000.0) < 0.0005, "Frame at \(pts)s lasts \(plane.duration)s")
+        }
+    }
+
+    /// Every row of the still picture looks combed against its neighbours. Judged frame by frame, each field's
+    /// frame interpolates the other field away, so the two frames alternate between light and dark at 50 Hz.
+    @Test("Still detail that looks combed is woven once the previous frame shows it hasn't moved")
+    func weavesStillDetailAgainstPreviousFrame() throws {
+        guard let woven = try Self.decodeLuma(.interlacedStaticDetailTS, mode: .off),
+            let output = try Self.decodeLuma(.interlacedStaticDetailTS, mode: .auto)
+        else { return }
+        let frames = woven.keys.sorted()
+        #expect(frames.count > 4)
+        let first = try #require(frames.first)
+        #expect(woven[first].map(\.combEnergy) ?? 0 > 1000, "Source rows don't alternate")
+
+        // The first frame has nothing to compare against: judged alone, its fields differ.
+        #expect(output.keys.filter { $0 >= first && $0 < first + 0.039 }.count == 2)
+        for pts in frames.dropFirst() {
+            let source = try #require(woven[pts])
+            let plane = try #require(output[pts], "No frame at \(pts)s")
+            #expect(plane.meanDifference(from: source) < 1.0, "Still detail at \(pts)s changed")
+            // Nothing moves, so one frame covers both fields.
+            #expect(abs(plane.duration - 0.040) < 0.0005, "Frame at \(pts)s lasts \(plane.duration)s")
+        }
+        #expect(output.count == frames.count + 1)
+    }
+
+    @Test("The deinterlace mode switches pacing between field and frame rate")
+    @MainActor
+    func modeSwitchesPacing() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .h264InterlacedTS) else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: path)
+        #expect(engine.isLoaded)
+        #expect(engine.isInterlacedContent)
+        for (mode, frameDuration) in [(DeinterlaceMode.frameRate, 0.040), (.off, 0.040), (.auto, 0.020)] {
+            engine.deinterlaceMode = mode
+            #expect(
+                abs(engine.nominalFrameDuration - frameDuration) < 0.0001, "\(mode): \(engine.nominalFrameDuration)")
+            #expect(await engine.waitUntil(timeout: .seconds(5)) { !engine.isSeeking && engine.pendingSeekTime == nil })
+        }
+
+        guard let progressive = SyntheticTestMediaFactory.ensureMedia(preset: .mpeg1MPG) else { return }
+        engine.load(path: progressive)
+        #expect(!engine.isInterlacedContent)
+        let frameDuration = engine.nominalFrameDuration
+        engine.deinterlaceMode = .frameRate
+        #expect(engine.nominalFrameDuration == frameDuration)
+    }
+
+    @Test("Frame steps skip repeated fields of still interlaced video")
+    @MainActor
+    func stepsOverMergedFields() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .interlacedStaticDetailTS) else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: path)
+        #expect(engine.isLoaded)
+        #expect(await engine.waitUntil { engine.isPlaying })
+        engine.pause()
+        engine.seek(to: 0.5, exact: true)
+        #expect(await engine.waitUntil(timeout: .seconds(5)) { !engine.isSeeking && engine.pendingSeekTime == nil })
+
+        for _ in 0..<3 {
+            let before = engine.currentFramePTS
+            engine.stepFrameForward()
+            #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.currentFramePTS > before + 0.001 })
+            let step = engine.currentFramePTS - before
+            #expect(abs(step - 0.040) < 0.005, "Stepped \(step)s from \(before)s")
         }
     }
 }

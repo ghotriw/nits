@@ -10,6 +10,18 @@ public enum RenderMode: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+/// How interlaced video is turned into progressive frames.
+public enum DeinterlaceMode: String, CaseIterable, Identifiable, Sendable {
+    /// A frame per field (50 / 60 fps), except where the two fields show the same moment.
+    case auto = "Auto (Frame per Field)"
+    /// A frame per interlaced frame (25 / 30 fps), keeping the first field.
+    case frameRate = "Frame per Frame"
+    /// Frames are shown woven, as stored.
+    case off = "Off"
+
+    public var id: String { rawValue }
+}
+
 public enum PlaybackState: Sendable, Equatable {
     case idle
     case loading
@@ -80,6 +92,10 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
     @MainActor var videoSourcePeakNits: Float { get }
 
     @MainActor var renderMode: RenderMode { get set }
+    /// Whether the loaded video is interlaced (declares a field order, or is standard-definition DV).
+    @MainActor var isInterlacedContent: Bool { get }
+    /// Applies to interlaced content; changing it re-seeks to the current frame.
+    @MainActor var deinterlaceMode: DeinterlaceMode { get set }
     @MainActor var isHDRDisplay: Bool { get set }
     @MainActor var isToneMappingPermitted: Bool { get set }
     nonisolated var activeRenderMode: RenderMode { get }

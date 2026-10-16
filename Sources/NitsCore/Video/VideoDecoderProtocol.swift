@@ -31,10 +31,16 @@ public protocol VideoDecoderProtocol: AnyObject, Sendable {
     /// Whether interlaced frames come out as one progressive frame per field, so the stream presents at twice
     /// its frame rate and the player paces it at the field rate.
     var outputsFieldRate: Bool { get }
+
+    /// Changes how interlaced frames are deinterlaced from the next decoded frame on. Decoders that don't
+    /// deinterlace ignore it.
+    func setDeinterlaceMode(_ mode: DeinterlaceMode)
 }
 
 extension VideoDecoderProtocol {
     public func setDiscardNonReferenceFrames(_ discard: Bool) {}
 
     public var outputsFieldRate: Bool { false }
+
+    public func setDeinterlaceMode(_ mode: DeinterlaceMode) {}
 }

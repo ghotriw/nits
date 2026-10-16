@@ -80,7 +80,7 @@ struct FrameFormatNormalizerTests {
             (640, 360, 81, kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String),
         ])
     func rgbMatrixFollowsResolution(width: Int32, height: Int32, expectedLuma: Int, matrix: String) throws {
-        var source: UnsafeMutablePointer<AVFrame>? = try #require(av_frame_alloc())
+        var source: UnsafeMutablePointer<AVFrame>? = av_frame_alloc()
         defer { av_frame_free(&source) }
         let frame = try #require(source)
         frame.pointee.format = AV_PIX_FMT_RGB24.rawValue
