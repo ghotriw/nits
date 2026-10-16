@@ -139,7 +139,7 @@ flowchart TD
   - Index-less containers (MPEG-TS / MPEG-PS): seeks sync to the next video keyframe, backing off until it precedes an exact-seek target.
   - MPEG-TS / MPEG-PS timestamps are rebased onto a zero-based timeline (`start_time`), including subtitles and thumbnails.
   - Untagged streams get BT.601 colorimetry at SD resolutions (SMPTE C / EBU primaries by line count) and BT.709 at HD.
-  - Interlaced content is decoded as is; deinterlacing remains 1.8.3.
+  - Interlaced content is deinterlaced by 1.8.3.
 - [x] **2.5.6. Flash & Early Web Video (Sorenson Spark, VP6, VP8, Theora):**
   - `FFmpegVideoDecoder` support for Sorenson Spark (FLV1) and On2 VP6 / VP6F / VP6A (alpha dropped) in FLV, VP8 in WebM / Matroska, and Theora in Ogg.
   - `FFmpegVideoDecoder` uses slice threading only: frame threading delays output past the few packets seek previews and frame steps decode.
@@ -166,9 +166,12 @@ flowchart TD
   - Native hardware/framework VideoToolbox decoding for Apple ProRes family (`kCMVideoCodecType_AppleProRes422`, `ProRes422HQ`, `ProRes422LT`, `ProRes422Proxy`, `ProRes4444`, `ProRes4444XQ`).
   - FFmpeg software decoding for Avid DNxHD / DNxHR with high-bitdepth P010/NV12 pool allocation.
   - Until then ProRes and DNxHD play through `FFmpegVideoDecoder` (2.5.8), with chroma reduced to 4:2:0.
-- [ ] **1.8.3. Metal Compute Shader Deinterlacing (YADIF / BWDIF):**
-  - Field order detection (`interlaced_frame`, `top_field_first`) from `AVCodecParameters` and `AVFrame` flags.
-  - Custom Metal compute deinterlacing pass (YADIF / BWDIF directional interpolation) for broadcast streams (1080i, 576i) and DVD/MPEG-2 remuxes, eliminating combing artifacts.
+- [x] **1.8.3. Metal Compute Deinterlacing:**
+  - Interlaced frames (`AV_FRAME_FLAG_INTERLACED` / `TOP_FIELD_FIRST`) are deinterlaced in `FFmpegVideoDecoder` by `MetalDeinterlacer` (`Deinterlace.metal`) before they reach the frame queue, seek preview or step cache: one progressive frame per interlaced frame, keeping the first field, weaving the second where it fits between its neighbours and interpolating along edges where it combs. No frame history, so no added latency.
+  - Interlaced H.264 (1080i broadcast, AVCHD) is decoded by FFmpeg: Apple Silicon's VideoToolbox rejects field-coded H.264 (`kVTVideoDecoderBadDataErr`). `FFmpegVideoDecoder` takes the `avcC` / `hvcC` from the format description because samples arrive length-prefixed.
+  - MPEG-TS / MPEG-PS rewind to byte 0 after probing: the timestamp rewind landed past the first packet and lost the opening keyframe (H.264 dropped its whole first GOP).
+- [ ] **1.8.4. Field-Rate Deinterlacing (50 / 60 fps output):**
+  - Emit a frame per field (bob / BWDIF-style with temporal neighbours) for smoother motion; needs the display-link rate and frame pacing to follow the doubled rate.
 
 ---
 
@@ -387,7 +390,7 @@ flowchart TD
 | **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263, FLV1, VP6, VP8, Theora, RealVideo 1–4 and any other FFmpeg video codec (libswscale fallback) into `CVPixelBufferPool` |
 | **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
 | **Professional Production Codecs** | `NitsCore` | Planned 📋 | Apple ProRes VideoToolbox, Avid DNxHR |
-| **Metal Deinterlacer (YADIF/BWDIF)** | `NitsCore` | Planned 📋 | Compute shader deinterlacing for 1080i/576i streams |
+| **Metal Deinterlacer** | `NitsCore` | Completed ✓ | Single-frame motion-adaptive deinterlacing for 1080i/576i; field-rate output planned |
 | **Audio Engine & Master Sync** | `NitsCore` | Completed ✓ | CoreAudio hardware clock, Spatial Audio 5.1/7.1, 48kHz Float32 |
 | **Audio-Only Playback** | `NitsCore` / `NitsUI` | Completed ✓ | FLAC, MP3, AAC, OGG, Opus, ALAC, WAV; music UI |
 | **CoreAudio Route Monitoring** | `NitsCore` | Completed ✓ | Real-time device listener, pipeline migration on change |

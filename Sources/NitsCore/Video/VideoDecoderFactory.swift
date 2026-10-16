@@ -8,7 +8,13 @@ public enum VideoDecoderFactory {
         for codec: VideoCodec,
         demuxer: MediaDemuxer
     ) -> (any VideoDecoderProtocol)? {
-        if codec.isHardwareAccelerated {
+        // Apple Silicon's hardware H.264 decoder rejects field-coded (interlaced) streams: every frame fails with
+        // kVTVideoDecoderBadDataErr, so 1080i broadcasts and AVCHD camcorder footage would show nothing.
+        let isInterlacedH264 = codec == .h264 && demuxer.isInterlaced
+        if isInterlacedH264 {
+            AppLog.info(.video, "Interlaced H.264: VideoToolbox can't decode field-coded streams, using FFmpeg")
+        }
+        if codec.isHardwareAccelerated && !isInterlacedH264 {
             // H.264 and HEVC have guaranteed VT hardware on Apple Silicon — no probe needed.
             // AV1 and VP9 report hardware support via VTIsHardwareDecodeSupported, but on
             // virtualised CI runners the hypervisor exposes the flag without the actual decoder
@@ -27,7 +33,9 @@ public enum VideoDecoderFactory {
 
         if let params = demuxer.getVideoCodecParameters() {
             AppLog.info(.video, "Using Software FFmpeg decoder for \(codec)")
-            if let softwareDecoder = FFmpegVideoDecoder(codecParameters: params, timebase: demuxer.timebase) {
+            if let softwareDecoder = FFmpegVideoDecoder(
+                codecParameters: params, timebase: demuxer.timebase, formatDescription: demuxer.formatDescription)
+            {
                 return softwareDecoder
             }
             AppLog.error(.video, "FFmpegVideoDecoder initialization failed: cannot decode \(codec) stream")

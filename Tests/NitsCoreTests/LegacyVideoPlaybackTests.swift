@@ -52,11 +52,16 @@ struct LegacyVideoPlaybackTests {
         Case(
             preset: .cinepakMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_CINEPAK.rawValue), width: 320, height: 240),
         Case(preset: .proresMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_PRORES.rawValue), width: 640, height: 360),
+        // Field-coded H.264: hardware can't decode it, so it plays in software.
+        Case(
+            preset: .h264InterlacedTS, codec: .h264, width: 720, height: 576,
+            sampleAspectRatio: RationalAspectRatio(numerator: 16, denominator: 15),
+            primaries: kCVImageBufferColorPrimaries_EBU_3213 as String),
     ]
 
     /// Presets with B-frames, where decode and presentation order differ.
     static let reorderedPresets: [SyntheticTestMediaFactory.Preset] = [
-        .mpeg4XvidAVI, .mpeg2DVDVOB, .mpeg2InterlacedTS, .mpeg1MPG, .vp8WebM,
+        .mpeg4XvidAVI, .mpeg2DVDVOB, .mpeg2InterlacedTS, .mpeg1MPG, .vp8WebM, .h264InterlacedTS,
     ]
 
     @Test(
@@ -101,7 +106,9 @@ struct LegacyVideoPlaybackTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: testCase.preset) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let params = try #require(demuxer.getVideoCodecParameters())
-        let decoder = try #require(FFmpegVideoDecoder(codecParameters: params, timebase: demuxer.timebase))
+        let decoder = try #require(
+            FFmpegVideoDecoder(
+                codecParameters: params, timebase: demuxer.timebase, formatDescription: demuxer.formatDescription))
 
         let ptsList = LockIsolated<[Double]>([])
         let size = LockIsolated((0, 0))

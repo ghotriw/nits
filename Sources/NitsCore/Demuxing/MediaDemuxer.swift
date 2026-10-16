@@ -23,6 +23,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var codec: VideoCodec = .hevc
     public private(set) var hasVideo: Bool = false
     public private(set) var nominalFrameDuration: Double = 1.0 / 24.0
+    /// The stream signals interlaced field order (`field_order` TT / BB / TB / BT). Frames may still be flagged
+    /// interlaced individually when it is unknown (e.g. DV).
+    public private(set) var isInterlaced: Bool = false
     public private(set) var hasAudio: Bool = false
     public private(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
     public private(set) var audioChannels: Int = 0
@@ -512,6 +515,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.nominalFrameDuration =
             (rawDuration >= (1.0 / 240.0) && rawDuration <= 1.0) ? rawDuration : (1.0 / 24.0)
 
+        let fieldOrder = codecpar.pointee.field_order
+        self.isInterlaced = fieldOrder != AV_FIELD_UNKNOWN && fieldOrder != AV_FIELD_PROGRESSIVE
+
         let colorimetry = StreamColorimetry(codecParameters: codecpar, width: width, height: height)
         self.colorPrimaries = colorimetry.colorPrimaries
         self.transferFunction = colorimetry.transferFunction
@@ -699,12 +705,19 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
     }
 
+    /// MPEG-TS / MPEG-PS: no index, and timestamps that continue the source clock. Seeking there bisects on
+    /// timestamps and lands on whichever packet is nearest, not on a keyframe.
+    package static func isUnindexedStream(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        guard let iformat = ctx.pointee.iformat else { return false }
+        return (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0
+    }
+
     /// Start of the playback timeline in `AV_TIME_BASE` units. MPEG-TS / MPEG-PS timestamps continue the
     /// source's clock (a DVD starts around 0.5 s, a broadcast capture hours in), so their first timestamp
     /// becomes zero. Other containers already start near zero (or slightly before, via edit lists) and
     /// are left as they are.
     package static func timelineOrigin(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Int64 {
-        guard let iformat = ctx.pointee.iformat, (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0,
+        guard isUnindexedStream(ctx),
             ctx.pointee.start_time != Int64.min, ctx.pointee.start_time > 0
         else { return 0 }
         return ctx.pointee.start_time
@@ -825,9 +838,15 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        // Rewind to beginning of stream
-        av_seek_frame(
-            ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
+        // Rewind to the beginning. A timestamp seek in MPEG-TS / MPEG-PS bisects and can land past the first
+        // packet, dropping the keyframe that starts the file (H.264 then can't decode its first GOP). Their data
+        // starts at the first byte, so rewind there.
+        if Self.isUnindexedStream(ctx) {
+            avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
+        } else {
+            av_seek_frame(
+                ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
+        }
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
@@ -1210,9 +1229,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             .demuxer,
             "av_seek_frame to targetPts: \(target) (exact: \(exact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
-        if ret >= 0, videoStreamIndex >= 0, let iformat = ctx.pointee.iformat,
-            (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0
-        {
+        if ret >= 0, videoStreamIndex >= 0, Self.isUnindexedStream(ctx) {
             syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: exact)
         }
     }

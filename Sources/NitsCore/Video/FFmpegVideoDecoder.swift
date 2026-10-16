@@ -27,6 +27,12 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     /// Converts frames the NV12 / P010 copy can't take (4:2:2, 4:4:4, RGB…) to planar 4:2:0.
     private let frameFormatNormalizer = FrameFormatNormalizer()
     private var loggedNormalizationFailure = false
+    /// Whether interlaced frames are deinterlaced; tests turn it off to compare against the woven frames.
+    private let deinterlaces: Bool
+    private let deinterlacerLock = OSAllocatedUnfairLock()
+    /// Created on the first interlaced frame; `nil` afterwards only if Metal is unavailable.
+    private var deinterlacer: MetalDeinterlacer?
+    private var didCreateDeinterlacer = false
 
     // Tracking metadata across frame-threading latency and B-frame reordering. Keyed by a packet
     // serial that FFmpeg carries from packet to frame (`AV_CODEC_FLAG_COPY_OPAQUE`), so matching
@@ -45,8 +51,18 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     // Cached color metadata dictionary to preserve attributes across drain() / EOF
     private var cachedColorAttachments: [CFString: CFTypeRef] = [:]
 
-    public init?(codecParameters: UnsafePointer<AVCodecParameters>, timebase: AVRational) {
+    /// - Parameters:
+    ///   - formatDescription: the samples' format description. H.264 / HEVC samples arrive length-prefixed (the
+    ///     demuxer rewrites Annex B for VideoToolbox), so their `avcC` / `hvcC` replaces the container extradata.
+    ///   - deinterlace: whether interlaced frames are deinterlaced; tests turn it off to compare.
+    public init?(
+        codecParameters: UnsafePointer<AVCodecParameters>,
+        timebase: AVRational,
+        formatDescription: CMFormatDescription? = nil,
+        deinterlace: Bool = true
+    ) {
         self.timebase = timebase
+        self.deinterlaces = deinterlace
         let codecId = codecParameters.pointee.codec_id
 
         let codec: UnsafePointer<AVCodec>? = {
@@ -76,6 +92,10 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
 
         ctx.pointee.pkt_timebase = timebase
+        if let configuration = Self.lengthPrefixedConfiguration(codecId: codecId, formatDescription: formatDescription)
+        {
+            Self.replaceExtradata(of: ctx, with: configuration)
+        }
         ctx.pointee.flags |= Int32(AV_CODEC_FLAG_COPY_OPAQUE)
 
         // Slice threading only. Frame threading delays output by one frame per thread, while seek previews
@@ -109,6 +129,36 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         AppLog.info(
             .video,
             "FFmpegVideoDecoder initialized successfully (\(codecName)) with \(ctx.pointee.thread_count) threads.")
+    }
+
+    /// The `avcC` / `hvcC` record of an H.264 / HEVC format description: it tells FFmpeg its packets are
+    /// length-prefixed (as `MediaDemuxer` delivers them) rather than Annex B.
+    private static func lengthPrefixedConfiguration(
+        codecId: AVCodecID, formatDescription: CMFormatDescription?
+    ) -> Data? {
+        let atomKey: String
+        switch codecId {
+        case AV_CODEC_ID_H264: atomKey = "avcC"
+        case AV_CODEC_ID_HEVC: atomKey = "hvcC"
+        default: return nil
+        }
+        guard let formatDescription,
+            let atoms = CMFormatDescriptionGetExtension(
+                formatDescription, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms)
+                as? [String: Any]
+        else { return nil }
+        return atoms[atomKey] as? Data
+    }
+
+    private static func replaceExtradata(of ctx: UnsafeMutablePointer<AVCodecContext>, with data: Data) {
+        av_freep(&ctx.pointee.extradata)
+        guard let buffer = av_mallocz(data.count + Int(AV_INPUT_BUFFER_PADDING_SIZE)) else {
+            ctx.pointee.extradata_size = 0
+            return
+        }
+        data.copyBytes(to: buffer.assumingMemoryBound(to: UInt8.self), count: data.count)
+        ctx.pointee.extradata = buffer.assumingMemoryBound(to: UInt8.self)
+        ctx.pointee.extradata_size = Int32(data.count)
     }
 
     public func setOutputHandler(_ handler: @escaping OutputHandler) {
@@ -373,7 +423,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             }
 
             if let rawPtr = raw.managedFrame.rawPointer,
-                let pixelBuffer = convertAVFrameToPixelBuffer(rawPtr)
+                let pixelBuffer = convertAVFrameToPixelBuffer(rawPtr).map({ deinterlaceIfNeeded($0, frame: rawPtr) })
             {
                 decodedFrames.append(
                     DecodedFrame(
@@ -493,6 +543,25 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         self.poolHeight = height
         self.poolPixelFormat = pixelFormat
         return pool
+    }
+
+    /// A progressive version of an interlaced frame (`AV_FRAME_FLAG_INTERLACED`), keeping its first field;
+    /// progressive frames, and all frames when Metal is unavailable, pass through.
+    private func deinterlaceIfNeeded(
+        _ pixelBuffer: CVPixelBuffer, frame: UnsafeMutablePointer<AVFrame>
+    ) -> CVPixelBuffer {
+        guard deinterlaces, (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0 else { return pixelBuffer }
+        deinterlacerLock.lock()
+        if !didCreateDeinterlacer {
+            didCreateDeinterlacer = true
+            deinterlacer = MetalDeinterlacer()
+            AppLog.info(.video, "FFmpegVideoDecoder: interlaced frames, deinterlacing on the GPU")
+        }
+        let deinterlacer = self.deinterlacer
+        deinterlacerLock.unlock()
+
+        let topFieldFirst = (frame.pointee.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) != 0
+        return deinterlacer?.deinterlace(pixelBuffer, topFieldFirst: topFieldFirst) ?? pixelBuffer
     }
 
     private func convertAVFrameToPixelBuffer(

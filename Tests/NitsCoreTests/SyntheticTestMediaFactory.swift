@@ -35,7 +35,8 @@ public enum SyntheticTestMediaFactory {
         case h263pMKV
         /// DVD-style MPEG-2 (4s, 720x480 anamorphic 16:9 @ 29.97fps, GOP 15, 2 B-frames) with AC-3 audio in VOB
         case mpeg2DVDVOB
-        /// Interlaced (top field first) PAL MPEG-2 (4s, 720x576 4:3 @ 25fps) with MP2 audio in MPEG-TS
+        /// Interlaced (top field first) PAL MPEG-2 (4s, 720x576 4:3 @ 25fps) with MP2 audio in MPEG-TS. Woven from
+        /// 50p, so the two fields of a frame show different moments and moving areas comb like camera footage.
         case mpeg2InterlacedTS
         /// VCD-style MPEG-1 (4s, 352x240 @ 29.97fps, 2 B-frames) with MP2 audio in MPEG-PS
         case mpeg1MPG
@@ -55,6 +56,9 @@ public enum SyntheticTestMediaFactory {
         case cinepakMOV
         /// Apple ProRes 422 10-bit 4:2:2 (3s, 640x360 @ 24fps) in QuickTime
         case proresMOV
+        /// Interlaced H.264 (MBAFF, top field first) as DVB broadcasts it (3s, 720x576 4:3 @ 25i from 50p, so moving
+        /// areas comb) with MP2 audio in MPEG-TS. VideoToolbox can't decode field-coded H.264.
+        case h264InterlacedTS
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 8-bit SDR in WebM container
         case vp9SDR
         /// VP9 video (3s) encoded with libvpx-vp9 (640x360 @ 24fps) 10-bit HDR (BT.2020 / PQ) in WebM container
@@ -101,7 +105,7 @@ public enum SyntheticTestMediaFactory {
             case .mpeg2DVDVOB:
                 return "synth_mpeg2_dvd.vob"
             case .mpeg2InterlacedTS:
-                return "synth_mpeg2_pal_interlaced.ts"
+                return "synth_mpeg2_pal_interlaced_50i.ts"
             case .mpeg1MPG:
                 return "synth_mpeg1_vcd.mpg"
             case .flvSpark:
@@ -120,6 +124,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_cinepak_rgb.mov"
             case .proresMOV:
                 return "synth_prores_422_10bit.mov"
+            case .h264InterlacedTS:
+                return "synth_h264_576i.ts"
             case .vp9SDR:
                 return "synth_vp9_sdr.webm"
             case .vp910BitHDR:
@@ -479,9 +485,9 @@ public enum SyntheticTestMediaFactory {
         case .mpeg2InterlacedTS:
             return [
                 "-y",
-                "-f", "lavfi", "-i", "testsrc2=size=720x576:rate=25:duration=4",
+                "-f", "lavfi", "-i", "testsrc2=size=720x576:rate=50:duration=4",
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
-                "-vf", "setfield=tff",
+                "-vf", "tinterlace=mode=interleave_top,setfield=tff",
                 "-c:v", "mpeg2video", "-b:v", "5000k", "-bf", "2", "-g", "12", "-aspect", "4:3",
                 "-flags", "+ilme+ildct",
                 "-c:a", "mp2", "-b:a", "192k",
@@ -569,6 +575,18 @@ public enum SyntheticTestMediaFactory {
                 "-y",
                 "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
                 "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
+                outputPath,
+            ]
+
+        case .h264InterlacedTS:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x576:rate=50:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                "-vf", "tinterlace=mode=interleave_top,setfield=tff",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-flags", "+ildct+ilme", "-x264-params", "tff=1",
+                "-g", "25", "-aspect", "4:3",
+                "-c:a", "mp2", "-b:a", "192k",
                 outputPath,
             ]
 

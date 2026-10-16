@@ -108,6 +108,8 @@ discontinuity can't hide every following frame. Container quirks:
   capture hours in). `MediaDemuxer.timelineOrigin(of:)` makes the first one zero: every packet is
   read through `readPacket` / `MediaDemuxer.rebase`, and seek targets get the offset added back.
   Thumbnails and embedded subtitle extraction apply the same origin.
+  After probing parameter sets at open, these formats rewind to byte 0: a timestamp rewind can land past
+  the first packet and lose the keyframe that starts the file.
 - **AVI** stores decode order only, so I/P packets have no PTS. The sample's PTS falls back to its
   DTS (the engine needs one), but it carries `presentationTimeUnknownAttachmentKey`, and
   `FFmpegVideoDecoder` then leaves the packet PTS unset so FFmpeg reorders B-frames correctly.

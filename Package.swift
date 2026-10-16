@@ -30,6 +30,7 @@ let package = Package(
             resources: [
                 .process("Video/HDRToneMapping.metal"),
                 .process("Video/BT2390ToneMapping.metal"),
+                .process("Video/Deinterlace.metal"),
             ],
             swiftSettings: defaultSwiftSettings + [
                 // Software YUV->NV12/P010 conversion (FFmpegVideoDecoder) is hand-SIMD that only
