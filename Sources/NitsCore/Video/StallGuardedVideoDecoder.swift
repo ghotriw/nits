@@ -2,11 +2,12 @@
 import Foundation
 import os
 
-/// Runs a decoder's blocking calls with a time limit, for callers that must not hang with it: the seek queue is
-/// serial, so one call that never returns (a VideoToolbox session whose decoder service stopped answering) would
-/// hold every later seek, frame step and load behind it.
+/// Runs a decoder's blocking calls with a time limit, for callers that must not hang with it: a call that never
+/// returns (a VideoToolbox session whose decoder service stopped answering) would freeze the video feeder for good,
+/// and on the serial seek queue hold every later seek, frame step and load behind it.
 ///
-/// Each call runs on this wrapper's own queue while the caller waits up to `timeout`. A call that overruns marks
+/// Each call runs on this wrapper's own queue while the caller waits up to `timeout` (async callers without
+/// blocking their thread, so a stall never pins a cooperative-pool thread). A call that overruns marks
 /// the decoder stalled: its output is silenced, every later call returns at once, and `onStall` reports it. The
 /// stalled call keeps its thread; nothing else can be done with it, since even flushing a VideoToolbox session
 /// starts by waiting for the service. Non-blocking setters are forwarded directly.
@@ -28,6 +29,10 @@ final class StallGuardedVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
 
     var isStalled: Bool { stalled.withLock { $0 } }
 
+    private var timeoutSeconds: Double {
+        Double(timeout.components.seconds) + Double(timeout.components.attoseconds) * 1e-18
+    }
+
     private func callWithTimeout(_ body: @escaping @Sendable () -> Void) {
         guard !isStalled else { return }
         let done = DispatchSemaphore(value: 0)
@@ -36,12 +41,54 @@ final class StallGuardedVideoDecoder: VideoDecoderProtocol, @unchecked Sendable 
             body()
             done.signal()
         }
-        let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) * 1e-18
-        guard done.wait(timeout: .now() + seconds) == .timedOut else { return }
+        guard done.wait(timeout: .now() + timeoutSeconds) == .timedOut else { return }
+        markStalled(since: startedAt)
+    }
+
+    /// `callWithTimeout` for async callers: the caller's thread is free while the call runs, so a stall holds
+    /// only this wrapper's queue, never a cooperative-pool thread.
+    private func callWithTimeout(_ body: @escaping @Sendable () -> Void) async {
+        guard !isStalled else { return }
+        let startedAt = ContinuousClock.now
+        // Whichever of completion and timeout comes first resumes the caller.
+        let isSettled = OSAllocatedUnfairLock(initialState: false)
+        let settle: @Sendable () -> Bool = {
+            isSettled.withLock { settled in
+                defer { settled = true }
+                return !settled
+            }
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            callQueue.async {
+                body()
+                if settle() { continuation.resume() }
+            }
+            DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + timeoutSeconds) { [self] in
+                guard settle() else { return }
+                markStalled(since: startedAt)
+                continuation.resume()
+            }
+        }
+    }
+
+    private func markStalled(since startedAt: ContinuousClock.Instant) {
         stalled.withLock { $0 = true }
         // Frames the session might still emit must not reach the queue or step cache a replacement fills.
         wrapped.setOutputHandler { _ in }
         onStall(ContinuousClock.now - startedAt)
+    }
+
+    /// `decode(sampleBuffer:)` without blocking the caller's thread.
+    func decodeAsync(sampleBuffer: CMSampleBuffer) async {
+        let wrapped = self.wrapped
+        nonisolated(unsafe) let sample = sampleBuffer
+        await callWithTimeout { wrapped.decode(sampleBuffer: sample) }
+    }
+
+    /// `drain()` without blocking the caller's thread.
+    func drainAsync() async {
+        let wrapped = self.wrapped
+        await callWithTimeout { wrapped.drain() }
     }
 
     func setOutputHandler(_ handler: @escaping OutputHandler) {

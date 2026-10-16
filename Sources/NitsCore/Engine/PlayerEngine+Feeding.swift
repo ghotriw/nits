@@ -55,11 +55,8 @@ extension PlayerEngine {
 
         let feedingLock = self.isFeeding
         let drainPausedLock = self.isVideoDrainPaused
-        let decoder = self.decoder
+        let decoder = stallGuardedDecoder(for: "the video feeder")
         let queue = self.frameQueue
-        // Each run times its own decode calls, so a stalled run that returns late can't clear the next one's.
-        let decodeWatch = DecodeWatch()
-        videoDecodeWatch = decodeWatch
 
         videoFeedingTask = Task.detached(priority: .userInitiated) {
             await Self.runVideoFeeding(
@@ -67,69 +64,45 @@ extension PlayerEngine {
                 decoder: decoder,
                 queue: queue,
                 feedingLock: feedingLock,
-                drainPausedLock: drainPausedLock,
-                decodeWatch: decodeWatch
+                drainPausedLock: drainPausedLock
             )
         }
     }
 
     // MARK: - Stalled Decoder Recovery
 
-    /// How long a decode call may take before the decoder counts as stalled. Calls return in milliseconds even
+    /// How long a decoder call may take before the decoder counts as stalled. Calls return in milliseconds even
     /// for software decoders; VideoToolbox decodes asynchronously, so one that takes seconds is not coming back.
     static let decoderStallTimeout: Duration = .seconds(3)
 
-    /// Replaces the video decoder when a decode call has not returned for `decoderStallTimeout`.
+    /// The engine's decoder with its blocking calls limited to `decoderStallTimeout`, for the video feeder and for
+    /// work on `seekQueue` (seek previews, frame-step pumps, the flush after a load).
     ///
     /// A hardware decoder runs in VideoToolbox's decoder service, and `VTDecompressionSessionDecodeFrame` waits for
-    /// it synchronously: when the service stops answering, the call never returns. Video then stops, the demuxer
-    /// stops handing out audio (it doesn't read ahead past a full video packet queue) and the clock runs on through
-    /// silence, so pausing and resuming can't help.
-    func checkForStalledDecoder() {
-        guard hasVideo, isPlaying, !isSeeking, let since = videoDecodeWatch?.decodeStartedAt else { return }
-        let blockedFor = ContinuousClock.now - since
-        guard blockedFor >= Self.decoderStallTimeout else { return }
-        recoverFromStalledDecoder(blockedFor: blockedFor)
-    }
-
-    /// Abandons the stalled decoder and restarts video from the last presented frame with a new one: a fresh
-    /// session the first time, software decoding for the rest of the media if that stalls too.
-    ///
-    /// The stalled decoder is left alone: flushing or invalidating a VideoToolbox session starts by waiting for
-    /// its frames, which would block the caller the same way. Its feeder stays parked in the stalled call.
-    func recoverFromStalledDecoder(blockedFor: Duration) {
-        logDecoderStall("a decode call has not returned for \(blockedFor)")
-        // Frames the stalled decoder might still emit must not reach the queue the new one fills.
-        decoder.setOutputHandler { _ in }
-        stopFeedingVideo()
-        videoDecodeWatch = nil
-        guard replaceStalledDecoder() else { return }
-        seek(to: currentFramePTS >= 0 ? currentFramePTS : currentTime, exact: true)
-    }
-
-    /// The engine's decoder for work on `seekQueue` (seek previews, frame-step pumps, the flush after a load), with
-    /// its blocking calls limited to `decoderStallTimeout`: the queue is serial, so a call that never returned
-    /// would hold every later seek behind it. A stalled call lets the work finish without the decoder (a seek
-    /// lands without a preview frame) and `recoverFromStalledSeekDecoder` takes over.
-    func stallGuardedDecoderForSeekQueue() -> StallGuardedVideoDecoder {
+    /// it synchronously: when the service stops answering, the call never returns. In the feeder, video then stops,
+    /// the demuxer stops handing out audio (it doesn't read ahead past a full video packet queue) and the clock runs
+    /// on through silence; on the serial `seekQueue`, every later seek would wait behind it. Guarded, the caller
+    /// carries on without the decoder (a seek lands without a preview frame) and `recoverFromStalledDecoder`
+    /// replaces it. `caller` names the user in the log.
+    func stallGuardedDecoder(for caller: String) -> StallGuardedVideoDecoder {
         let current = decoder
         return StallGuardedVideoDecoder(wrapping: current, timeout: Self.decoderStallTimeout) {
             [weak self] blockedFor in
             DispatchQueue.main.async {
-                self?.recoverFromStalledSeekDecoder(current, blockedFor: blockedFor)
+                self?.recoverFromStalledDecoder(current, blockedFor: blockedFor, caller: caller)
             }
         }
     }
 
-    /// Replaces a decoder that stalled during work on `seekQueue` and repeats the interrupted positioning with
-    /// the replacement. The guarded wrapper has already silenced it, and the interrupted seek or step completes on
-    /// its own; this seek supersedes it, as a newer target would.
-    func recoverFromStalledSeekDecoder(_ stalled: any VideoDecoderProtocol, blockedFor: Duration) {
-        // Already replaced (e.g. by the feeder's recovery), or another media was loaded meanwhile.
+    /// Replaces a stalled decoder and restarts video with the new one where it stood: at the target of a seek in
+    /// flight (which the new seek supersedes, as a newer target would), else at the last presented frame. The
+    /// guarded wrapper has already silenced the stalled decoder; it is otherwise left alone, since flushing or
+    /// invalidating a VideoToolbox session starts by waiting for its frames, and its call keeps its thread.
+    func recoverFromStalledDecoder(_ stalled: any VideoDecoderProtocol, blockedFor: Duration, caller: String) {
+        // Already replaced (a stall seen by both the feeder and a seek), or another media was loaded meanwhile.
         guard stalled === decoder else { return }
-        logDecoderStall("a call on the seek queue has not returned for \(blockedFor)")
+        logDecoderStall("a call from \(caller) has not returned for \(blockedFor)")
         stopFeedingVideo()
-        videoDecodeWatch = nil
         guard replaceStalledDecoder() else { return }
         let target = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
         seek(to: target, exact: true)
@@ -196,11 +169,10 @@ extension PlayerEngine {
 
     private nonisolated static func runVideoFeeding(
         demuxer: MediaDemuxer,
-        decoder: any VideoDecoderProtocol,
+        decoder: StallGuardedVideoDecoder,
         queue: FrameQueue,
         feedingLock: OSAllocatedUnfairLock<Bool>,
-        drainPausedLock: OSAllocatedUnfairLock<Bool>,
-        decodeWatch: DecodeWatch
+        drainPausedLock: OSAllocatedUnfairLock<Bool>
     ) async {
         let sampleCountLock = OSAllocatedUnfairLock(initialState: 0)
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
@@ -217,7 +189,7 @@ extension PlayerEngine {
             guard let sample = demuxer.nextVideoSample() else {
                 if demuxer.isEOF {
                     AppLog.debug(.engine, "Demuxer reached EOF for video. Draining decoder...")
-                    decoder.drain()
+                    await decoder.drainAsync()
                     break
                 }
                 try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
@@ -239,10 +211,10 @@ extension PlayerEngine {
             let signpostID = PlayerPerformanceMonitor.shared.signposter.makeSignpostID()
             let interval = PlayerPerformanceMonitor.shared.signposter.beginInterval(
                 "EnqueueDecodeFrame", id: signpostID)
-            decodeWatch.begin()
-            decoder.decode(sampleBuffer: sample)
-            decodeWatch.end()
+            await decoder.decodeAsync(sampleBuffer: sample)
             PlayerPerformanceMonitor.shared.signposter.endInterval("EnqueueDecodeFrame", interval)
+            // Recovery replaces the decoder and restarts feeding; reading on would only discard packets.
+            if decoder.isStalled { break }
         }
     }
 
@@ -326,22 +298,5 @@ extension PlayerEngine {
                 )
             }
         }
-    }
-}
-
-/// When the video feeder's decode call in progress began; `nil` between calls.
-final class DecodeWatch: Sendable {
-    private let startedAt = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
-
-    var decodeStartedAt: ContinuousClock.Instant? {
-        startedAt.withLock { $0 }
-    }
-
-    func begin() {
-        startedAt.withLock { $0 = .now }
-    }
-
-    func end() {
-        startedAt.withLock { $0 = nil }
     }
 }

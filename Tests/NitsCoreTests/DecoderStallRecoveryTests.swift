@@ -266,4 +266,30 @@ struct StallGuardedVideoDecoderTests {
         silenced(DecodedFrame(pixelBuffer: try #require(pixelBuffer), pts: .zero, duration: .invalid))
         #expect(!delivered.value)
     }
+
+    @Test("Async callers are released at the timeout while the stalled call keeps the wrapper's queue")
+    func asyncOverrunReleasesCaller() async throws {
+        let inner = BlockingDecoder()
+        let stalls = LockIsolated(0)
+        let guarded = StallGuardedVideoDecoder(wrapping: inner, timeout: .milliseconds(200)) { _ in
+            stalls.withValue { $0 += 1 }
+        }
+        defer { inner.release() }
+        let sample = try makeSample()
+
+        await guarded.decodeAsync(sampleBuffer: sample)
+        #expect(!guarded.isStalled)
+
+        inner.blocking.withLock { $0 = true }
+        let started = ContinuousClock.now
+        await guarded.decodeAsync(sampleBuffer: sample)
+        #expect(ContinuousClock.now - started < .seconds(2), "The overrunning call held the caller")
+        #expect(guarded.isStalled)
+        #expect(stalls.value == 1)
+
+        await guarded.drainAsync()
+        await guarded.decodeAsync(sampleBuffer: sample)
+        #expect(inner.calls.withLock { $0 } == 2)
+        #expect(stalls.value == 1)
+    }
 }

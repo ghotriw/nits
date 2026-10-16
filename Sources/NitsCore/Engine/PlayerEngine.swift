@@ -377,9 +377,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var seekTask: Task<Void, Never>?
 
     var decoder: any VideoDecoderProtocol = VTVideoDecoder()
-    /// Times the decode calls of the running video feeder; see `checkForStalledDecoder()`.
-    @ObservationIgnored
-    var videoDecodeWatch: DecodeWatch?
     /// Stalled decoders replaced for the current media; after the first, replacements decode in software.
     @ObservationIgnored
     var decoderStallRecoveries = 0
@@ -710,10 +707,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
         timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            // On this timer rather than the periodic time observer: a stalled decoder may leave the clock stopped.
-            self.checkForStalledDecoder()
-            guard self.showDebugHUD else { return }
+            guard let self, self.showDebugHUD else { return }
             let statusDesc = self.isPlaying ? "Rendering" : "Paused"
             self.performanceMonitor.updateNativeLayerStatus(statusDesc)
 
