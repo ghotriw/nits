@@ -131,7 +131,31 @@ extension PlayerEngine {
         selectSubtitleTrack(id: trackId)
     }
 
+    /// Shifts subtitles by `seconds` (clamped to `subtitleDelayRange`, rounded to milliseconds) and saves the delay
+    /// for the file. The delay belongs to the file's embedded tracks: while an external track is selected it applies
+    /// but isn't saved, as that track isn't restored on the next load.
+    public func setSubtitleDelay(_ seconds: Double) {
+        guard seconds.isFinite else { return }
+        let range = Self.subtitleDelayRange
+        let clamped = min(max((seconds * 1000).rounded() / 1000, range.lowerBound), range.upperBound)
+        guard clamped != subtitleDelay else { return }
+        subtitleDelay = clamped
+        AppLog.info(.subtitles, "Subtitle delay changed to \(clamped)s")
+        updateActiveSubtitles(at: currentTime)
+        saveCurrentPlaybackProgress()
+    }
+
+    public func stepSubtitleDelay(by delta: Double) {
+        setSubtitleDelay(subtitleDelay + delta)
+    }
+
+    public func resetSubtitleDelay() {
+        setSubtitleDelay(0)
+    }
+
     func updateActiveSubtitles(at seconds: Double) {
+        // A cue due at `t` shows at `t + subtitleDelay`.
+        let seconds = seconds - subtitleDelay
         if let id = selectedSubtitleTrackId,
             let track = subtitleTracks.first(where: { $0.id == id }),
             !track.isExternal,

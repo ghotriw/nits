@@ -1,4 +1,5 @@
 import Foundation
+import NitsTestSupport
 import Testing
 
 @testable import NitsCore
@@ -154,5 +155,52 @@ struct SubtitleTests {
         let dialogueText2 = parts2.suffix(from: 9).joined(separator: ",")
         let cleaned2 = SubtitleDocument.cleanFormattingTags(dialogueText2)
         #expect(cleaned2 == "Here is some dialogue")
+    }
+}
+
+@Suite("Subtitle Delay Tests")
+@MainActor
+struct SubtitleDelayTests {
+    private func makeEngine() -> PlayerEngine {
+        let engine = PlayerEngine.makeForTesting()
+        engine.activeSubtitleDocument = SubtitleDocument(cues: [
+            SubtitleCue(id: 1, startTime: 10.0, endTime: 12.0, text: "Line", alignment: .bottomCenter)
+        ])
+        return engine
+    }
+
+    @Test("A positive delay shows cues later, a negative one earlier, and changes apply at once")
+    func testDelayShiftsCueLookup() {
+        let engine = makeEngine()
+        engine.currentTime = 12.5
+        engine.updateActiveSubtitles(at: engine.currentTime)
+        #expect(engine.currentSubtitleCues.isEmpty)
+
+        engine.setSubtitleDelay(1.0)  // cue now spans 11...13
+        #expect(engine.currentSubtitleText == "Line")
+
+        engine.setSubtitleDelay(-1.0)  // cue now spans 9...11
+        #expect(engine.currentSubtitleCues.isEmpty)
+        engine.currentTime = 9.5
+        engine.updateActiveSubtitles(at: engine.currentTime)
+        #expect(engine.currentSubtitleText == "Line")
+
+        engine.resetSubtitleDelay()
+        #expect(engine.subtitleDelay == 0)
+        #expect(engine.currentSubtitleCues.isEmpty)
+    }
+
+    @Test("Delay steps round to milliseconds and clamp to the allowed range")
+    func testDelayRoundingAndClamping() {
+        let engine = makeEngine()
+        for _ in 0..<3 { engine.stepSubtitleDelay(by: 0.1) }
+        #expect(engine.subtitleDelay == 0.3)
+
+        engine.setSubtitleDelay(100)
+        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.upperBound)
+        engine.setSubtitleDelay(-100)
+        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.lowerBound)
+        engine.setSubtitleDelay(.nan)
+        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.lowerBound)
     }
 }

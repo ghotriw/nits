@@ -286,6 +286,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var subtitleTextColorHex: String = "#FFFFFF"
     public var subtitleBgColorHex: String = "#000000"
     public var subtitleBgOpacity: Double = 0.65
+    /// Seconds subtitles are shifted by: positive shows them later, negative earlier. Set with `setSubtitleDelay`.
+    public internal(set) var subtitleDelay: Double = 0
+    public static let subtitleDelayRange: ClosedRange<Double> = -30.0...30.0
     var activeSubtitleDocument: SubtitleDocument? = nil
     var lastObservedLiveSubtitleVersion: Int = -1
 

@@ -659,6 +659,10 @@ struct PlayerEngineTests {
             init() {}
 
             func selectSubtitleTrack(id: Int?) {}
+            var subtitleDelay: Double = 0
+            func setSubtitleDelay(_ seconds: Double) {}
+            func stepSubtitleDelay(by delta: Double) {}
+            func resetSubtitleDelay() {}
             func loadExternalSubtitle(url: URL) {}
             func stop() {}
             func play() {}

@@ -94,7 +94,7 @@ struct PlaybackHistoryStoreTests {
             subtitleTrackId: 1
         )
 
-        let tracks = store.savedTrackSelection(for: path)
+        let tracks = store.savedPreferences(for: path)
         #expect(tracks?.audioTrackId == 2)
         #expect(tracks?.subtitleTrackId == 1)
 
@@ -105,7 +105,7 @@ struct PlaybackHistoryStoreTests {
             audioTrackId: 3,
             subtitleTrackId: PlaybackRecord.subtitlesOff
         )
-        let updatedTracks = store.savedTrackSelection(for: path)
+        let updatedTracks = store.savedPreferences(for: path)
         #expect(updatedTracks?.audioTrackId == 3)
         #expect(updatedTracks?.subtitleTrackId == PlaybackRecord.subtitlesOff)
         // Position was preserved
@@ -125,8 +125,50 @@ struct PlaybackHistoryStoreTests {
 
         let legacyPos = store.savedPosition(for: legacyPath)
         #expect(legacyPos == 350.0)
-        let legacyTracks = store.savedTrackSelection(for: legacyPath)
+        let legacyTracks = store.savedPreferences(for: legacyPath)
         #expect(legacyTracks?.audioTrackId == nil)
         #expect(legacyTracks?.subtitleTrackId == nil)
+        #expect(legacyTracks?.subtitleDelay == nil)
+    }
+
+    @Test("PlaybackHistoryStore keeps the subtitle delay across saves and lets an explicit 0 override it")
+    func testSubtitleDelayPersistence() {
+        let defaults = InMemoryUserDefaults()
+        let store = PlaybackHistoryStore(userDefaults: defaults)
+        let path = "/movies/out_of_sync.mkv"
+
+        // A delay alone keeps the record even at the start of the file.
+        store.saveTrackSelection(
+            for: path, duration: 1000.0, audioTrackId: nil, subtitleTrackId: nil, subtitleDelay: 1.4)
+        #expect(store.savedPreferences(for: path)?.subtitleDelay == 1.4)
+
+        // `nil` keeps the saved delay.
+        store.savePosition(for: path, position: 120.0, duration: 1000.0)
+        #expect(store.savedPreferences(for: path)?.subtitleDelay == 1.4)
+        #expect(store.savedPosition(for: path) == 120.0)
+
+        store.savePosition(for: path, position: 130.0, duration: 1000.0, subtitleDelay: 0)
+        #expect(store.savedPreferences(for: path)?.subtitleDelay == 0)
+    }
+
+    @Test("PlaybackHistoryStore keeps preferences of a finished file and resets only its position")
+    func testFinishedFileKeepsPreferences() {
+        let defaults = InMemoryUserDefaults()
+        let store = PlaybackHistoryStore(userDefaults: defaults)
+        let path = "/movies/watched.mkv"
+
+        store.savePosition(for: path, position: 300.0, duration: 1000.0, subtitleTrackId: 2, subtitleDelay: -0.6)
+        store.savePosition(for: path, position: 990.0, duration: 1000.0)
+
+        #expect(store.savedPosition(for: path) == nil)
+        let preferences = store.savedPreferences(for: path)
+        #expect(preferences?.subtitleTrackId == 2)
+        #expect(preferences?.subtitleDelay == -0.6)
+
+        // Without preferences, a finished or barely started file leaves no record.
+        let plainPath = "/movies/plain.mkv"
+        store.savePosition(for: plainPath, position: 300.0, duration: 1000.0, subtitleDelay: 0)
+        store.savePosition(for: plainPath, position: 990.0, duration: 1000.0)
+        #expect(store.savedPreferences(for: plainPath) == nil)
     }
 }

@@ -116,6 +116,11 @@ public struct QuickSubtitlesPane: View {
             Divider()
                 .overlay(Color.white.opacity(0.12))
 
+            timingSection
+
+            Divider()
+                .overlay(Color.white.opacity(0.12))
+
             // Appearance & Styling Section
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
@@ -275,6 +280,67 @@ public struct QuickSubtitlesPane: View {
                 }
             }
         }
+    }
+
+    private var timingSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Timing", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                if engine.subtitleDelay != 0 {
+                    Button("Reset") {
+                        engine.resetSubtitleDelay()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("Delay")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                delayStepButton(systemImage: "minus", delta: -0.1)
+                TextField(
+                    "Delay",
+                    value: Binding(
+                        get: { engine.subtitleDelay },
+                        set: { engine.setSubtitleDelay($0) }
+                    ),
+                    format: .number.precision(.fractionLength(1...3))
+                )
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(width: 70)
+                Text("s")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.6))
+                delayStepButton(systemImage: "plus", delta: 0.1)
+            }
+
+            Text("Positive shows subtitles later. Z / X shift by 0.2 s while playing.")
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.5))
+        }
+    }
+
+    private func delayStepButton(systemImage: String, delta: Double) -> some View {
+        Button {
+            engine.stepSubtitleDelay(by: delta)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.white.opacity(0.1)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white.opacity(0.9))
     }
 
     private func loadExternalSubtitle() {

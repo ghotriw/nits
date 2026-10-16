@@ -147,6 +147,16 @@ struct TimeParserTests {
         #expect(TimeParser.parse(input: "200%", currentTime: cur, duration: dur) == 600.0)
     }
 
+    @Test("Subtitle delay shows one to three decimals with a sign")
+    func testFormatSubtitleDelay() {
+        #expect(TimeParser.formatSubtitleDelay(0) == "0.0s")
+        #expect(TimeParser.formatSubtitleDelay(0.2) == "+0.2s")
+        #expect(TimeParser.formatSubtitleDelay(-1.35) == "-1.35s")
+        #expect(TimeParser.formatSubtitleDelay(2.0) == "+2.0s")
+        #expect(TimeParser.formatSubtitleDelay(-0.125) == "-0.125s")
+        #expect(TimeParser.formatSubtitleDelay(.nan) == "0.0s")
+    }
+
     @Test("Invalid strings return nil")
     func testInvalid() {
         let dur = 600.0

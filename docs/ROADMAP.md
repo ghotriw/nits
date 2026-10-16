@@ -252,10 +252,11 @@ flowchart TD
 
 > Compensate for out-of-sync subtitle releases and simplify subtitle loading.
 
-- [ ] **4.6.1. Subtitle Timing Offset (Subtitle Delay):**
-  - Configurable timestamp shift (`subtitleDelaySeconds: -30.0 ... +30.0`) in `SubtitleDocument` lookup routines.
+- [x] **4.6.1. Subtitle Timing Offset (Subtitle Delay):**
+  - Configurable timestamp shift (`PlayerEngine.subtitleDelay`, `-30.0 ... +30.0` s) applied to the cue lookup.
   - Hotkey adjustments (`Z` / `X`) stepping timing by ±200ms with real-time OSD indication.
   - Manual entry field in Quick Settings (`Subtitles` pane).
+  - Remembered per file in `PlaybackHistoryStore` (not for external subtitle tracks, which aren't restored yet).
 - [ ] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - AppKit drag-and-drop ingestion (`NSView.registerForDraggedTypes([.fileURL])`) in `NativeVideoHostView`.
   - Dropping `.srt`, `.vtt`, or `.ass` directly attaches the subtitle file to active playback with auto-selection.

@@ -368,14 +368,16 @@ extension PlayerEngine {
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
                 audioTrackId: hasAudioTrackSelection ? selectedAudioTrackId : nil,
-                subtitleTrackId: subtitleTrackIdForHistory
+                subtitleTrackId: subtitleTrackIdForHistory,
+                subtitleDelay: subtitleDelayForHistory
             )
         } else {
             historyStore.saveTrackSelection(
                 for: path,
                 duration: duration,
                 audioTrackId: hasAudioTrackSelection ? selectedAudioTrackId : nil,
-                subtitleTrackId: subtitleTrackIdForHistory
+                subtitleTrackId: subtitleTrackIdForHistory,
+                subtitleDelay: subtitleDelayForHistory
             )
         }
     }
@@ -392,6 +394,15 @@ extension PlayerEngine {
             return id
         }
         return nil
+    }
+
+    /// Subtitle delay to persist: `nil` (keep the saved one) while an external track is selected, since the delay
+    /// was set for that file's timing and the track isn't restored.
+    private var subtitleDelayForHistory: Double? {
+        if let id = selectedSubtitleTrackId, subtitleTracks.first(where: { $0.id == id })?.isExternal == true {
+            return nil
+        }
+        return subtitleDelay
     }
 
     private var hasAudioTrackSelection: Bool { selectedAudioTrackId >= 0 }
@@ -563,12 +574,9 @@ extension PlayerEngine {
         }
         // Track selection priority chain (per kind):
         // 1. Explicit request (CLI, host app, deep link)
-        // 2. PlaybackHistoryStore saved selection (if resume is enabled)
+        // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
         // 3. Demuxer default
-        let savedTracks =
-            configuration.resumePlayback
-            ? historyStore.savedTrackSelection(for: path)
-            : nil
+        let savedTracks = historyStore.savedPreferences(for: path)
 
         if let spec = requestedAudioTrack,
             let id = Self.resolveAudioTrackId(spec, in: demuxer.audioTracks)
@@ -590,6 +598,14 @@ extension PlayerEngine {
         self.currentSubtitleCues.removeAll()
         self.loadedSubtitleDocuments.removeAll()
         self.lastObservedLiveSubtitleVersion = -1
+        // Set directly, not via `setSubtitleDelay`: nothing to re-save, and the track below picks its cues with it.
+        let savedDelay = savedTracks?.subtitleDelay ?? 0
+        self.subtitleDelay =
+            savedDelay.isFinite
+            ? min(max(savedDelay, Self.subtitleDelayRange.lowerBound), Self.subtitleDelayRange.upperBound) : 0
+        if self.subtitleDelay != 0 {
+            AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(self.subtitleDelay)s")
+        }
         self.loadError = nil
 
         if let spec = requestedSubtitleTrack,

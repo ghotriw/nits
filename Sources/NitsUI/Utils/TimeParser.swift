@@ -22,6 +22,17 @@ public enum TimeParser: Sendable {
         return "\(sign)\(format(seconds: abs(diff)))"
     }
 
+    /// Formats a subtitle delay with one to three decimals (e.g. "+0.2s", "-1.35s", "0.0s").
+    public static func formatSubtitleDelay(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0.0s" }
+        var text = String(format: "%.3f", abs(seconds))
+        while text.hasSuffix("0") && !text.hasSuffix(".0") {
+            text.removeLast()
+        }
+        guard text != "0.0" else { return text + "s" }
+        return (seconds > 0 ? "+" : "-") + text + "s"
+    }
+
     /// Formats a seek offset for display (e.g. "+5s", "+60s", "+1m 05s", "-2m 30s", "+1h 01m 05s").
     /// Offsets up to 60s are displayed in whole seconds, while offsets exceeding 60s are formatted in minutes and seconds.
     public static func formatSeekOffset(_ offset: Double) -> String {

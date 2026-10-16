@@ -126,6 +126,12 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor var selectedSubtitleTrackId: Int? { get }
     @MainActor func selectSubtitleTrack(id: Int?)
     @MainActor func loadExternalSubtitle(url: URL)
+
+    /// Seconds subtitles are shifted by: positive shows them later, negative earlier.
+    @MainActor var subtitleDelay: Double { get }
+    @MainActor func setSubtitleDelay(_ seconds: Double)
+    @MainActor func stepSubtitleDelay(by delta: Double)
+    @MainActor func resetSubtitleDelay()
 }
 
 /// Container chapter markers and navigation.

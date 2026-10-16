@@ -149,8 +149,9 @@ selectors (see Video pipeline).
 - `CommandMenu` items use modified shortcuts only (`⌥→`, `⌃⌘F`, `⌘O`, …). Never give a menu item
   an unmodified key (`Space`, arrows, `m`): menu shortcuts intercept keys before the view, and a
   disabled item swallows them.
-- Unmodified player keys (`Space`, arrows, `m`, `d`, `esc`) are handled in the player view via
-  `.onKeyPress`.
+- Unmodified player keys (`Space`, arrows, `m`, `d`, `z` / `x`, `esc`) are handled in
+  `PlayerWindow.sendEvent` by physical key code, so they work on any keyboard layout and while focus is
+  in a panel (text fields excepted).
 
 ## Tests
 

@@ -96,6 +96,12 @@ public final class PlayerWindow: NSWindow {
         case 0x2A, 0x33:  // Physical '\' (0x2A / 42) or Backspace (0x33 / 51) -> Reset Speed to 1.0x
             actionHandler.resetPlaybackRate()
             return true
+        case 0x06:  // Physical 'Z' (ANSI Z) -> Show subtitles 200 ms earlier
+            actionHandler.stepSubtitleDelay(by: -0.2)
+            return true
+        case 0x07:  // Physical 'X' (ANSI X) -> Show subtitles 200 ms later
+            actionHandler.stepSubtitleDelay(by: 0.2)
+            return true
         case 0x35:  // Escape -> Dismiss dialogs/sidebars if active, or Exit Fullscreen if active
             if actionHandler.isJumpToPresented {
                 actionHandler.dismissJumpToTime()
