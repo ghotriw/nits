@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import NitsTestSupport
 import Testing
 import os
 

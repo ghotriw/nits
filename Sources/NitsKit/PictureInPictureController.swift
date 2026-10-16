@@ -213,7 +213,8 @@ extension PictureInPictureController: AVPictureInPictureSampleBufferPlaybackDele
         _ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool
     ) {
         Task { @MainActor in
-            // PiP may act on a stale state; re-issuing play() to a playing engine restarts its pipeline (a stutter).
+            // PiP may act on a stale state. Forward only real changes: play() on a playing engine within 0.25 s of
+            // the end restarts it from the beginning.
             if playing != self.engine.isPlaying {
                 playing ? self.engine.play() : self.engine.pause()
             }

@@ -60,8 +60,10 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    public init(configuration: PlayerConfiguration = PlayerConfiguration()) {
-        let engine = PlayerEngine(configuration: configuration)
+    /// - Parameter engine: An engine built with the same `configuration` and the host's own stores (tests pass
+    ///   in-memory ones); `nil` creates one that uses the app's.
+    public init(configuration: PlayerConfiguration = PlayerConfiguration(), engine: PlayerEngine? = nil) {
+        let engine = engine ?? PlayerEngine(configuration: configuration)
         self.engine = engine
         self.nowPlayingController = NowPlayingControllerFactory.makeController(engine: engine)
         let window = PlayerWindow(

@@ -1,4 +1,5 @@
 import Foundation
+import NitsTestSupport
 import Testing
 
 @testable import NitsCore

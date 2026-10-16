@@ -61,14 +61,21 @@ let package = Package(
             ],
             swiftSettings: defaultSwiftSettings
         ),
+        // Wait helpers, in-memory stores and the engine factory shared by the test targets; public API only.
+        .target(
+            name: "NitsTestSupport",
+            dependencies: ["NitsCore"],
+            path: "Tests/NitsTestSupport",
+            swiftSettings: defaultSwiftSettings
+        ),
         .testTarget(
             name: "NitsCoreTests",
-            dependencies: ["NitsCore"],
+            dependencies: ["NitsCore", "NitsTestSupport"],
             swiftSettings: defaultSwiftSettings
         ),
         .testTarget(
             name: "NitsKitTests",
-            dependencies: ["NitsKit", "NitsUI"],
+            dependencies: ["NitsKit", "NitsUI", "NitsTestSupport"],
             swiftSettings: defaultSwiftSettings
         ),
     ]

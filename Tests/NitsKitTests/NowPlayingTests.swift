@@ -3,6 +3,7 @@ import Foundation
 import MediaPlayer
 import NitsCore
 import NitsKit
+import NitsTestSupport
 import Testing
 
 #if canImport(NowPlaying)
@@ -14,7 +15,7 @@ struct NowPlayingTests {
     @Test("LegacyMediaPlayerController sets nowPlayingInfo and playbackState accurately")
     @MainActor
     func testLegacyMediaPlayerStateAndMetadata() async throws {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         let legacy = LegacyMediaPlayerController(engine: engine)
         let center = MPNowPlayingInfoCenter.default()
 
@@ -66,7 +67,7 @@ struct NowPlayingTests {
     @Test("LegacyMediaPlayerController toggles remote command center enabled state on active media")
     @MainActor
     func testLegacyCommandCenterActiveStateToggling() async throws {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         let legacy = LegacyMediaPlayerController(engine: engine)
         let remote = MPRemoteCommandCenter.shared()
 
@@ -115,7 +116,7 @@ struct NowPlayingTests {
         @available(macOS 27.0, *)
         @MainActor
         func testModernNowPlayingControllerLifecycle() async throws {
-            let engine = PlayerEngine()
+            let engine = PlayerEngine.makeForTesting()
             let controller = ModernNowPlayingController(engine: engine)
 
             controller.update(title: "Dune", currentTime: 0.0, duration: 9300.0, isPlaying: true)
@@ -132,7 +133,7 @@ struct NowPlayingTests {
     @Test("NowPlayingControllerFactory returns an instance without error")
     @MainActor
     func testFactoryCreation() async throws {
-        let engine = PlayerEngine()
+        let engine = PlayerEngine.makeForTesting()
         let controller = NowPlayingControllerFactory.makeController(engine: engine)
         #expect(controller.isKeyWindow == true)
         controller.update(title: "Factory Video", currentTime: 0, duration: 100, isPlaying: true)
@@ -142,7 +143,7 @@ struct NowPlayingTests {
     @Test("PlayerWindowController handles closing and opening a second video seamlessly")
     @MainActor
     func testPlayerWindowControllerReopenLifecycle() async throws {
-        let windowController = PlayerWindowController()
+        let windowController = PlayerWindowController(engine: .makeForTesting())
 
         // 1. First video playback
         windowController.nowPlayingController.update(title: "Video 1", currentTime: 0, duration: 100, isPlaying: true)

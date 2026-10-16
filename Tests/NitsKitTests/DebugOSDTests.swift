@@ -1,5 +1,6 @@
 import Foundation
 import NitsCore
+import NitsTestSupport
 import Testing
 
 @testable import NitsUI
@@ -72,15 +73,19 @@ struct DebugOSDTests {
         let osd = OSDManager()
         osd.configureDebug(enabled: true, minimumLevel: .debug, duration: 4, logStore: store)
         store.append(entry(.error, "live"))
-        for _ in 0..<50 where osd.debugMessages.isEmpty {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        #expect(await waitUntil { !osd.debugMessages.isEmpty })
         #expect(osd.debugMessages.map(\.text) == ["live"])
 
         osd.configureDebug(enabled: false, minimumLevel: .debug, duration: 4, logStore: store)
         #expect(osd.debugMessages.isEmpty)
+
+        // Listeners hop to the main actor in append order, so once a later entry reaches a second subscriber,
+        // anything the disabled OSD was still sent would have arrived too.
+        let witness = OSDManager()
+        witness.configureDebug(enabled: true, minimumLevel: .debug, duration: 4, logStore: store)
         store.append(entry(.error, "after disable"))
-        try? await Task.sleep(for: .milliseconds(50))
+        store.append(entry(.error, "barrier"))
+        #expect(await waitUntil { witness.debugMessages.contains { $0.text == "barrier" } })
         #expect(osd.debugMessages.isEmpty)
     }
 
@@ -92,12 +97,11 @@ struct DebugOSDTests {
         osd.configureDebug(enabled: true, minimumLevel: .debug, duration: 30, logStore: first)
         osd.configureDebug(enabled: true, minimumLevel: .debug, duration: 30, logStore: second)
 
+        // Listeners hop to the main actor in append order: an entry still delivered from the first store would
+        // arrive before the one from the second.
         first.append(entry(.error, "from first"))
         second.append(entry(.error, "from second"))
-        for _ in 0..<50 where osd.debugMessages.isEmpty {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await waitUntil { osd.debugMessages.contains { $0.text == "from second" } })
         #expect(osd.debugMessages.map(\.text) == ["from second"])
     }
 
@@ -112,9 +116,7 @@ struct DebugOSDTests {
         osd.receiveDebugLog(entry(.warning, "short"))
         #expect(osd.debugMessages.count == 2)
 
-        for _ in 0..<200 where osd.debugMessages.count == 2 {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        #expect(await waitUntil { osd.debugMessages.count < 2 })
         #expect(osd.debugMessages.map(\.text) == ["long"])
     }
 }
@@ -128,9 +130,6 @@ struct OSDDurationTests {
         osd.eventDuration = 0.2
         osd.show(.play)
         #expect(osd.isVisible)
-        for _ in 0..<100 where osd.isVisible {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(osd.isVisible == false)
+        #expect(await waitUntil { !osd.isVisible })
     }
 }
