@@ -18,10 +18,14 @@ enum MediaDurationProbe {
         timeout: Duration = defaultTimeout
     ) async -> Double? {
         let path = url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
-        let interrupt = FFmpegInterrupt(timeout: timeout)
+        let interrupt = FFmpegInterrupt()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
+                    // The limit is for a stalled resource, not for waiting behind busy work at utility QoS
+                    // (decoding during playback): a probe timed out in the queue would leave its item without a
+                    // duration for good.
+                    interrupt.startTimeout(timeout)
                     let duration = withExtendedLifetime(interrupt) {
                         readDuration(path: path, headers: headers, interrupt: interrupt)
                     }

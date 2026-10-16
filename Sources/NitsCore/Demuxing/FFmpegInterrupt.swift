@@ -8,15 +8,22 @@ import os
 public final class FFmpegInterrupt: Sendable {
     private struct State: Sendable {
         var isCancelled = false
+        var deadline: ContinuousClock.Instant?
         var lastError: (code: Int32, message: String)?
     }
 
-    private let state = OSAllocatedUnfairLock(initialState: State())
-    private let deadline: ContinuousClock.Instant?
+    private let state: OSAllocatedUnfairLock<State>
 
-    /// - Parameter timeout: aborts I/O once this much time has passed; `nil` waits indefinitely.
+    /// - Parameter timeout: aborts I/O once this much time has passed; `nil` waits indefinitely (or until
+    ///   `startTimeout(_:)`).
     public init(timeout: Duration? = nil) {
-        deadline = timeout.map { .now + $0 }
+        state = OSAllocatedUnfairLock(initialState: State(deadline: timeout.map { .now + $0 }))
+    }
+
+    /// Starts (or restarts) the deadline now. Work queued before it runs should arm its timeout when it starts, so
+    /// time spent waiting for a busy queue does not count against it.
+    public func startTimeout(_ timeout: Duration) {
+        state.withLock { $0.deadline = .now + timeout }
     }
 
     /// `cancel()` was called. Doesn't include the deadline; see `shouldAbort`.
@@ -26,7 +33,9 @@ public final class FFmpegInterrupt: Sendable {
 
     /// Cancelled, or past the deadline: what FFmpeg's interrupt callback reports.
     public var shouldAbort: Bool {
-        isCancelled || deadline.map { ContinuousClock.now >= $0 } ?? false
+        state.withLock { state in
+            state.isCancelled || state.deadline.map { ContinuousClock.now >= $0 } ?? false
+        }
     }
 
     public func cancel() {

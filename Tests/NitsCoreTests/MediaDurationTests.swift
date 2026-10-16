@@ -41,6 +41,23 @@ struct MediaDurationTests {
         #expect(duration.map { abs($0 - expected) < 0.5 } == true, "probed \(String(describing: duration))")
     }
 
+    @Test("Time a probe waits for the busy utility queue does not count against its timeout")
+    func probeTimeoutStartsWhenWorkStarts() async {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        // Keep every utility worker computing for longer than the probe's timeout, as playback decoding can.
+        // (Blocked workers would not do: GCD starts more threads for them.)
+        let busy = DispatchGroup()
+        for _ in 0..<(ProcessInfo.processInfo.activeProcessorCount * 2) {
+            DispatchQueue.global(qos: .utility).async(group: busy) {
+                let end = ContinuousClock.now + .milliseconds(600)
+                while ContinuousClock.now < end {}
+            }
+        }
+        let duration = await MediaDurationProbe.duration(of: URL(fileURLWithPath: path), timeout: .milliseconds(300))
+        await withCheckedContinuation { done in busy.notify(queue: .global()) { done.resume() } }
+        #expect(duration.map { abs($0 - 30) < 0.5 } == true, "probed \(String(describing: duration))")
+    }
+
     @Test("Probe returns nil for missing and non-media files")
     func probeRejectsUnreadableFiles() async throws {
         let directory = try Self.makeTemporaryDirectory()

@@ -348,6 +348,15 @@ struct MediaDemuxerColorTests {
         open.recordError(code: -5, message: "Input/output error")
         #expect(open.lastError?.code == -5)
         #expect(open.lastError?.message == "Input/output error")
+
+        // A deadline started later counts from then, not from construction.
+        let deferred = FFmpegInterrupt()
+        #expect(deferred.shouldAbort == false)
+        deferred.startTimeout(.seconds(60))
+        #expect(deferred.shouldAbort == false)
+        deferred.startTimeout(.zero)
+        #expect(deferred.shouldAbort == true)
+        #expect(deferred.isCancelled == false)
     }
 
     @Test("Demuxer initializes with custom headers dictionary without breaking")

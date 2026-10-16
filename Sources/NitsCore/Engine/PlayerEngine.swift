@@ -539,9 +539,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.init(configuration: PlayerConfiguration())
     }
 
-    /// - Parameter userDefaults: Where the engine persists playback history and the playlist's repeat / shuffle
-    ///   state. A host embedding the engine, or a test, passes its own store to keep these out of the app's defaults.
-    public init(configuration: PlayerConfiguration, userDefaults: UserDefaults = .standard) {
+    /// - Parameters:
+    ///   - userDefaults: Where the engine persists playback history and the playlist's repeat / shuffle state.
+    ///   - durationCache: Where playlist durations are cached (`.shared` persists them under Caches).
+    ///
+    /// A host embedding the engine, or a test, passes its own stores to keep these out of the app's.
+    public init(
+        configuration: PlayerConfiguration, userDefaults: UserDefaults = .standard,
+        durationCache: MediaDurationCache = .shared
+    ) {
         self.configuration = configuration
         self.historyStore =
             userDefaults === UserDefaults.standard ? .shared : PlaybackHistoryStore(userDefaults: userDefaults)
@@ -567,7 +573,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             repeatMode: configuration.playlistRepeatMode,
             isShuffled: configuration.playlistIsShuffled,
             userDefaults: userDefaults,
-            durationCache: .shared
+            durationCache: durationCache
         )
 
         metalRenderer?.uniforms.targetNits = effectiveNits
