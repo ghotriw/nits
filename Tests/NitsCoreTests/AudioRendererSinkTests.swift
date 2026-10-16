@@ -41,11 +41,15 @@ struct AudioRendererSinkTests {
                 accepted.withValue { $0 += 1 }
             }
         }
+        // A renderer that has taken nothing yet is still starting up, not applying backpressure: cancelling then
+        // races the first enqueue, which completes and is rightly counted.
+        let deadline = ContinuousClock.now + .seconds(10)
         var lastCount = -1
-        while accepted.value != lastCount {
+        while lastCount <= 0 || accepted.value != lastCount, ContinuousClock.now < deadline {
             lastCount = accepted.value
             try await Task.sleep(for: .milliseconds(300))
         }
+        try #require(lastCount > 0, "The renderer took no buffer within 10 s")
         try #require(lastCount < buffers.count, "The renderer took all \(buffers.count) buffers without backpressure")
 
         feeding.cancel()
