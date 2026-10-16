@@ -502,6 +502,9 @@ extension PlaybackStressTests {
 
         #expect(engine.currentTime >= 9.0)
 
+        // Only drops caused by the backward seek count; the forward seek and start may skip a tick under load.
+        let droppedBeforeSeek = engine.droppedFramesCount
+
         // Seek backward to 0.0s while playing (equivalent to ⌘← shortcut); wait until the clock runs from there
         engine.seek(to: 0.0, exact: true)
         // Right after the seek the clock still reads the old ~11s; the chase seek restarts it near 0.0s.
@@ -511,10 +514,12 @@ extension PlaybackStressTests {
         }
         try? await Task.sleep(nanoseconds: 300_000_000)
 
-        // Must settle close to 0.0s and resume smoothly without frame bursts
+        // Must settle close to 0.0s and resume smoothly without frame bursts. A stale clock (~11s) drops every
+        // frame queued from 0s (the queue holds up to 60); a few skipped VSYNC ticks under parallel test load don't.
+        let droppedAfterSeek = engine.droppedFramesCount - droppedBeforeSeek
         #expect(
-            engine.droppedFramesCount <= 2,
-            "Stale clock caused frame drop burst on backward seek: \(engine.droppedFramesCount)")
+            droppedAfterSeek <= 4,
+            "Stale clock caused frame drop burst on backward seek: \(droppedAfterSeek)")
         #expect(
             engine.currentTime >= 0.2 && engine.currentTime <= 2.0,
             "Expected currentTime progressing near 0.0s, got \(engine.currentTime)")
@@ -651,12 +656,17 @@ extension PlaybackStressTests {
         for startTime in [nil, 1.0] as [Double?] {
             let engine = Self.makeEngine()
             await engine.loadAsync(MediaLoadRequest(path: path, startTime: startTime))
+            // The seek's first time update is where it settled; `currentTime` read afterwards has already moved on
+            // with the resumed playback by however long the main actor was busy.
+            let landings = LockIsolated<[Double]>([])
+            engine.onTimeUpdate = { time, _ in landings.withValue { $0.append(time) } }
             engine.seek(to: target, exact: true)
             #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
 
+            let landing = landings.value.first ?? -1
             #expect(
-                abs(engine.currentTime - target) < halfFrame,
-                "Seek right after load (start \(String(describing: startTime))) landed at \(engine.currentTime)s")
+                abs(landing - target) < halfFrame,
+                "Seek right after load (start \(String(describing: startTime))) landed at \(landing)s")
             #expect(await engine.waitForClock(toPass: target + 0.2), "Playback did not continue from \(target)s")
             #expect(engine.isPlaying == true)
             engine.stop()
