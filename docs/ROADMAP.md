@@ -261,6 +261,11 @@ flowchart TD
 - [ ] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - AppKit drag-and-drop ingestion (`NSView.registerForDraggedTypes([.fileURL])`) in `NativeVideoHostView`.
   - Dropping `.srt`, `.vtt`, or `.ass` directly attaches the subtitle file to active playback with auto-selection.
+- [x] **4.6.3. Sidecar Subtitle Discovery:**
+  - `movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to a local `movie.mkv` are added as tracks on load
+    (`SidecarSubtitles`); language, forced and SDH tags come from the file name.
+  - Selected automatically only when the media has no subtitle streams and nothing was chosen before: a full track
+    in a preferred system language first.
 
 ---
 

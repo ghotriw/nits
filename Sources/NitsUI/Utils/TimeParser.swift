@@ -60,7 +60,7 @@ public enum TimeParser: Sendable {
     /// - `hh:mm:ss` (e.g. `1:23:45`, `01:23:45`) with strict validation (m < 60, s < 60)
     /// - `mm:ss` (e.g. `14:30`, `05:12`) with strict validation (s < 60)
     /// - Pure seconds (e.g. `90`, `120.5`, `120,5`)
-    /// - Units in English or Russian (e.g. `1h 30m 10s`, `1.5ч`, `45s`, `30сек`)
+    /// - Units in English or Ukrainian (e.g. `1h 30m 10s`, `1.5ч`, `45s`, `30сек`)
     /// - Relative offsets (e.g. `+10`, `+10s`, `-1:30`, `+5m`, `-30сек`)
     /// - Percentage (e.g. `50%`, `25.5%`, `+10%`)
     public static func parse(input: String, currentTime: Double, duration: Double) -> Double? {
@@ -75,7 +75,7 @@ public enum TimeParser: Sendable {
             : trimmed
         guard !cleanRaw.isEmpty else { return nil }
 
-        // Normalize decimal separators (e.g. "1,5" -> "1.5" from Russian / European keyboards)
+        // Normalize decimal separators (e.g. "1,5" -> "1.5" from Ukrainian / European keyboards)
         let clean = cleanRaw.replacingOccurrences(of: ",", with: ".")
 
         // 1. Percentage check (e.g. "50%", "25.5%")
@@ -127,7 +127,7 @@ public enum TimeParser: Sendable {
             return nil
         }
 
-        // 3. Units check: contains 'h', 'm', 's', or Russian units ('ч', 'м', 'с')
+        // 3. Units check: contains 'h', 'm', 's', or Ukrainian units ('г', 'хв', 'с')
         let lower = clean.lowercased()
         if let secondsFromUnits = parseUnits(lower) {
             let target: Double

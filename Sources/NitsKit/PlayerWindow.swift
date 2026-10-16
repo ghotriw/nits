@@ -71,7 +71,7 @@ public final class PlayerWindow: NSWindow {
         case 0x7D:  // Down Arrow
             actionHandler.stepVolume(by: -0.05)
             return true
-        case 0x2E:  // Physical 'M' (ANSI M) -> Mute on any keyboard layout (Russian, Hebrew, etc.)
+        case 0x2E:  // Physical 'M' (ANSI M) -> Mute on any keyboard layout (Ukrainian, Hebrew, etc.)
             actionHandler.toggleMute()
             return true
         case 0x02:  // Physical 'D' (ANSI D) -> Performance HUD on any layout

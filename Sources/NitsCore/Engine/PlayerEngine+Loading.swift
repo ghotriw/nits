@@ -602,7 +602,11 @@ extension PlayerEngine {
             AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(self.subtitleDelay)s")
         }
         self.loadError = nil
+        // Before the saved selection: a saved external file that is one of them maps to the same track.
+        let sidecarTrackIds = addSidecarSubtitles(for: path)
 
+        // Subtitles: explicit request, then the saved selection, then a subtitle file next to the media if it has no
+        // subtitle streams; otherwise none.
         if let spec = requestedSubtitleTrack,
             let preference = Self.resolveSubtitleSelection(spec, in: demuxer.subtitleTracks)
         {
@@ -634,6 +638,9 @@ extension PlayerEngine {
                 selectSubtitleTrack(id: saved, persistHistory: false)
                 AppLog.info(.subtitles, "Restored subtitle track from saved history: \(saved)")
             }
+        } else if demuxer.subtitleTracks.isEmpty, let trackId = defaultExternalSubtitleTrackId(among: sidecarTrackIds) {
+            selectSubtitleTrack(id: trackId, persistHistory: false)
+            AppLog.info(.subtitles, "Selected the subtitle file next to the media: track \(trackId)")
         }
 
         if demuxer.hasVideo {

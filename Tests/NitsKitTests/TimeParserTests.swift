@@ -91,7 +91,7 @@ struct TimeParserTests {
         #expect(TimeParser.parse(input: "45", currentTime: cur, duration: dur) == 45.0)
         #expect(TimeParser.parse(input: "120.5", currentTime: cur, duration: dur) == 120.5)
 
-        // Comma decimal separator (European / Russian keyboard layout)
+        // Comma decimal separator (European / Ukrainian keyboard layout)
         #expect(TimeParser.parse(input: "120,5", currentTime: cur, duration: dur) == 120.5)
         #expect(TimeParser.parse(input: "+30,5", currentTime: cur, duration: dur) == 530.5)
 
@@ -100,7 +100,7 @@ struct TimeParserTests {
         #expect(TimeParser.parse(input: "-60", currentTime: cur, duration: dur) == 440.0)
     }
 
-    @Test("Parse unit strings in English and Russian with dot and comma")
+    @Test("Parse unit strings in English and Ukrainian with dot and comma")
     func testParseUnits() {
         let dur = 7200.0
         let cur = 1000.0
@@ -114,9 +114,9 @@ struct TimeParserTests {
         #expect(TimeParser.parse(input: "+5m", currentTime: cur, duration: dur) == 1300.0)
         #expect(TimeParser.parse(input: "-30s", currentTime: cur, duration: dur) == 970.0)
 
-        // Russian
-        #expect(TimeParser.parse(input: "1ч 15мин", currentTime: cur, duration: dur) == 4500.0)
-        #expect(TimeParser.parse(input: "1,5ч", currentTime: cur, duration: dur) == 5400.0)
+        // Ukrainian
+        #expect(TimeParser.parse(input: "1г 15хв", currentTime: cur, duration: dur) == 4500.0)
+        #expect(TimeParser.parse(input: "1,5г", currentTime: cur, duration: dur) == 5400.0)
         #expect(TimeParser.parse(input: "+10сек", currentTime: cur, duration: dur) == 1010.0)
         #expect(TimeParser.parse(input: "-2мин", currentTime: cur, duration: dur) == 880.0)
     }

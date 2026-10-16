@@ -130,16 +130,44 @@ extension PlayerEngine {
 
         let trackId = 1000 + subtitleTracks.count
         let trackName = url.deletingPathExtension().lastPathComponent
+        let tags = SidecarSubtitles.tags(of: url)
         let track = SubtitleTrack(
             id: trackId,
             streamIndex: -1,
             title: "\(trackName) (External)",
-            language: "und",
-            externalURL: url
+            language: tags.language ?? "und",
+            externalURL: url,
+            isForced: tags.isForced,
+            isSDH: tags.isSDH
         )
         subtitleTracks.append(track)
         loadedSubtitleDocuments[trackId] = document
         return trackId
+    }
+
+    /// Adds the subtitle files next to a local media file as tracks (see `SidecarSubtitles`) and returns their ids.
+    func addSidecarSubtitles(for path: String) -> [Int] {
+        guard !MediaURL.isNetworkURL(path) else { return [] }
+        let mediaURL = URL(string: path).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: path)
+        let ids = SidecarSubtitles.urls(for: mediaURL).compactMap { addExternalSubtitle(url: $0) }
+        if !ids.isEmpty {
+            AppLog.info(.subtitles, "Found \(ids.count) subtitle file(s) next to the media")
+        }
+        return ids
+    }
+
+    /// The subtitle track to select when the media has none of its own: the first full (not forced) track in one of
+    /// the user's preferred languages, else the first full track, else the first.
+    func defaultExternalSubtitleTrackId(among ids: [Int]) -> Int? {
+        let tracks = ids.compactMap { id in subtitleTracks.first { $0.id == id } }
+        let fullTracks = tracks.filter { !$0.isForced }
+        for preferred in Locale.preferredLanguages {
+            guard let code = Locale.Language(identifier: preferred).languageCode else { continue }
+            if let match = fullTracks.first(where: { Locale.Language(identifier: $0.language).languageCode == code }) {
+                return match.id
+            }
+        }
+        return (fullTracks.first ?? tracks.first)?.id
     }
 
     /// Shifts subtitles by `seconds` (clamped to `subtitleDelayRange`, rounded to milliseconds) and saves the delay

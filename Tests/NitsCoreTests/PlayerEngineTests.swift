@@ -197,6 +197,44 @@ struct PlayerEngineTests {
         engine.stop()
     }
 
+    @Test("Subtitle files next to the media become tracks, selected only when the media has no subtitles")
+    @MainActor
+    func testSidecarSubtitlesOnLoad() throws {
+        guard let plainPath = SyntheticTestMediaFactory.ensureMedia(preset: .h263pMKV),
+            let subtitledPath = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles)
+        else { return }
+        // A copy in a folder of its own: subtitle files next to the shared synthetic media would reach other tests.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let srt = "1\n00:00:00,000 --> 00:00:02,000\nSidecar line\n"
+        let plainCopy = directory.appendingPathComponent("plain.mkv")
+        let subtitledCopy = directory.appendingPathComponent("subtitled.mkv")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: plainPath), to: plainCopy)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: subtitledPath), to: subtitledCopy)
+        try srt.write(to: directory.appendingPathComponent("plain.en.forced.srt"), atomically: true, encoding: .utf8)
+        try srt.write(to: directory.appendingPathComponent("plain.srt"), atomically: true, encoding: .utf8)
+        try srt.write(to: directory.appendingPathComponent("subtitled.srt"), atomically: true, encoding: .utf8)
+
+        let engine = PlayerEngine.makeForTesting()
+
+        // No subtitle streams: a full (not forced) sidecar is selected.
+        engine.load(path: plainCopy.path)
+        try #require(engine.isLoaded)
+        #expect(engine.subtitleTracks.filter(\.isExternal).count == 2)
+        let selected = engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }
+        #expect(selected?.externalURL?.lastPathComponent == "plain.srt")
+        #expect(engine.subtitleTracks.contains { $0.isExternal && $0.isForced && $0.language == "en" })
+
+        // Subtitle streams of its own: the sidecar is listed, nothing is selected.
+        engine.load(path: subtitledCopy.path)
+        try #require(engine.isLoaded)
+        #expect(engine.subtitleTracks.count == 6)
+        #expect(engine.subtitleTracks.last?.externalURL?.lastPathComponent == "subtitled.srt")
+        #expect(engine.selectedSubtitleTrackId == nil)
+        engine.stop()
+    }
+
     @Test("Engine handles unavailable network URL gracefully with loadError and not loading")
     @MainActor
     func testLoadAsyncNetworkError() async {
@@ -432,8 +470,8 @@ struct PlayerEngineTests {
             MediaDemuxer.AudioTrack(
                 id: 2,
                 streamIndex: 3,
-                title: "Russian Commentary",
-                language: "rus",
+                title: "Ukrainian Commentary",
+                language: "ukr",
                 codecName: "aac",
                 channels: 2,
                 sampleRate: 48000
@@ -447,7 +485,7 @@ struct PlayerEngineTests {
         // Language code
         #expect(PlayerEngine.resolveAudioTrackId("jpn", in: tracks) == 0)
         #expect(PlayerEngine.resolveAudioTrackId("eng", in: tracks) == 1)
-        #expect(PlayerEngine.resolveAudioTrackId("rus", in: tracks) == 2)
+        #expect(PlayerEngine.resolveAudioTrackId("ukr", in: tracks) == 2)
 
         // Title fragment
         #expect(PlayerEngine.resolveAudioTrackId("Commentary", in: tracks) == 2)
@@ -468,7 +506,7 @@ struct PlayerEngineTests {
     func testResolveSubtitleTrack() {
         let tracks = [
             SubtitleTrack(id: 0, streamIndex: 3, title: "English Full", language: "eng"),
-            SubtitleTrack(id: 1, streamIndex: 4, title: "Russian Forced", language: "rus", isForced: true),
+            SubtitleTrack(id: 1, streamIndex: 4, title: "Ukrainian Forced", language: "ukr", isForced: true),
             SubtitleTrack(id: 2, streamIndex: 5, title: "Japanese Signs & Songs", language: "jpn"),
         ]
 
@@ -489,13 +527,13 @@ struct PlayerEngineTests {
         #expect(PlayerEngine.resolveSubtitleSelection("5", in: tracks) == .select(trackId: 2))
 
         // Language code
-        #expect(PlayerEngine.resolveSubtitleSelection("rus", in: tracks) == .select(trackId: 1))
+        #expect(PlayerEngine.resolveSubtitleSelection("ukr", in: tracks) == .select(trackId: 1))
         #expect(PlayerEngine.resolveSubtitleSelection("jpn", in: tracks) == .select(trackId: 2))
 
         // Title fragment
         #expect(PlayerEngine.resolveSubtitleSelection("Signs", in: tracks) == .select(trackId: 2))
 
-        // Short word false-positive protection (e.g. "ru" won't falsely substring-match arbitrary words if not a word)
+        // Short word false-positive protection (e.g. "uk" won't falsely substring-match arbitrary words if not a word)
         #expect(PlayerEngine.resolveSubtitleSelection("ger", in: tracks) == nil)
         #expect(PlayerEngine.resolveSubtitleSelection("99", in: tracks) == nil)
         #expect(PlayerEngine.resolveSubtitleSelection("stream:99", in: tracks) == nil)

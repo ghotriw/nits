@@ -204,3 +204,40 @@ struct SubtitleDelayTests {
         #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.lowerBound)
     }
 }
+
+@Suite("Sidecar Subtitle Tests")
+struct SidecarSubtitleTests {
+    @Test("Subtitle files named as the media are found, sorted, and other files are left out")
+    func testFindsSidecarFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let names = [
+            "movie.mkv", "movie.srt", "Movie.EN.srt", "movie.en.forced.vtt", "movie.ass", "movie2.srt",
+            "moviestuff.srt", "other.srt", ".movie.srt",
+        ]
+        for name in names {
+            try Data().write(to: directory.appendingPathComponent(name))
+        }
+
+        let found = SidecarSubtitles.urls(for: directory.appendingPathComponent("movie.mkv"))
+        #expect(found.map(\.lastPathComponent) == ["movie.en.forced.vtt", "Movie.EN.srt", "movie.srt"])
+        #expect(SidecarSubtitles.urls(for: URL(string: "https://example.com/movie.mkv")!).isEmpty)
+    }
+
+    @Test("Language, forced and SDH tags are read from the end of the file name")
+    func testNameTags() {
+        func tags(_ name: String) -> SidecarSubtitles.NameTags {
+            SidecarSubtitles.tags(of: URL(fileURLWithPath: "/subs/\(name)"))
+        }
+        #expect(tags("movie.srt") == .init())
+        #expect(tags("movie.en.srt") == .init(language: "en"))
+        #expect(tags("Movie.UKR.srt").language == "ukr")
+        #expect(tags("movie.pt-BR.srt").language == "pt-br")
+        #expect(tags("movie.en.forced.vtt") == .init(language: "en", isForced: true))
+        #expect(tags("movie.ukr.sdh.srt") == .init(language: "ukr", isSDH: true))
+        #expect(tags("The.Movie.2019.1080p.srt") == .init())
+        #expect(tags("film.x264.srt") == .init())
+        #expect(tags("film.und.srt") == .init())
+    }
+}
