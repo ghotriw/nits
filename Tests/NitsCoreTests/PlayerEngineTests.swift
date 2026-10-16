@@ -510,14 +510,13 @@ struct PlayerEngineTests {
             let path2 = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264)
         else { return }
 
-        let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
         let config = PlayerConfiguration(
             resumePlayback: true,
             resumeStartThreshold: 15.0,
             resumeEndThresholdRatio: 0.95
         )
-        let engine = PlayerEngine.makeForTesting(configuration: config, historyStore: historyStore)
+        let engine = PlayerEngine.makeForTesting(configuration: config)
+        let historyStore = engine.historyStore
 
         // 1. Load first file (60s) and seek past resume threshold (to 25.0s)
         engine.load(path: path1)

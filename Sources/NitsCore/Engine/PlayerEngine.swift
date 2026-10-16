@@ -537,9 +537,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.init(configuration: PlayerConfiguration())
     }
 
-    public init(configuration: PlayerConfiguration, historyStore: PlaybackHistoryStore = .shared) {
+    /// - Parameter userDefaults: Where the engine persists playback history and the playlist's repeat / shuffle
+    ///   state. A host embedding the engine, or a test, passes its own store to keep these out of the app's defaults.
+    public init(configuration: PlayerConfiguration, userDefaults: UserDefaults = .standard) {
         self.configuration = configuration
-        self.historyStore = historyStore
+        self.historyStore =
+            userDefaults === UserDefaults.standard ? .shared : PlaybackHistoryStore(userDefaults: userDefaults)
         self.renderMode = configuration.defaultRenderMode
         self.isToneMappingPermitted = configuration.enableToneMapping
         self.targetNitsScale = configuration.targetNitsScale
@@ -561,7 +564,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.playlist = PlaylistManager(
             repeatMode: configuration.playlistRepeatMode,
             isShuffled: configuration.playlistIsShuffled,
-            userDefaults: .standard,
+            userDefaults: userDefaults,
             durationCache: .shared
         )
 

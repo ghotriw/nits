@@ -4,17 +4,17 @@ import Foundation
 @testable import NitsCore
 
 extension PlayerEngine {
-    /// Engine for tests, with silent audio output and its own empty playback history.
+    /// Engine for tests, with silent audio output and its own in-memory defaults.
     ///
     /// Only the renderer is silenced, so the engine's `volume` / `isMuted` stay as configured and tests can assert
     /// on them. The audio device still runs, so the synchronizer clock behaves as in real playback. With the shared
-    /// history, a test would resume wherever another test (or an earlier run) left the same synthetic file.
+    /// defaults, a test would resume wherever another test (or an earlier run) left the same synthetic file.
     @MainActor
     static func makeForTesting(
         configuration: PlayerConfiguration = PlayerConfiguration(),
-        historyStore: PlaybackHistoryStore = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        userDefaults: UserDefaults = InMemoryUserDefaults()
     ) -> PlayerEngine {
-        let engine = PlayerEngine(configuration: configuration, historyStore: historyStore)
+        let engine = PlayerEngine(configuration: configuration, userDefaults: userDefaults)
         engine.audioRenderer.volume = 0
         return engine
     }
