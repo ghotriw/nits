@@ -123,6 +123,45 @@ struct FrameCadenceStatsTests {
         #expect(stats.skippedFrames == 0)
     }
 
+    /// A ProMotion panel running at ~118.5 Hz while `CADisplayLink.duration` says 1/120: 25 fps takes 4.74 ticks per
+    /// frame, not 4.8, and holds of 4 are 26 %, not 20 %.
+    @Test("Tick figures follow the measured vsync spacing, not the link's reported duration")
+    func testMeasuredTickInterval() {
+        var stats = FrameCadenceStats()
+        let reported = 1.0 / 120
+        let actual = 1.0 / 118.5
+        let frameDuration = 0.04
+        let lead = FrameQueue.leadWindowSeconds(nominalFrameDuration: frameDuration)
+        var nextFrame = 0
+        for tickIndex in 0..<(4 * 118) {
+            let target = 100 + Double(tickIndex) * actual
+            stats.recordTick(targetTimestamp: target, tickInterval: reported)
+            // Content clock tied to the actual vsyncs, phase chosen off the frame boundaries.
+            let clock = Double(tickIndex) * actual + 0.0004
+            let pts = Double(nextFrame) * frameDuration
+            guard clock + lead >= pts else { continue }
+            _ = stats.recordFrame(
+                targetTimestamp: target, tickInterval: reported, pts: pts, slack: clock + lead - pts,
+                frameDuration: frameDuration, playbackRate: 1, renderCall: 0)
+            nextFrame += 1
+        }
+        #expect(abs(stats.measuredTickInterval - actual) < 1e-6)
+        #expect(stats.holdTicks.keys.sorted() == [4, 5])
+        #expect(stats.offPatternHolds == 0)
+        let fours = Double(stats.holdTicks[4] ?? 0)
+        let fives = Double(stats.holdTicks[5] ?? 0)
+        #expect(abs(fours / (fours + fives) - 0.26) < 0.03)
+    }
+
+    @Test("On 120 Hz 25p, frame boundaries centred in the 1.7 ms lattice cells are not edge frames")
+    func testEdgeWindowInsideLatticeStep() {
+        // Centred cells put boundaries 0.83 ms from either tick edge: inside the old 1.5 ms window, outside step / 3.
+        let stats = play(fps: 25, linkHz: 120, seconds: 4, clockPhase: 1.0 / 1200)
+        #expect(stats.holdTicks.keys.sorted() == [4, 5])
+        #expect(stats.edgeFrames == 0)
+        #expect(stats.nearTickEdge == 0)
+    }
+
     @Test("A completed window yields a report and starts the next one")
     func testReport() {
         var stats = FrameCadenceStats()

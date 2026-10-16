@@ -54,6 +54,17 @@ struct FrameCadenceStats: Sendable {
     private var frameDuration: Double = 0
     private var playbackRate: Double = 1
 
+    /// Vsync spacing measured from the link's target timestamps, smoothed; 0 until measured. ProMotion panels can run
+    /// measurably off the rate `CADisplayLink.duration` reports, and every tick-based figure uses this instead.
+    private(set) var measuredTickInterval: Double = 0
+    private var linkDuration: CFTimeInterval = 0
+    private var lastTickTarget: CFTimeInterval = 0
+    private var linkTicks = 0
+    private var linkTickSum: Double = 0
+    private var missedLinkTicks = 0
+    private var minLinkTick = Double.infinity
+    private var maxLinkTick: Double = 0
+
     /// Records a frame picked for the vsync at `targetTimestamp` and returns a report when a window is complete.
     /// - Parameters:
     ///   - tickInterval: The display link's vsync spacing (`CADisplayLink.duration`).
@@ -98,7 +109,7 @@ struct FrameCadenceStats: Sendable {
         frames += 1
         measured += hostGap
         framesSinceBaseline += 1
-        let ticks = Int((hostGap / tickInterval).rounded())
+        let ticks = Int((hostGap / effectiveTickInterval).rounded())
         let skipped = Int((ptsGap / frameDuration).rounded()) - 1
         if skipped > 0 {
             skippedFrames += skipped
@@ -119,12 +130,14 @@ struct FrameCadenceStats: Sendable {
         slackSpread = max(slackSpread, runMaxSlack - runMinSlack)
         minSlack = min(minSlack, slack)
         maxSlack = max(maxSlack, slack)
-        let tickInContent = tickInterval * playbackRate
-        if slack < Self.nearTickEdgeSeconds || slack > tickInContent - Self.nearTickEdgeSeconds {
+        let tickInContent = effectiveTickInterval * playbackRate
+        let edgeWindow = edgeWindowSeconds
+        let nearWindow = min(Self.nearTickEdgeSeconds, edgeWindow)
+        if slack < nearWindow || slack > tickInContent - nearWindow {
             nearTickEdge += 1
         }
-        let onTime = slack < Self.edgeSideWindowSeconds
-        let late = slack > tickInContent - Self.edgeSideWindowSeconds
+        let onTime = slack < edgeWindow
+        let late = slack > tickInContent - edgeWindow
         if onTime || late {
             edgeFrames += 1
             if let lastEdgeSideLate, lastEdgeSideLate != late { edgeSideFlips += 1 }
@@ -152,7 +165,43 @@ struct FrameCadenceStats: Sendable {
         if margin < 0 { lateGPUFrames += 1 }
     }
 
-    private var idealTicksPerFrame: Double { frameDuration / (tickInterval * playbackRate) }
+    /// Records a display-link tick for the vsync at `targetTimestamp`, picked frame or not.
+    /// - Parameter tickInterval: The link's reported vsync spacing (`CADisplayLink.duration`).
+    mutating func recordTick(targetTimestamp: CFTimeInterval, tickInterval: CFTimeInterval) {
+        defer { lastTickTarget = targetTimestamp }
+        guard tickInterval > 0 else { return }
+        if abs(tickInterval - linkDuration) > tickInterval * 0.05 {
+            // Another link rate or screen: the old measurement no longer applies.
+            linkDuration = tickInterval
+            measuredTickInterval = 0
+            return
+        }
+        let gap = targetTimestamp - lastTickTarget
+        guard lastTickTarget > 0, gap > 0, gap < Self.maxContinuousHostGap else { return }
+        let vsyncs = max(1, Int((gap / tickInterval).rounded()))
+        let spacing = gap / Double(vsyncs)
+        linkTicks += vsyncs
+        linkTickSum += gap
+        missedLinkTicks += vsyncs - 1
+        minLinkTick = min(minLinkTick, spacing)
+        maxLinkTick = max(maxLinkTick, spacing)
+        measuredTickInterval =
+            measuredTickInterval > 0 ? measuredTickInterval + (spacing - measuredTickInterval) * 0.02 : spacing
+    }
+
+    private var effectiveTickInterval: Double { measuredTickInterval > 0 ? measuredTickInterval : tickInterval }
+
+    private var idealTicksPerFrame: Double { frameDuration / (effectiveTickInterval * playbackRate) }
+
+    /// Slack this close to a tick edge marks an edge frame. Kept well inside a lattice step: on 120 Hz 25p the phases
+    /// frame boundaries take are only 1.7 ms apart, and a wider window would count two of them as edge frames by design.
+    private var edgeWindowSeconds: Double {
+        let contentTick = effectiveTickInterval * playbackRate
+        let step =
+            DisplayClockSmoother.latticeStep(
+                tickInterval: effectiveTickInterval, frameDuration: frameDuration, rate: playbackRate) ?? contentTick
+        return min(Self.edgeSideWindowSeconds, contentTick / 10, step / 3)
+    }
 
     private mutating func reset() {
         measured = 0
@@ -173,6 +222,11 @@ struct FrameCadenceStats: Sendable {
         minGPUMargin = .infinity
         runMinSlack = .infinity
         runMaxSlack = -.infinity
+        linkTicks = 0
+        linkTickSum = 0
+        missedLinkTicks = 0
+        minLinkTick = .infinity
+        maxLinkTick = 0
     }
 
     private func makeReport() -> String {
@@ -185,15 +239,22 @@ struct FrameCadenceStats: Sendable {
             ? "\(Int(ideal.rounded()))×100%"
             : "\(low)×\(Int(((1 - ceilShare) * 100).rounded()))% \(low + 1)×\(Int((ceilShare * 100).rounded()))%"
         let holds = holdTicks.keys.sorted().map { "\($0)×\(holdTicks[$0] ?? 0)" }.joined(separator: " ")
-        let spreadTicks = slackSpread / (tickInterval * playbackRate)
+        let spreadTicks = slackSpread / (effectiveTickInterval * playbackRate)
         let gpuSummary =
             gpuFrames == 0
             ? "GPU not tracked"
             : "GPU done after vsync \(lateGPUFrames)/\(gpuFrames), failed \(failedGPUFrames), min margin \(ms(minGPUMargin)) ms"
+        let linkSummary =
+            linkTicks == 0
+            ? "link \(ms(tickInterval)) ms"
+            : "link \(String(format: "%.3f", linkTickSum / Double(linkTicks) * 1000)) ms mean "
+                + "(duration \(String(format: "%.3f", tickInterval * 1000)), \(String(format: "%.2f", minLinkTick * 1000))…"
+                + "\(String(format: "%.2f", maxLinkTick * 1000)), missed \(missedLinkTicks))"
         return
             "Cadence \(String(format: "%.1f", measured))s: \(frames) frames, "
             + "\(String(format: "%.3f", 1 / frameDuration)) fps at \(String(format: "%.2f", playbackRate))× on "
-            + "\(String(format: "%.1f", 1 / tickInterval)) Hz (ideal \(String(format: "%.2f", ideal)) ticks: \(idealPattern)); "
+            + "\(String(format: "%.2f", 1 / effectiveTickInterval)) Hz, \(linkSummary) "
+            + "(ideal \(String(format: "%.2f", ideal)) ticks: \(idealPattern)); "
             + "held \(holds.isEmpty ? "-" : holds), off-pattern \(offPatternHolds), skipped \(skippedFrames); "
             + "slack \(ms(minSlack))…\(ms(maxSlack)) ms (spread \(String(format: "%.2f", spreadTicks)) ticks, ideal <1), "
             + "near tick edge \(nearTickEdge), edge frames \(edgeFrames) with \(edgeSideFlips) side flips; render call max \(ms(maxRenderCall)) ms; \(gpuSummary)"

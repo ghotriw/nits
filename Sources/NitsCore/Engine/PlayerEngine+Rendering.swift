@@ -288,6 +288,7 @@ extension PlayerEngine {
         }
         let currentSyncTime = CMTime(seconds: pickSeconds, preferredTimescale: 1_000_000)
 
+        frameCadenceLock.withLock { $0.recordTick(targetTimestamp: targetTimestamp, tickInterval: tickInterval) }
         let droppedBefore = frameQueue.pipelineDroppedFramesCount
         let vsyncIntervalMs = tickDiagnosticsLock.withLock { state -> Double in
             defer { state.lastTargetTimestamp = targetTimestamp }

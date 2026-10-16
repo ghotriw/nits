@@ -66,6 +66,9 @@ log stream --level debug --predicate 'subsystem == "com.nits.app" AND category =
 ```
 
 - **`Cadence 5.0s: …`** every 5 s of continuous playback (`FrameCadenceStats`):
+  - `on 118.96 Hz, link 8.403 ms mean (duration 8.333, 6.25…10.42, missed 16)` — vsync spacing measured from the
+    link's target timestamps against what `CADisplayLink.duration` reports, with the spread of single intervals and
+    vsyncs the link skipped. Every tick figure (holds, ideal pattern, spread) uses the measured spacing.
   - `held 2×75 3×50` — how many link ticks each frame stayed up, against the ideal pattern in brackets (25p on
     60 Hz: 2 and 3 ticks, 60/40). `off-pattern` counts other hold lengths, `skipped` frames that never showed.
   - `slack min…max` — how far past its pick threshold each frame was when picked. Steady playback with the phase

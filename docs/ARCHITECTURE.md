@@ -216,10 +216,16 @@ millisecond from tick to tick, so the frame at that point used to flip between t
   step it moves by a whole step, shifting one frame boundary across a vsync once. The bias is the only A/V offset
   added: ±1.7 ms for 25p on 60 Hz, ±8.3 ms at most. Rates without a lattice of ≤ 12 points are not locked.
 
-On an LG UltraFine at 60 Hz with 25p this took the frames sitting on a vsync from about one in five to none in
-steady playback. What remains is the audio clock stepping by ±10–13 ms early in playback (see `OPEN_ISSUES.md`):
-each step makes the lock re-centre for a few seconds. The cadence diagnostics that measure all this are described
-in `docs/LOGGING.md`.
+On an LG UltraFine at 60 Hz with 25p this took the frames sitting on a vsync from about one in five to none: with
+audio on the MacBook speakers, 90 s without a single one and without a clock step. With **Bluetooth audio**
+(AirPods) the synchronizer follows the headphones' clock, which steps by ±10–13 ms, usually in pairs, in the first
+tens of seconds while the link settles; each step makes the lock re-centre, and frames on a vsync flip between ticks
+for a few seconds. The cadence diagnostics that measure all this are described in `docs/LOGGING.md`.
+
+The built-in ProMotion panel does not keep an even vsync grid while playing: successive link targets sit 6.25, 8.33
+or 10.42 ms apart (steps of 1/480 s), averaging ~118.5 Hz instead of 120, and 15–25 of every 600 ticks are skipped.
+That irregularity, not clock jitter, decides where frame boundaries land there, so the phase lock neither helps nor
+hurts (measured with and without it); at an 8.3 ms tick the resulting one-tick errors are hard to see.
 
 ### Picture in Picture
 
