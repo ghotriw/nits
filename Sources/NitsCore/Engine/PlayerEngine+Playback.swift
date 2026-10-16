@@ -224,6 +224,28 @@ extension PlayerEngine {
         )
     }
 
+    /// Moves a held preroll clock forward to the first queued frame when that frame lies just past the anchor.
+    ///
+    /// A start position between two frames (resume positions are arbitrary) has the demuxer flag the frame before
+    /// it as not displayable, so the first queued frame can be up to a frame past the anchor: beyond the half-frame
+    /// lead window in which `popFrame` takes it for a clock that is not moving. The anchor frame would never be
+    /// presented and the preroll would wait for its timeout. Starting a fraction of a frame later costs nothing
+    /// audible; a larger gap is left alone rather than skipping media.
+    nonisolated func alignPendingClockStartWithFirstFrame() {
+        guard frameQueue.getLastRenderedPTS() < 0, let head = frameQueue.headFramePTS, head.isNumeric else { return }
+        let maxGap = CMTime(
+            seconds: nominalFrameDurationLock.withLock { $0 } * 2, preferredTimescale: 1_000_000)
+        let moved = pendingClockStartLock.withLock { pending -> Bool in
+            guard let target = pending?.targetTime, target.isNumeric, head > target, head - target <= maxGap
+            else { return false }
+            pending?.targetTime = head
+            return true
+        }
+        if moved {
+            synchronizer.setRate(0, time: head)
+        }
+    }
+
     /// What the preroll was waiting for: the anchor frame is presented only by a display-link tick, so a timeout
     /// means the link did not tick (hidden or occluded host window, paused link), the decoder delivered nothing,
     /// or the first queued frame lies beyond the anchor time.

@@ -634,6 +634,29 @@ extension PlaybackStressTests {
         engine.stop()
     }
 
+    @Test("Starting between two frames presents the first one without waiting for the preroll timeout")
+    @MainActor
+    func testStartBetweenFramesPrerollsWithoutTimeout() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        // 24 fps: frames at 5.5 and 5.5417. Frames before the start are not displayable, so the first queued frame
+        // lies 31 ms past the anchor, beyond the 21 ms lead window in which a held clock presents it.
+        let startTime = 5.51
+        let engine = Self.makeEngine()
+        let start = ContinuousClock.now
+        engine.load(MediaLoadRequest(path: path, startTime: startTime))
+        #expect(await engine.waitUntil { engine.frameQueue.getLastRenderedPTS() >= 0 }, "No frame presented")
+        let firstFrameAfter = ContinuousClock.now - start
+
+        #expect(
+            firstFrameAfter < PlayerEngine.prerollTimeout,
+            "First frame took \(firstFrameAfter): the preroll waited for its timeout")
+        #expect(engine.frameQueue.getLastRenderedPTS() >= startTime, "Presented a frame before the start position")
+        #expect(await engine.waitForPlayback(), "Playback did not start")
+
+        engine.stop()
+    }
+
     // MARK: - 15. Mid-GOP Start Position (resume from history / explicit start time)
     @Test("Starting playback mid-GOP never presents or drops reordered pre-target B-frames")
     @MainActor

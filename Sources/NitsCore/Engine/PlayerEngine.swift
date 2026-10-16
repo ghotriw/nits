@@ -465,7 +465,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Clock start deferred until the display-link tick has presented the anchor frame
     /// (see `startSynchronizerClockAfterPreroll`). Claimed exactly once by the tick or by the timeout.
     struct PendingClockStart: Sendable {
-        let targetTime: CMTime
+        var targetTime: CMTime
         var rate: Double
         let requestHostTime: Double
         /// Display-link callbacks since the request; explains a preroll timeout (0 → the link is not ticking).
