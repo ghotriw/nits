@@ -138,6 +138,44 @@ A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
   waiting on `isReadyForMoreMediaData` with `Task.sleep` before a direct `enqueue(_:)`. Both throw
   `CancellationError` if cancelled before the buffer is accepted, so pause keeps it pending.
 
+### Stalls and buffering
+
+**Stalled decoders.** A hardware decoder runs in `VTDecoderXPCService`, and `VTDecompressionSessionDecodeFrame`
+waits for it synchronously; when the service stops answering, the call never returns, and nothing can unblock
+it: flushing or invalidating the session starts by waiting for the same service. So the engine never calls a
+decoder where a stall would hang it. The video feeder and the work on the serial `seekQueue` (seek previews,
+frame-step pumps, the flush after a load) go through `StallGuardedVideoDecoder`, which runs each blocking call on
+its own queue and waits at most `decoderStallTimeout` (3 s; calls normally return in milliseconds). On an overrun
+the decoder is silenced and later calls return at once, so the caller finishes without it (a seek lands without a
+preview frame) and `recoverFromStalledDecoder` installs a replacement, a new session first and software
+decoding after a second stall, then seeks to the target of a seek in flight, else to the last presented frame.
+The stalled call keeps its GCD thread for good; the feeder awaits its calls, so no cooperative-pool thread is
+lost. Without the guard on `seekQueue`, one stalled seek would hold every later seek, step and load behind it.
+
+**Buffering.** The synchronizer starts with `delaysRateChangeUntilHasSufficientMediaData = false` and, once
+running, never waits for data. When media runs out mid-playback (a slow network or disk; a video decoder too slow
+for realtime, which also starves audio because the demuxer reads no audio past a full video packet queue), the
+clock would run on through silence, and everything arriving later would be late. `PlayerEngine+Buffering` stops
+the clock instead, sets `isBuffering` (`isPlaying` stays set) and restarts it where it stopped, like mpv's cache
+pause:
+- **Units.** Audio in seconds of playback (media seconds ÷ rate): the renderer queues about a second of playback
+  at any rate (0.9–1.4 s of media at 1x, 2.8–3.9 s at 4x). Video in frames: while frames arrive the feeder keeps
+  25–40 queued whatever the frame rate, which at 60 or 120 fps is well under half a second, so a threshold in
+  seconds would read a full queue as running low.
+- **Trigger** (checked by the 20 Hz periodic time observer): under 0.15 s of audio queued in the renderer
+  (`BufferTrackingAudioSink` tracks the end of the latest enqueued buffer) *and* under 20 frames queued. Audio
+  alone is not a shortage: a track ending before the video must not stop playback, and then the frame queue stays
+  in its range. A low frame queue alone isn't either (a decoder briefly behind), and waiting for an empty one would
+  let the clock run into silence for however much more video than audio was queued. Without audio: frame queue
+  empty with the clock two frames past the last frame.
+- **Resume**: 30 frames *and* 0.5 s of audio queued, or demuxer EOF, starting the clock as a resume from pause
+  does. Both are above the trigger, so a resume does not run straight back into a hold. Audio that has not changed
+  for 0.5 s counts as all there is (the held renderer is full, or the demuxer reads no audio past a full video
+  packet queue): playback then resumes with it if it is above the trigger or video is ready, and stays held if
+  neither, as nothing is arriving.
+- Every path that stops or re-anchors the clock goes through `cancelPreroll()`, which also ends buffering;
+  buffering never starts while seeking, prerolling or after demuxer EOF.
+
 ### Display pacing
 
 `CADisplayLink` from `view.displayLink(target:selector:)` / `screen.displayLink(...)`. Unlike

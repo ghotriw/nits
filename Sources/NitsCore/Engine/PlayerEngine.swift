@@ -254,7 +254,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 pending?.rate = clamped
                 return true
             }
-            if isPlaying && !isPrerollPending {
+            // Buffering also holds the clock; its resume starts it at `playbackRate`.
+            if isPlaying && !isPrerollPending && !isBuffering {
                 let currentRate = playbackRate
                 clockSettlingGuardLock.withLock { guardState in
                     guard var state = guardState else { return }
@@ -371,7 +372,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
     public let metalRenderer = MetalVideoRenderer()
     public let audioRenderer = AVSampleBufferAudioRenderer()
-    let audioSink: any AudioRendererSink
+    let audioSink: BufferTrackingAudioSink
     var videoFeedingTask: Task<Void, Never>?
     var audioFeedingTask: Task<Void, Never>?
     var seekTask: Task<Void, Never>?
@@ -380,6 +381,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Stalled decoders replaced for the current media; after the first, replacements decode in software.
     @ObservationIgnored
     var decoderStallRecoveries = 0
+    /// Playback is on hold until media data arrives again: the clock stands while `isPlaying` stays set. See
+    /// `PlayerEngine+Buffering`.
+    public internal(set) var isBuffering = false
+    @ObservationIgnored
+    var bufferingResumeTask: Task<Void, Never>?
     var audioDecoder: FFAudioDecoder?
     let synchronizer = AVSampleBufferRenderSynchronizer()
     var demuxer: MediaDemuxer?
@@ -612,7 +618,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
             self.enqueueSampleBufferImp = nil
         }
         // Synchronizer drives the audio renderer and the master clock timeline
-        self.audioSink = makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer)
+        self.audioSink = BufferTrackingAudioSink(
+            wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer))
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
@@ -649,6 +656,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
                     // Update active subtitle cues
                     self.updateActiveSubtitles(at: seconds)
+                    self.checkForStarvation()
 
                     // Check if playback reached the end
                     if self.isPlaying && self.duration > 0 && seconds >= (self.duration - 0.25) {

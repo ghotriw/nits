@@ -265,10 +265,13 @@ extension PlayerEngine {
             + "queued frames: \(frameQueue.count), first at \(head); presented: \(presented); anchor: \(anchor)"
     }
 
+    /// Every path that stops or re-anchors the clock (pause, seek, reload, a clock start) passes here, so it also
+    /// ends buffering, which holds the clock the same way.
     func cancelPreroll() {
         pendingClockStartLock.withLock { $0 = nil }
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
+        cancelBuffering()
     }
 
     public func togglePlayPause() {

@@ -95,6 +95,9 @@ selectors (see Video pipeline).
 - **Don't tear down `VTDecompressionSession` on seek** — flush it. Before any invalidate/reset,
   call `VTDecompressionSessionWaitForAsynchronousFrames`; session, format description and output
   handler stay behind a lock.
+- **Decoder calls from the video feeder and `seekQueue` go through `StallGuardedVideoDecoder`**
+  (`stallGuardedDecoder(for:)`), never the bare decoder: a VideoToolbox call can block forever, and on the
+  serial `seekQueue` it would hold every later seek and load. See "Stalls and buffering" in `docs/ARCHITECTURE.md`.
 - **`FrameQueue`** stays a fixed-capacity ring buffer, keeps PTS order (B-frames inserted, not
   appended), and nils a slot as soon as it's popped — held `CVPixelBuffer`s starve the decoder's
   `IOSurface` pool.
@@ -117,6 +120,9 @@ selectors (see Video pipeline).
 - **Backpressure** is cooperative: video feeding pauses at a queue high-water mark using
   `Task.sleep`; audio relies on `await audioSink.enqueue(...)` (`Receiver` on macOS 27+, readiness
   polling with `Task.sleep` on 15–26). Never block threads.
+- **Code that stops or re-anchors the synchronizer clock goes through `cancelPreroll()`** (directly or via
+  `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`): it also ends a pending preroll and
+  buffering, whose tasks would otherwise restart the clock at a stale position.
 - **Picture in Picture** mirrors the display layer 1:1 (macOS AVKit bug), so while it is active the
   layer's geometry comes from `pictureInPictureLayerGeometry`, not the host view's bounds. Keep the
   AVKit workarounds guarded (act only on a broken layout) and don't give PiP a controlTimebase of its

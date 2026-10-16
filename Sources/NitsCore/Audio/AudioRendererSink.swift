@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import os
 
 /// Feeds decoded audio to the `AVSampleBufferAudioRenderer` attached to the master-clock synchronizer.
 ///
@@ -66,5 +67,46 @@ private final class LegacyAudioSink: AudioRendererSink, @unchecked Sendable {
 
     func flush() {
         renderer.flush()
+    }
+}
+
+/// Remembers how far the audio handed to the renderer reaches, so the engine can tell when the renderer is about
+/// to run dry (see `PlayerEngine+Buffering`). A flush forgets it.
+final class BufferTrackingAudioSink: AudioRendererSink {
+    private struct State {
+        var end: CMTime?
+        /// Bumped by `flush()`, so an enqueue that was in flight across it doesn't record pre-flush media.
+        var generation: UInt64 = 0
+    }
+
+    private let wrapped: any AudioRendererSink
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(wrapping wrapped: any AudioRendererSink) {
+        self.wrapped = wrapped
+    }
+
+    /// End of the latest audio enqueued since the last flush; `nil` if none.
+    var bufferedEnd: CMTime? {
+        state.withLock { $0.end }
+    }
+
+    func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
+        let generation = state.withLock { $0.generation }
+        let end = CMSampleBufferGetPresentationTimeStamp(sampleBuffer) + CMSampleBufferGetDuration(sampleBuffer)
+        try await wrapped.enqueue(sampleBuffer)
+        guard end.isNumeric else { return }
+        state.withLock { state in
+            guard state.generation == generation else { return }
+            state.end = state.end.map { max($0, end) } ?? end
+        }
+    }
+
+    func flush() {
+        state.withLock { state in
+            state.end = nil
+            state.generation &+= 1
+        }
+        wrapped.flush()
     }
 }

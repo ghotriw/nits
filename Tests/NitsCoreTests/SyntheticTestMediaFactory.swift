@@ -8,6 +8,10 @@ public enum SyntheticTestMediaFactory {
     public enum Preset: String, CaseIterable, Sendable {
         /// Standard multi-track video: H.264 video with GOP=24, AC3 5.1 Surround audio, and AAC Stereo audio (30 seconds)
         case multiTrackH264
+        /// H.264 at 60 fps with stereo AAC (20 seconds): a frame queue of 25–40 frames holds under 0.7 s
+        case h264HFR60
+        /// H.264 without an audio track (20 seconds)
+        case videoOnlyH264
         /// Audio-only multi-channel FLAC (15 seconds)
         case audioOnlyFLAC
         /// HEVC 10-bit HDR video with BT.2020 color primaries and PQ transfer function (10 seconds)
@@ -83,6 +87,10 @@ public enum SyntheticTestMediaFactory {
             switch self {
             case .multiTrackH264:
                 return "synth_multitrack_h264_51_stereo.mkv"
+            case .h264HFR60:
+                return "synth_h264_60fps.mp4"
+            case .videoOnlyH264:
+                return "synth_h264_video_only.mp4"
             case .audioOnlyFLAC:
                 return "synth_audio_flac_51.flac"
             case .hevc10BitHDR:
@@ -343,6 +351,25 @@ public enum SyntheticTestMediaFactory {
                 "language=eng",
                 "-c:a:1", "aac", "-b:a:1", "128k", "-metadata:s:a:1", "title=Stereo 2.0", "-metadata:s:a:1",
                 "language=ukr",
+                outputPath,
+            ]
+
+        case .h264HFR60:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60:duration=20",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60",
+                "-c:a", "aac", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .videoOnlyH264:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=20",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "24",
+                "-an",
                 outputPath,
             ]
 
