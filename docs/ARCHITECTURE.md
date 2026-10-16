@@ -144,6 +144,13 @@ A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
 `CVDisplayLink`, it follows the window across screens, tracks ProMotion/VRR, and needs no
 `Unmanaged` C callbacks. Lifecycle: `isPaused` / `invalidate()`.
 
+The links are created and configured on the main thread but fire on the run loop of a dedicated thread
+(`DisplayLinkThread`). On the main run loop every UI stall became a skipped tick and a dropped frame:
+SwiftUI redrawing the window waits synchronously for WindowServer (a repeating symbol animation alone
+did that every frame), and resizes, panels and sheets all run there. The tick touches only lock-guarded
+engine state, the Metal renderer (own lock) and the display layer, whose enqueues and flushes share
+`displayLayerLock` with the main-thread previews, seeks and loads; UI state goes to the main actor.
+
 Every tick presents a frame (`DisplayImmediately` / Metal draw), so the tick rate is the presentation
 cadence. The link only delivers rates that divide the screen's maximum refresh (120 Hz ProMotion:
 120/60/40/30/24), so `preferredDisplayLinkRate` picks the lowest such rate ≥ 48 Hz that is a whole multiple
@@ -152,8 +159,8 @@ the unavoidable cadence error smallest (25 / 50 fps on 120 Hz; 23.976 counts as 
 A fixed 60 Hz request would give 24p film 3:2 pulldown judder; a fixed 120 Hz one wastes ProMotion power on 30/60 fps content.
 
 Frames are chosen for the clock at the vsync they will appear on — `synchronizer.currentTime()` projected to
-`link.targetTimestamp` — because the callback runs on the main run loop and its latency jitters by
-milliseconds; sampling the clock there skips frames whenever content fps is close to the link rate.
+`link.targetTimestamp` — because callback latency jitters by milliseconds; sampling the clock at callback
+time skips frames whenever content fps is close to the link rate.
 
 ### Picture in Picture
 

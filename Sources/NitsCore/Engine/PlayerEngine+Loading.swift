@@ -778,7 +778,7 @@ extension PlayerEngine {
         if !demuxer.hasVideo {
             clearVideoSurface()
         } else {
-            _ = self.sampleBufferRenderer.perform(Self.flushSelector)
+            flushDisplayLayer(removingDisplayedImage: false)
         }
         self.audioSink.flush()
         self.audioDecoder?.flush()

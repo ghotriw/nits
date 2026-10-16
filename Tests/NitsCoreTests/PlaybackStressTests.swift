@@ -294,15 +294,17 @@ extension PlaybackStressTests {
 
         // The demuxer reads all tracks from one position, ahead of the clock by what is buffered. A new track that
         // simply continued from there would start up to a second ahead, and more with every switch.
+        // Compared with the frame on screen at the switch rather than the clock read afterwards: under parallel test
+        // load the main actor reaches that read late, and the clock has moved on by then.
         for track in [tracks[1], tracks[0], tracks[1]] {
             engine.firstFedAudioPTS.withLock { $0 = nil }
+            let switchedAt = engine.currentFramePTS
             engine.selectAudioTrack(id: track.id)
             #expect(await engine.waitUntil { engine.firstFedAudioPTS.withLock { $0 } != nil })
             let audioStart = engine.firstFedAudioPTS.withLock { $0 }?.seconds ?? -1
-            let clock = engine.synchronizer.currentTime().seconds
             #expect(
-                abs(audioStart - clock) < 0.3,
-                "Track \(track.id) audio resumed at \(audioStart)s with the clock at \(clock)s")
+                abs(audioStart - switchedAt) < 0.3,
+                "Track \(track.id) audio resumed at \(audioStart)s, switched at frame \(switchedAt)s")
             #expect(await engine.waitForPlayback(), "Playback did not resume after switching to track \(track.id)")
         }
 
@@ -685,6 +687,39 @@ extension PlaybackStressTests {
             "First frame took \(firstFrameAfter): the preroll waited for its timeout")
         #expect(engine.frameQueue.getLastRenderedPTS() >= startTime, "Presented a frame before the start position")
         #expect(await engine.waitForPlayback(), "Playback did not start")
+
+        engine.stop()
+    }
+
+    @Test("A busy main thread does not drop or delay video frames")
+    @MainActor
+    func testBusyMainThreadDoesNotDropFrames() async {
+        guard let path = Self.findTestMedia() else { return }
+
+        let engine = Self.makeEngine()
+        engine.load(path: path)
+        // Without a screen there is no display link to pace frames (headless CI).
+        guard engine.displayLink != nil else {
+            engine.stop()
+            return
+        }
+        #expect(await engine.waitForPlayback(advancingBy: 0.5))
+
+        // UI work keeps the main thread busy for a frame or more at a time: SwiftUI redrawing the window waits for
+        // WindowServer, a panel animates, the window resizes. Video presentation must not depend on it.
+        let droppedBefore = engine.pipelineDroppedFramesCount
+        let presentedBefore = engine.frameQueue.getLastRenderedPTS()
+        for _ in 0..<10 {
+            let busyUntil = ContinuousClock.now + .milliseconds(150)
+            while ContinuousClock.now < busyUntil {}
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let dropped = engine.pipelineDroppedFramesCount - droppedBefore
+        let presentedAdvance = engine.frameQueue.getLastRenderedPTS() - presentedBefore
+
+        // A tick on the main run loop drops ~27 frames here; parallel test load can still delay a few ticks.
+        #expect(dropped <= 4, "\(dropped) frames dropped while the main thread was busy")
+        #expect(presentedAdvance > 2.0, "Presented frames advanced only \(presentedAdvance)s in 2.5s of playback")
 
         engine.stop()
     }

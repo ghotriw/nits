@@ -326,10 +326,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Enqueues a ready sample buffer to the (synchronizer-decoupled) display layer. See the
     /// note above on why selector dispatch is used instead of `enqueue(_:)`.
     nonisolated func enqueueToDisplayLayer(_ sample: CMSampleBuffer) {
+        displayLayerLock.lock()
+        defer { displayLayerLock.unlock() }
         if let fn = enqueueSampleBufferImp {
             fn(sampleBufferRenderer, Self.enqueueSampleBufferSelector, sample)
         } else {
             _ = sampleBufferRenderer.perform(Self.enqueueSampleBufferSelector, with: sample)
+        }
+    }
+
+    /// Flushes the display layer, keeping its current image unless `removingDisplayedImage`.
+    nonisolated func flushDisplayLayer(removingDisplayedImage: Bool) {
+        displayLayerLock.lock()
+        defer { displayLayerLock.unlock() }
+        if removingDisplayedImage {
+            Self.flushRemovingDisplayedImage(sampleBufferRenderer)
+        } else {
+            _ = sampleBufferRenderer.perform(Self.flushSelector)
         }
     }
 
@@ -350,6 +363,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     nonisolated(unsafe) public let displayLayer = AVSampleBufferDisplayLayer()
     nonisolated(unsafe) let sampleBufferRenderer: AVSampleBufferVideoRenderer
+    /// Serializes enqueues and flushes: the display-link tick enqueues on its own thread
+    /// (`DisplayLinkThread`) while seeks, previews and loads enqueue or flush on the main thread.
+    @ObservationIgnored
+    let displayLayerLock = OSAllocatedUnfairLock()
     @ObservationIgnored
     let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
     public let metalRenderer = MetalVideoRenderer()

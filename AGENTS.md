@@ -87,7 +87,9 @@ selectors (see Video pipeline).
 - **Pacing** comes from `CADisplayLink`. Its rate is matched to the content
   (`preferredDisplayLinkRate`): the lowest divisor of the screen's max refresh that is ≥ 48 Hz and a whole
   multiple of the content fps, else the screen max; re-evaluated on load and screen change. Frames are picked
-  for the synchronizer clock projected to `link.targetTimestamp`, never the clock at callback time.
+  for the synchronizer clock projected to `link.targetTimestamp`, never the clock at callback time. Links fire on
+  `DisplayLinkThread`, never the main run loop (UI stalls there dropped frames); the tick may only touch
+  lock-guarded state, and display-layer enqueues / flushes go through `displayLayerLock`.
 - **Seeks** run on the serial `seekQueue` with a `currentSeekId` generation token; stale seeks are
   dropped. Seek and render-mode switches clear `FrameQueue` and flush decoder and renderer.
 - **Don't tear down `VTDecompressionSession` on seek** — flush it. Before any invalidate/reset,

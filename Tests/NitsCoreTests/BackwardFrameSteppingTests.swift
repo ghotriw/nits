@@ -22,13 +22,19 @@ struct BackwardFrameSteppingTests {
         // skips seeding the step cache.
         #expect(await engine.waitUntil { engine.isPlaying }, "Load did not autoplay")
         engine.pause()
+        #expect(
+            await engine.waitUntil { !engine.isPlaying && !engine.isSeeking && engine.pendingSeekTime == nil },
+            "Pause did not settle")
 
         // Keyframes every 5s → 3.5s is deep inside a GOP (~84 frames from the keyframe at 0s).
         engine.seek(to: 3.5)
         #expect(await engine.waitForSeekToSettle())
 
         // The seek must seed a real backward window, not just the handful of forward over-read frames.
-        #expect(engine.stepFrameCache.count > 10)
+        #expect(
+            engine.stepFrameCache.count > 10,
+            "Step cache holds \(engine.stepFrameCache.count) frames (playing: \(engine.isPlaying), frame \(engine.currentFramePTS)s)"
+        )
 
         // Each backward step from the window updates currentFramePTS synchronously (cache hit). A full
         // re-seek would be asynchronous and leave currentFramePTS unchanged immediately after the call.

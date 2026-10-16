@@ -13,7 +13,7 @@ extension PlayerEngine {
         // If a screen is available on initialization, attach CADisplayLink to NSScreen.main
         if let screen = NSScreen.main {
             let link = screen.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-            link.add(to: .main, forMode: .common)
+            link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
             link.isPaused = true
             self.displayLink = link
             updateDisplayLinkFrameRate()
@@ -28,7 +28,7 @@ extension PlayerEngine {
         self.displayLinkTarget = target
 
         let link = view.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-        link.add(to: .main, forMode: .common)
+        link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
         link.isPaused = !isPlaying
         self.displayLink = link
         self.displayLinkHostView = view
@@ -54,7 +54,7 @@ extension PlayerEngine {
             return
         }
         displayLink?.invalidate()
-        link.add(to: .main, forMode: .common)
+        link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
         link.isPaused = !isPlaying
         self.displayLink = link
         AppLog.debug(.video, "Display link follows \(isPictureInPictureActive ? "screen (PiP)" : "host view")")
@@ -562,7 +562,7 @@ extension PlayerEngine {
     public func clearVideoSurface() {
         cachedVideoFormatDescription.withLock { $0 = nil }
         frameQueue.clear(resetDroppedFrames: true)
-        Self.flushRemovingDisplayedImage(sampleBufferRenderer)
+        flushDisplayLayer(removingDisplayedImage: true)
         metalRenderer?.clear()
     }
 }
