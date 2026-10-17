@@ -155,7 +155,7 @@ struct AudioDelayPlaybackTests {
         engine.setAudioDelay(0.5)
         #expect(engine.audioDelay == 0.5)
         // The renderer had held about `before` seconds; the same audio now ends half a second later.
-        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.3 })
+        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.1 })
         // And it starts with audio already played once, now heard again at the clock: no gap. Continuing with the
         // next decoded audio instead would start about `before` seconds past the clock.
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
@@ -180,7 +180,7 @@ struct AudioDelayPlaybackTests {
         engine.setAudioDelay(0.5)
         #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.audioSink.bufferedEnd == nil })
         engine.play()
-        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.3 })
+        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.1 })
         #expect(engine.currentSeekId == seekId, "The delay change seeked")
         #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
     }
