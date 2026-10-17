@@ -11,7 +11,7 @@ import os
 ///
 /// If sample creation rejected the cached descriptor frame-to-frame, the cache would be a no-op (recreating the
 /// descriptor every tick) plus a failed creation per frame.
-@Suite("Format Description Cache Hit Tests")
+@Suite("Format Description Cache Hit Tests", .hostDependent)
 struct FormatDescriptionCacheTests {
 
     /// Decodes real frames through VTVideoDecoder (the decoder that feeds the system render path)

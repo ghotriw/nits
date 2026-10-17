@@ -6,7 +6,7 @@ import os
 
 @testable import NitsCore
 
-@Suite("WMV Playback & FFmpeg Software Decoding Tests")
+@Suite("WMV Playback & FFmpeg Software Decoding Tests", .hostDependent)
 struct WMVPlaybackTests {
 
     @Test("MediaDemuxer correctly identifies WMV2 codec and produces valid format description")

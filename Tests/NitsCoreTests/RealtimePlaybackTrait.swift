@@ -6,7 +6,7 @@ import Testing
 /// playing). Run alongside each other they share the main actor, the audio device and the decoders, so a slow CI
 /// runner turns ordinary scheduling delays into failures. `.serialized` only orders the tests within one suite.
 ///
-/// Apply it to a suite (it is recursive) or to single tests; nesting both is fine.
+/// Apply it to a suite (it is recursive) or to single tests; nesting both is fine. It implies `.hostDependent`.
 struct RealtimePlaybackTrait: SuiteTrait, TestTrait, TestScoping {
     var isRecursive: Bool { true }
 
@@ -19,6 +19,8 @@ struct RealtimePlaybackTrait: SuiteTrait, TestTrait, TestScoping {
     func provideScope(
         for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void
     ) async throws {
+        // Real-time playback is host-dependent by definition; see `HostDependentTrait`.
+        try HostDependentTrait.cancelIfSkipped()
         if Self.isHoldingGate {
             try await function()
             return

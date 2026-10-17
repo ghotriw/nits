@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Audio renderer sink")
+@Suite("Audio renderer sink", .hostDependent)
 struct AudioRendererSinkTests {
     private static func decodedAudio(seconds: Double) throws -> [CMSampleBuffer] {
         let path = try #require(SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC))

@@ -4,7 +4,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Backward Frame-Stepping Window")
+@Suite("Backward Frame-Stepping Window", .hostDependent)
 @MainActor
 struct BackwardFrameSteppingTests {
     /// Regression guard: a paused exact seek into the middle of a long GOP must seed the step cache with a

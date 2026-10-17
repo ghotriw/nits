@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("VP9 Playback & Decoding Tests")
+@Suite("VP9 Playback & Decoding Tests", .hostDependent)
 struct VP9PlaybackTests {
 
     @Test("MediaDemuxer correctly identifies VP9 SDR codec in WebM and creates format description")

@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Decode+Convert Throughput")
+@Suite("Decode+Convert Throughput", .hostDependent)
 struct DecodeThroughputTests {
     private func measure(preset: SyntheticTestMediaFactory.Preset, label: String, repeats: Int) {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else {

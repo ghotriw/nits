@@ -3,7 +3,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Container Chapters")
+@Suite("Container Chapters", .hostDependent)
 struct ChapterTests {
     private static func chapters(_ starts: [Double], duration: Double) -> [MediaChapter] {
         MediaChapter.normalized(starts.map { MediaChapter.Raw(title: nil, start: $0, end: nil) }, duration: duration)

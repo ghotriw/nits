@@ -6,7 +6,7 @@ import os
 
 @testable import NitsCore
 
-@Suite("Thumbnail System Tests")
+@Suite("Thumbnail System Tests", .hostDependent)
 struct ThumbnailTests {
 
     @Test("ThumbnailDiskCache computes stable keys and stores/loads thumbnails")

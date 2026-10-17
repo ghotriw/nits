@@ -200,7 +200,7 @@ struct DecoderStallRecoveryTests {
     }
 }
 
-@Suite("StallGuardedVideoDecoder", .timeLimit(.minutes(1)))
+@Suite("StallGuardedVideoDecoder", .hostDependent, .timeLimit(.minutes(1)))
 struct StallGuardedVideoDecoderTests {
     /// Counts calls; `decode` blocks while `blocking` is set, until `release()`.
     private final class BlockingDecoder: VideoDecoderProtocol, @unchecked Sendable {

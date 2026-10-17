@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Legacy & Software-Decoded Video (FFmpegVideoDecoder)")
+@Suite("Legacy & Software-Decoded Video (FFmpegVideoDecoder)", .hostDependent)
 struct LegacyVideoPlaybackTests {
 
     struct Case: Sendable, CustomTestStringConvertible {

@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Deinterlacing (MetalDeinterlacer via FFmpegVideoDecoder)")
+@Suite("Deinterlacing (MetalDeinterlacer via FFmpegVideoDecoder)", .hostDependent)
 struct DeinterlaceTests {
 
     /// 8-bit luma of one decoded frame, tightly packed.
@@ -296,7 +296,7 @@ struct DeinterlaceTests {
     }
 }
 
-@Suite("MPEG-TS / MPEG-PS start")
+@Suite("MPEG-TS / MPEG-PS start", .hostDependent)
 struct UnindexedStreamStartTests {
     /// After probing parameter sets the demuxer rewinds; a timestamp seek in TS / PS used to land past the
     /// first packet and drop the opening keyframe, so H.264 lost its whole first GOP.
@@ -322,7 +322,7 @@ struct UnindexedStreamStartTests {
     }
 }
 
-@Suite("Field timing")
+@Suite("Field timing", .hostDependent)
 struct FieldTimingTests {
     private func durations(_ seconds: Double, repeated: Int = 0) -> (first: Double, second: Double)? {
         FieldTiming.durations(ofFrame: CMTime(seconds: seconds, preferredTimescale: 90000), repeatedFields: repeated)

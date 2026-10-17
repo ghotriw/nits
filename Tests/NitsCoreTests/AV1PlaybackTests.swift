@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("AV1 Playback & dav1d Decoding Tests")
+@Suite("AV1 Playback & dav1d Decoding Tests", .hostDependent)
 struct AV1PlaybackTests {
 
     @Test("MediaDemuxer correctly identifies AV1 codec and produces format description")

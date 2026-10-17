@@ -3,7 +3,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Media Duration Probe & Cache Tests")
+@Suite("Media Duration Probe & Cache Tests", .hostDependent)
 struct MediaDurationTests {
 
     /// Polls `condition` every 20 ms until it holds or `timeout` passes.
