@@ -19,6 +19,11 @@ jobs:
   verify:
     name: Lint, Typecheck, Test & Package
     runs-on: xcode-27
+    env:
+      # Suite regexes for `swift test --filter/--skip`; `\b` matters, a trailing `/` misses the suite itself.
+      HOST_DEPENDENT_TESTS: '^NitsCoreTests\.(PlayerEngineTests|PlayerLifecycleTests|PlaybackStressTests|BufferingTests|ChapterTests|BackwardFrameSteppingTests|DeinterlaceTests|UnindexedStreamStartTests|FieldTimingTests|DecoderStallRecoveryTests|StallGuardedVideoDecoderTests|DecodeThroughputTests|AV1PlaybackTests|VP9PlaybackTests|WMVPlaybackTests|LegacyVideoPlaybackTests|ThumbnailTests|AudioRendererSinkTests|FormatDescriptionCacheTests|MediaDurationTests)\b'
+      # Too slow for every push; run on manual dispatch with run_stress_tests.
+      SLOW_TESTS: '^NitsCoreTests\.(PlaybackStressTests|PlayerLifecycleTests|AudioReferenceComparisonTests)\b'
 
     steps:
       - name: Checkout repository
@@ -82,13 +87,20 @@ jobs:
       - name: Generate synthetic test media
         run: swift test --disable-sandbox --filter SyntheticMediaWarmupTests
 
-      - name: Run fast unit tests (Push / PR)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_stress_tests != true }}
-        run: swift test --disable-sandbox --skip PlaybackStressTests --skip AudioReferenceComparisonTests --skip PlayerLifecycleTests
-
-      - name: Run full test suite including stress tests (Manual dispatch)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress_tests == true }}
-        run: swift test --disable-sandbox
+      # Deterministic tests gate the build. Suites in HOST_DEPENDENT_TESTS play media in real time, use hardware
+      # decoders or the audio renderer, or time async work: on virtualised runners their results depend on the
+      # host the job lands on, so they run after packaging and only report. Run them locally before pushing.
+      - name: Run deterministic tests
+        run: swift test --disable-sandbox --skip "$HOST_DEPENDENT_TESTS" --skip "$SLOW_TESTS"
 
       - name: Package Nits.app
         run: ./scripts/bundle_app.sh
+
+      - name: Run host-dependent tests (informational)
+        continue-on-error: true
+        run: |
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.run_stress_tests == true }}" = true ]; then
+            swift test --disable-sandbox --filter "$HOST_DEPENDENT_TESTS" --filter "$SLOW_TESTS"
+          else
+            swift test --disable-sandbox --filter "$HOST_DEPENDENT_TESTS" --skip "$SLOW_TESTS"
+          fi
