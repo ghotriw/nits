@@ -854,8 +854,8 @@ extension PlayerEngine {
         // 2. PlaybackHistoryStore saved position (if resume is enabled)
         // 3. Fallback to 0.0
         let effectiveStartTime: Double
-        if let explicit = requestedStartTime, explicit > 0 {
-            effectiveStartTime = min(explicit, max(0.0, self.duration - 1.0))
+        if let explicit = requestedStartTime {
+            effectiveStartTime = min(max(0.0, explicit), max(0.0, self.duration - 1.0))
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")
         } else if configuration.resumePlayback,
             let saved = historyStore.savedPosition(

@@ -17,7 +17,8 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// HTTP/HTTPS or streaming headers (e.g. auth tokens, custom user-agent).
     public var headers: [String: String]
 
-    /// An optional custom start playback position in seconds.
+    /// An optional custom start playback position in seconds. Any value, including `0`, overrides the saved
+    /// resume position; `nil` leaves resuming to `PlayerConfiguration.resumePlayback`.
     public var startTime: Double?
 
     /// Optional track identifier or language name to select for audio upon loading.

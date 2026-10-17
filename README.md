@@ -71,7 +71,7 @@ controller.openStream(
     title: "Movie Title", // Optional; falls back to URL filename/host
     artworkURL: URL(string: "https://media.server/poster.jpg"), // Optional; displayed in Now Playing / Control Center
     headers: ["Authorization": "Bearer secret_token"],
-    startTime: 120.0,     // Optional; overrides local resume history
+    startTime: 120.0,     // Optional; overrides local resume history (0 starts from the beginning)
     audioTrack: "jpn",    // Optional; track id, "stream:N" (container stream index), or language/title; overrides history
     subtitleTrack: "eng"  // Optional; track id, "stream:N", language/title, or "off"/"none"; overrides history
 )
@@ -161,7 +161,7 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 | `--no-tone-mapping` | Disable SDR tone mapping |
 | `--sharpness=0.0–1.0` | Sharpening strength (default 0.5) |
 | `--volume=0.0–1.0` | Initial volume |
-| `--start-time=<sec>` | Start at a given position, ignoring history |
+| `--start-time=<sec>` | Start at a given position, ignoring history (`0` starts from the beginning) |
 | `--no-resume` | Don't restore the saved position |
 | `--audio-track=<id\|name>` | Pick audio track |
 | `--subtitle-track=<id\|name\|off>` | Pick subtitle track |

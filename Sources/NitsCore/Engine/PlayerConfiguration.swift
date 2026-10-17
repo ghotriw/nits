@@ -120,7 +120,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// When disabled, all seeks navigate strictly by keyframes.
     public var exactSeekOnSinglePress: Bool
 
-    /// Explicit start time in seconds requested on launch (if provided, overrides resume history).
+    /// Explicit start time in seconds requested on launch (if provided, including `0`, overrides resume history).
     public var startTime: Double?
 
     /// Explicit audio track requested on launch: internal track id (`0, 1...`), explicit stream index
