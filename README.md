@@ -29,7 +29,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 **Next**
 - [ ] Styled ASS/SSA subtitles
 - [ ] Bitmap subtitles (PGS / VOBSUB)
-- [ ] Audio sync delay adjustment
+- [x] Audio sync delay adjustment
 - [x] Subtitle sync delay adjustment
 - [ ] Apple ProRes support
 - [x] Timeline thumbnails

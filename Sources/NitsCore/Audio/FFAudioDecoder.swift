@@ -147,6 +147,16 @@ public final class FFAudioDecoder: @unchecked Sendable {
         undeliveredOutput.append(contentsOf: buffers)
     }
 
+    /// Puts buffers taken back from the renderer (an audio delay change) in front of the stashed ones, unless a flush
+    /// happened since `generation` was read.
+    public func requeue(_ buffers: [CMSampleBuffer], generation: Int) {
+        guard !buffers.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == flushGeneration else { return }
+        undeliveredOutput.insert(contentsOf: buffers, at: 0)
+    }
+
     /// Returns (and forgets) the buffers stashed by an interrupted feeding run, in presentation order.
     public func takeUndelivered() -> [CMSampleBuffer] {
         lock.lock()

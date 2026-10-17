@@ -14,6 +14,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let subtitleTrackId: Int?
     /// Subtitle delay in seconds (`nil` if never set).
     public let subtitleDelay: Double?
+    /// Audio delay in seconds (`nil` if never set).
+    public let audioDelay: Double?
     /// Path of the selected external subtitle file, when `subtitleTrackId` is `externalSubtitle`.
     public let externalSubtitlePath: String?
 
@@ -34,6 +36,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.audioTrackId = preferences.audioTrackId
         self.subtitleTrackId = preferences.subtitleTrackId
         self.subtitleDelay = preferences.subtitleDelay
+        self.audioDelay = preferences.audioDelay
         self.externalSubtitlePath = preferences.externalSubtitlePath
     }
 
@@ -42,6 +45,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
             audioTrackId: audioTrackId,
             subtitleTrackId: subtitleTrackId,
             subtitleDelay: subtitleDelay,
+            audioDelay: audioDelay,
             externalSubtitlePath: externalSubtitlePath
         )
     }
@@ -54,17 +58,20 @@ public struct PlaybackPreferences: Sendable, Equatable {
     /// See `PlaybackRecord.subtitleTrackId`.
     public var subtitleTrackId: Int?
     public var subtitleDelay: Double?
+    public var audioDelay: Double?
     public var externalSubtitlePath: String?
 
     public init(
         audioTrackId: Int? = nil,
         subtitleTrackId: Int? = nil,
         subtitleDelay: Double? = nil,
+        audioDelay: Double? = nil,
         externalSubtitlePath: String? = nil
     ) {
         self.audioTrackId = audioTrackId
         self.subtitleTrackId = subtitleTrackId
         self.subtitleDelay = subtitleDelay
+        self.audioDelay = audioDelay
         self.externalSubtitlePath = externalSubtitlePath
     }
 
@@ -74,13 +81,14 @@ public struct PlaybackPreferences: Sendable, Equatable {
             audioTrackId: audioTrackId ?? saved?.audioTrackId,
             subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
             subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
+            audioDelay: audioDelay ?? saved?.audioDelay,
             externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath
         )
     }
 
     /// Whether there is a preference worth keeping without a resume position.
     var isEmpty: Bool {
-        audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0
+        audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0 && (audioDelay ?? 0) == 0
     }
 }
 

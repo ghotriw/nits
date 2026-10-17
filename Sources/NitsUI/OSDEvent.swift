@@ -11,6 +11,7 @@ public enum OSDEvent: Equatable, Sendable {
     case audioTrack(title: String)
     case subtitleTrack(title: String)
     case subtitleDelay(seconds: Double)
+    case audioDelay(seconds: Double)
     case renderMode(modeName: String)
     case sharpness(value: Float)
     case playbackRate(rate: Double)

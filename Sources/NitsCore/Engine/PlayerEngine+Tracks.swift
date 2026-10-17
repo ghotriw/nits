@@ -196,6 +196,48 @@ extension PlayerEngine {
         setSubtitleDelay(0)
     }
 
+    /// Shifts audio against the picture by `seconds` (clamped to `audioDelayRange`, rounded to milliseconds) and saves
+    /// the delay for the file.
+    ///
+    /// Takes effect without re-reading the media: the renderer is flushed and the audio it held is enqueued again
+    /// with the new shift, followed by what was decoded but not yet delivered (see `DelayedAudioSink`).
+    public func setAudioDelay(_ seconds: Double) {
+        guard seconds.isFinite else { return }
+        let range = Self.audioDelayRange
+        let clamped = min(max((seconds * 1000).rounded() / 1000, range.lowerBound), range.upperBound)
+        guard clamped != audioDelay else { return }
+        audioDelay = clamped
+        AppLog.info(.audio, "Audio delay changed to \(clamped)s")
+        applyAudioDelay()
+        saveCurrentPlaybackProgress()
+    }
+
+    public func stepAudioDelay(by delta: Double) {
+        setAudioDelay(audioDelay + delta)
+    }
+
+    public func resetAudioDelay() {
+        setAudioDelay(0)
+    }
+
+    private func applyAudioDelay() {
+        let delay = CMTime(seconds: audioDelay, preferredTimescale: 1_000_000)
+        guard demuxer != nil, let decoder = audioDecoder else {
+            audioSink.setDelay(delay)
+            return
+        }
+        // Restarted even when paused: the run then feeds nothing, but `prepare` still moves the audio. A seek in
+        // flight flushes it all again and reads audio from its target with the new delay.
+        stopFeedingAudio()
+        let sink = audioSink
+        let synchronizer = self.synchronizer
+        let generation = decoder.generation
+        startFeedingAudio {
+            let replay = sink.changeDelay(to: delay, keepingAudioAfter: synchronizer.currentTime())
+            decoder.requeue(replay, generation: generation)
+        }
+    }
+
     func updateActiveSubtitles(at seconds: Double) {
         // A cue due at `t` shows at `t + subtitleDelay`.
         let seconds = seconds - subtitleDelay

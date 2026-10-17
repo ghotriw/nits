@@ -392,12 +392,13 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Track selection and subtitle delay to persist. Subtitles are `subtitlesOff` when disabled, and an external
+    /// Track selection and delays to persist. Subtitles are `subtitlesOff` when disabled, and an external
     /// file is saved by its path; one that isn't a local file can't be restored and keeps the saved selection.
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioTrackId: selectedAudioTrackId >= 0 ? selectedAudioTrackId : nil,
-            subtitleDelay: subtitleDelay
+            subtitleDelay: subtitleDelay,
+            audioDelay: audioDelay
         )
         if let id = selectedSubtitleTrackId {
             let track = subtitleTracks.first { $0.id == id }
@@ -613,6 +614,15 @@ extension PlayerEngine {
             ? min(max(savedDelay, Self.subtitleDelayRange.lowerBound), Self.subtitleDelayRange.upperBound) : 0
         if self.subtitleDelay != 0 {
             AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(self.subtitleDelay)s")
+        }
+        // Set directly too: the pipeline is flushed below, so there is no queued audio to move.
+        let savedAudioDelay = savedTracks?.audioDelay ?? 0
+        self.audioDelay =
+            savedAudioDelay.isFinite
+            ? min(max(savedAudioDelay, Self.audioDelayRange.lowerBound), Self.audioDelayRange.upperBound) : 0
+        audioSink.setDelay(CMTime(seconds: audioDelay, preferredTimescale: 1_000_000))
+        if self.audioDelay != 0 {
+            AppLog.info(.audio, "Restored audio delay from saved history: \(self.audioDelay)s")
         }
         self.loadError = nil
         // Before the saved selection: a saved external file that is one of them maps to the same track.
@@ -849,8 +859,9 @@ extension PlayerEngine {
         }
 
         if effectiveStartTime > 0 {
-            demuxer.seek(to: effectiveStartTime)
-            demuxer.purgeAudio(beforeSeconds: effectiveStartTime)
+            demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
+            demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)
+            demuxer.purgeAudio(beforeSeconds: effectiveStartTime - audioDelay)
         }
         setExactSeekDisplayFloor(effectiveStartTime > 0 ? effectiveStartTime : nil)
 

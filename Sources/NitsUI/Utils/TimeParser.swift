@@ -33,6 +33,13 @@ public enum TimeParser: Sendable {
         return (seconds > 0 ? "+" : "-") + text + "s"
     }
 
+    /// Formats an audio delay in whole milliseconds (e.g. "+50 ms", "-1000 ms", "0 ms").
+    public static func formatAudioDelay(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0 ms" }
+        let milliseconds = Int((seconds * 1000).rounded())
+        return milliseconds == 0 ? "0 ms" : String(format: "%+d ms", milliseconds)
+    }
+
     /// Formats a seek offset for display (e.g. "+5s", "+60s", "+1m 05s", "-2m 30s", "+1h 01m 05s").
     /// Offsets up to 60s are displayed in whole seconds, while offsets exceeding 60s are formatted in minutes and seconds.
     public static func formatSeekOffset(_ offset: Double) -> String {

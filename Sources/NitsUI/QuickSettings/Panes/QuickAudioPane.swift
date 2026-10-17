@@ -99,6 +99,74 @@ public struct QuickAudioPane: View {
                     }
                 }
             }
+
+            if !engine.audioTracks.isEmpty {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+
+                syncSection
+            }
         }
+    }
+
+    private var syncSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Sync", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                if engine.audioDelay != 0 {
+                    Button("Reset") {
+                        engine.resetAudioDelay()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("Delay")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                delayStepButton(systemImage: "minus", delta: -0.05)
+                TextField(
+                    "Delay",
+                    value: Binding(
+                        get: { Int((engine.audioDelay * 1000).rounded()) },
+                        set: { engine.setAudioDelay(Double($0) / 1000) }
+                    ),
+                    format: .number
+                )
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(width: 70)
+                Text("ms")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.6))
+                delayStepButton(systemImage: "plus", delta: 0.05)
+            }
+
+            Text("Positive plays audio later. J / K shift by 50 ms while playing.")
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.5))
+        }
+    }
+
+    private func delayStepButton(systemImage: String, delta: Double) -> some View {
+        Button {
+            engine.stepAudioDelay(by: delta)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.white.opacity(0.1)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white.opacity(0.9))
     }
 }

@@ -102,6 +102,12 @@ public final class PlayerWindow: NSWindow {
         case 0x07:  // Physical 'X' (ANSI X) -> Show subtitles 100 ms later
             actionHandler.stepSubtitleDelay(by: 0.1)
             return true
+        case 0x26:  // Physical 'J' (ANSI J) -> Play audio 50 ms earlier (VLC's binding)
+            actionHandler.stepAudioDelay(by: -0.05)
+            return true
+        case 0x28:  // Physical 'K' (ANSI K) -> Play audio 50 ms later
+            actionHandler.stepAudioDelay(by: 0.05)
+            return true
         case 0x35:  // Escape -> Dismiss dialogs/sidebars if active, or Exit Fullscreen if active
             if actionHandler.isJumpToPresented {
                 actionHandler.dismissJumpToTime()

@@ -523,6 +523,14 @@ extension PlayerWindowController: PlayerActions {
         }
     }
 
+    public func stepAudioDelay(by delta: Double) {
+        guard engine.isLoaded, !engine.audioTracks.isEmpty else { return }
+        engine.stepAudioDelay(by: delta)
+        if engine.enableOSD {
+            uiState.osd.show(.audioDelay(seconds: engine.audioDelay))
+        }
+    }
+
     public func toggleDebugHUD() {
         withAnimation {
             engine.toggleDebugHUD()

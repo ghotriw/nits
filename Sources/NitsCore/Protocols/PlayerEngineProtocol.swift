@@ -122,6 +122,12 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor var selectedAudioTrackId: Int { get }
     @MainActor func selectAudioTrack(id: Int)
 
+    /// Seconds audio is shifted against the picture: positive plays it later, negative earlier.
+    @MainActor var audioDelay: Double { get }
+    @MainActor func setAudioDelay(_ seconds: Double)
+    @MainActor func stepAudioDelay(by delta: Double)
+    @MainActor func resetAudioDelay()
+
     @MainActor var subtitleTracks: [SubtitleTrack] { get }
     @MainActor var selectedSubtitleTrackId: Int? { get }
     @MainActor func selectSubtitleTrack(id: Int?)

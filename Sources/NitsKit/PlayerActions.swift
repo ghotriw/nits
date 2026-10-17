@@ -37,6 +37,7 @@ public protocol PlayerActions: AnyObject {
     func stepPlaybackRate(by delta: Double)
     func resetPlaybackRate()
     func stepSubtitleDelay(by delta: Double)
+    func stepAudioDelay(by delta: Double)
     func toggleDebugHUD()
     func toggleQuickSettings()
     func togglePlaylist()
@@ -95,6 +96,7 @@ extension PlayerActions {
     public func stepPlaybackRate(by delta: Double) {}
     public func resetPlaybackRate() {}
     public func stepSubtitleDelay(by delta: Double) {}
+    public func stepAudioDelay(by delta: Double) {}
 }
 
 public struct PlayerActionsKey: FocusedValueKey {

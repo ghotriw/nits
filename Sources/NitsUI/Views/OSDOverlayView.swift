@@ -90,6 +90,8 @@ public struct OSDOverlayView: View {
             return "captions.bubble.fill"
         case .subtitleDelay:
             return "captions.bubble"
+        case .audioDelay:
+            return "waveform.badge.plus"
         case .renderMode:
             return "display"
         case .sharpness:
@@ -123,6 +125,8 @@ public struct OSDOverlayView: View {
             return title
         case .subtitleDelay(let seconds):
             return TimeParser.formatSubtitleDelay(seconds)
+        case .audioDelay(let seconds):
+            return TimeParser.formatAudioDelay(seconds)
         case .renderMode(let modeName):
             return modeName
         case .sharpness(let value):
@@ -149,6 +153,8 @@ public struct OSDOverlayView: View {
             return "Subtitles"
         case .subtitleDelay:
             return "Subtitle Delay"
+        case .audioDelay:
+            return "Audio Delay"
         case .renderMode:
             return "Render Pipeline"
         case .playbackRate:

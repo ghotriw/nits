@@ -124,3 +124,94 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         wrapped.flush()
     }
 }
+
+/// Shifts audio against the picture by `delay` (positive plays it later) and keeps the audio it handed on, so a delay
+/// change re-enqueues it with the new shift instead of re-reading the media (a seek, which stalls the picture).
+///
+/// The shift is in media time, applied to the timestamps the renderer schedules on the master clock; the clock, the
+/// picture and subtitles stay on the media's own timeline.
+final class DelayedAudioSink: AudioRendererSink {
+    /// Media seconds of enqueued audio kept for `changeDelay`: what the renderer queues (up to ~4 s of media at 4x, see
+    /// `PlayerEngine+Buffering`) plus a full swing of `PlayerEngine.audioDelayRange`.
+    static let retainedSeconds: Double = 6
+
+    private struct State {
+        var delay: CMTime = .zero
+        /// Enqueued audio, unshifted, in presentation order.
+        var retained: [CMSampleBuffer] = []
+        /// Bumped by `flush()` and `changeDelay`, so an enqueue in flight across them isn't retained.
+        var generation: UInt64 = 0
+    }
+
+    private let wrapped: BufferTrackingAudioSink
+    private let state = OSAllocatedUnfairLock(uncheckedState: State())
+
+    init(wrapping wrapped: BufferTrackingAudioSink) {
+        self.wrapped = wrapped
+    }
+
+    /// End of the latest audio enqueued since the last flush, on the clock's timeline (delay included).
+    var bufferedEnd: CMTime? {
+        wrapped.bufferedEnd
+    }
+
+    /// Sets the delay for audio enqueued from now on, keeping what is already queued; for a pipeline that is flushed
+    /// anyway (loading media).
+    func setDelay(_ delay: CMTime) {
+        state.withLock { $0.delay = delay }
+    }
+
+    /// Sets the delay and flushes the renderer. Returns the retained audio that, with the new delay, still ends after
+    /// `clock`, for the caller to enqueue again before anything newer. Nothing may be enqueueing meanwhile: an
+    /// enqueue in flight would deliver its buffer with the old delay after the flush.
+    func changeDelay(to delay: CMTime, keepingAudioAfter clock: CMTime) -> [CMSampleBuffer] {
+        let replay = state.withLockUnchecked { state in
+            state.delay = delay
+            state.generation &+= 1
+            defer { state.retained.removeAll() }
+            guard clock.isNumeric else { return state.retained }
+            return state.retained.filter { Self.end(of: $0) + delay > clock }
+        }
+        wrapped.flush()
+        return replay
+    }
+
+    func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
+        let (delay, generation) = state.withLock { ($0.delay, $0.generation) }
+        let shifted = delay == .zero ? sampleBuffer : try Self.shift(sampleBuffer, by: delay)
+        try await wrapped.enqueue(shifted)
+        state.withLockUnchecked { state in
+            guard state.generation == generation else { return }
+            state.retained.append(sampleBuffer)
+            let end = Self.end(of: sampleBuffer)
+            guard end.isNumeric else { return }
+            let horizon = end.seconds - Self.retainedSeconds
+            let stale = state.retained.prefix { Self.end(of: $0).seconds < horizon }.count
+            state.retained.removeFirst(stale)
+        }
+    }
+
+    func flush() {
+        state.withLock { state in
+            state.retained.removeAll()
+            state.generation &+= 1
+        }
+        wrapped.flush()
+    }
+
+    private static func end(of buffer: CMSampleBuffer) -> CMTime {
+        CMSampleBufferGetPresentationTimeStamp(buffer) + CMSampleBufferGetDuration(buffer)
+    }
+
+    private static func shift(_ buffer: CMSampleBuffer, by delay: CMTime) throws -> CMSampleBuffer {
+        let timing = try buffer.sampleTimingInfos().map { info in
+            var info = info
+            info.presentationTimeStamp = info.presentationTimeStamp + delay
+            if info.decodeTimeStamp.isValid {
+                info.decodeTimeStamp = info.decodeTimeStamp + delay
+            }
+            return info
+        }
+        return try CMSampleBuffer(copying: buffer, withNewTiming: timing)
+    }
+}

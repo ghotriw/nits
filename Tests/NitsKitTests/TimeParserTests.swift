@@ -157,6 +157,16 @@ struct TimeParserTests {
         #expect(TimeParser.formatSubtitleDelay(.nan) == "0.0s")
     }
 
+    @Test("Audio delay shows whole milliseconds with a sign")
+    func testFormatAudioDelay() {
+        #expect(TimeParser.formatAudioDelay(0) == "0 ms")
+        #expect(TimeParser.formatAudioDelay(0.05) == "+50 ms")
+        #expect(TimeParser.formatAudioDelay(-1.0) == "-1000 ms")
+        #expect(TimeParser.formatAudioDelay(0.1234) == "+123 ms")
+        #expect(TimeParser.formatAudioDelay(-0.0001) == "0 ms")
+        #expect(TimeParser.formatAudioDelay(.infinity) == "0 ms")
+    }
+
     @Test("Invalid strings return nil")
     func testInvalid() {
         let dur = 600.0

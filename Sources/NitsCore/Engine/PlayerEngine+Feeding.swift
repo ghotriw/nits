@@ -218,7 +218,9 @@ extension PlayerEngine {
         }
     }
 
-    func startFeedingAudio() {
+    /// - Parameter prepare: Runs once the previous run has unwound and before this one enqueues anything (also when
+    ///   nothing is fed because playback is paused), so it can flush the renderer with no enqueue in flight.
+    func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil) {
         guard let demuxer = self.demuxer, let aDecoder = self.audioDecoder else { return }
         // The previous run may still be unwinding from its cancellation; the new one waits for it so the
         // output it stashes is delivered first and in order.
@@ -233,6 +235,7 @@ extension PlayerEngine {
 
         audioFeedingTask = Task.detached(priority: .userInitiated) {
             await previousRun?.value
+            prepare?()
             await Self.runAudioFeeding(
                 demuxer: demuxer,
                 audioDecoder: aDecoder,

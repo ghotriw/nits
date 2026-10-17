@@ -184,10 +184,16 @@ flowchart TD
 
 > Solve wireless audio latency and improve dialogue intelligibility during wide dynamic range film playback.
 
-- [ ] **2.8.1. Manual Audio Synchronization Delay (A/V Sync Offset):**
-  - User-configurable audio timestamp offset (`audioDelaySeconds: -1.0 ... +1.0`) to compensate for third-party Bluetooth latency and external DSP pipelines.
-  - Runtime adjustment without pipeline teardown via OSD and Quick Settings (`Audio` pane).
-  - Keyboard shortcuts (`G` / `F`) adjusting delay in ±50ms steps with instant feedback.
+- [x] **2.8.1. Manual Audio Synchronization Delay (A/V Sync Offset):**
+  - Audio timestamp offset (`PlayerEngine.audioDelay`, `-1.0 ... +1.0` s) applied by `DelayedAudioSink` to the
+    timestamps the renderer schedules; the clock, picture and subtitles stay on the media timeline. Seeks read audio
+    from the target minus the delay; with audio played late, the demuxer also reads the audio stored before the
+    landed keyframe (`readAudioAhead`), which plain reading from the keyframe skips. Compensates badly muxed files and external DSP (AV receivers); macOS already
+    accounts for the reported latency of Bluetooth routes.
+  - Runtime adjustment without a seek: the renderer is flushed and the audio it held is enqueued again with the new
+    shift. Manual entry in Quick Settings (`Audio` pane, milliseconds).
+  - Keyboard shortcuts (`J` / `K`, as in VLC; `F` is fullscreen) adjusting delay in ±50ms steps with OSD feedback.
+  - Remembered per file in `PlaybackHistoryStore`, like the subtitle delay.
 - [ ] **2.8.2. Dynamic Range Compression & Night Mode:**
   - Audio processing filter stage in `FFAudioDecoder` or CoreAudio AudioUnit graph.
   - Night Mode / Voice Boost: dynamic range compression raising low-level dialogue while softly limiting explosive peaks and loud effects.

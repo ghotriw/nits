@@ -289,6 +289,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Seconds subtitles are shifted by: positive shows them later, negative earlier. Set with `setSubtitleDelay`.
     public internal(set) var subtitleDelay: Double = 0
     public static let subtitleDelayRange: ClosedRange<Double> = -30.0...30.0
+    /// Seconds audio is shifted against the picture: positive plays it later, negative earlier. Set with
+    /// `setAudioDelay`.
+    public internal(set) var audioDelay: Double = 0
+    /// Audio played early is read that far ahead of the picture, within the demuxer's video packet queue.
+    public static let audioDelayRange: ClosedRange<Double> = -1.0...1.0
     var activeSubtitleDocument: SubtitleDocument? = nil
     var lastObservedLiveSubtitleVersion: Int = -1
 
@@ -375,7 +380,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
     public let metalRenderer = MetalVideoRenderer()
     public let audioRenderer = AVSampleBufferAudioRenderer()
-    let audioSink: BufferTrackingAudioSink
+    let audioSink: DelayedAudioSink
     var videoFeedingTask: Task<Void, Never>?
     var audioFeedingTask: Task<Void, Never>?
     var seekTask: Task<Void, Never>?
@@ -647,8 +652,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
             self.enqueueSampleBufferImp = nil
         }
         // Synchronizer drives the audio renderer and the master clock timeline
-        self.audioSink = BufferTrackingAudioSink(
-            wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer))
+        self.audioSink = DelayedAudioSink(
+            wrapping: BufferTrackingAudioSink(
+                wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer)))
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false

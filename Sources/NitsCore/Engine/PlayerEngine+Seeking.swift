@@ -124,6 +124,7 @@ extension PlayerEngine {
         let decoder = stallGuardedDecoder(for: "the seek queue")
         let audioDecoder = self.audioDecoder
         let audioSink = self.audioSink
+        let audioDelay = self.audioDelay
         let hasVideo = self.hasVideo
         let seekIdLock = self.activeSeekId
         let frameQueue = self.frameQueue
@@ -142,7 +143,7 @@ extension PlayerEngine {
                 if hasVideo {
                     decoder.flush()
                 }
-                demuxer.seek(to: targetSeconds, exact: isExact, forward: isForward)
+                demuxer.seek(to: targetSeconds, exact: isExact, forward: isForward, audioDelay: audioDelay)
             }
 
             var previewFrame: SeekPreviewResult? = nil
@@ -158,11 +159,14 @@ extension PlayerEngine {
                     isCurrent: { !isSuperseded() }
                 )
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
+                // Audio heard with the picture at `t` is the media's audio at `t - audioDelay`.
                 if !isExact, let preview = previewFrame {
-                    demuxer.setTargetAudioPts(seconds: preview.pts)
+                    demuxer.setTargetAudioPts(seconds: preview.pts - audioDelay)
+                } else if audioDelay != 0 {
+                    demuxer.setTargetAudioPts(seconds: targetSeconds - audioDelay)
                 }
                 if !shouldResume {
-                    demuxer.purgeAudio(beforeSeconds: resolvedSeconds)
+                    demuxer.purgeAudio(beforeSeconds: resolvedSeconds - audioDelay)
                 }
                 // Render the freshly previewed frame directly (avoiding queue miss & stale fallback)
                 if !isSuperseded(), let preview = previewFrame {
