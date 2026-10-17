@@ -59,6 +59,7 @@ extension PlayerEngine {
         self.chapters = []
         self.isLoaded = false
         self.isLoading = true
+        loadGeneration += 1
 
         let seekId = currentSeekId + 1
         currentSeekId = seekId
@@ -106,6 +107,9 @@ extension PlayerEngine {
         let normalizedPath = Self.normalizeMediaPath(request.path)
         let isNetwork = MediaURL.isNetworkURL(normalizedPath)
         let isRemoteOrMounted = MediaURL.isRemoteOrMountedVolume(normalizedPath)
+        // Now, not when a background load resets the rest: the previous media's buttons must not show over this one,
+        // and buttons the host sets right after `load` must survive that reset.
+        actionButtons = request.actionButtons
 
         // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
         if PlaylistParser.isPlaylistFile(path: normalizedPath),
@@ -137,7 +141,7 @@ extension PlayerEngine {
                     }
                 } else if isNetwork {
                     // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
-                    await self.loadAsync(request)
+                    await self.loadAsyncKeepingActionButtons(request)
                 } else {
                     self.isLoading = false
                 }
@@ -158,7 +162,7 @@ extension PlayerEngine {
             self.playbackState = .loading
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
-                await self?.loadAsync(normalizedRequest)
+                await self?.loadAsyncKeepingActionButtons(normalizedRequest)
             }
         } else {
             loadSync(normalizedRequest)
@@ -175,6 +179,13 @@ extension PlayerEngine {
     }
 
     public func loadAsync(_ request: MediaLoadRequest) async {
+        actionButtons = request.actionButtons
+        await loadAsyncKeepingActionButtons(request)
+    }
+
+    /// `loadAsync` for loads `load(_:)` started: it already applied the request's action buttons, and the host may
+    /// have replaced them since.
+    private func loadAsyncKeepingActionButtons(_ request: MediaLoadRequest) async {
         let path = request.path
         let (loadID, interruptContext) = resetPlaybackTrackingState(
             for: path,
@@ -364,6 +375,7 @@ extension PlayerEngine {
         currentTime = 0
         duration = 0
         chapters = []
+        actionButtons = []
         isLoading = false
         playbackState = .idle
         thumbnailManager.reset()

@@ -767,6 +767,10 @@ struct PlayerEngineTests {
             func seekToChapter(_ chapter: MediaChapter) {}
             func nextChapter() -> MediaChapter? { nil }
             func previousChapter() -> MediaChapter? { nil }
+            var actionButtons: [PlaybackActionButton] = []
+            var activeActionButton: PlaybackActionButton? = nil
+            var onActionButton: ((String) -> Void)? = nil
+            func performActionButton(_ button: PlaybackActionButton) {}
             func playNext() {}
             func playPrevious() {}
             func playPlaylistItem(id: UUID) {}

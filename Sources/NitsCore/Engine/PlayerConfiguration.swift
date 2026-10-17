@@ -147,6 +147,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public var pausesOnPictureInPicture: Bool
     /// Enter Picture in Picture when the player window is minimized during playback, and leave it on restore.
     public var entersPictureInPictureOnMinimize: Bool
+    /// Seconds of playback an action button ("Skip Intro") stays up on its own before it hides with the controls
+    /// (default 8).
+    public var actionButtonDisplayDuration: Double
+    /// Press an action button by itself once `actionButtonDisplayDuration` runs out, unless the button opts out
+    /// (default false).
+    public var actionButtonAutoPress: Bool
 
     public init(
         enableToneMapping: Bool = true,
@@ -181,7 +187,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
         pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
         pausesOnPictureInPicture: Bool = false,
-        entersPictureInPictureOnMinimize: Bool = false
+        entersPictureInPictureOnMinimize: Bool = false,
+        actionButtonDisplayDuration: Double = 8.0,
+        actionButtonAutoPress: Bool = false
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -219,6 +227,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
         self.pausesOnPictureInPicture = pausesOnPictureInPicture
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
+        self.actionButtonDisplayDuration = Self.clampActionButtonDisplayDuration(actionButtonDisplayDuration)
+        self.actionButtonAutoPress = actionButtonAutoPress
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -248,6 +258,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
     public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
+    public static let keyActionButtonDisplayDuration = "Nits.actionButtonDisplayDuration"
+    public static let keyActionButtonAutoPress = "Nits.actionButtonAutoPress"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -343,6 +355,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyEntersPictureInPictureOnMinimize) != nil {
             config.entersPictureInPictureOnMinimize = userDefaults.bool(forKey: keyEntersPictureInPictureOnMinimize)
         }
+        if let duration = userDefaults.object(forKey: keyActionButtonDisplayDuration) as? NSNumber {
+            config.actionButtonDisplayDuration = clampActionButtonDisplayDuration(duration.doubleValue)
+        }
+        if userDefaults.object(forKey: keyActionButtonAutoPress) != nil {
+            config.actionButtonAutoPress = userDefaults.bool(forKey: keyActionButtonAutoPress)
+        }
         return config
     }
 
@@ -375,6 +393,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
         userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
+        userDefaults.set(actionButtonDisplayDuration, forKey: Self.keyActionButtonDisplayDuration)
+        userDefaults.set(actionButtonAutoPress, forKey: Self.keyActionButtonAutoPress)
     }
 
     /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).
@@ -387,6 +407,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static func clampDebugOSDDuration(_ value: Double) -> Double {
         guard value.isFinite else { return 4.0 }
         return max(1.0, min(60.0, value))
+    }
+
+    /// Clamps how long an action button stays up on its own to a usable range (3...60 s).
+    public static func clampActionButtonDisplayDuration(_ value: Double) -> Double {
+        guard value.isFinite else { return 8.0 }
+        return max(3.0, min(60.0, value))
     }
 
     private static func nonEmpty(_ value: String) -> String? {

@@ -26,6 +26,9 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// Optional track identifier or language name to select for subtitles upon loading.
     public var subtitleTrack: String?
 
+    /// Action buttons for this media; they replace the previous media's as soon as the load starts.
+    public var actionButtons: [PlaybackActionButton]
+
     public init(
         path: String,
         title: String? = nil,
@@ -34,8 +37,10 @@ public struct MediaLoadRequest: Sendable, Equatable {
         headers: [String: String] = [:],
         startTime: Double? = nil,
         audioTrack: String? = nil,
-        subtitleTrack: String? = nil
+        subtitleTrack: String? = nil,
+        actionButtons: [PlaybackActionButton] = []
     ) {
+        self.actionButtons = actionButtons
         self.path = path
         self.title = title
         self.artworkData = artworkData
@@ -87,6 +92,12 @@ public struct MediaLoadRequest: Sendable, Equatable {
     public func subtitleTrack(_ value: String?) -> Self {
         var copy = self
         copy.subtitleTrack = value
+        return copy
+    }
+
+    public func actionButtons(_ value: [PlaybackActionButton]) -> Self {
+        var copy = self
+        copy.actionButtons = value
         return copy
     }
 }

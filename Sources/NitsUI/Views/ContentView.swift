@@ -11,6 +11,8 @@ public struct ContentView: View {
 
     @State private var isControlsVisible: Bool = true
     @State private var isUserInteracting: Bool = false
+    /// The pointer is over the action button; holds the controls like hovering the control bar does.
+    @State private var isActionButtonHovered: Bool = false
     @State private var hideTimer: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
@@ -183,9 +185,7 @@ public struct ContentView: View {
             }
 
             // Controls Overlay
-            if isControlsVisible || !engine.isLoaded || isUserInteracting
-                || uiState.controlsConfig.isSettingsCustomizingControls
-            {
+            if showsControls {
                 ControlsOverlay(
                     engine: engine,
                     uiState: uiState,
@@ -197,6 +197,16 @@ public struct ContentView: View {
                 }
                 .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
+
+            // Host action button ("Skip Intro") - Bottom Trailing, above the control bar
+            PlaybackActionButtonView(
+                engine: engine,
+                presenter: uiState.actionButton,
+                areControlsVisible: showsControls,
+                trailingInset: uiState.sidePanel?.width ?? 0,
+                isHovered: $isActionButtonHovered
+            )
+            .ignoresSafeArea()
 
             // Jump to Time Dialog Overlay
             if uiState.isJumpToPresented {
@@ -269,7 +279,7 @@ public struct ContentView: View {
                 break
             }
         }
-        .onChange(of: isUserInteracting) { _, interacting in
+        .onChange(of: isInteracting) { _, interacting in
             if interacting {
                 hideTimer?.cancel()
                 withAnimation { isControlsVisible = true }
@@ -322,6 +332,15 @@ public struct ContentView: View {
         }
     }
 
+    private var isInteracting: Bool {
+        isUserInteracting || isActionButtonHovered
+    }
+
+    private var showsControls: Bool {
+        isControlsVisible || !engine.isLoaded || isInteracting
+            || uiState.controlsConfig.isSettingsCustomizingControls
+    }
+
     @ViewBuilder
     private func sidePanelContent(_ panel: PlayerSidePanel) -> some View {
         switch panel {
@@ -347,7 +366,7 @@ public struct ContentView: View {
     }
 
     private func scheduleControlsHide() {
-        guard engine.isLoaded, !isUserInteracting, !uiState.isJumpToPresented, uiState.sidePanel == nil,
+        guard engine.isLoaded, !isInteracting, !uiState.isJumpToPresented, uiState.sidePanel == nil,
             !uiState.controlsConfig.isSettingsCustomizingControls
         else {
             return
@@ -355,7 +374,7 @@ public struct ContentView: View {
         hideTimer?.cancel()
         hideTimer = Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if !Task.isCancelled && !isUserInteracting && !uiState.isJumpToPresented
+            if !Task.isCancelled && !isInteracting && !uiState.isJumpToPresented
                 && uiState.sidePanel == nil && !uiState.controlsConfig.isSettingsCustomizingControls
             {
                 withAnimation {

@@ -100,6 +100,17 @@ controller.onPlaybackEnded = {
 controller.onClose = { finalTime, duration in
     // Window was closed by user; provides final playback time and duration before stop()
 }
+
+// Action buttons ("Skip Intro", "Next Episode") for spans of the timeline. The host decides where they go
+// (e.g. from its media server's intro / credits markers) and what they do; each load replaces them.
+controller.setActionButtons([
+    PlaybackActionButton(id: "intro", title: "Skip Intro", start: 12, end: 72.5),
+    PlaybackActionButton(id: "next", title: "Next Episode", start: 2666.5, allowsAutoPress: false), // end: nil = to the end
+])
+controller.onActionButton = { id in
+    if id == "intro" { controller.engine.seek(to: 72.5) } else { /* load the next episode */ }
+}
+// The user picks how long a button stays up and whether it presses itself (Settings → General → Action Buttons).
 ```
 
 ### Logging

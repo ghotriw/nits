@@ -37,6 +37,7 @@ flowchart TD
     M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
     M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
     M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
+    M5 -.-> M5Y["Stage 5.11: Skip Intro & Next Episode ✓"]
 ```
 
 ---
@@ -357,6 +358,26 @@ flowchart TD
 
 ---
 
+### Stage 5.11: Skip Intro & Next Episode (Host Action Buttons) — [COMPLETED] ✓
+
+> Streaming-service style buttons over the video for spans of the timeline; the host supplies the spans and the actions.
+
+- [x] **5.11.1. Host-Provided Spans & Actions:**
+  - The host gives buttons for spans of the timeline (`PlaybackActionButton`: id, title, start, optional end) and
+    handles presses (`onActionButton(id)`); finding intros and credits (media server markers, chapters, a fallback
+    before the end) stays with the host, so Nits is not tied to Emby, Jellyfin or Plex.
+  - API: `PlayerWindowController.setActionButtons(_:)` / `openStream(actionButtons:)`, `MediaLoadRequest.actionButtons`;
+    engine-only hosts read `PlayerEngine.activeActionButton`. Each load replaces the previous media's buttons at once;
+    buttons set right after `openStream` survive the background load.
+  - Button in the bottom-trailing corner with a dismiss button beside it. It stays up for a set time of playback
+    (Settings → General → Action Buttons, 5–15 s), then shows only with the controls. Optional auto-press with a
+    countdown fill (per button opt-out via `allowsAutoPress`). The countdown runs on playback only: it holds on
+    pause, scrubbing and frame steps, and restarts after a seek within the span.
+  - Dismissing or pressing hides the button for the rest of its span; a new load resets this (`loadGeneration`).
+    `Return` presses, `Esc` dismisses (before leaving fullscreen); hovering the button keeps the controls and cursor up.
+
+---
+
 ### Stage 6: Host Integration Bridge (WKWebView Two-Way Bridge) — [IN PROGRESS] ⏳
 
 > Embedding Nits as a high-performance native rendering core inside hybrid host applications (e.g., Emby / Jellyfin web shells).
@@ -424,6 +445,7 @@ flowchart TD
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
 | **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
+| **Host Action Buttons** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans from the host, timed display, auto-press |
 | **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |

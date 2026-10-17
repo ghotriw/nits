@@ -108,13 +108,21 @@ public final class PlayerWindow: NSWindow {
         case 0x28:  // Physical 'K' (ANSI K) -> Play audio 50 ms later
             actionHandler.stepAudioDelay(by: 0.05)
             return true
-        case 0x35:  // Escape -> Dismiss dialogs/sidebars if active, or Exit Fullscreen if active
+        case 0x24, 0x4C:  // Return / keypad Enter -> Press the action button ("Skip Intro") while it is on screen
+            guard actionHandler.isActionButtonVisible else { return false }
+            actionHandler.pressActionButton()
+            return true
+        case 0x35:  // Escape -> Dismiss dialogs/sidebars/action button if active, or Exit Fullscreen if active
             if actionHandler.isJumpToPresented {
                 actionHandler.dismissJumpToTime()
                 return true
             }
             if actionHandler.isSidePanelPresented {
                 actionHandler.closeSidePanel()
+                return true
+            }
+            if actionHandler.isActionButtonVisible {
+                actionHandler.dismissActionButton()
                 return true
             }
             if styleMask.contains(.fullScreen) {

@@ -56,6 +56,13 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyEntersPictureInPictureOnMinimize)
     private var entersPictureInPictureOnMinimize: Bool = false
 
+    @AppStorage(PlayerConfiguration.keyActionButtonDisplayDuration)
+    private var actionButtonDisplayDuration: Double = 8.0
+
+    @AppStorage(PlayerConfiguration.keyActionButtonAutoPress)
+    private var actionButtonAutoPress: Bool = false
+
+    private static let actionButtonDurations: [Double] = [5.0, 8.0, 10.0, 15.0]
     private static let standardSeekSteps: [Double] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
     private static let osdDurations: [Double] = [0.8, 1.3, 2.0, 3.0, 5.0]
     private static let debugOSDDurations: [Double] = [2.0, 4.0, 6.0, 10.0, 15.0, 30.0]
@@ -246,6 +253,32 @@ public struct SettingsView: View {
             }
 
             Section {
+                Picker("Show button for", selection: $actionButtonDisplayDuration) {
+                    ForEach(Self.actionButtonDurations, id: \.self) { seconds in
+                        Text(Self.formatSeconds(seconds)).tag(seconds)
+                    }
+                    if !Self.actionButtonDurations.contains(actionButtonDisplayDuration) {
+                        Text("Custom (\(Self.formatSeconds(actionButtonDisplayDuration)))")
+                            .tag(actionButtonDisplayDuration)
+                    }
+                }
+                .onChange(of: actionButtonDisplayDuration) { _, _ in
+                    notifyChange()
+                }
+
+                Toggle("Press automatically when the time runs out", isOn: $actionButtonAutoPress)
+                    .onChange(of: actionButtonAutoPress) { _, _ in
+                        notifyChange()
+                    }
+            } header: {
+                Text("Action Buttons")
+            } footer: {
+                Text(
+                    "Buttons such as Skip Intro or Next Episode, offered by the app that opened the video. After this time they show only with the controls. Return presses the button, Esc dismisses it."
+                )
+            }
+
+            Section {
                 Picker("Player window during PiP", selection: $pictureInPictureWindowBehavior) {
                     ForEach(PictureInPictureWindowBehavior.allCases) { behavior in
                         Text(behavior.displayName).tag(behavior)
@@ -421,7 +454,9 @@ public struct SettingsView: View {
             networkThumbnailPolicy: networkThumbnailPolicy,
             pictureInPictureWindowBehavior: pictureInPictureWindowBehavior,
             pausesOnPictureInPicture: pausesOnPictureInPicture,
-            entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize
+            entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize,
+            actionButtonDisplayDuration: actionButtonDisplayDuration,
+            actionButtonAutoPress: actionButtonAutoPress
         )
         onConfigurationChanged?(current)
     }

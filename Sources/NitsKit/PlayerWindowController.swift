@@ -33,10 +33,28 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     /// Set in `windowWillClose`; PiP callbacks that follow must not show the window again.
     private var isWindowClosing = false
 
+    /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
+    public var onActionButton: ((_ id: String) -> Void)? {
+        get { engine.onActionButton }
+        set { engine.onActionButton = newValue }
+    }
+
+    /// Replaces the action buttons of the media playing now; the next load replaces them again (see
+    /// `openStream(actionButtons:)`).
+    public func setActionButtons(_ buttons: [PlaybackActionButton]) {
+        engine.actionButtons = buttons
+    }
+
     public func applyConfiguration(_ config: PlayerConfiguration) {
         engine.applyConfiguration(config)
         applyOSDConfiguration(config)
         applyPictureInPictureConfiguration(config)
+        applyActionButtonConfiguration(config)
+    }
+
+    private func applyActionButtonConfiguration(_ config: PlayerConfiguration) {
+        uiState.actionButton.displayDuration = config.actionButtonDisplayDuration
+        uiState.actionButton.autoPress = config.actionButtonAutoPress
     }
 
     private func applyPictureInPictureConfiguration(_ config: PlayerConfiguration) {
@@ -81,6 +99,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
         applyOSDConfiguration(configuration)
         applyPictureInPictureConfiguration(configuration)
+        applyActionButtonConfiguration(configuration)
 
         window.title = "Nits"
         window.titlebarAppearsTransparent = true
@@ -217,7 +236,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         artworkURL: URL? = nil,
         startTime: Double? = nil,
         audioTrack: String? = nil,
-        subtitleTrack: String? = nil
+        subtitleTrack: String? = nil,
+        actionButtons: [PlaybackActionButton] = []
     ) {
         openStream(
             url: url,
@@ -227,7 +247,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             headers: [:],
             startTime: startTime,
             audioTrack: audioTrack,
-            subtitleTrack: subtitleTrack
+            subtitleTrack: subtitleTrack,
+            actionButtons: actionButtons
         )
     }
 
@@ -239,7 +260,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         headers: [String: String] = [:],
         startTime: Double? = nil,
         audioTrack: String? = nil,
-        subtitleTrack: String? = nil
+        subtitleTrack: String? = nil,
+        actionButtons: [PlaybackActionButton] = []
     ) {
         let isNetwork = MediaURL.isNetworkURL(url.absoluteString)
         let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
@@ -253,7 +275,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 headers: headers,
                 startTime: startTime,
                 audioTrack: audioTrack,
-                subtitleTrack: subtitleTrack
+                subtitleTrack: subtitleTrack,
+                actionButtons: actionButtons
             ))
         window?.title = engine.mediaTitle
 
@@ -676,6 +699,21 @@ extension PlayerWindowController: PlayerActions {
         engine.playPrevious()
         if let title = engine.playlist.currentItem?.title {
             uiState.osd.show(.custom(symbol: "backward.end.fill", text: title))
+        }
+    }
+
+    public var isActionButtonVisible: Bool {
+        uiState.actionButton.isVisible
+    }
+
+    public func pressActionButton() {
+        guard isActionButtonVisible, let button = uiState.actionButton.press() else { return }
+        engine.performActionButton(button)
+    }
+
+    public func dismissActionButton() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            uiState.actionButton.dismiss()
         }
     }
 

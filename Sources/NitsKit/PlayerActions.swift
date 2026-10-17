@@ -19,6 +19,8 @@ public protocol PlayerActions: AnyObject {
     var hasPreviousTrack: Bool { get }
     var hasChapters: Bool { get }
     var isChaptersPresented: Bool { get }
+    /// Whether a host action button ("Skip Intro") is on screen.
+    var isActionButtonVisible: Bool { get }
 
     var seekStepSeconds: Double { get }
 
@@ -54,6 +56,8 @@ public protocol PlayerActions: AnyObject {
     func togglePictureInPicture()
     func promptJumpToTime()
     func dismissJumpToTime()
+    func pressActionButton()
+    func dismissActionButton()
 }
 
 extension PlayerActions {
@@ -70,6 +74,9 @@ extension PlayerActions {
     public var hasPreviousTrack: Bool { false }
     public var hasChapters: Bool { false }
     public var isChaptersPresented: Bool { false }
+    public var isActionButtonVisible: Bool { false }
+    public func pressActionButton() {}
+    public func dismissActionButton() {}
     public func seekForward() {
         seekRelative(by: seekStepSeconds)
     }

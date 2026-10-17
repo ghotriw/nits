@@ -178,6 +178,26 @@ struct PlayerConfigurationTests {
         #expect(loaded.entersPictureInPictureOnMinimize == true)
     }
 
+    @Test("UserDefaults roundtrip preserves action button settings and clamps the duration")
+    func testUserDefaultsActionButton() {
+        let defaults = InMemoryUserDefaults()
+        #expect(PlayerConfiguration().actionButtonDisplayDuration == 8.0)
+        #expect(PlayerConfiguration().actionButtonAutoPress == false)
+
+        var config = PlayerConfiguration()
+        config.actionButtonDisplayDuration = 15
+        config.actionButtonAutoPress = true
+        config.saveToUserDefaults(userDefaults: defaults)
+        let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
+        #expect(loaded.actionButtonDisplayDuration == 15)
+        #expect(loaded.actionButtonAutoPress == true)
+
+        defaults.set(0.5, forKey: PlayerConfiguration.keyActionButtonDisplayDuration)
+        #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).actionButtonDisplayDuration == 3)
+        defaults.set(Double.infinity, forKey: PlayerConfiguration.keyActionButtonDisplayDuration)
+        #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).actionButtonDisplayDuration == 8)
+    }
+
     @Test("UserDefaults roundtrip preserves enableOSD flag")
     func testUserDefaultsOSD() {
         let defaults = InMemoryUserDefaults()

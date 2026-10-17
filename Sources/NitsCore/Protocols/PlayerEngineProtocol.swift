@@ -151,6 +151,14 @@ public protocol PlayerChapterControlling: AnyObject, Sendable {
     @MainActor @discardableResult func previousChapter() -> MediaChapter?
 }
 
+/// Host-provided action buttons ("Skip Intro", "Next Episode") shown for spans of the timeline.
+public protocol PlayerActionButtonControlling: AnyObject, Sendable {
+    @MainActor var actionButtons: [PlaybackActionButton] { get set }
+    @MainActor var activeActionButton: PlaybackActionButton? { get }
+    @MainActor var onActionButton: ((_ id: String) -> Void)? { get set }
+    @MainActor func performActionButton(_ button: PlaybackActionButton)
+}
+
 /// Visual formatting, styling, and text state for subtitle rendering.
 public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var currentSubtitleText: String? { get }
@@ -188,6 +196,7 @@ public protocol PlayerEngineProtocol:
     PlayerVideoControlling,
     PlayerTrackControlling,
     PlayerChapterControlling,
+    PlayerActionButtonControlling,
     PlayerSubtitleStyling,
     PlayerPlaylistControlling,
     PlayerUIOverlayControlling

@@ -25,15 +25,18 @@ public final class PlayerUIState {
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     public let osd: OSDManager
     public let controlsConfig: ControlsConfiguration
+    public let actionButton: ActionButtonPresenter
 
     public init(
         isFullscreen: Bool = false,
         osd: OSDManager = OSDManager(),
-        controlsConfig: ControlsConfiguration = ControlsConfiguration.shared
+        controlsConfig: ControlsConfiguration = ControlsConfiguration.shared,
+        actionButton: ActionButtonPresenter = ActionButtonPresenter()
     ) {
         self.isFullscreen = isFullscreen
         self.osd = osd
         self.controlsConfig = controlsConfig
+        self.actionButton = actionButton
     }
 
     public var isQuickSettingsPresented: Bool { sidePanel == .quickSettings }

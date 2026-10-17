@@ -13,8 +13,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var currentTime: Double = 0 {
         didSet {
             updateCurrentChapterIndex()
+            updateActiveActionButton()
         }
     }
+    /// Host-provided buttons for spans of the timeline; replaced by each load's `MediaLoadRequest.actionButtons`.
+    public var actionButtons: [PlaybackActionButton] = [] {
+        didSet {
+            updateActiveActionButton()
+        }
+    }
+    /// The button whose span contains `currentTime`; `nil` outside every span and while no media is loaded.
+    public internal(set) var activeActionButton: PlaybackActionButton?
+    /// Bumped by every load. Per-media UI state (a dismissed action button) resets on it: a load from a position inside
+    /// a span to the same position in the next media never shows `activeActionButton` change.
+    public internal(set) var loadGeneration: Int = 0
+    /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
+    public var onActionButton: ((_ id: String) -> Void)?
     /// Container chapters of the loaded media, sorted by start; empty when it has none.
     public internal(set) var chapters: [MediaChapter] = [] {
         didSet {
@@ -31,7 +45,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
             displaySleepManager.update(isPlaying: isPlaying, hasVideo: hasVideo)
         }
     }
-    public var isLoaded: Bool = false
+    public var isLoaded: Bool = false {
+        didSet {
+            updateActiveActionButton()
+        }
+    }
     public var isLoading: Bool = false
     public var loadError: String? = nil
     public var playbackState: PlaybackState = .idle {
