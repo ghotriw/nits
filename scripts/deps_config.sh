@@ -87,7 +87,9 @@ deps_relocate() {
 
     if [ -d "$lib_dir/pkgconfig" ]; then
         for pc in "$lib_dir/pkgconfig/"*.pc; do
-            [ -f "$pc" ] && sed -i '' "s|^prefix=.*|prefix=$1|" "$pc"
+            # libdir / includedir are absolute in archives built elsewhere; derive them from prefix.
+            [ -f "$pc" ] && sed -i '' -e "s|^prefix=.*|prefix=$1|" -e 's|^libdir=.*|libdir=${prefix}/lib|' \
+                -e 's|^includedir=.*|includedir=${prefix}/include|' "$pc"
         done
     fi
 }
