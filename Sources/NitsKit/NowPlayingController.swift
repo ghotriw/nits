@@ -171,6 +171,9 @@ public struct NowPlayingThrottler: Sendable {
         public var isPlaying: Bool = false
         public var playbackRate: Double = 1.0
         public var rawArtworkData: Data? = nil
+        /// Whether Next and Previous are offered; see `PlayerEngine.canPlayNext`.
+        public var canPlayNext: Bool = true
+        public var canPlayPrevious: Bool = true
 
         public var onTogglePlayPause: (() -> Void)?
         public var onPlay: (() -> Void)?
@@ -224,7 +227,7 @@ public struct NowPlayingThrottler: Sendable {
         }
 
         public var commands: [MediaCommand] {
-            [
+            var commands: [MediaCommand] = [
                 .togglePlayPause { [weak self] in
                     self?.onTogglePlayPause?()
                 },
@@ -245,13 +248,20 @@ public struct NowPlayingThrottler: Sendable {
                     let delta = interval > 0 ? interval : 10
                     self?.onSkip?(-delta)
                 },
-                .next { [weak self] in
-                    self?.onNext?()
-                },
-                .previous { [weak self] in
-                    self?.onPrevious?()
-                },
             ]
+            if canPlayNext {
+                commands.append(
+                    .next { [weak self] in
+                        self?.onNext?()
+                    })
+            }
+            if canPlayPrevious {
+                commands.append(
+                    .previous { [weak self] in
+                        self?.onPrevious?()
+                    })
+            }
+            return commands
         }
     }
 
@@ -325,6 +335,17 @@ public struct NowPlayingThrottler: Sendable {
             }
         }
 
+        /// Writes only on change: `model` is observed, and `update` runs at the time update rate.
+        private func updateTrackCommands() {
+            guard let engine else { return }
+            if model.canPlayNext != engine.canPlayNext {
+                model.canPlayNext = engine.canPlayNext
+            }
+            if model.canPlayPrevious != engine.canPlayPrevious {
+                model.canPlayPrevious = engine.canPlayPrevious
+            }
+        }
+
         private func executeNextTrack() {
             if let actions {
                 actions.playNextTrack()
@@ -395,6 +416,7 @@ public struct NowPlayingThrottler: Sendable {
             }
 
             resolveArtwork(data: artworkData, url: artworkURL)
+            updateTrackCommands()
 
             let currentRate = engine?.playbackRate ?? 1.0
             guard
@@ -604,7 +626,6 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         targets.append((center.skipBackwardCommand, skipBwdTarget))
 
         // 7. Next track
-        center.nextTrackCommand.isEnabled = true
         let nextTarget = center.nextTrackCommand.addTarget { [weak self] _ in
             guard let self, self.isActive else { return .noActionableNowPlayingItem }
             return self.executeNextTrack() ? .success : .noActionableNowPlayingItem
@@ -612,7 +633,6 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         targets.append((center.nextTrackCommand, nextTarget))
 
         // 8. Previous track
-        center.previousTrackCommand.isEnabled = true
         let prevTarget = center.previousTrackCommand.addTarget { [weak self] _ in
             guard let self, self.isActive else { return .noActionableNowPlayingItem }
             return self.executePreviousTrack() ? .success : .noActionableNowPlayingItem
@@ -705,6 +725,20 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         center.changePlaybackPositionCommand.isEnabled = isActive
         center.skipForwardCommand.isEnabled = isActive
         center.skipBackwardCommand.isEnabled = isActive
+        updateTrackCommandsEnabledState()
+    }
+
+    /// Writes only on change: `update` calls it at the time update rate.
+    private func updateTrackCommandsEnabledState() {
+        let center = MPRemoteCommandCenter.shared()
+        let canPlayNext = isActive && engine?.canPlayNext == true
+        if center.nextTrackCommand.isEnabled != canPlayNext {
+            center.nextTrackCommand.isEnabled = canPlayNext
+        }
+        let canPlayPrevious = isActive && engine?.canPlayPrevious == true
+        if center.previousTrackCommand.isEnabled != canPlayPrevious {
+            center.previousTrackCommand.isEnabled = canPlayPrevious
+        }
     }
 
     public func update(
@@ -721,6 +755,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         }
 
         resolveArtwork(data: artworkData, url: artworkURL)
+        updateTrackCommandsEnabledState()
 
         let currentRate = engine?.playbackRate ?? 1.0
         guard

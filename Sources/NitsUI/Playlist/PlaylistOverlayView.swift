@@ -67,10 +67,10 @@ public struct PlaylistOverlayView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Media without chapters (once loaded) falls back to the playlist tab.
+        // Media without chapters (once loaded) falls back to the playlist tab, or closes the panel without one.
         .onChange(of: !engine.isLoading && engine.chapters.isEmpty, initial: true) { _, noChapters in
             if noChapters && uiState.sidePanel == .chapters {
-                uiState.sidePanel = .playlist
+                uiState.sidePanel = uiState.isPlaylistAvailable ? .playlist : nil
             }
         }
         .overlay {
@@ -119,22 +119,26 @@ public struct PlaylistOverlayView: View {
 
     // MARK: - Header View
 
-    /// Chapters tab is open and the media has chapters; otherwise the panel shows the playlist.
+    /// Chapters tab is open and the media has chapters (or there's no playlist tab to show instead); otherwise the
+    /// panel shows the playlist.
     private var isShowingChapters: Bool {
-        tab == .chapters && !engine.chapters.isEmpty
+        tab == .chapters && (!engine.chapters.isEmpty || !uiState.isPlaylistAvailable)
     }
 
     private var headerTabs: [SidePanelTab<PlayerSidePanel>] {
         let playlist = engine.playlist
-        var tabs = [
-            SidePanelTab(
-                id: PlayerSidePanel.playlist,
-                title: "Playlist",
-                iconName: "list.bullet",
-                badge: playlist.items.isEmpty ? nil : "\(playlist.items.count)",
-                isBusy: playlist.isLoading
+        var tabs: [SidePanelTab<PlayerSidePanel>] = []
+        if uiState.isPlaylistAvailable {
+            tabs.append(
+                SidePanelTab(
+                    id: PlayerSidePanel.playlist,
+                    title: "Playlist",
+                    iconName: "list.bullet",
+                    badge: playlist.items.isEmpty ? nil : "\(playlist.items.count)",
+                    isBusy: playlist.isLoading
+                )
             )
-        ]
+        }
         if !engine.chapters.isEmpty {
             tabs.append(
                 SidePanelTab(

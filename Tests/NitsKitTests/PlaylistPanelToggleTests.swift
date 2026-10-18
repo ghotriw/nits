@@ -72,3 +72,47 @@ struct PlaylistPanelToggleTests {
         #expect(state.sidePanel == .chapters)
     }
 }
+
+@Suite("Controls the host doesn't offer")
+@MainActor
+struct UnavailableControlsTests {
+    private func makeConfig() -> ControlsConfiguration {
+        let config = ControlsConfiguration(userDefaults: nil)
+        config.items = [.playlistShuffle, .playPause, .timeline, .playlistRepeat, .chapters, .playlist]
+        config.unavailableItems = [.playlistShuffle, .playlistRepeat, .playlist]
+        return config
+    }
+
+    @Test("Unavailable items leave the bar but stay in the saved layout")
+    func hiddenFromBar() {
+        let config = makeConfig()
+        #expect(config.visibleItems == [.playPause, .timeline, .chapters])
+        #expect(config.items.contains(.playlist))
+        #expect(!config.isVisible(.playlist) && config.isEnabled(.playlist))
+    }
+
+    @Test("Reordering the visible items keeps unavailable ones in their slots")
+    func moveKeepsUnavailableSlots() {
+        let config = makeConfig()
+        // Chapters to the front of the visible list.
+        config.move(from: [2], to: 0)
+        #expect(config.visibleItems == [.chapters, .playPause, .timeline])
+        #expect(config.items == [.playlistShuffle, .chapters, .playPause, .playlistRepeat, .timeline, .playlist])
+    }
+
+    @Test("Without the playlist tab, the panel's entry points open chapters only")
+    func playlistTabUnavailable() {
+        let state = PlayerUIState(controlsConfig: makeConfig())
+        #expect(!state.isPlaylistAvailable)
+
+        state.togglePlaylist()
+        #expect(state.sidePanel == nil)
+        #expect(!state.isPlaylistPresented)
+
+        state.toggleChapters()
+        #expect(state.sidePanel == .chapters, "The chapters button stands for the panel, which has no playlist tab")
+        #expect(!state.isPlaylistPresented)
+        state.toggleChapters()
+        #expect(state.sidePanel == nil)
+    }
+}

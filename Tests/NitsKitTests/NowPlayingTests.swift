@@ -84,7 +84,43 @@ struct NowPlayingTests {
         #expect(remote.pauseCommand.isEnabled == false)
     }
 
+    @Test("LegacyMediaPlayerController offers Next only while the host's queue has a next item")
+    @MainActor
+    func testLegacyNextTrackFollowsHostNavigation() async throws {
+        let engine = PlayerEngine.makeForTesting()
+        engine.onTrackNavigation = { _ in }
+        let legacy = LegacyMediaPlayerController(engine: engine)
+        let remote = MPRemoteCommandCenter.shared()
+        defer { legacy.clear() }
+
+        legacy.update(title: "Episode 1", currentTime: 0, duration: 100, isPlaying: true)
+        #expect(remote.nextTrackCommand.isEnabled == false)
+
+        engine.trackNavigation = TrackNavigation(hasNext: true)
+        legacy.update(title: "Episode 1", currentTime: 0.1, duration: 100, isPlaying: true)
+        #expect(remote.nextTrackCommand.isEnabled == true)
+    }
+
     #if canImport(NowPlaying)
+        @Test("ModernNowPlayingController offers Next only while the host's queue has a next item")
+        @available(macOS 27.0, *)
+        @MainActor
+        func testModernNextTrackFollowsHostNavigation() async throws {
+            let engine = PlayerEngine.makeForTesting()
+            engine.onTrackNavigation = { _ in }
+            let controller = ModernNowPlayingController(engine: engine)
+            defer { controller.clear() }
+
+            controller.update(title: "Episode 1", currentTime: 0.0, duration: 100.0, isPlaying: true)
+            #expect(controller.model.canPlayNext == false)
+            let commandsWithoutNext = controller.model.commands.count
+
+            engine.trackNavigation = TrackNavigation(hasNext: true)
+            controller.update(title: "Episode 1", currentTime: 0.1, duration: 100.0, isPlaying: true)
+            #expect(controller.model.canPlayNext == true)
+            #expect(controller.model.commands.count == commandsWithoutNext + 1)
+        }
+
         @Test("ModernNowPlayingModel creates valid snapshot and metadata")
         @available(macOS 27.0, *)
         @MainActor

@@ -60,7 +60,7 @@ public struct ControlsOverlay: View {
 
             // Bottom Player Control Panel (Configurable sequence)
             HStack(spacing: 0) {
-                let items = uiState?.controlsConfig.items ?? ControlsConfiguration.defaultItems
+                let items = uiState?.controlsConfig.visibleItems ?? ControlsConfiguration.defaultItems
                 ForEach(items) { item in
                     controlView(for: item)
                         // Keep the timeline's thumbnail preview above neighbouring controls.

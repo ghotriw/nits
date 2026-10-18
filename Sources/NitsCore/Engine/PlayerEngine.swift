@@ -29,6 +29,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public internal(set) var loadGeneration: Int = 0
     /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
     public var onActionButton: ((_ id: String) -> Void)?
+    /// Set by a host that keeps its own queue: Next and Previous go to it instead of `playlist`, and the end of the
+    /// media leaves what plays next to the host. The host answers by loading the item it moves to.
+    public var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)?
+    /// The host's queue around the media playing now (see `onTrackNavigation`); replaced by each load's
+    /// `MediaLoadRequest.trackNavigation`.
+    public var trackNavigation = TrackNavigation()
     /// Container chapters of the loaded media, sorted by start; empty when it has none.
     public internal(set) var chapters: [MediaChapter] = [] {
         didSet {
@@ -729,8 +735,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         stopPlaybackPipeline()
         saveCurrentPlaybackProgress()
         // Repeating is not an end: going through `.completed` would report `onPlaybackEnded` to the host while
-        // the same media starts again.
-        if playlist.repeatMode == .one {
+        // the same media starts again. With the host's queue the playlist's repeat mode doesn't apply.
+        if onTrackNavigation == nil, playlist.repeatMode == .one {
             AppLog.info(.engine, "Repeating current item (repeatMode: .one)")
             seek(to: 0)
             play()
@@ -741,7 +747,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     func handlePlaybackCompleted() {
-        if playlist.autoPlayNext, let nextItem = playlist.playNext() {
+        if onTrackNavigation != nil {
+            AppLog.info(.engine, "Playback completed; the host's queue decides what plays next")
+        } else if playlist.autoPlayNext, let nextItem = playlist.playNext() {
             AppLog.info(.engine, "Auto-advancing to next playlist item: '\(nextItem.title)'")
             load(item: nextItem)
         } else {

@@ -161,7 +161,7 @@ public struct PlayerCommands: Commands {
                 )
             )
             .keyboardShortcut("p", modifiers: [.option, .command])
-            .disabled(playerActions == nil)
+            .disabled(!(playerActions?.isPlaylistAvailable ?? false))
 
             Toggle(
                 "Chapters",

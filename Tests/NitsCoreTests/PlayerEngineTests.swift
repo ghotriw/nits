@@ -771,8 +771,12 @@ struct PlayerEngineTests {
             var activeActionButton: PlaybackActionButton? = nil
             var onActionButton: ((String) -> Void)? = nil
             func performActionButton(_ button: PlaybackActionButton) {}
-            func playNext() {}
-            func playPrevious() {}
+            var onTrackNavigation: ((TrackNavigationDirection) -> Void)? = nil
+            var trackNavigation = TrackNavigation()
+            var canPlayNext: Bool = false
+            var canPlayPrevious: Bool = false
+            func playNext() -> String? { nil }
+            func playPrevious() -> String? { nil }
             func playPlaylistItem(id: UUID) {}
             func removePlaylistItem(id: UUID) {}
         }

@@ -172,11 +172,15 @@ public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var subtitleBgOpacity: Double { get set }
 }
 
-/// Playlist management, queues, and sequential navigation.
+/// Playlist management, queues, and sequential navigation, through the playlist or a host's own queue.
 public protocol PlayerPlaylistControlling: AnyObject, Sendable {
     @MainActor var playlist: PlaylistManager { get }
-    @MainActor func playNext()
-    @MainActor func playPrevious()
+    @MainActor var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)? { get set }
+    @MainActor var trackNavigation: TrackNavigation { get set }
+    @MainActor var canPlayNext: Bool { get }
+    @MainActor var canPlayPrevious: Bool { get }
+    @MainActor @discardableResult func playNext() -> String?
+    @MainActor @discardableResult func playPrevious() -> String?
     @MainActor func playPlaylistItem(id: UUID)
     @MainActor func removePlaylistItem(id: UUID)
 }

@@ -63,7 +63,7 @@ public struct ControlPlaylistNavButton: View {
     }
 
     public var body: some View {
-        let isEnabled = isNext ? engine.playlist.hasNext : engine.playlist.hasPrevious
+        let isEnabled = isNext ? engine.canPlayNext : engine.canPlayPrevious
         Button {
             if isNext {
                 engine.playNext()

@@ -14,6 +14,8 @@ public protocol PlayerActions: AnyObject {
     var isJumpToPresented: Bool { get }
     var isQuickSettingsPresented: Bool { get }
     var isPlaylistPresented: Bool { get }
+    /// Whether the playlist panel is offered; see `PlayerUIState.isPlaylistAvailable`.
+    var isPlaylistAvailable: Bool { get }
     var isSidePanelPresented: Bool { get }
     var hasNextTrack: Bool { get }
     var hasPreviousTrack: Bool { get }
@@ -69,6 +71,7 @@ extension PlayerActions {
     public var isJumpToPresented: Bool { false }
     public var isQuickSettingsPresented: Bool { false }
     public var isPlaylistPresented: Bool { false }
+    public var isPlaylistAvailable: Bool { true }
     public var isSidePanelPresented: Bool { false }
     public var hasNextTrack: Bool { false }
     public var hasPreviousTrack: Bool { false }

@@ -30,6 +30,10 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// Action buttons for this media; they replace the previous media's as soon as the load starts.
     public var actionButtons: [PlaybackActionButton]
 
+    /// The host's queue around this media (see `PlayerEngine.onTrackNavigation`); like `actionButtons`, it replaces
+    /// the previous media's as soon as the load starts.
+    public var trackNavigation: TrackNavigation
+
     public init(
         path: String,
         title: String? = nil,
@@ -39,9 +43,11 @@ public struct MediaLoadRequest: Sendable, Equatable {
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
-        actionButtons: [PlaybackActionButton] = []
+        actionButtons: [PlaybackActionButton] = [],
+        trackNavigation: TrackNavigation = TrackNavigation()
     ) {
         self.actionButtons = actionButtons
+        self.trackNavigation = trackNavigation
         self.path = path
         self.title = title
         self.artworkData = artworkData
@@ -99,6 +105,12 @@ public struct MediaLoadRequest: Sendable, Equatable {
     public func actionButtons(_ value: [PlaybackActionButton]) -> Self {
         var copy = self
         copy.actionButtons = value
+        return copy
+    }
+
+    public func trackNavigation(_ value: TrackNavigation) -> Self {
+        var copy = self
+        copy.trackNavigation = value
         return copy
     }
 }

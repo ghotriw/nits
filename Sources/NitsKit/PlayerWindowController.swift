@@ -45,6 +45,20 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         engine.actionButtons = buttons
     }
 
+    /// Set by a host that keeps its own queue (a media server client's series): Next and Previous from the control
+    /// bar, menu, keyboard and media keys call it instead of moving through the playlist, and the end of the media no
+    /// longer plays the playlist's next item. The host answers by opening the item it moves to.
+    public var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)? {
+        get { engine.onTrackNavigation }
+        set { engine.onTrackNavigation = newValue }
+    }
+
+    /// Replaces what the host's queue has around the media playing now, e.g. once the host learns the next episode;
+    /// the next load replaces it again (see `openStream(trackNavigation:)`).
+    public func setTrackNavigation(_ navigation: TrackNavigation) {
+        engine.trackNavigation = navigation
+    }
+
     public func applyConfiguration(_ config: PlayerConfiguration) {
         engine.applyConfiguration(config)
         applyOSDConfiguration(config)
@@ -237,7 +251,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
-        actionButtons: [PlaybackActionButton] = []
+        actionButtons: [PlaybackActionButton] = [],
+        trackNavigation: TrackNavigation = TrackNavigation()
     ) {
         openStream(
             url: url,
@@ -248,7 +263,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             startTime: startTime,
             audioTrack: audioTrack,
             subtitleTrack: subtitleTrack,
-            actionButtons: actionButtons
+            actionButtons: actionButtons,
+            trackNavigation: trackNavigation
         )
     }
 
@@ -261,7 +277,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
-        actionButtons: [PlaybackActionButton] = []
+        actionButtons: [PlaybackActionButton] = [],
+        trackNavigation: TrackNavigation = TrackNavigation()
     ) {
         let isNetwork = MediaURL.isNetworkURL(url.absoluteString)
         let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
@@ -276,7 +293,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 startTime: startTime,
                 audioTrack: audioTrack,
                 subtitleTrack: subtitleTrack,
-                actionButtons: actionButtons
+                actionButtons: actionButtons,
+                trackNavigation: trackNavigation
             ))
         window?.title = engine.mediaTitle
 
@@ -658,16 +676,20 @@ extension PlayerWindowController: PlayerActions {
         uiState.isPlaylistPresented
     }
 
+    public var isPlaylistAvailable: Bool {
+        uiState.isPlaylistAvailable
+    }
+
     public var isSidePanelPresented: Bool {
         uiState.sidePanel != nil
     }
 
     public var hasNextTrack: Bool {
-        engine.playlist.hasNext
+        engine.canPlayNext
     }
 
     public var hasPreviousTrack: Bool {
-        engine.playlist.hasPrevious
+        engine.canPlayPrevious
     }
 
     public func toggleQuickSettings() {
@@ -689,15 +711,13 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public func playNextTrack() {
-        engine.playNext()
-        if let title = engine.playlist.currentItem?.title {
+        if let title = engine.playNext() {
             uiState.osd.show(.custom(symbol: "forward.end.fill", text: title))
         }
     }
 
     public func playPreviousTrack() {
-        engine.playPrevious()
-        if let title = engine.playlist.currentItem?.title {
+        if let title = engine.playPrevious() {
             uiState.osd.show(.custom(symbol: "backward.end.fill", text: title))
         }
     }

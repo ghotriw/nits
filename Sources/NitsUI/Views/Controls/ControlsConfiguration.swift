@@ -37,6 +37,26 @@ public final class ControlsConfiguration {
         }
     }
 
+    /// Items the host app doesn't offer, e.g. the playlist's (`.playlist`, `.playlistRepeat`, `.playlistShuffle`) in a
+    /// media server client that keeps its own queue. They stay off the control bar and out of the Controls settings
+    /// whatever the saved layout says, and the playlist panel and its menu item go with `.playlist`. Not saved: the
+    /// host sets it at launch.
+    public var unavailableItems: Set<ControlBarItem> = []
+
+    /// `items` the control bar shows: without `unavailableItems`.
+    public var visibleItems: [ControlBarItem] {
+        items.filter(isAvailable)
+    }
+
+    public func isAvailable(_ item: ControlBarItem) -> Bool {
+        !unavailableItems.contains(item)
+    }
+
+    /// Whether `item` is on the control bar: in the layout and available.
+    public func isVisible(_ item: ControlBarItem) -> Bool {
+        isEnabled(item) && isAvailable(item)
+    }
+
     /// Where the layout persists; `nil` keeps it in memory (tests, previews).
     private let userDefaults: UserDefaults?
 
@@ -85,9 +105,13 @@ public final class ControlsConfiguration {
         }
     }
 
-    /// Reorders items via standard move operation (e.g. from SwiftUI List .onMove).
+    /// Reorders `visibleItems` via standard move operation (e.g. from SwiftUI List .onMove, offsets into the list the
+    /// Controls settings show); unavailable items keep their slots in `items`.
     public func move(from offsets: IndexSet, to offset: Int) {
-        items.move(fromOffsets: offsets, toOffset: offset)
+        var visible = visibleItems
+        visible.move(fromOffsets: offsets, toOffset: offset)
+        var reordered = visible.makeIterator()
+        items = items.map { isAvailable($0) ? reordered.next() ?? $0 : $0 }
     }
 
     /// Resets control layout back to default state.

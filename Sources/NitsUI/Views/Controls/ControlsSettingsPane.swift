@@ -17,7 +17,7 @@ public struct ControlsSettingsPane: View {
             }
 
             Section {
-                ForEach(controlsConfig.items) { item in
+                ForEach(controlsConfig.visibleItems) { item in
                     HStack(spacing: 12) {
                         Image(systemName: "line.3.horizontal")
                             .foregroundStyle(.tertiary)
@@ -69,7 +69,9 @@ public struct ControlsSettingsPane: View {
             }
 
             // Available hidden items to add back
-            let hiddenItems = ControlBarItem.allCases.filter { !controlsConfig.isEnabled($0) }
+            let hiddenItems = ControlBarItem.allCases.filter {
+                controlsConfig.isAvailable($0) && !controlsConfig.isEnabled($0)
+            }
             if !hiddenItems.isEmpty {
                 Section {
                     ForEach(hiddenItems) { item in

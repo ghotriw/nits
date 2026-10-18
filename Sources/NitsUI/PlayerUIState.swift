@@ -44,7 +44,14 @@ public final class PlayerUIState {
     /// Whether the playlist entry point (control bar button, `P`, View menu) shows as active: its tab is open, or
     /// either tab while it stands for the whole panel.
     public var isPlaylistPresented: Bool {
-        opensWholePlaylistPanel(.playlist) ? sidePanel?.isPlaylistPanelTab == true : sidePanel == .playlist
+        guard isPlaylistAvailable else { return false }
+        return opensWholePlaylistPanel(.playlist) ? sidePanel?.isPlaylistPanelTab == true : sidePanel == .playlist
+    }
+
+    /// Whether the playlist tab is offered at all; the host can take it away (`ControlsConfiguration.unavailableItems`),
+    /// leaving the panel to chapters.
+    public var isPlaylistAvailable: Bool {
+        controlsConfig.isAvailable(.playlist)
     }
 
     /// Whether the chapters entry point shows as active; see `isPlaylistPresented`.
@@ -68,6 +75,7 @@ public final class PlayerUIState {
     /// this one stands for the whole panel, like the quick settings button: it reopens the tab last shown this
     /// session and closes the panel on either tab.
     public func togglePlaylist() {
+        guard isPlaylistAvailable else { return }
         togglePlaylistPanel(from: .playlist)
     }
 
@@ -81,13 +89,14 @@ public final class PlayerUIState {
             toggleSidePanel(tab)
             return
         }
-        sidePanel = sidePanel?.isPlaylistPanelTab == true ? nil : lastPlaylistPanelTab
+        sidePanel =
+            sidePanel?.isPlaylistPanelTab == true ? nil : isPlaylistAvailable ? lastPlaylistPanelTab : .chapters
     }
 
     /// Whether `tab`'s entry point stands for the whole playlist panel: the other tab has no control bar button.
     private func opensWholePlaylistPanel(_ tab: PlayerSidePanel) -> Bool {
         let otherTabButton: ControlBarItem = tab == .chapters ? .playlist : .chapters
-        return !controlsConfig.isEnabled(otherTabButton)
+        return !controlsConfig.isVisible(otherTabButton)
     }
 
     public func showControlsTemporarily() {
