@@ -713,10 +713,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
                     // Check if playback reached the end
                     if self.isPlaying && self.duration > 0 && seconds >= (self.duration - 0.25) {
-                        self.stopPlaybackPipeline()
-                        self.playbackState = .completed
-                        self.saveCurrentPlaybackProgress()
-                        self.handlePlaybackCompleted()
+                        self.handleEndOfMedia()
                     }
                     // Throttled periodic progress auto-save every 15 seconds
                     if abs(seconds - self.lastSavedProgressSeconds) >= 15.0 {
@@ -728,12 +725,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
     }
 
-    func handlePlaybackCompleted() {
+    func handleEndOfMedia() {
+        stopPlaybackPipeline()
+        saveCurrentPlaybackProgress()
+        // Repeating is not an end: going through `.completed` would report `onPlaybackEnded` to the host while
+        // the same media starts again.
         if playlist.repeatMode == .one {
             AppLog.info(.engine, "Repeating current item (repeatMode: .one)")
             seek(to: 0)
             play()
-        } else if playlist.autoPlayNext, let nextItem = playlist.playNext() {
+            return
+        }
+        playbackState = .completed
+        handlePlaybackCompleted()
+    }
+
+    func handlePlaybackCompleted() {
+        if playlist.autoPlayNext, let nextItem = playlist.playNext() {
             AppLog.info(.engine, "Auto-advancing to next playlist item: '\(nextItem.title)'")
             load(item: nextItem)
         } else {
