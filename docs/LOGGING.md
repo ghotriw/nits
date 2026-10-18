@@ -39,10 +39,10 @@ AppLog.minimumLogLevel = .debug
 ```swift
 import NitsKit
 
-LogViewerWindowController.shared.show()
+LogViewerWindowController.shared.showLogs()
 ```
 
-The menu command `PlayerCommands.LogConsoleMenuCommand()` binds it to ⌥⌘L. The viewer can filter by level and category, search, copy, export and clear the log (clearing also truncates `player.log`).
+`PlayerCommands` adds it to the Window menu as "Show Log Console…" (⌥⌘L). The viewer can filter by level and category, search, copy, export and clear the log (clearing also truncates `player.log`).
 
 ## Reading logs from the terminal
 

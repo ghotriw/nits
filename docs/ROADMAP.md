@@ -37,7 +37,7 @@ flowchart TD
     M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
     M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
     M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
-    M5 -.-> M5Y["Stage 5.11: Skip Intro & Next Episode ✓"]
+    M5 -.-> M5Y["Stage 5.11: Skip Intro, Next Episode & Host Queue ✓"]
 ```
 
 ---
@@ -358,9 +358,10 @@ flowchart TD
 
 ---
 
-### Stage 5.11: Skip Intro & Next Episode (Host Action Buttons) — [COMPLETED] ✓
+### Stage 5.11: Skip Intro, Next Episode & Host Queue — [COMPLETED] ✓
 
-> Streaming-service style buttons over the video for spans of the timeline; the host supplies the spans and the actions.
+> Streaming-service style buttons over the video for spans of the timeline, and episode navigation driven by the host's
+> own queue; the host supplies the spans, the queue and the actions.
 
 - [x] **5.11.1. Host-Provided Spans & Actions:**
   - The host gives buttons for spans of the timeline (`PlaybackActionButton`: id, title, start, optional end) and
@@ -375,6 +376,26 @@ flowchart TD
     pause, scrubbing and frame steps, and restarts after a seek within the span.
   - Dismissing or pressing hides the button for the rest of its span; a new load resets this (`loadGeneration`).
     `Return` presses, `Esc` dismisses (before leaving fullscreen); hovering the button keeps the controls and cursor up.
+- [x] **5.11.2. Host-Driven Track Navigation:**
+  - A host that keeps its own queue (a media server client's series) sets `onTrackNavigation`; Next / Previous from the
+    control bar, the Playback menu (`⌘→` / `⌘←`), media keys and Control Center then call it instead of moving through
+    the playlist, and the host answers by loading the item. What the queue has around the current media
+    (`TrackNavigation`: `hasNext`, `hasPrevious`, optional titles for the OSD) comes with each load
+    (`openStream(trackNavigation:)`, `MediaLoadRequest.trackNavigation`) or later (`setTrackNavigation(_:)`).
+  - One press, one request: Next / Previous turn off after calling the host until its next load. Previous keeps the
+    playlist rule: past 3 s, or without a previous item, it restarts the media.
+  - The end of the media is left to the host (`onPlaybackEnded`): no repeat-one restart, no auto-advance. Repeat-one
+    no longer reports an end in any mode.
+  - Navigation state lives in the engine (`canPlayNext` / `canPlayPrevious`), so every entry point follows it, and
+    the system media controls update on every change, paused too.
+- [x] **5.11.3. Controls the Host Doesn't Offer:**
+  - `ControlsConfiguration.unavailableItems` (process-wide, not saved): the items leave the control bar and the
+    Controls settings whatever the user's saved layout says. Without `.playlist` the side panel shows chapters only,
+    and `P` / View → Playlist are off.
+- [x] **5.11.4. Up Next Card:**
+  - An action button with a `subtitle` or `artworkURL` shows as a card: 16:9 artwork, title and subtitle, a fixed
+    width so it keeps its size between episodes. The auto-press countdown runs as a bar along its bottom edge.
+    Auto-play at the end of the media stays with the host.
 
 ---
 
@@ -445,7 +466,7 @@ flowchart TD
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
 | **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
-| **Host Action Buttons** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans from the host, timed display, auto-press |
+| **Host Action Buttons & Queue** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans and Up Next cards from the host, timed display, auto-press; host-driven Next / Previous; hiding controls |
 | **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |

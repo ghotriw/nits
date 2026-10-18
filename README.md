@@ -25,6 +25,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 - [x] macOS integration: Now Playing media keys, Control Center, sleep prevention
 - [x] Network streaming over HTTP/HTTPS with custom headers
 - [x] Playback history: resume where you left off
+- [x] Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
 
 **Next**
 - [ ] Styled ASS/SSA subtitles
@@ -60,6 +61,8 @@ targets: [
 
 ### High-level Window API (`NitsKit`)
 
+#### Opening media
+
 ```swift
 import NitsKit
 
@@ -83,8 +86,11 @@ controller.openFile(
     artworkData: nil, // Optional; falls back to embedded file artwork (MP4 covr / MKV attachment / ID3)
     startTime: nil // Pass nil to automatically resume from saved position (if enabled)
 )
+```
 
-// Observability and Event Callbacks:
+#### Events
+
+```swift
 controller.onTimeUpdate = { currentTime, duration in
     // Called periodically (every ~0.1s during active playback)
 }
@@ -100,18 +106,72 @@ controller.onPlaybackEnded = {
 controller.onClose = { finalTime, duration in
     // Window was closed by user; provides final playback time and duration before stop()
 }
+```
 
-// Action buttons ("Skip Intro", "Next Episode") for spans of the timeline. The host decides where they go
-// (e.g. from its media server's intro / credits markers) and what they do; each load replaces them.
+#### Media server clients
+
+A host that plays episodes from its own server (Emby, Jellyfin, Plex) keeps the series, the markers and the queue;
+Nits shows the controls and reports what the user did. Everything below is per load: each `openStream` replaces the
+previous media's buttons and navigation, so pass them with it or set them once known. The types come from the
+modules under `NitsKit`: `PlaybackActionButton` and `TrackNavigation` from `NitsCore`, `ControlsConfiguration` from
+`NitsUI`.
+
+Action buttons ("Skip Intro", "Next Episode") for spans of the timeline. The host decides where they go (e.g. from
+its media server's intro / credits markers) and what they do. A button with a subtitle or artwork shows as an
+"Up Next" card:
+
+```swift
+import NitsCore
+import NitsKit
+import NitsUI
+
 controller.setActionButtons([
     PlaybackActionButton(id: "intro", title: "Skip Intro", start: 12, end: 72.5),
-    PlaybackActionButton(id: "next", title: "Next Episode", start: 2666.5, allowsAutoPress: false), // end: nil = to the end
+    PlaybackActionButton(
+        id: "next", title: "Next Episode", start: 2666.5, // end: nil = to the end
+        allowsAutoPress: false,                            // see below
+        subtitle: "S2 · E5 · The Episode Name",            // Optional; makes it a card
+        artworkURL: thumbnailURL),                         // Optional, 16:9; fetched without headers
 ])
 controller.onActionButton = { id in
-    if id == "intro" { controller.engine.seek(to: 72.5) } else { /* load the next episode */ }
+    if id == "intro" { controller.engine.seek(to: 72.5) } else { /* open the next episode */ }
 }
-// The user picks how long a button stays up and whether it presses itself (Settings → General → Action Buttons).
 ```
+
+The user picks how long a button stays up and whether it presses itself (Settings → General → Action Buttons).
+Auto-press is meant for buttons like "Skip Intro"; pass `allowsAutoPress: false` for "Next Episode" unless cutting
+the credits short is wanted.
+
+Next / Previous from the host's queue. Setting `onTrackNavigation` makes the control bar, the Playback menu
+(`⌘→` / `⌘←`), media keys and Control Center call the host instead of Nits' playlist; the host answers by opening
+the item it moves to:
+
+```swift
+controller.onTrackNavigation = { direction in   // .next / .previous
+    /* open the next or previous episode with openStream(...) */
+}
+
+controller.openStream(
+    url: episodeURL,
+    trackNavigation: TrackNavigation(hasNext: true, hasPrevious: true, nextTitle: "S2 · E6 · …"))
+
+// Or later, once the host knows the next episode:
+controller.setTrackNavigation(TrackNavigation(hasNext: true, hasPrevious: true, nextTitle: "S2 · E6 · …"))
+```
+
+- After calling the host, Next (or Previous) stays off until the next load, so repeated presses don't skip several
+  episodes.
+- Previous restarts the episode when it has played past 3 s or there's no previous one.
+- With `onTrackNavigation` set the end of the media is left to the host: Nits doesn't repeat or advance, and
+  `onPlaybackEnded` is the signal to auto-play the next episode.
+
+Controls the host doesn't offer, set once at launch (not saved; the user's control bar layout is kept):
+
+```swift
+ControlsConfiguration.shared.unavailableItems = [.playlist, .playlistRepeat, .playlistShuffle]
+```
+
+They leave the control bar and the Controls settings. Without `.playlist` the side panel shows chapters only.
 
 ### Logging
 
@@ -119,7 +179,7 @@ Player logs go through `AppLog`, which writes to `os.Logger` and to `~/Library/A
 
 ```swift
 AppLog.info(.host, "Session started")
-LogViewerWindowController.shared.show() // or ⌥⌘L
+LogViewerWindowController.shared.showLogs() // or ⌥⌘L
 ```
 
 Details: [docs/LOGGING.md](docs/LOGGING.md).
@@ -133,10 +193,11 @@ let engine = PlayerEngine()
 
 // Async loading for network streams:
 await engine.loadAsync(
-    path: "https://media.server/stream.mkv",
-    headers: ["X-Api-Key": "my-key"],
-    startTime: 300.0
-)
+    MediaLoadRequest(
+        path: "https://media.server/stream.mkv",
+        headers: ["X-Api-Key": "my-key"],
+        startTime: 300.0
+    ))
 ```
 
 ## Command-Line Options
