@@ -137,6 +137,22 @@ struct AdaptiveToneMappingTests {
         #expect(abs(meta.sdrTrim?.saturationGain ?? 1.0) < 0.0001)
     }
 
+    @Test("An L2 trim at neutral codes is neutral; one code off is not")
+    func testLevel2TrimNeutrality() {
+        func trim(slope: UInt16 = 2048, offset: UInt16 = 2048, power: UInt16 = 2048, saturation: UInt16 = 2048)
+            -> DolbyVisionFrameMetadata.Level2Trim
+        {
+            DolbyVisionFrameMetadata.Level2Trim(
+                targetMaxPQ: 2081, trimSlope: slope, trimOffset: offset, trimPower: power, trimChromaWeight: 1000,
+                trimSaturationGain: saturation)
+        }
+        #expect(trim().isNeutral)
+        #expect(!trim(slope: 2049).isNeutral)
+        #expect(!trim(offset: 2047).isNeutral)
+        #expect(!trim(power: 2049).isNeutral)
+        #expect(!trim(saturation: 2049).isNeutral)
+    }
+
     @Test("DolbyVisionRPUParser handles unescaping emulation prevention bytes")
     func testRPUUnescaping() {
         // [0x00, 0x00, 0x03, 0x01] -> [0x00, 0x00, 0x01]

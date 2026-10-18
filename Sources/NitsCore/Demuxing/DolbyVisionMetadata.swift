@@ -64,6 +64,14 @@ public struct DolbyVisionFrameMetadata: Sendable, Equatable {
             self.chromaWeight = (Float(trimChromaWeight) / 4096.0) - 0.5
             self.saturationGain = (Float(trimSaturationGain) / 4096.0) - 0.5
         }
+
+        /// Slope, offset, power and saturation at their neutral codes (2048): the trim leaves the picture unchanged.
+        /// Mastering tools often write such a block on every frame. Chroma weight is not applied, so not checked.
+        public var isNeutral: Bool {
+            let tolerance: Float = 0.5 / 4096.0
+            return abs(slope - 1.0) < tolerance && abs(offset) < tolerance && abs(power - 1.0) < tolerance
+                && abs(saturationGain) < tolerance
+        }
     }
 
     public let sceneRefresh: Bool

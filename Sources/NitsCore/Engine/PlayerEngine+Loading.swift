@@ -368,6 +368,7 @@ extension PlayerEngine {
             $0.smoothedPeakNits = 1000.0
             $0.smoothedTargetNits = 203.0
             $0.lastRenderModeName = "Metal SDR"
+            $0.lastDoviMetadata = nil
         }
         performanceMonitor.updateToneMapParams(
             PlayerPerformanceMonitor.ToneMapParams(mode: .none, peakNits: 0, targetNits: 203)
@@ -702,6 +703,7 @@ extension PlayerEngine {
                 $0.smoothedPeakNits = demuxer.maxPeakNits
                 $0.smoothedTargetNits = effectiveTargetNits
                 $0.lastRenderModeName = "Metal SDR"
+                $0.lastDoviMetadata = nil
             }
 
             self.metalRenderer?.updateUniforms { uniforms in
@@ -799,7 +801,7 @@ extension PlayerEngine {
             if self.activeRenderMode == .system {
                 initialToneMode = .appleXDR
             } else if demuxer.isDolbyVisionProfile5 || demuxer.dolbyVisionProfile != nil {
-                initialToneMode = .doviL2Trim
+                initialToneMode = .doviL1Auto
             } else if demuxer.isHDR {
                 initialToneMode = .bt2390
             } else {

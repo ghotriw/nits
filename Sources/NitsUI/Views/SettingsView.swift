@@ -11,6 +11,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyTargetNitsScale)
     private var targetNitsScale: Double = 1.0
 
+    @AppStorage(PlayerConfiguration.keyApplyDolbyVisionTrims)
+    private var applyDolbyVisionTrims: Bool = false
+
     @AppStorage(PlayerConfiguration.keyResumePlayback)
     private var resumePlayback: Bool = true
 
@@ -410,6 +413,19 @@ public struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Apply Dolby Vision trims (L2)", isOn: $applyDolbyVisionTrims)
+                        .disabled(!enableToneMapping)
+                        .onChange(of: applyDolbyVisionTrims) { _, _ in
+                            notifyChange()
+                        }
+                    Text(
+                        "Applies the colorist's SDR corrections from Dolby Vision metadata on top of the tone mapping. An approximation of Dolby's own processing: compare on your titles. Off uses the scene brightness metadata (L1) only."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Tone Mapping Tuning")
             }
@@ -434,6 +450,7 @@ public struct SettingsView: View {
             defaultRenderMode: .auto,
             targetNitsScale: Float(targetNitsScale),
             sharpness: Float(sharpness),
+            applyDolbyVisionTrims: applyDolbyVisionTrims,
             resumePlayback: resumePlayback,
             resumeStartThreshold: resumeStartThreshold,
             resumeEndThresholdRatio: resumeEndThresholdRatio,

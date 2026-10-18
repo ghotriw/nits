@@ -107,6 +107,7 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
     @MainActor var targetNitsScale: Float { get set }
     @MainActor var baseAdaptiveTargetNits: Float { get }
     @MainActor var metalSharpness: Float { get set }
+    @MainActor var applyDolbyVisionTrims: Bool { get set }
 
     @MainActor var droppedFramesCount: Int { get }
     @MainActor var pipelineDroppedFramesCount: Int { get }

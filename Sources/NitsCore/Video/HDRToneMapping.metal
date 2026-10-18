@@ -46,6 +46,7 @@ struct ToneMapUniforms {
     float doViTrimOffset;                // L2 offset
     float doViTrimPower;                 // L2 power
     float doViTrimSaturation;            // L2 saturation gain
+    float doViTrimTargetNits;            // L2 target display peak (~100 nits)
 };
 
 // PQ (SMPTE ST 2084) electro-optical transfer functions (EOTF / Inverse EOTF)
@@ -374,37 +375,34 @@ float3 sampleAndToneMap(
         sourceNits = nitsFromYUV(y, uv, uniforms);
     }
 
-    // Tone mapping to SDR display white:
-    // If Dolby Vision authored Level 2 SDR trim (100 nits) is present:
-    // Apply SMPTE ST 2094-10 SOP (Slope, Offset, Power) parametric display mapping in PQ domain,
-    // where artist trims were authored, avoiding double-tonemapping distortion.
-    float3 mapped2020;
+    // Tone mapping to SDR display white: BT.2390, driven by the stream's (or Dolby Vision L1's) peak.
+    float sdrWhite = max(uniforms.targetNits, 100.0);
+    float3 mapped2020 = mpvBT2390(sourceNits / sdrWhite, uniforms.sourcePeakNits, sdrWhite);
+
+    // A Dolby Vision L2 trim (SMPTE ST 2094-10 slope / offset / power) corrects the base display mapping, so it goes
+    // on top of it, never in its place: the base output is taken as the signal of the trim's target display (white =
+    // its peak), the SOP curve is applied to its PQ code normalized to that peak, and the result is read back at our
+    // white. Neutral trims (1, 0, 1) leave the base curve unchanged. The curve maps the max-RGB intensity, like the
+    // base curve, and RGB is scaled by its ratio: per channel, a power or offset would shift hues.
     if (uniforms.hasDoViL2Trim == 1) {
-        float3 normPQ = clamp(nitsToPQ(sourceNits), 0.0, 1.0);
+        float3 base = clamp(mapped2020, 0.0, 1.0);
+        float baseMax = max(base.r, max(base.g, base.b));
+        float trimPeakNits = max(uniforms.doViTrimTargetNits, 1.0);
+        float trimPeakPQ = nitsToPQ(float3(trimPeakNits)).x;
+        float basePQ = nitsToPQ(float3(baseMax * trimPeakNits)).x / trimPeakPQ;
         float s = max(uniforms.doViTrimSlope, 0.001);
         float o = uniforms.doViTrimOffset;
         float p = max(uniforms.doViTrimPower, 0.001);
+        float trimmedPQ = clamp(pow(max(basePQ * s + o, 1e-6), p), 0.0, 1.0);
+        float trimmedMax = pqToNits(float3(trimmedPQ * trimPeakPQ)).x / trimPeakNits;
+        float3 trimmed = baseMax > 1e-6 ? base * (trimmedMax / baseMax) : float3(trimmedMax);
 
-        // SMPTE ST 2094-10 / SOP curve: V_out = clamp((S * V_in + O)^P, 0, 1)
-        float3 sopLinear = max(normPQ * s + o, 0.0);
-        float3 mappedPQ = pow(max(sopLinear, 1e-6), p);
-        mappedPQ = clamp(mappedPQ, 0.0, 1.0);
-
-        // Convert mapped PQ optical signal to normalized display linear [0, 1] relative to target white
-        float3 mappedNits = pqToNits(mappedPQ);
-        float3 mappedLinear = mappedNits / max(uniforms.targetNits, 100.0);
-
-        // Chroma / saturation adjustment per ST 2094-10
         if (uniforms.doViTrimSaturation != 0.0) {
             float satScale = max(1.0 + uniforms.doViTrimSaturation, 0.0);
-            float luma = dot(mappedLinear, float3(0.2627, 0.6780, 0.0593));
-            mappedLinear = mix(float3(luma), mappedLinear, satScale);
+            float luma = dot(trimmed, float3(0.2627, 0.6780, 0.0593));
+            trimmed = mix(float3(luma), trimmed, satScale);
         }
-        mapped2020 = clamp(mappedLinear, 0.0, 1.0);
-    } else {
-        float sdrWhite = max(uniforms.targetNits, 100.0);
-        float3 sourceLinear = sourceNits / sdrWhite;
-        mapped2020 = mpvBT2390(sourceLinear, uniforms.sourcePeakNits, sdrWhite);
+        mapped2020 = clamp(trimmed, 0.0, 1.0);
     }
 
     float3 p3Linear = bt2020_to_display_p3(mapped2020);

@@ -214,21 +214,42 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let targetNitsScaleLock = OSAllocatedUnfairLock(initialState: Float(1.0))
 
+    /// Whether Dolby Vision L2 trims are applied on top of BT.2390 (see `PlayerConfiguration.applyDolbyVisionTrims`).
+    /// A paused frame is re-rendered right away, so the change can be compared on the same frame.
+    public var applyDolbyVisionTrims: Bool = false {
+        didSet {
+            guard applyDolbyVisionTrims != oldValue else { return }
+            let enabled = applyDolbyVisionTrims
+            let lastMetadata = dynamicToneMapLock.withLock {
+                $0.appliesTrims = enabled
+                return $0.lastDoviMetadata
+            }
+            guard !isPlaying, activeRenderMode == .metalToneMap, let lastMetadata else { return }
+            _ = applyDynamicToneMap(doviMetadata: lastMetadata)
+            metalRenderer?.redrawLastFrame()
+        }
+    }
+
     struct BaseDynamicToneMapState {
         var basePeakNits: Float = 1000.0
         var baseTargetNits: Float = 203.0
         var smoothedPeakNits: Float = 1000.0
         var smoothedTargetNits: Float = 203.0
         var lastRenderModeName: String = "Metal SDR"
+        var appliesTrims = false
+        /// RPU of the last tone-mapped frame, to re-render it when `appliesTrims` changes while paused.
+        var lastDoviMetadata: DolbyVisionFrameMetadata?
     }
     @ObservationIgnored
     let dynamicToneMapLock = OSAllocatedUnfairLock(initialState: BaseDynamicToneMapState())
 
     func recomputeEffectiveTargetNits() {
-        let effective = max(min(baseAdaptiveTargetNits * targetNitsScale, 500.0), 80.0)
+        let base = baseAdaptiveTargetNits
+        let effective = max(min(base * targetNitsScale, 500.0), 80.0)
         self.metalTargetNits = effective
         dynamicToneMapLock.withLock {
-            $0.baseTargetNits = effective
+            // The base stays unscaled, as on load: tone mapping applies `targetNitsScale` to it.
+            $0.baseTargetNits = base
             $0.smoothedTargetNits = effective
         }
     }
@@ -244,6 +265,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.isToneMappingPermitted = config.enableToneMapping
         self.targetNitsScale = config.targetNitsScale
         self.metalSharpness = config.sharpness
+        self.applyDolbyVisionTrims = config.applyDolbyVisionTrims
         self.subtitleFontSize = config.subtitleFontSize
         self.subtitleFontName = config.subtitleFontName
         self.subtitleFontWeight = config.subtitleFontWeight
@@ -656,6 +678,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let effectiveNits = max(min(203.0 * configuration.targetNitsScale, 500.0), 80.0)
         self.metalTargetNits = effectiveNits
         self.metalSharpness = configuration.sharpness
+        self.applyDolbyVisionTrims = configuration.applyDolbyVisionTrims
+        self.dynamicToneMapLock.withLock { $0.appliesTrims = configuration.applyDolbyVisionTrims }
         self.volume = configuration.initialVolume
         self.subtitleFontSize = configuration.subtitleFontSize
         self.subtitleFontName = configuration.subtitleFontName

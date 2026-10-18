@@ -214,6 +214,16 @@ public struct QuickVideoPane: View {
                         }
                         Slider(value: $engine.metalShadowLift, in: 0.0...0.1)
                     }
+
+                    if engine.videoDolbyVisionProfile != nil {
+                        Toggle(isOn: $engine.applyDolbyVisionTrims) {
+                            Text("Dolby Vision Trims (L2)")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    }
                 }
             }
         }

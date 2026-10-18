@@ -80,9 +80,9 @@ flowchart TD
   - High-performance, zero-allocation bitstream parser with emulation prevention unescaping (`0x000003`) and boundary validation for 4K60 streams.
 - [x] **1.5.3. Scene-Adaptive Tone Mapping:**
   - Forward dynamic L1/L2 metadata with frame PTS through `VTVideoDecoder` into `FrameQueue` and `CADisplayLink` rendering passes.
-  - Direct application of authored 100-nit L2 trim SOP (Slope, Offset, Power) display mapping in the PQ domain before optical linear conversion, preventing double-tonemapping distortion.
-  - Fallback to dynamic shot peak luminance and adaptive white point scaling via L1 with exponential moving average (EMA) temporal smoothing and scene-cut resets.
-  - Telemetry reporting in Performance HUD (`Metal SDR (DoVi L2 Trim)` / `Metal SDR (DoVi L1)`).
+  - BT.2390 driven by dynamic shot peak luminance and adaptive white point scaling via L1 with exponential moving average (EMA) temporal smoothing and scene-cut resets.
+  - Opt-in (off by default, as in mpv; Settings, Quick Settings, `--dovi-trims`): authored 100-nit L2 trim SOP (Slope, Offset, Power) applied on top of the BT.2390 output to the max-RGB intensity (hue-preserving), in PQ normalized to the trim's target display. An approximation: Dolby's own base display-management curve is not public. Neutral trims are skipped; frames without RPU hold the last L1-smoothed peak and target.
+  - Telemetry reporting in Performance HUD (`Metal SDR (DoVi L1 + L2 Trim)` / `Metal SDR (DoVi L1)`).
 - [x] **1.5.4. User Target White Point Calibration:**
   - User-configurable `targetNitsScale` multiplier (0.5×–2.0× in UI, 0.1×–4.0× engine bounds) to fine-tune the SDR reference luminance for ambient room lighting.
 

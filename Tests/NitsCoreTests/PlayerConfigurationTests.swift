@@ -147,6 +147,22 @@ struct PlayerConfigurationTests {
         #expect(loaded.subtitleFontWeight == "Heavy")
     }
 
+    @Test("Dolby Vision trims default off, persist, and follow the CLI flags")
+    func testDolbyVisionTrimsSetting() {
+        #expect(PlayerConfiguration().applyDolbyVisionTrims == false)
+
+        let defaults = InMemoryUserDefaults()
+        var config = PlayerConfiguration()
+        config.applyDolbyVisionTrims = true
+        config.saveToUserDefaults(userDefaults: defaults)
+        #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).applyDolbyVisionTrims == true)
+
+        #expect(PlayerConfiguration.parse(arguments: ["Nits", "--dovi-trims"]).configuration.applyDolbyVisionTrims)
+        #expect(
+            !PlayerConfiguration.parse(arguments: ["Nits", "--no-dovi-trims"], base: config).configuration
+                .applyDolbyVisionTrims)
+    }
+
     @Test("CLI arguments correctly parse audio-track and subtitle-track flags")
     func testParseTrackFlags() {
         let args = ["Nits", "--audio-track=jpn", "--subtitle-track", "off", "/tmp/movie.mkv"]

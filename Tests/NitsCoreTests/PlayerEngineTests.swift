@@ -710,6 +710,7 @@ struct PlayerEngineTests {
             var targetNitsScale: Float = 1.0
             var baseAdaptiveTargetNits: Float = 203.0
             var metalSharpness: Float = 0
+            var applyDolbyVisionTrims: Bool = false
             var volume: Float = 1.0
             var isMuted: Bool = false
             var playbackRate: Double = 1.0

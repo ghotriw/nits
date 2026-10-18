@@ -62,6 +62,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Default sharpness factor for FidelityFX CAS (0.0 ... 1.0).
     public var sharpness: Float
 
+    /// Whether Dolby Vision L2 trims (the colorist's 100-nit SDR corrections) are applied on top of the BT.2390
+    /// curve (default false). Off, Metal tone mapping uses L1 only, as mpv does: the trims correct Dolby's own base
+    /// curve, which is not public, so on BT.2390 they are an approximation.
+    public var applyDolbyVisionTrims: Bool
+
     /// Default volume level (0.0 ... 1.0).
     public var initialVolume: Float
 
@@ -160,6 +165,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         targetNits: Float = 203.0,
         targetNitsScale: Float? = nil,
         sharpness: Float = 0.5,
+        applyDolbyVisionTrims: Bool = false,
         initialVolume: Float = 1.0,
         httpHeaders: [String: String] = [:],
         resumePlayback: Bool = true,
@@ -199,6 +205,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
             self.targetNitsScale = max(targetNits / 203.0, 0.1)
         }
         self.sharpness = sharpness
+        self.applyDolbyVisionTrims = applyDolbyVisionTrims
         self.initialVolume = initialVolume
         self.httpHeaders = httpHeaders
         self.resumePlayback = resumePlayback
@@ -235,6 +242,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyTargetNits = "Nits.targetNits"
     public static let keyTargetNitsScale = "Nits.targetNitsScale"
     public static let keySharpness = "Nits.sharpness"
+    public static let keyApplyDolbyVisionTrims = "Nits.applyDolbyVisionTrims"
     public static let keyResumePlayback = "Nits.resumePlayback"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
     public static let keyResumeEndThresholdRatio = "Nits.resumeEndThresholdRatio"
@@ -274,6 +282,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if let sharpness = userDefaults.object(forKey: keySharpness) as? NSNumber {
             config.sharpness = sharpness.floatValue
+        }
+        if userDefaults.object(forKey: keyApplyDolbyVisionTrims) != nil {
+            config.applyDolbyVisionTrims = userDefaults.bool(forKey: keyApplyDolbyVisionTrims)
         }
         if userDefaults.object(forKey: keyResumePlayback) != nil {
             config.resumePlayback = userDefaults.bool(forKey: keyResumePlayback)
@@ -370,6 +381,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(targetNitsScale, forKey: Self.keyTargetNitsScale)
         userDefaults.set(targetNits, forKey: Self.keyTargetNits)
         userDefaults.set(sharpness, forKey: Self.keySharpness)
+        userDefaults.set(applyDolbyVisionTrims, forKey: Self.keyApplyDolbyVisionTrims)
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
@@ -459,6 +471,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 if let val = Float(arg.dropFirst("--sharpness=".count)) {
                     config.sharpness = max(0.0, min(1.0, val))
                 }
+            } else if arg == "--dovi-trims" {
+                config.applyDolbyVisionTrims = true
+            } else if arg == "--no-dovi-trims" {
+                config.applyDolbyVisionTrims = false
             } else if arg.starts(with: "--volume=") {
                 if let val = Float(arg.dropFirst("--volume=".count)) {
                     config.initialVolume = max(0.0, min(1.0, val))

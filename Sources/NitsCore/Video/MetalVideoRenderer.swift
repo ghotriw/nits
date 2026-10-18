@@ -24,7 +24,8 @@ public struct ToneMapUniforms: Sendable {
     public var doViTrimSlope: Float = 1.0
     public var doViTrimOffset: Float = 0.0
     public var doViTrimPower: Float = 1.0
-    public var doViTrimSaturation: Float = 1.0
+    public var doViTrimSaturation: Float = 0.0  // saturation gain, neutral 0
+    public var doViTrimTargetNits: Float = 100.0  // peak of the display the L2 trim was authored for
 
     public init(
         targetNits: Float = 203.0,
@@ -45,7 +46,8 @@ public struct ToneMapUniforms: Sendable {
         doViTrimSlope: Float = 1.0,
         doViTrimOffset: Float = 0.0,
         doViTrimPower: Float = 1.0,
-        doViTrimSaturation: Float = 1.0
+        doViTrimSaturation: Float = 0.0,
+        doViTrimTargetNits: Float = 100.0
     ) {
         self.targetNits = targetNits
         self.sourcePeakNits = sourcePeakNits
@@ -66,6 +68,7 @@ public struct ToneMapUniforms: Sendable {
         self.doViTrimOffset = doViTrimOffset
         self.doViTrimPower = doViTrimPower
         self.doViTrimSaturation = doViTrimSaturation
+        self.doViTrimTargetNits = doViTrimTargetNits
     }
 }
 
