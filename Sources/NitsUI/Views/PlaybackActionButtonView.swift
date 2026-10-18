@@ -86,13 +86,27 @@ public struct PlaybackActionButtonView: View {
             }
             .background(alignment: .leading) {
                 // Auto-press countdown: fills from the leading edge until the button presses itself.
-                if let progress = presenter.autoPressProgress {
+                if !button.isCard, let progress = presenter.autoPressProgress {
                     GeometryReader { geo in
                         Rectangle()
                             .fill(Color.white.opacity(0.22))
                             .frame(width: geo.size.width * progress)
                             .animation(.linear(duration: 0.1), value: progress)
                     }
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                // On a card the countdown is a bar along the bottom edge: a fill behind it would hide under the
+                // artwork for its first third.
+                if button.isCard, let progress = presenter.autoPressProgress {
+                    GeometryReader { geo in
+                        Rectangle()
+                            .fill(Color.white.opacity(0.85))
+                            .frame(width: geo.size.width * progress, height: 3)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                            .animation(.linear(duration: 0.1), value: progress)
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .background(.ultraThinMaterial)
@@ -134,7 +148,9 @@ public struct PlaybackActionButtonView: View {
                 }
             }
             .lineLimit(1)
-            .frame(maxWidth: 220, alignment: .leading)
+            // A fixed width, not one that hugs the text: the card keeps its size from episode to episode, and long
+            // titles truncate instead of widening it.
+            .frame(width: 220, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
         .padding(button.artworkURL == nil ? 12 : 8)
