@@ -110,7 +110,7 @@ public final class NativeVideoHostView: NSView {
         super.layout()
         let videoFrame = aspectFitVideoFrame()
 
-        // No implicit animation, or the layer would lag behind a PiP window being resized.
+        // No implicit animation: the video layers would lag behind the window being resized.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         switch engine.pictureInPictureLayerGeometry {
@@ -132,13 +132,26 @@ public final class NativeVideoHostView: NSView {
                 indicator.setNeedsLayout()
             }
         }
+
+        var drawableSizeChanged = false
+        if let metalLayer = engine.metalRenderer?.metalLayer {
+            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            // On whole pixels: a fractional frame makes the compositor resample the drawable, softening the picture.
+            let metalFrame = backingAlignedRect(videoFrame, options: .alignAllEdgesNearest)
+            let drawableSize = CGSize(
+                width: (metalFrame.width * scale).rounded(), height: (metalFrame.height * scale).rounded())
+            drawableSizeChanged = metalLayer.drawableSize != drawableSize
+            metalLayer.contentsScale = scale
+            metalLayer.frame = metalFrame
+            metalLayer.drawableSize = drawableSize
+        }
         CATransaction.commit()
 
-        guard let metalLayer = engine.metalRenderer?.metalLayer else { return }
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        metalLayer.contentsScale = scale
-        metalLayer.frame = videoFrame
-        metalLayer.drawableSize = CGSize(width: videoFrame.width * scale, height: videoFrame.height * scale)
+        // While playing, the next frame comes within a frame duration; a redraw would only compete with the display
+        // link for drawables.
+        if drawableSizeChanged, engine.isMetalLayerVisible, !engine.isPlaying {
+            engine.metalRenderer?.redrawLastFrame()
+        }
     }
 
     /// Aspect-fit frame of the video in the view, matching AVSampleBufferDisplayLayer `resizeAspect` (SAR / DAR).

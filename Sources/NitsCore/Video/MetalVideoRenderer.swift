@@ -77,6 +77,8 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private var textureCache: CVMetalTextureCache?
     private let renderPassDesc = MTLRenderPassDescriptor()
     private var lastRenderedTextures: (CVMetalTexture?, CVMetalTexture?) = (nil, nil)
+    /// Already kept alive by `lastRenderedTextures`; held for `redrawLastFrame()`.
+    private var lastPixelBuffer: CVPixelBuffer?
     private let renderLock = OSAllocatedUnfairLock()
     private let uniformsLock = OSAllocatedUnfairLock(initialState: ToneMapUniforms())
 
@@ -145,7 +147,21 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     ) {
         renderLock.lock()
         defer { renderLock.unlock() }
+        renderLocked(pixelBuffer: pixelBuffer, onGPUCompleted: onGPUCompleted)
+    }
 
+    /// Re-renders the last frame at the current `drawableSize`: until the next frame, the layer would otherwise show
+    /// the previous drawable scaled to its new size (soft after enlarging the window while paused).
+    public func redrawLastFrame() {
+        renderLock.lock()
+        defer { renderLock.unlock() }
+        guard let lastPixelBuffer else { return }
+        renderLocked(pixelBuffer: lastPixelBuffer, onGPUCompleted: nil)
+    }
+
+    private func renderLocked(
+        pixelBuffer: CVPixelBuffer, onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)?
+    ) {
         guard let pipelineState,
             let textureCache,
             let drawable = metalLayer.nextDrawable()
@@ -224,6 +240,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
 
         // Retain textures in renderer slot until next frame without allocating a heap closure
         lastRenderedTextures = (yTextureRef, uvTextureRef)
+        lastPixelBuffer = pixelBuffer
 
         if let onGPUCompleted {
             commandBuffer.addCompletedHandler { onGPUCompleted($0.status == .completed ? $0.gpuEndTime : 0) }
@@ -238,6 +255,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         defer { renderLock.unlock() }
 
         lastRenderedTextures = (nil, nil)
+        lastPixelBuffer = nil
         guard let drawable = metalLayer.nextDrawable() else { return }
         renderPassDesc.colorAttachments[0].texture = drawable.texture
 
