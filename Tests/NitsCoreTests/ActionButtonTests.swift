@@ -33,6 +33,18 @@ struct ActionButtonTests {
         #expect(PlaybackActionButton.active(in: [], at: 15) == nil)
     }
 
+    @Test("A subtitle or artwork makes the button an Up Next card; a plain title stays a plain button")
+    func testCard() {
+        #expect(!Self.intro.isCard)
+        let withSubtitle = PlaybackActionButton(
+            id: "next", title: "Next Episode", start: 2666.5, subtitle: "S2 · E5 · The Episode")
+        #expect(withSubtitle.isCard)
+        let withArtwork = PlaybackActionButton(
+            id: "next", title: "Next Episode", start: 2666.5,
+            artworkURL: URL(string: "https://media.example/Items/42/Images/Primary?api_key=abc"))
+        #expect(withArtwork.isCard)
+    }
+
     @Test("Engine follows the playback position and reports presses of its own buttons only")
     @MainActor
     func testEngineActiveButtonAndPress() {

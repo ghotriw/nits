@@ -72,34 +72,73 @@ public struct PlaybackActionButtonView: View {
                 engine.performActionButton(pressed)
             }
         } label: {
-            Text(button.title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(alignment: .leading) {
-                    // Auto-press countdown: fills from the leading edge until the button presses itself.
-                    if let progress = presenter.autoPressProgress {
-                        GeometryReader { geo in
-                            Rectangle()
-                                .fill(Color.white.opacity(0.22))
-                                .frame(width: geo.size.width * progress)
-                                .animation(.linear(duration: 0.1), value: progress)
-                        }
+            Group {
+                if button.isCard {
+                    cardLabel(button)
+                } else {
+                    Text(button.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                }
+            }
+            .background(alignment: .leading) {
+                // Auto-press countdown: fills from the leading edge until the button presses itself.
+                if let progress = presenter.autoPressProgress {
+                    GeometryReader { geo in
+                        Rectangle()
+                            .fill(Color.white.opacity(0.22))
+                            .frame(width: geo.size.width * progress)
+                            .animation(.linear(duration: 0.1), value: progress)
                     }
                 }
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
-                )
-                .contentShape(Rectangle())
+            }
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .shadow(color: .black.opacity(0.25), radius: 14, x: 0, y: 0)
         .help("\(button.title) (Return)")
+    }
+
+    /// "Up Next" card: the host's artwork beside the title and subtitle.
+    private func cardLabel(_ button: PlaybackActionButton) -> some View {
+        HStack(spacing: 12) {
+            if let artworkURL = button.artworkURL {
+                AsyncImage(url: artworkURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        // Loading or failed: keep the card's size, so it doesn't jump when the picture arrives.
+                        Color.white.opacity(0.08)
+                    }
+                }
+                .frame(width: 128, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(button.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                if let subtitle = button.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: 220, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(button.artworkURL == nil ? 12 : 8)
+        .padding(.trailing, 8)
     }
 
     private var dismissButton: some View {

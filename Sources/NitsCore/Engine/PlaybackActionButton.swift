@@ -14,15 +14,35 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
     /// Seconds where it disappears again (exclusive); `nil` keeps it up to the end of the media.
     public let end: Double?
     /// Whether the player may press the button by itself when the user enabled auto-press. Hosts turn it off for
-    /// actions their own settings keep manual (e.g. "Next Episode" without auto-play).
+    /// actions that shouldn't happen without the user (e.g. "Next Episode", which would cut the credits short).
     public let allowsAutoPress: Bool
+    /// A second line under the title (e.g. "S2 · E5 · The Episode Name"), already localized by the host.
+    public let subtitle: String?
+    /// A 16:9 picture of what the button leads to (e.g. the next episode's thumbnail). The URL carries any
+    /// authentication itself: it is fetched without headers.
+    public let artworkURL: URL?
 
-    public init(id: String, title: String, start: Double, end: Double? = nil, allowsAutoPress: Bool = true) {
+    public init(
+        id: String,
+        title: String,
+        start: Double,
+        end: Double? = nil,
+        allowsAutoPress: Bool = true,
+        subtitle: String? = nil,
+        artworkURL: URL? = nil
+    ) {
         self.id = id
         self.title = title
         self.start = start
         self.end = end
         self.allowsAutoPress = allowsAutoPress
+        self.subtitle = subtitle
+        self.artworkURL = artworkURL
+    }
+
+    /// Whether the button shows as an "Up Next" card (artwork, title and subtitle) rather than a plain title.
+    public var isCard: Bool {
+        subtitle != nil || artworkURL != nil
     }
 
     /// Whether `time` falls inside the button's span.
