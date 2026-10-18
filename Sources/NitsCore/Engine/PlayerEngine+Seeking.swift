@@ -172,7 +172,8 @@ extension PlayerEngine {
                 if !isSuperseded(), let preview = previewFrame {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.currentSeekId == seekId else { return }
-                        self.renderDirect(pixelBuffer: preview.pixelBuffer, pts: preview.pts)
+                        self.renderDirect(
+                            pixelBuffer: preview.pixelBuffer, pts: preview.pts, doviMetadata: preview.doviMetadata)
                     }
                 }
             }
@@ -298,11 +299,14 @@ extension PlayerEngine {
     struct SeekPreviewResult: @unchecked Sendable {
         let pixelBuffer: CVPixelBuffer
         let pts: Double
+        /// The frame's Dolby Vision RPU: without it a paused seek tone-maps with static values, not the frame's.
+        let doviMetadata: DolbyVisionFrameMetadata?
     }
 
     final class SeekPreviewBox: @unchecked Sendable {
         var buffer: CVPixelBuffer?
         var pts: Double = -1.0
+        var doviMetadata: DolbyVisionFrameMetadata?
     }
 
     nonisolated static func seekPreview(
@@ -383,6 +387,7 @@ extension PlayerEngine {
                 if shouldUpdate {
                     box.buffer = frame.pixelBuffer
                     box.pts = framePts
+                    box.doviMetadata = frame.doviMetadata
                 }
                 lock.unlock()
             }
@@ -473,13 +478,14 @@ extension PlayerEngine {
         lock.lock()
         let finalBuf = box.buffer
         let finalPts = box.pts
+        let finalDoviMetadata = box.doviMetadata
         lock.unlock()
 
         if let finalBuf, finalPts >= 0 {
             AppLog.debug(
                 .engine,
                 "seekPreview settled: pts=\(finalPts)s for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
-            return SeekPreviewResult(pixelBuffer: finalBuf, pts: finalPts)
+            return SeekPreviewResult(pixelBuffer: finalBuf, pts: finalPts, doviMetadata: finalDoviMetadata)
         }
         AppLog.debug(
             .engine, "seekPreview found no frame for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
