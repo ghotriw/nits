@@ -34,7 +34,16 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)?
     /// The host's queue around the media playing now (see `onTrackNavigation`); replaced by each load's
     /// `MediaLoadRequest.trackNavigation`.
-    public var trackNavigation = TrackNavigation()
+    public var trackNavigation = TrackNavigation() {
+        didSet {
+            if oldValue != trackNavigation {
+                onTrackNavigationChanged?()
+            }
+        }
+    }
+    /// Called when `trackNavigation` changes (a load, the host, a press), so Next / Previous outside the views, such
+    /// as the system's media controls, follow it without waiting for a time update; none come while paused.
+    public var onTrackNavigationChanged: (() -> Void)?
     /// Container chapters of the loaded media, sorted by start; empty when it has none.
     public internal(set) var chapters: [MediaChapter] = [] {
         didSet {

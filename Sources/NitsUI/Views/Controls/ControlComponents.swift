@@ -56,20 +56,20 @@ public struct ControlSeekRelativeButton: View {
 public struct ControlPlaylistNavButton: View {
     let engine: PlayerEngine
     let isNext: Bool
+    /// Shows where the press went, as the menu and media keys do.
+    var osd: OSDManager?
 
-    public init(engine: PlayerEngine, isNext: Bool) {
+    public init(engine: PlayerEngine, isNext: Bool, osd: OSDManager? = nil) {
         self.engine = engine
         self.isNext = isNext
+        self.osd = osd
     }
 
     public var body: some View {
         let isEnabled = isNext ? engine.canPlayNext : engine.canPlayPrevious
         Button {
-            if isNext {
-                engine.playNext()
-            } else {
-                engine.playPrevious()
-            }
+            let title = isNext ? engine.playNext() : engine.playPrevious()
+            osd?.showTrackChange(to: title, isNext: isNext)
         } label: {
             Image(systemName: isNext ? "forward.end.fill" : "backward.end.fill")
                 .font(.system(size: 14))

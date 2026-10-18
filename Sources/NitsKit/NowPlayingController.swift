@@ -23,6 +23,9 @@ public protocol NowPlayingController: AnyObject {
         artworkURL: URL?
     )
     func clear()
+    /// Re-reads whether Next and Previous are available (`PlayerEngine.canPlayNext` / `canPlayPrevious`); `update`
+    /// does too, but no updates come while paused.
+    func updateTrackCommands()
 }
 
 extension NowPlayingController {
@@ -336,7 +339,7 @@ public struct NowPlayingThrottler: Sendable {
         }
 
         /// Writes only on change: `model` is observed, and `update` runs at the time update rate.
-        private func updateTrackCommands() {
+        public func updateTrackCommands() {
             guard let engine else { return }
             if model.canPlayNext != engine.canPlayNext {
                 model.canPlayNext = engine.canPlayNext
@@ -725,11 +728,11 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         center.changePlaybackPositionCommand.isEnabled = isActive
         center.skipForwardCommand.isEnabled = isActive
         center.skipBackwardCommand.isEnabled = isActive
-        updateTrackCommandsEnabledState()
+        updateTrackCommands()
     }
 
     /// Writes only on change: `update` calls it at the time update rate.
-    private func updateTrackCommandsEnabledState() {
+    public func updateTrackCommands() {
         let center = MPRemoteCommandCenter.shared()
         let canPlayNext = isActive && engine?.canPlayNext == true
         if center.nextTrackCommand.isEnabled != canPlayNext {
@@ -755,7 +758,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         }
 
         resolveArtwork(data: artworkData, url: artworkURL)
-        updateTrackCommandsEnabledState()
+        updateTrackCommands()
 
         let currentRate = engine?.playbackRate ?? 1.0
         guard

@@ -197,6 +197,29 @@ struct NowPlayingTests {
         windowController.windowWillClose(Notification(name: NSWindow.willCloseNotification))
     }
 
+    @Test("A change of the host's queue reaches the media controls at once, without a time update")
+    @MainActor
+    func testTrackNavigationChangeRefreshesMediaControls() async throws {
+        let windowController = PlayerWindowController(engine: .makeForTesting())
+        defer { windowController.windowWillClose(Notification(name: NSWindow.willCloseNotification)) }
+        windowController.onTrackNavigation = { _ in }
+        windowController.nowPlayingController.update(
+            title: "Episode 1", currentTime: 0, duration: 100, isPlaying: false)
+
+        // Paused: no further `update` comes.
+        windowController.setTrackNavigation(TrackNavigation(hasNext: true))
+
+        #if canImport(NowPlaying)
+            if #available(macOS 27.0, *),
+                let modern = windowController.nowPlayingController as? ModernNowPlayingController
+            {
+                #expect(modern.model.canPlayNext)
+                return
+            }
+        #endif
+        #expect(MPRemoteCommandCenter.shared().nextTrackCommand.isEnabled)
+    }
+
     @Test("NowPlayingThrottler accurately throttles 1x ticks and detects state changes, seeks, and heartbeats")
     func testNowPlayingThrottler() {
         var throttler = NowPlayingThrottler()

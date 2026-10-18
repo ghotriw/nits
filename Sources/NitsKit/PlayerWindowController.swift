@@ -231,6 +231,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 break
             }
         }
+        engine.onTrackNavigationChanged = { [weak self] in
+            self?.nowPlayingController.updateTrackCommands()
+        }
         engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
             guard let self, self.engine.enableOSD, self.uiState.osd.isVisible else { return }
             self.uiState.osd.show(
@@ -711,15 +714,11 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public func playNextTrack() {
-        if let title = engine.playNext() {
-            uiState.osd.show(.custom(symbol: "forward.end.fill", text: title))
-        }
+        uiState.osd.showTrackChange(to: engine.playNext(), isNext: true)
     }
 
     public func playPreviousTrack() {
-        if let title = engine.playPrevious() {
-            uiState.osd.show(.custom(symbol: "backward.end.fill", text: title))
-        }
+        uiState.osd.showTrackChange(to: engine.playPrevious(), isNext: false)
     }
 
     public var isActionButtonVisible: Bool {

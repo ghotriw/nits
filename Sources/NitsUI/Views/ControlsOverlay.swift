@@ -107,7 +107,7 @@ public struct ControlsOverlay: View {
     private func controlView(for item: ControlBarItem) -> some View {
         switch item {
         case .playlistPrevious:
-            ControlPlaylistNavButton(engine: engine, isNext: false)
+            ControlPlaylistNavButton(engine: engine, isNext: false, osd: uiState?.osd)
         case .seekBackward:
             ControlSeekRelativeButton(engine: engine, isForward: false)
         case .playPause:
@@ -115,7 +115,7 @@ public struct ControlsOverlay: View {
         case .seekForward:
             ControlSeekRelativeButton(engine: engine, isForward: true)
         case .playlistNext:
-            ControlPlaylistNavButton(engine: engine, isNext: true)
+            ControlPlaylistNavButton(engine: engine, isNext: true, osd: uiState?.osd)
         case .timeline:
             ControlTimelineSection(
                 engine: engine,

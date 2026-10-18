@@ -182,3 +182,12 @@ private final class LogSubscription: Sendable {
         store.removeListener(id)
     }
 }
+
+extension OSDManager {
+    /// Shows the title of the item Next or Previous moved to (`PlayerEngine.playNext()` / `playPrevious()`); nothing
+    /// when it didn't move.
+    public func showTrackChange(to title: String?, isNext: Bool) {
+        guard let title else { return }
+        show(.custom(symbol: isNext ? "forward.end.fill" : "backward.end.fill", text: title))
+    }
+}
