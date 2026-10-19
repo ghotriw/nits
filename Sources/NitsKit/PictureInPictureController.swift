@@ -159,6 +159,7 @@ public final class PictureInPictureController: NSObject {
             pip.stopPictureInPicture()
         } else {
             refreshSnapshot(invalidate: true)
+            engine.primeDisplayLayerForPictureInPicture()
             windowsBeforeStart = Set(NSApp.windows.map(ObjectIdentifier.init))
             pip.startPictureInPicture()
         }

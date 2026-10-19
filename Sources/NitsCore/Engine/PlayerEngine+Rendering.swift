@@ -542,6 +542,15 @@ extension PlayerEngine {
         }
     }
 
+    /// Gives the display layer the current frame before Picture in Picture starts. Under Metal tone mapping the
+    /// (hidden) display layer gets no frames, and AVKit lays out its panel from the layer's video size right at
+    /// `willStart`, before the switch to `.system` delivers one: with no frame ever enqueued that size is zero and
+    /// AVKit crashes on a NaN view frame. The layer stays hidden until the render mode switches.
+    public func primeDisplayLayerForPictureInPicture() {
+        guard activeRenderMode == .metalToneMap, let buffer = frameQueue.getLastRenderedBuffer() else { return }
+        presentToDisplayLayer(pixelBuffer: buffer)
+    }
+
     /// Resolves and applies dynamic tone-mapping (Dolby Vision L1/L2 trims or static base values) for a
     /// single frame's metadata, updating the Metal uniforms and performance monitor. Returns the resolved
     /// render-mode name. Shared by the playback display-link path and direct (seek/step) renders so
