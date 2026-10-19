@@ -236,7 +236,10 @@ hurts (measured with and without it); at an 8.3 ms tick the resulting one-tick e
 `NitsKit/PictureInPictureController` drives the public `AVPictureInPictureController` with a
 `ContentSource(sampleBufferDisplayLayer:)` over `engine.displayLayer`; the engine only exposes
 `isPictureInPictureActive` and `pictureInPictureLayerGeometry`, so embedding hosts can bring their
-own PiP. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
+own PiP. The controller is public for hosts with their own window: it follows the engine through
+observation (the engine's callbacks have one slot each, which the host uses), so a host only
+toggles it and moves its window aside and back (`onActiveChanged`, `onRestoreUserInterface`). The
+window settings in `PlayerConfiguration` are applied by `PlayerWindowController`. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
 included), but a broken private API means no PiP at all, while AVKit's bugs below are cosmetic.
 
 - **Render mode and pacing.** PiP only sees the display layer, so `.metalToneMap` falls back to

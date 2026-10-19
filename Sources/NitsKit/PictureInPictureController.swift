@@ -44,10 +44,16 @@ struct PictureInPicturePlaybackSnapshot: Sendable, Equatable {
 }
 
 /// Mirrors `PlayerEngine.displayLayer` into the system Picture in Picture window.
+///
+/// Follows the engine on its own (through observation): PiP's timeline and play / pause button track playback, and
+/// AVKit is prepared once there is video. A host only toggles it and handles its window: `onActiveChanged` (hide or
+/// keep the window while PiP runs), `onRestoreUserInterface` (bring it back) and `onPossibleChanged` (enable the
+/// toggle). The window behaviour in `PlayerConfiguration` is `PlayerWindowController`'s; other hosts apply their own.
+/// Subtitles drawn above the video are not part of the display layer, so PiP shows none.
 @MainActor
-final class PictureInPictureController: NSObject {
+public final class PictureInPictureController: NSObject {
     private let engine: PlayerEngine
-    /// Created on first use: the content source needs `self` as its playback delegate.
+    /// Created on first use (`prepare()`), with `delegateProxy` as its delegates.
     private var lazyController: AVPictureInPictureController?
     /// Read by the nonisolated playback delegate methods, which AVKit may call off the main thread.
     private let snapshot = OSAllocatedUnfairLock(initialState: PictureInPicturePlaybackSnapshot())
@@ -59,20 +65,64 @@ final class PictureInPictureController: NSObject {
     /// Set when PiP hands playback back (restore button or our own stop); a stop without it is the close button.
     private var isHandingBack = false
     private var possibleObservation: NSKeyValueObservation?
+    private lazy var delegateProxy = DelegateProxy(owner: self, snapshot: snapshot)
 
     /// Called on the main actor when PiP starts or stops.
-    var onActiveChanged: ((Bool) -> Void)?
+    public var onActiveChanged: ((Bool) -> Void)?
     /// Called when the user asks PiP to hand playback back to the player window. The host brings the window back
-    /// and calls the closure once it is on screen; PiP then animates into it.
-    var onRestoreUserInterface: ((_ windowReady: @escaping @MainActor () -> Void) -> Void)?
+    /// and calls the closure once it is on screen; PiP then animates into it. For a minimized window that is after
+    /// the Dock restore animation (`windowDidDeminiaturize`, with a timeout in case it never comes), or PiP lands in a
+    /// window still flying out of the Dock. Without this callback the closure runs right away.
+    public var onRestoreUserInterface: ((_ windowReady: @escaping @MainActor () -> Void) -> Void)?
     /// Called on the main actor when AVKit reports whether PiP can start.
-    var onPossibleChanged: ((Bool) -> Void)?
+    public var onPossibleChanged: ((Bool) -> Void)?
 
-    var isActive: Bool { lazyController?.isPictureInPictureActive ?? false }
+    public var isActive: Bool { lazyController?.isPictureInPictureActive ?? false }
+    /// The playback state PiP reads; for tests.
+    var playbackSnapshot: PictureInPicturePlaybackSnapshot { snapshot.withLock { $0 } }
+    /// Whether PiP can start now; `false` until AVKit is prepared (the first video plays) or without PiP support.
+    public var isPossible: Bool { lazyController?.isPictureInPicturePossible ?? false }
 
-    init(engine: PlayerEngine) {
+    /// Can be created at any point, also with media already loaded: it starts from the engine's current state.
+    public init(engine: PlayerEngine) {
         self.engine = engine
         super.init()
+        engineDidChange()
+    }
+
+    /// Released while PiP runs, AVKit closes it without telling the (gone) delegate, so the engine is handed back
+    /// here: otherwise it stays in PiP mode, with Metal tone mapping off and the display layer sized for the panel.
+    isolated deinit {
+        if let panelResizeObserver {
+            NotificationCenter.default.removeObserver(panelResizeObserver)
+        }
+        if lazyController?.isPictureInPictureActive == true || panelResizeObserver != nil {
+            engine.pictureInPictureLayerGeometry = nil
+            engine.isPictureInPictureActive = false
+        }
+    }
+
+    /// Re-registered after every change: `withObservationTracking` reports one change, before it is applied, so the
+    /// state is read on the next main-actor turn, which also folds changes made together into one update. The
+    /// position (20 updates a second) is followed only while PiP shows it; `toggle()` reads it when PiP starts.
+    private func observeEngine() {
+        withObservationTracking {
+            _ = (engine.isPlaying, engine.playbackRate, engine.duration, engine.playbackState, engine.hasVideo)
+            if engine.isPictureInPictureActive {
+                _ = engine.currentTime
+            }
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.engineDidChange() }
+        }
+    }
+
+    private func engineDidChange() {
+        observeEngine()
+        // PiP is told to re-read only on a pause, resume, rate change or jump (`needsReport`).
+        refreshSnapshot()
+        if engine.hasVideo, engine.playbackState == .playing || engine.playbackState == .paused {
+            prepare()
+        }
     }
 
     private func makeControllerIfNeeded() -> AVPictureInPictureController? {
@@ -83,10 +133,10 @@ final class PictureInPictureController: NSObject {
         }
         let source = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: engine.displayLayer,
-            playbackDelegate: self
+            playbackDelegate: delegateProxy
         )
         let pip = AVPictureInPictureController(contentSource: source)
-        pip.delegate = self
+        pip.delegate = delegateProxy
         possibleObservation = pip.observe(\.isPictureInPicturePossible, options: [.initial, .new]) {
             [weak self] _, change in
             let isPossible = change.newValue ?? false
@@ -98,11 +148,11 @@ final class PictureInPictureController: NSObject {
 
     /// Creates the AVKit controller ahead of the first toggle. AVKit prepares a new content source asynchronously,
     /// and starting PiP right after creating it makes the first transition glitchy.
-    func prepare() {
+    private func prepare() {
         _ = makeControllerIfNeeded()
     }
 
-    func toggle() {
+    public func toggle() {
         guard let pip = makeControllerIfNeeded() else { return }
         if pip.isPictureInPictureActive {
             isHandingBack = true
@@ -187,9 +237,9 @@ final class PictureInPictureController: NSObject {
         engine.pictureInPictureLayerGeometry = nil
     }
 
-    /// Feeds the latest engine state to PiP. Cheap enough for the 20 Hz time observer: PiP is only told to re-read
-    /// its state when playback paused, resumed or jumped away from the extrapolated position.
-    func refreshSnapshot(invalidate force: Bool = false) {
+    /// Feeds the latest engine state to PiP. Cheap enough for every time update: PiP is only told to re-read its
+    /// state when playback paused, resumed or jumped away from the extrapolated position.
+    private func refreshSnapshot(invalidate force: Bool = false) {
         let now = CACurrentMediaTime()
         let next = PictureInPicturePlaybackSnapshot(
             mediaTime: engine.currentTime,
@@ -208,17 +258,33 @@ final class PictureInPictureController: NSObject {
     }
 }
 
-extension PictureInPictureController: AVPictureInPictureSampleBufferPlaybackDelegate {
+extension PictureInPictureController {
+    /// AVKit's delegates, kept off the controller's public interface. AVKit holds delegates weakly; the controller
+    /// owns this. The nonisolated methods only read the snapshot, and reach the controller on the main actor.
+    @MainActor
+    fileprivate final class DelegateProxy: NSObject {
+        weak var owner: PictureInPictureController?
+        let snapshot: OSAllocatedUnfairLock<PictureInPicturePlaybackSnapshot>
+
+        init(owner: PictureInPictureController, snapshot: OSAllocatedUnfairLock<PictureInPicturePlaybackSnapshot>) {
+            self.owner = owner
+            self.snapshot = snapshot
+        }
+    }
+}
+
+extension PictureInPictureController.DelegateProxy: AVPictureInPictureSampleBufferPlaybackDelegate {
     nonisolated func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool
     ) {
         Task { @MainActor in
+            guard let owner = self.owner else { return }
             // PiP may act on a stale state. Forward only real changes: play() on a playing engine within 0.25 s of
             // the end restarts it from the beginning.
-            if playing != self.engine.isPlaying {
-                playing ? self.engine.play() : self.engine.pause()
+            if playing != owner.engine.isPlaying {
+                playing ? owner.engine.play() : owner.engine.pause()
             }
-            self.refreshSnapshot(invalidate: true)
+            owner.refreshSnapshot(invalidate: true)
         }
     }
 
@@ -245,8 +311,9 @@ extension PictureInPictureController: AVPictureInPictureSampleBufferPlaybackDele
         _ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime
     ) async {
         await MainActor.run {
-            self.engine.seekRelative(by: skipInterval.seconds, exact: false)
-            self.refreshSnapshot(invalidate: true)
+            guard let owner = self.owner else { return }
+            owner.engine.seekRelative(by: skipInterval.seconds, exact: false)
+            owner.refreshSnapshot(invalidate: true)
         }
     }
 
@@ -257,15 +324,16 @@ extension PictureInPictureController: AVPictureInPictureSampleBufferPlaybackDele
     }
 }
 
-extension PictureInPictureController: AVPictureInPictureControllerDelegate {
+extension PictureInPictureController.DelegateProxy: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerWillStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         // Synchronously when possible: the start animation begins right after this returns.
         let start: @MainActor @Sendable () -> Void = {
-            self.trackPanelSize(source: "willStart")
-            self.engine.isPictureInPictureActive = true
-            self.onActiveChanged?(true)
+            guard let owner = self.owner else { return }
+            owner.trackPanelSize(source: "willStart")
+            owner.engine.isPictureInPictureActive = true
+            owner.onActiveChanged?(true)
         }
         if Thread.isMainThread {
             MainActor.assumeIsolated(start)
@@ -278,10 +346,11 @@ extension PictureInPictureController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         Task { @MainActor in
+            guard let owner = self.owner else { return }
             // Fallback in case the panel did not exist yet at `willStart`; no-op once tracking.
-            self.trackPanelSize(source: "didStart", warnIfMissing: true)
+            owner.trackPanelSize(source: "didStart", warnIfMissing: true)
             // PiP caches the paused state from an earlier session or from before playback started.
-            self.refreshSnapshot(invalidate: true)
+            owner.refreshSnapshot(invalidate: true)
         }
     }
 
@@ -289,14 +358,15 @@ extension PictureInPictureController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         Task { @MainActor in
-            self.stopTrackingPanelSize()
-            self.engine.isPictureInPictureActive = false
+            guard let owner = self.owner else { return }
+            owner.stopTrackingPanelSize()
+            owner.engine.isPictureInPictureActive = false
             // The close button stops PiP without handing playback back to the window.
-            if !self.isHandingBack, self.engine.isPlaying {
-                self.engine.pause()
+            if !owner.isHandingBack, owner.engine.isPlaying {
+                owner.engine.pause()
             }
-            self.isHandingBack = false
-            self.onActiveChanged?(false)
+            owner.isHandingBack = false
+            owner.onActiveChanged?(false)
         }
     }
 
@@ -306,9 +376,10 @@ extension PictureInPictureController: AVPictureInPictureControllerDelegate {
     ) {
         AppLog.error(.ui, "Picture in Picture failed to start: \(error.localizedDescription)")
         Task { @MainActor in
-            self.stopTrackingPanelSize()
-            self.engine.isPictureInPictureActive = false
-            self.onActiveChanged?(false)
+            guard let owner = self.owner else { return }
+            owner.stopTrackingPanelSize()
+            owner.engine.isPictureInPictureActive = false
+            owner.onActiveChanged?(false)
         }
     }
 
@@ -318,16 +389,20 @@ extension PictureInPictureController: AVPictureInPictureControllerDelegate {
     ) {
         nonisolated(unsafe) let completion = completionHandler
         Task { @MainActor in
-            self.isHandingBack = true
+            guard let owner = self.owner else {
+                completion(true)
+                return
+            }
+            owner.isHandingBack = true
             // AVKit animates the panel back onto the display layer's current frame, so the layer moves to the
             // video's rect (`handLayerBack`) right before that, once the window is back on screen; otherwise the
             // panel lands small in a corner and the video snaps to full size afterwards. Until then the layer
             // keeps matching the panel, which still shows the video.
             let windowReady: @MainActor () -> Void = {
-                self.handLayerBack()
+                owner.handLayerBack()
                 completion(true)
             }
-            if let onRestoreUserInterface = self.onRestoreUserInterface {
+            if let onRestoreUserInterface = owner.onRestoreUserInterface {
                 onRestoreUserInterface(windowReady)
             } else {
                 windowReady()

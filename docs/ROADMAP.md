@@ -418,6 +418,8 @@ flowchart TD
   - `onBufferingChanged` / `isBuffering`: playback held for data; `playbackState` stays `.playing`.
   - `bufferedTime`: how far media has been read ahead of `currentTime` (`duration` once read to the end).
   - Load errors: `playbackState == .failed(message)` / `loadError`.
+  - Picture in Picture: public `PictureInPictureController` (NitsKit) that follows the engine by itself; the host
+    toggles it and handles its window.
 - [ ] **6.4. Transparent Overlay Compositing:**
   - Verify a transparent `WKWebView` above `NativeVideoHostView`: mouse and keyboard reach the web view, video stays
     smooth (no dropped frames from compositing), HDR / EDR is preserved on XDR displays in windowed and fullscreen

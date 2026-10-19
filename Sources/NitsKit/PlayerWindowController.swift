@@ -111,6 +111,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         uiState.togglePictureInPicture = { [weak self] in
             self?.togglePictureInPicture()
         }
+        // Created now, not on first toggle: it follows the engine from here on and prepares AVKit for the first video.
+        _ = pictureInPicture
         applyOSDConfiguration(configuration)
         applyPictureInPictureConfiguration(configuration)
         applyActionButtonConfiguration(configuration)
@@ -159,9 +161,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             }
 
             self.onTimeUpdate?(current, dur)
-            if self.engine.isPictureInPictureActive {
-                self.pictureInPicture.refreshSnapshot()
-            }
             self.nowPlayingController.update(
                 title: self.engine.mediaTitle,
                 currentTime: current,
@@ -196,12 +195,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             }
 
             self.onPlaybackStateChanged?(state)
-            if self.engine.isPictureInPictureActive {
-                self.pictureInPicture.refreshSnapshot(invalidate: true)
-            }
-            if state == .playing || state == .paused, self.engine.hasVideo {
-                self.pictureInPicture.prepare()
-            }
             switch state {
             case .playing:
                 self.nowPlayingController.update(
