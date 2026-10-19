@@ -97,6 +97,66 @@ struct HostEventTests {
         #expect(reports == [added.id])
     }
 
+    @Test("A burst of seeks reports seeking once when it starts and once when playback resumes")
+    func reportsSeekingWhilePlaying() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        var changes: [Bool] = []
+        engine.onSeekingChanged = { changes.append($0) }
+
+        engine.seek(to: 3.0)
+        engine.seek(to: 4.0)
+        engine.seek(to: 2.0)
+        #expect(changes == [true])
+        #expect(
+            await engine.waitUntil(timeout: .seconds(5)) { !changes.isEmpty && changes.last == false },
+            "Changes: \(changes)")
+        #expect(changes == [true, false])
+        #expect(engine.isPlaying)
+    }
+
+    @Test("Pausing while a playing seek waits to resume settles the seek, and play() resumes from its target")
+    func pauseDuringSeekSettle() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        var changes: [Bool] = []
+        engine.onSeekingChanged = { changes.append($0) }
+
+        engine.seek(to: 3.0)
+        try #require(await engine.waitUntil(timeout: .seconds(5)) { !engine.isSeeking }, "The seek did not decode")
+        try #require(engine.pendingSeekTime != nil, "The seek resumed before the pause")
+        engine.pause()
+        #expect(changes == [true, false])
+        #expect(engine.pendingSeekTime == nil)
+
+        engine.play()
+        #expect(
+            await engine.waitUntil(timeout: .seconds(5)) { engine.isPlaying && engine.currentTime > 3.2 },
+            "At \(engine.currentTime)s, playing \(engine.isPlaying)")
+    }
+
+    @Test("A paused seek reports seeking until its frame settles")
+    func reportsSeekingWhilePaused() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        engine.pause()
+        var changes: [Bool] = []
+        engine.onSeekingChanged = { changes.append($0) }
+
+        engine.seek(to: 3.0)
+        #expect(await engine.waitUntil(timeout: .seconds(5)) { changes == [true, false] }, "Changes: \(changes)")
+        #expect(!engine.isSeeking && engine.pendingSeekTime == nil)
+    }
+
     @Test("The buffered position runs ahead of playback and reaches the duration once the file is read to its end")
     func bufferedTimeRunsAhead() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }

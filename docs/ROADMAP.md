@@ -416,6 +416,7 @@ flowchart TD
 - [x] **6.3. Host Event Completeness:** everything a bridge forwards is available without Swift observation.
   - `onTracksChanged`: track lists or selection changed (once per load and on `stop()`, then on switches and added subtitle files).
   - `onBufferingChanged` / `isBuffering`: playback held for data; `playbackState` stays `.playing`.
+  - `onSeekingChanged`: a seek (or a burst of them) started or settled; `isSeeking || pendingSeekTime != nil`.
   - `bufferedTime`: how far media has been read ahead of `currentTime` (`duration` once read to the end).
   - Load errors: `playbackState == .failed(message)` / `loadError`.
   - Picture in Picture: public `PictureInPictureController` (NitsKit) that follows the engine by itself; the host
@@ -478,5 +479,5 @@ flowchart TD
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |
 | **Display Sleep Management** | `NitsCore` | Completed ✓ | IOKit power assertions during active video |
 | **Logging & Diagnostics** | `NitsCore` / `NitsKit` | Completed ✓ | `AppLog` categories, in-memory store, `LogViewerWindowController` |
-| **Host Integration API** | `NitsCore` | In Progress ⏳ | `NativeVideoHostView`, `PlayerEngineProtocol` with track, buffering and time events; overlay compositing to verify |
+| **Host Integration API** | `NitsCore` | In Progress ⏳ | `NativeVideoHostView`, `PlayerEngineProtocol` with track, buffering, seeking and time events; overlay compositing to verify |
 | **Standalone Dylib Bundling** | Scripts / CI | Completed ✓ | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |

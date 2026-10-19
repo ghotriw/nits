@@ -64,6 +64,12 @@ extension PlayerEngine {
         stopFeedingAudio()
         seekTask?.cancel()
         seekTask = nil
+        // A seek that has decoded its target and only waits to resume settles here, at its target; left pending,
+        // it would keep reporting a seek and make `play()` wait for it forever.
+        if chaseSettleTask != nil, !isSeeking, let settledSeconds = chaseTargetTime {
+            chaseTargetTime = nil
+            synchronizer.setRate(0.0, time: CMTime(seconds: settledSeconds, preferredTimescale: 1000))
+        }
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
         clockSettlingGuardLock.withLock { $0 = nil }

@@ -498,9 +498,21 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let lastSyncDriftSpikeInstant = OSAllocatedUnfairLock<ContinuousClock.Instant>(initialState: .now - .seconds(10))
     @ObservationIgnored
-    public package(set) var isSeeking: Bool = false
+    public package(set) var isSeeking: Bool = false {
+        didSet { reportSeekingChange() }
+    }
     @ObservationIgnored
-    var chaseTargetTime: Double? = nil
+    var chaseTargetTime: Double? = nil {
+        didSet { reportSeekingChange() }
+    }
+    /// Called when a seek starts and when it settles: `isSeeking || pendingSeekTime != nil` changes. A burst of seeks
+    /// (and the chase to its latest target) reports once each way; a playing seek settles just before the clock
+    /// restarts. Frame steps that decode or seek report it too; steps served from the step cache present at once,
+    /// without it.
+    public var onSeekingChanged: ((_ isSeeking: Bool) -> Void)?
+    /// The seek state last reported through `onSeekingChanged`.
+    @ObservationIgnored
+    var reportedSeeking = false
     @ObservationIgnored
     var chaseExactSeek: Bool = true
     /// Minimum allowed PTS for step-frame seeking to guarantee advancing forward

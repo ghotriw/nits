@@ -675,6 +675,7 @@ struct PlayerEngineTests {
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
             var onBufferingChanged: ((Bool) -> Void)? = nil
+            var onSeekingChanged: ((Bool) -> Void)? = nil
             var bufferedTime: Double = 0
             var isBuffering: Bool = false
             var currentTime: Double = 0
@@ -807,6 +808,7 @@ struct PlayerEngineTests {
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
             var onBufferingChanged: ((Bool) -> Void)? = nil
+            var onSeekingChanged: ((Bool) -> Void)? = nil
             var bufferedTime: Double = 0
             var isBuffering: Bool = false
             var currentTime: Double = 0

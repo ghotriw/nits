@@ -41,6 +41,8 @@ public protocol PlayerPlaybackControlling: AnyObject, Sendable {
     @MainActor var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)? { get set }
     /// Called when `isBuffering` changes.
     @MainActor var onBufferingChanged: ((_ isBuffering: Bool) -> Void)? { get set }
+    /// Called when a seek starts and when it settles (`isSeeking || pendingSeekTime != nil` changes).
+    @MainActor var onSeekingChanged: ((_ isSeeking: Bool) -> Void)? { get set }
     @MainActor var currentTime: Double { get }
     /// Timeline second up to which media has been read ahead of `currentTime`; `duration` once read to the end.
     @MainActor var bufferedTime: Double { get }

@@ -702,3 +702,12 @@ extension PlayerEngine {
         seek(to: clampedTarget)
     }
 }
+
+extension PlayerEngine {
+    func reportSeekingChange() {
+        let seeking = isSeeking || chaseTargetTime != nil
+        guard seeking != reportedSeeking else { return }
+        reportedSeeking = seeking
+        onSeekingChanged?(seeking)
+    }
+}
