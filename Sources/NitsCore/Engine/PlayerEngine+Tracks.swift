@@ -11,7 +11,8 @@ extension PlayerEngine {
     /// new track up to a second ahead of the picture, further with every switch. An exact seek to the current frame
     /// re-reads both from there (as mpv does); the seek keeps playing or paused as it was.
     public func selectAudioTrack(id: Int) {
-        guard let demuxer = self.demuxer else { return }
+        guard let demuxer = self.demuxer, id != selectedAudioTrackId, audioTracks.contains(where: { $0.id == id })
+        else { return }
         AppLog.info(.audio, "Switching to audio track: \(id)")
 
         stopFeedingAudio()
@@ -105,6 +106,9 @@ extension PlayerEngine {
 
     /// Adds subtitle files as tracks and selects the last one that could be read; files already added are reused.
     public func loadExternalSubtitles(urls: [URL]) {
+        // The added tracks and the selection are reported once.
+        beginDeferringTracksChanged()
+        defer { endDeferringTracksChanged() }
         guard let trackId = urls.compactMap({ addExternalSubtitle(url: $0) }).last else { return }
         selectSubtitleTrack(id: trackId)
     }
@@ -266,6 +270,30 @@ extension PlayerEngine {
             self.currentSubtitleCues = doc.activeCues(at: seconds)
         } else {
             self.currentSubtitleCues = []
+        }
+    }
+}
+
+extension PlayerEngine {
+    /// Reports a change of the tracks or their selection through `onTracksChanged`, or marks it while deferred.
+    func tracksDidChange() {
+        if tracksChangedDeferralDepth > 0 {
+            hasDeferredTracksChange = true
+        } else {
+            onTracksChanged?()
+        }
+    }
+
+    /// Holds back track change reports until the matching `endDeferringTracksChanged()`; nests.
+    func beginDeferringTracksChanged() {
+        tracksChangedDeferralDepth += 1
+    }
+
+    func endDeferringTracksChanged() {
+        tracksChangedDeferralDepth = max(tracksChangedDeferralDepth - 1, 0)
+        if tracksChangedDeferralDepth == 0, hasDeferredTracksChange {
+            hasDeferredTracksChange = false
+            onTracksChanged?()
         }
     }
 }

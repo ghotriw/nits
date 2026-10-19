@@ -171,7 +171,11 @@ public final class NativeVideoHostView: NSView {
         }
     }
 
+    /// Accepts files only when the host handles them, so an embedding host without drop handlers shows no copy cursor.
     public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard onFilesDrop != nil || onFileDrop != nil,
+            sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: nil)
+        else { return [] }
         return .copy
     }
 
@@ -183,8 +187,10 @@ public final class NativeVideoHostView: NSView {
         }
         if let onFilesDrop {
             onFilesDrop(items)
-        } else if let firstUrl = items.first {
-            onFileDrop?(firstUrl.path)
+        } else if let onFileDrop, let firstUrl = items.first {
+            onFileDrop(firstUrl.path)
+        } else {
+            return false
         }
         return true
     }

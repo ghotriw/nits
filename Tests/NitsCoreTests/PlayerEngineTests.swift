@@ -674,6 +674,9 @@ struct PlayerEngineTests {
             var onTimeUpdate: ((Double, Double) -> Void)? = nil
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
+            var onBufferingChanged: ((Bool) -> Void)? = nil
+            var bufferedTime: Double = 0
+            var isBuffering: Bool = false
             var currentTime: Double = 0
             var pendingSeekTime: Double? = nil
             var isSeeking: Bool = false
@@ -725,6 +728,7 @@ struct PlayerEngineTests {
             var audioTracks: [MediaDemuxer.AudioTrack] = []
             var selectedAudioTrackId: Int = 0
             var subtitleTracks: [SubtitleTrack] = []
+            var onTracksChanged: (() -> Void)? = nil
             var selectedSubtitleTrackId: Int? = nil
             var chapters: [MediaChapter] = []
             var currentChapterIndex: Int? = nil
@@ -802,6 +806,9 @@ struct PlayerEngineTests {
             var onTimeUpdate: ((Double, Double) -> Void)? = nil
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
+            var onBufferingChanged: ((Bool) -> Void)? = nil
+            var bufferedTime: Double = 0
+            var isBuffering: Bool = false
             var currentTime: Double = 0
             var pendingSeekTime: Double? = nil
             var isSeeking: Bool = false

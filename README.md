@@ -34,9 +34,9 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 - [x] Subtitle sync delay adjustment
 - [ ] Apple ProRes support
 - [x] Timeline thumbnails
-- [x] Timeline chapterss
+- [x] Timeline chapters
 - [x] Picture-in-Picture
-- [ ] Embedding in web clients (WKWebView bridge)
+- [ ] Embedding in web clients (embeddable canvas and engine API; the JS bridge lives in the host)
 - [x] Standalone app bundle with embedded FFmpeg
 
 Details: [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -198,6 +198,17 @@ await engine.loadAsync(
         headers: ["X-Api-Key": "my-key"],
         startTime: 300.0
     ))
+
+// Events for a host UI (e.g. forwarded to a web view by the host's own bridge):
+engine.onTracksChanged = {
+    // engine.audioTracks, engine.subtitleTracks, engine.selectedAudioTrackId, engine.selectedSubtitleTrackId
+}
+engine.onBufferingChanged = { isBuffering in
+    // Playback is held for data; playbackState stays .playing
+}
+engine.onTimeUpdate = { currentTime, duration in
+    // engine.bufferedTime: how far media has been read ahead
+}
 ```
 
 ## Command-Line Options

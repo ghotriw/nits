@@ -32,7 +32,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
     public private(set) var audioChannels: Int = 0
     public private(set) var audioSampleRate: Int = 0
-    public struct AudioTrack: Sendable, Identifiable {
+    public struct AudioTrack: Sendable, Identifiable, Equatable {
         public let id: Int
         public let streamIndex: Int
         public let title: String
@@ -64,6 +64,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         liveSubtitleState.withLock { $0.version }
     }
     private var cachedSubtitleDocuments: [Int: SubtitleDocument] = [:]
+    /// Furthest timeline second read from the audio and video streams since the last seek (`-infinity` before any),
+    /// `infinity` once the input has been read to its end. Its own lock: `lock` is held through blocking reads.
+    private let readAheadState = OSAllocatedUnfairLock(initialState: -Double.infinity)
+    /// Timeline second up to which packets have been read ahead of playback; see `readAheadState`.
+    public var readAheadSeconds: Double {
+        readAheadState.withLock { $0 }
+    }
     private var lastAudioPts: Int64 = -1
     public var currentAudioPtsSeconds: Double {
         lock.lock()
@@ -741,13 +748,39 @@ public final class MediaDemuxer: @unchecked Sendable {
         if pkt.dts != Int64.min { pkt.dts -= offset }
     }
 
-    /// `av_read_frame` with timestamps on the zero-based timeline.
+    /// `AVERROR_EOF` (`-MKTAG('E', 'O', 'F', ' ')`); the macro does not import into Swift.
+    static let averrorEOF: Int32 = -0x2046_4F45
+
+    /// `av_read_frame` with timestamps on the zero-based timeline. Records how far audio and video have been read
+    /// (`readAheadSeconds`).
     private func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
         let ret = av_read_frame(ctx, &pkt)
         if ret >= 0 {
             Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
+            recordReadAhead(pkt, in: ctx)
+        } else if ret == Self.averrorEOF {
+            readAheadState.withLock { $0 = .infinity }
         }
         return ret
+    }
+
+    /// End of a packet (`pts` plus a positive `duration`), saturating instead of trapping on the corrupt timestamps
+    /// near `Int64.max` a damaged stream can carry.
+    static func packetEnd(pts: Int64, duration: Int64) -> Int64 {
+        let (end, overflow) = pts.addingReportingOverflow(max(duration, 0))
+        return overflow ? .max : end
+    }
+
+    private func recordReadAhead(_ pkt: AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard pkt.stream_index == videoStreamIndex || pkt.stream_index == audioStreamIndex,
+            let stream = ctx.pointee.streams[Int(pkt.stream_index)]
+        else { return }
+        let timebase = stream.pointee.time_base
+        let start = pkt.pts != Int64.min ? pkt.pts : pkt.dts
+        guard start != Int64.min, timebase.num > 0, timebase.den > 0 else { return }
+        let end =
+            Double(Self.packetEnd(pts: start, duration: pkt.duration)) * Double(timebase.num) / Double(timebase.den)
+        readAheadState.withLock { $0 = max($0, end) }
     }
 
     private func extractVideoFormatDescription() -> CMVideoFormatDescription? {
@@ -847,6 +880,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             av_seek_frame(
                 ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
         }
+        readAheadState.withLock { $0 = -.infinity }
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
@@ -1125,7 +1159,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         while let p = audioQueue.popFirst() {
             if targetAudioPts >= 0 {
-                let packetEndPts = p.pts + (p.duration > 0 ? p.duration : 0)
+                let packetEndPts = Self.packetEnd(pts: p.pts, duration: p.duration)
                 if packetEndPts < targetAudioPts {
                     continue
                 }
@@ -1149,7 +1183,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 let pktPts = pkt.pts
                 let pktDuration = pkt.duration
                 if targetAudioPts >= 0 {
-                    let packetEndPts = pktPts + (pktDuration > 0 ? pktDuration : 0)
+                    let packetEndPts = Self.packetEnd(pts: pktPts, duration: pktDuration)
                     if packetEndPts < targetAudioPts {
                         av_packet_unref(&pkt)
                         continue
@@ -1207,6 +1241,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         videoQueue.removeAll()
         lastAudioPts = -1
         isEOFInternal = false
+        // After the seek's own reads: a keyframe search that backs off, or reads to the end, would leave them ahead.
+        defer { readAheadState.withLock { $0 = seconds } }
         if audioTimebase.den > 0 && audioTimebase.num > 0 {
             self.targetAudioPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
         } else {

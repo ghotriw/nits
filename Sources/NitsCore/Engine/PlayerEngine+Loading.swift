@@ -381,6 +381,12 @@ extension PlayerEngine {
         currentTime = 0
         duration = 0
         chapters = []
+        beginDeferringTracksChanged()
+        audioTracks = []
+        selectedAudioTrackId = -1
+        subtitleTracks = []
+        selectedSubtitleTrackId = nil
+        endDeferringTracksChanged()
         actionButtons = []
         trackNavigation = TrackNavigation()
         isLoading = false
@@ -618,6 +624,11 @@ extension PlayerEngine {
             AppLog.info(.audio, "Restored audio track from saved history: \(saved)")
         }
 
+        // The new tracks and the selection below are reported once, when the load is applied, even when they equal
+        // the previous media's.
+        beginDeferringTracksChanged()
+        defer { endDeferringTracksChanged() }
+        hasDeferredTracksChange = true
         self.audioTracks = demuxer.audioTracks
         self.selectedAudioTrackId = demuxer.selectedAudioTrackIndex
         self.subtitleTracks = demuxer.subtitleTracks

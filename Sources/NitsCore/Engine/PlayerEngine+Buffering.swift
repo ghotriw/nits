@@ -132,3 +132,18 @@ extension PlayerEngine {
         }
     }
 }
+
+extension PlayerEngine {
+    /// Timeline second up to which media has been read ahead of playback: at least `currentTime`, and `duration`
+    /// once the input has been read to its end. The demuxer reads a few seconds ahead (its packet queues and the
+    /// frame queue), so this is no download progress. Not observable; read it with `onTimeUpdate`.
+    public var bufferedTime: Double {
+        guard let demuxer, isLoaded else { return currentTime }
+        let readAhead = demuxer.readAheadSeconds
+        if readAhead == .infinity {
+            return duration > 0 ? duration : currentTime
+        }
+        let buffered = max(currentTime, readAhead)
+        return duration > 0 ? min(buffered, duration) : buffered
+    }
+}

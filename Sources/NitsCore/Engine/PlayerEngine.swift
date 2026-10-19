@@ -323,11 +323,37 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     @ObservationIgnored
     let playbackRateLock = OSAllocatedUnfairLock(initialState: Double(1.0))
-    public var audioTracks: [MediaDemuxer.AudioTrack] = []
-    public var selectedAudioTrackId: Int = -1
+    public var audioTracks: [MediaDemuxer.AudioTrack] = [] {
+        didSet {
+            if oldValue != audioTracks { tracksDidChange() }
+        }
+    }
+    public var selectedAudioTrackId: Int = -1 {
+        didSet {
+            if oldValue != selectedAudioTrackId { tracksDidChange() }
+        }
+    }
 
-    public var subtitleTracks: [SubtitleTrack] = []
-    public var selectedSubtitleTrackId: Int? = nil
+    public var subtitleTracks: [SubtitleTrack] = [] {
+        didSet {
+            if oldValue != subtitleTracks { tracksDidChange() }
+        }
+    }
+    public var selectedSubtitleTrackId: Int? = nil {
+        didSet {
+            if oldValue != selectedSubtitleTrackId { tracksDidChange() }
+        }
+    }
+    /// Called when the audio or subtitle tracks, or the selected ones, change: once by each load (when it is applied)
+    /// and by a `stop()` that clears tracks, then by a track switch or an added subtitle file. Read the current tracks
+    /// from the engine.
+    public var onTracksChanged: (() -> Void)?
+    /// Nesting depth of `beginDeferringTracksChanged()`; while above zero, track changes only mark
+    /// `hasDeferredTracksChange`, reported once when the outermost deferral ends.
+    @ObservationIgnored
+    var tracksChangedDeferralDepth = 0
+    @ObservationIgnored
+    var hasDeferredTracksChange = false
     public var currentSubtitleCue: SubtitleCue? {
         currentSubtitleCues.first
     }
@@ -446,7 +472,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var decoderStallRecoveries = 0
     /// Playback is on hold until media data arrives again: the clock stands while `isPlaying` stays set. See
     /// `PlayerEngine+Buffering`.
-    public internal(set) var isBuffering = false
+    public internal(set) var isBuffering = false {
+        didSet {
+            if oldValue != isBuffering {
+                onBufferingChanged?(isBuffering)
+            }
+        }
+    }
+    /// Called when `isBuffering` changes. `playbackState` stays `.playing` while buffering.
+    public var onBufferingChanged: ((_ isBuffering: Bool) -> Void)?
     @ObservationIgnored
     var bufferingResumeTask: Task<Void, Never>?
     var audioDecoder: FFAudioDecoder?

@@ -121,4 +121,20 @@ struct BufferingTests {
         #expect(position > held && position < held + 2, "Resumed at \(position)s, the clock held at \(held)s")
         engine.stop()
     }
+
+    @Test("Buffering is reported to the host as it starts and ends, with the playback state left at playing")
+    func reportsBufferingChanges() async {
+        guard let engine = await startPlayback() else { return }
+        var changes: [Bool] = []
+        var states: [PlaybackState] = []
+        engine.onBufferingChanged = { changes.append($0) }
+        engine.onPlaybackStateChanged = { states.append($0) }
+
+        stopFeeding(engine)
+        #expect(await engine.waitUntil(timeout: .seconds(5)) { changes == [true] }, "Changes: \(changes)")
+        resumeFeeding(engine)
+        #expect(await engine.waitUntil { changes == [true, false] }, "Changes: \(changes)")
+        #expect(states.isEmpty, "States: \(states)")
+        engine.stop()
+    }
 }

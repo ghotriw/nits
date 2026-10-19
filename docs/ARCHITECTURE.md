@@ -42,8 +42,12 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
 - `NativeVideoHostView` is a bare video canvas; a transparent `WKWebView` can sit on top.
 - Commands in / events out go through `PlayerEngineProtocol`
   (`Sources/NitsCore/Protocols/PlayerEngineProtocol.swift`); the event callbacks
-  (`onTimeUpdate`, `onPlaybackStateChanged`) are shaped for JSON bridging to
-  `window.webkit.messageHandlers`.
+  (`onTimeUpdate`, `onPlaybackStateChanged`, `onTracksChanged`, `onBufferingChanged`) are shaped for JSON
+  bridging to `window.webkit.messageHandlers`. The bridge itself belongs to the host: its message schema is the
+  web client's, not Nits'. Nits keeps the protocol complete enough that a bridge needs no engine internals.
+- `bufferedTime` is the furthest timestamp the demuxer has read (`MediaDemuxer.readAheadSeconds`, behind its own
+  lock because the demuxer lock is held through blocking network reads), so it shows the few seconds of read-ahead,
+  not download progress.
 - The demuxer accepts HTTP/HTTPS/HLS URLs with custom headers (`X-Emby-Token`, `Authorization`,
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
 

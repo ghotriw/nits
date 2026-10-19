@@ -39,7 +39,13 @@ public protocol PlayerPlaybackControlling: AnyObject, Sendable {
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
     @MainActor var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)? { get set }
+    /// Called when `isBuffering` changes.
+    @MainActor var onBufferingChanged: ((_ isBuffering: Bool) -> Void)? { get set }
     @MainActor var currentTime: Double { get }
+    /// Timeline second up to which media has been read ahead of `currentTime`; `duration` once read to the end.
+    @MainActor var bufferedTime: Double { get }
+    /// Playback is held until media data arrives again; `playbackState` stays `.playing` meanwhile.
+    @MainActor var isBuffering: Bool { get }
     @MainActor var pendingSeekTime: Double? { get }
     @MainActor var isSeeking: Bool { get }
     @MainActor var duration: Double { get }
@@ -119,6 +125,8 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
 
 /// Track selection and inspection for audio and subtitle streams.
 public protocol PlayerTrackControlling: AnyObject, Sendable {
+    /// Called when the audio or subtitle tracks, or the selected ones, change (once per load and per `stop()`).
+    @MainActor var onTracksChanged: (() -> Void)? { get set }
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
     @MainActor var selectedAudioTrackId: Int { get }
     @MainActor func selectAudioTrack(id: Int)

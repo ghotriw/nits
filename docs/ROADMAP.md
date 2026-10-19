@@ -2,7 +2,7 @@
 
 This document outlines the architecture, current implementation status, and development roadmap for `Nits`.
 
-The goal is to evolve the Apple Silicon dual-engine video rendering core into a full-featured standalone media player with hardware-accelerated and software decoding, studio-grade synchronized audio, advanced subtitles, network streaming, playlist management, and host integration capabilities (including a bidirectional `WKWebView` bridge for Emby and Jellyfin clients).
+The goal is to evolve the Apple Silicon dual-engine video rendering core into a full-featured standalone media player with hardware-accelerated and software decoding, studio-grade synchronized audio, advanced subtitles, network streaming, playlist management, and host integration capabilities (an embeddable video canvas and native engine API that Emby and Jellyfin clients can bridge to their web UIs).
 
 ---
 
@@ -29,7 +29,7 @@ flowchart TD
     M25 --> M3["Stage 3: Network & Remote Streaming (HTTP/HTTPS) ✓"]
     M3 --> M4["Stage 4: Subtitles Subsystem (SRT / WebVTT / Metal Outline) ✓"]
     M4 --> M5["Stage 5: Playlists, OSD, Seeking Architecture & UX ✓"]
-    M5 --> M6["Stage 6: Host Integration Bridge (WKWebView Two-Way Bridge) ⏳"]
+    M5 --> M6["Stage 6: Host Integration (Embeddable View & Engine API) ⏳"]
     M6 --> M7["Stage 7: Standalone Distribution & Release Bundling"]
     
     M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing 📋"]
@@ -399,28 +399,32 @@ flowchart TD
 
 ---
 
-### Stage 6: Host Integration Bridge (WKWebView Two-Way Bridge) — [IN PROGRESS] ⏳
+### Stage 6: Host Integration (Embeddable View & Engine API) — [IN PROGRESS] ⏳
 
 > Embedding Nits as a high-performance native rendering core inside hybrid host applications (e.g., Emby / Jellyfin web shells).
+>
+> A JavaScript bridge is out of scope: its messages and JSON schema are defined by each web client (jellyfin-web's
+> `NativeShell`, Emby's own player API), so the host app implements it on top of `PlayerEngineProtocol`. Nits
+> provides the canvas and a native API complete enough that such a bridge never needs engine internals.
 
 - [x] **6.1. Standalone Video Canvas (`NativeVideoHostView`):**
   - Lightweight, embeddable `NSView` presenting hardware layers without intrusive native controls.
+  - Accepts file drops only when the host sets `onFileDrop` / `onFilesDrop`.
 - [x] **6.2. Engine Control & Event Protocol (`PlayerEngineProtocol`):**
   - Standardized programmatic interface: authenticated stream loading (`loadAsync(path:headers:)`), timeline controls, track selection, and rate adjustments.
   - Event callback hooks: `onTimeUpdate`, `onPlaybackStateChanged`, `onRelativeSeekResolved`.
-- [ ] **6.3. Bidirectional Serialization & Message Dispatch (JS Bridge):**
-  - Implement `WebPlayerBridge` injecting the JavaScript runtime interface into `WKWebView`.
-  - **Commands IN (JavaScript $\to$ Native via `WKScriptMessageHandler`):**
-    - `play()`, `pause()`, `seek(seconds, exact)`
-    - `setVolume(value)`, `setPlaybackRate(rate)`
-    - `selectAudioTrack(id)`, `selectSubtitleTrack(id)`
-    - `setToneMapParams(exposure, shadowLift, targetNitsScale, sharpness)`
-  - **Events OUT (Native $\to$ JavaScript via `evaluateJavaScript`):**
-    - `timeupdate`: `currentTime`, `duration`, `buffered`
-    - `playbackstate`: `'playing'` | `'paused'` | `'buffering'` | `'ended'` | `'error'`
-    - `tracksloaded`: discovered audio and subtitle tracks
-- [ ] **6.4. Transparent Window Compositing:**
-  - Overlay transparent `WKWebView` instances directly above `NativeVideoHostView` while forwarding mouse and keyboard events seamlessly.
+- [x] **6.3. Host Event Completeness:** everything a bridge forwards is available without Swift observation.
+  - `onTracksChanged`: track lists or selection changed (once per load and on `stop()`, then on switches and added subtitle files).
+  - `onBufferingChanged` / `isBuffering`: playback held for data; `playbackState` stays `.playing`.
+  - `bufferedTime`: how far media has been read ahead of `currentTime` (`duration` once read to the end).
+  - Load errors: `playbackState == .failed(message)` / `loadError`.
+- [ ] **6.4. Transparent Overlay Compositing:**
+  - Verify a transparent `WKWebView` above `NativeVideoHostView`: mouse and keyboard reach the web view, video stays
+    smooth (no dropped frames from compositing), HDR / EDR is preserved on XDR displays in windowed and fullscreen
+    mode, and Picture in Picture still works.
+  - Document the setup (view hierarchy, transparent web view background) with a minimal host example.
+- [ ] **6.5. Subtitle Events for Hosts:**
+  - Callback for subtitle cue changes, so a host that draws subtitles in its own overlay needs no polling.
 
 ---
 
@@ -472,5 +476,5 @@ flowchart TD
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |
 | **Display Sleep Management** | `NitsCore` | Completed ✓ | IOKit power assertions during active video |
 | **Logging & Diagnostics** | `NitsCore` / `NitsKit` | Completed ✓ | `AppLog` categories, in-memory store, `LogViewerWindowController` |
-| **WKWebView Bridge** | `NitsKit` | In Progress ⏳ | Two-way JSON bridge for Emby / Jellyfin web shells |
+| **Host Integration API** | `NitsCore` | In Progress ⏳ | `NativeVideoHostView`, `PlayerEngineProtocol` with track, buffering and time events; overlay compositing to verify |
 | **Standalone Dylib Bundling** | Scripts / CI | Completed ✓ | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |
