@@ -272,6 +272,7 @@ extension PlayerEngine {
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
         cancelBuffering()
+        audioLagDetector.clockRestarted()
     }
 
     public func togglePlayPause() {

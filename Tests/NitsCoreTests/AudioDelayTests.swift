@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 import Testing
+import os
 
 @testable import NitsCore
 
@@ -27,6 +28,35 @@ private final class RecordingAudioSink: AudioRendererSink, @unchecked Sendable {
         lock.withLock {
             timestamps.removeAll()
             flushes += 1
+        }
+    }
+}
+
+/// Holds each buffer until `release()`, like a renderer applying backpressure; a flush cancels the wait.
+private final class GatedAudioSink: AudioRendererSink {
+    private let waiting = OSAllocatedUnfairLock<CheckedContinuation<Void, any Error>?>(initialState: nil)
+
+    var isWaiting: Bool {
+        waiting.withLock { $0 != nil }
+    }
+
+    func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            waiting.withLock { $0 = continuation }
+        }
+    }
+
+    func release() {
+        waiting.withLock { waiting in
+            waiting?.resume()
+            waiting = nil
+        }
+    }
+
+    func flush() {
+        waiting.withLock { waiting in
+            waiting?.resume(throwing: CancellationError())
+            waiting = nil
         }
     }
 }
@@ -111,6 +141,31 @@ struct DelayedAudioSinkTests {
         }
         sink.flush()
         #expect(sink.changeDelay(to: Self.seconds(0.1), keepingAudioAfter: .invalid).isEmpty)
+    }
+
+    @Test("The audio the renderer holds back is known until it is taken or flushed")
+    func pendingStartFollowsBackpressure() async throws {
+        guard let decoded = Self.decodedAudio(seconds: 0.1)?.first else { return }
+        nonisolated(unsafe) let buffer = decoded
+        let gate = GatedAudioSink()
+        let sink = DelayedAudioSink(wrapping: BufferTrackingAudioSink(wrapping: gate))
+        sink.setDelay(Self.seconds(0.25))
+        #expect(sink.pendingStart == nil)
+
+        let taken = Task { try await sink.enqueue(buffer) }
+        while !gate.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        // On the clock's timeline, like `bufferedEnd`.
+        let pending = try #require(sink.pendingStart?.seconds)
+        #expect(abs(pending - (CMSampleBufferGetPresentationTimeStamp(buffer).seconds + 0.25)) < 1e-6)
+        gate.release()
+        try await taken.value
+        #expect(sink.pendingStart == nil)
+
+        let flushed = Task { try await sink.enqueue(buffer) }
+        while !gate.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        sink.flush()
+        #expect(sink.pendingStart == nil)
+        await #expect(throws: CancellationError.self) { try await flushed.value }
     }
 
     @Test("Only the last few seconds of audio are kept")

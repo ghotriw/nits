@@ -180,6 +180,16 @@ pause:
 - Every path that stops or re-anchors the clock goes through `cancelPreroll()`, which also ends buffering;
   buffering never starts while seeking, prerolling or after demuxer EOF.
 
+**Audio renderer behind the clock.** Starting playback on a Bluetooth route, the device can stop its IO for most
+of a second while the audio queue starts (seen with spatial audio being switched on). The renderer then anchors
+its timebase back in time: the clock leaps ahead (a burst of dropped frames), and the audio queue stays that far
+(~0.6 s) behind it for the rest of playback. The renderer's backpressure releases audio at the queue's pace, so
+every buffer arrives late and is discarded, and the queue resyncs several times a second: choppy audio that never
+recovers by itself. A pause and resume fixes it, and `PlayerEngine+AudioLag` does the same on its own: when the
+feeder has waited for 0.5 s for the renderer to take audio that is due (`BufferTrackingAudioSink.pendingStart`
+under 0.15 s of playback ahead of the clock), it re-anchors the clock, at most once every 5 s. A healthy renderer
+takes audio about a second ahead, and a real shortage leaves the feeder waiting on the demuxer, not the renderer.
+
 ### Display pacing
 
 `CADisplayLink` from `view.displayLink(target:selector:)` / `screen.displayLink(...)`. Unlike

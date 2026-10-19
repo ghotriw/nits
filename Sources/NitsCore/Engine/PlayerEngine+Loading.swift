@@ -95,6 +95,7 @@ extension PlayerEngine {
         displayLink?.isPaused = true
         synchronizer.setRate(0.0, time: .zero)
         clockSettlingGuardLock.withLock { $0 = nil }
+        audioLagDetector = AudioLagDetector()
         isPlaying = false
         loadError = nil
         hasVideo = false

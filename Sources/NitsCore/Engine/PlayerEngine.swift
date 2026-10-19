@@ -483,6 +483,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var onBufferingChanged: ((_ isBuffering: Bool) -> Void)?
     @ObservationIgnored
     var bufferingResumeTask: Task<Void, Never>?
+    /// Watches for the audio renderer holding back audio that is already due; see `PlayerEngine+AudioLag`.
+    @ObservationIgnored
+    var audioLagDetector = AudioLagDetector()
     var audioDecoder: FFAudioDecoder?
     let synchronizer = AVSampleBufferRenderSynchronizer()
     var demuxer: MediaDemuxer?
@@ -783,6 +786,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     // Update active subtitle cues
                     self.updateActiveSubtitles(at: seconds)
                     self.checkForStarvation()
+                    self.checkForAudioRendererLag()
 
                     // Check if playback reached the end
                     if self.isPlaying && self.duration > 0 && seconds >= (self.duration - 0.25) {

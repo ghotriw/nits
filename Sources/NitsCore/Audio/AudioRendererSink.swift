@@ -85,10 +85,13 @@ private final class LegacyAudioSink: AudioRendererSink, @unchecked Sendable {
 }
 
 /// Remembers how far the audio handed to the renderer reaches, so the engine can tell when the renderer is about
-/// to run dry (see `PlayerEngine+Buffering`). A flush forgets it.
+/// to run dry (see `PlayerEngine+Buffering`), and which audio the renderer is holding back (see
+/// `PlayerEngine+AudioLag`). A flush forgets both.
 final class BufferTrackingAudioSink: AudioRendererSink {
     private struct State {
         var end: CMTime?
+        /// Start of the buffer waiting for the renderer to take it.
+        var pending: CMTime?
         /// Bumped by `flush()`, so an enqueue that was in flight across it doesn't record pre-flush media.
         var generation: UInt64 = 0
     }
@@ -105,9 +108,25 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         state.withLock { $0.end }
     }
 
+    /// Start of the audio the renderer has not taken yet while the feeder waits on its backpressure; `nil` while
+    /// nothing waits.
+    var pendingStart: CMTime? {
+        state.withLock { $0.pending }
+    }
+
     func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
-        let generation = state.withLock { $0.generation }
-        let end = CMSampleBufferGetPresentationTimeStamp(sampleBuffer) + CMSampleBufferGetDuration(sampleBuffer)
+        let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let end = start + CMSampleBufferGetDuration(sampleBuffer)
+        let generation = state.withLock { state in
+            state.pending = start
+            return state.generation
+        }
+        defer {
+            state.withLock { state in
+                guard state.generation == generation else { return }
+                state.pending = nil
+            }
+        }
         try await wrapped.enqueue(sampleBuffer)
         guard end.isNumeric else { return }
         state.withLock { state in
@@ -119,6 +138,7 @@ final class BufferTrackingAudioSink: AudioRendererSink {
     func flush() {
         state.withLock { state in
             state.end = nil
+            state.pending = nil
             state.generation &+= 1
         }
         wrapped.flush()
@@ -153,6 +173,11 @@ final class DelayedAudioSink: AudioRendererSink {
     /// End of the latest audio enqueued since the last flush, on the clock's timeline (delay included).
     var bufferedEnd: CMTime? {
         wrapped.bufferedEnd
+    }
+
+    /// Start of the audio waiting for the renderer to take it, on the clock's timeline (delay included).
+    var pendingStart: CMTime? {
+        wrapped.pendingStart
     }
 
     /// Sets the delay for audio enqueued from now on, keeping what is already queued; for a pipeline that is flushed
