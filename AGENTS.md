@@ -162,6 +162,7 @@ selectors (see Video pipeline).
   `Preset` for new codec/container/channel/HDR coverage.
 - Mark suites that play media in real time `.realtimePlayback`, and ones that depend on the host otherwise
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
-  skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`) and runs them separately, only to report.
+  skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only
+  to report, so run them locally before pushing.
 - Frame-freeze detection uses `PixelBufferAnalyzer`.
 - Media tests skip when `ffmpeg` is missing; CI installs it.

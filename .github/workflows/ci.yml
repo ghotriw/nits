@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       run_stress_tests:
-        description: 'Run full stress & audio matrix test suites'
+        description: 'Include the slow stress & audio matrix suites in the host-dependent run'
         required: false
         type: boolean
         default: true
@@ -20,8 +20,8 @@ jobs:
     name: Lint, Typecheck, Test & Package
     runs-on: xcode-27
     env:
-      # Too slow for every push; run on manual dispatch with run_stress_tests. `\b` matters: a trailing `/`
-      # misses the suite itself.
+      # Too slow for the gating step; included in the manual host-dependent run with run_stress_tests. `\b`
+      # matters: a trailing `/` misses the suite itself.
       SLOW_TESTS: '^NitsCoreTests\.(PlaybackStressTests|PlayerLifecycleTests|AudioReferenceComparisonTests)\b'
 
     steps:
@@ -81,14 +81,37 @@ jobs:
       - name: Typecheck and build targets
         run: ./scripts/format.sh typecheck
 
+      # SyntheticTestMediaFactory reuses presets already on disk, so cached media skips encoding. The key has no
+      # restore-keys fallback: a changed preset keeps its filename, and a stale file would be reused as is.
+      - name: Locate synthetic test media
+        id: synthetic-media
+        run: |
+          tmp="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}"
+          echo "path=${tmp%/}/NitsSyntheticMedia" >> "$GITHUB_OUTPUT"
+
+      - name: Restore synthetic test media
+        id: synthetic-media-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.synthetic-media.outputs.path }}
+          key: nits-synthetic-media-${{ runner.os }}-${{ hashFiles('Tests/NitsCoreTests/SyntheticTestMediaFactory.swift') }}
+
       # Encoding the presets takes over a minute on a cold runner; done inside the test run, it starves the
       # parallel tests and eats into their waits and time limits.
       - name: Generate synthetic test media
         run: swift test --disable-sandbox --filter SyntheticMediaWarmupTests
 
+      - name: Save synthetic test media
+        if: steps.synthetic-media-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.synthetic-media.outputs.path }}
+          key: ${{ steps.synthetic-media-cache.outputs.cache-primary-key }}
+
       # Deterministic tests gate the build. Tests marked `.hostDependent` or `.realtimePlayback` use hardware
       # decoders, the audio renderer or real-time playback: on virtualised runners their results depend on the
-      # host the job lands on, so they run after packaging and only report. Run them locally before pushing.
+      # host the job lands on, so they run only on manual dispatch, after packaging, and only report. Run them
+      # locally before pushing.
       - name: Run deterministic tests
         env:
           NITS_SKIP_HOST_DEPENDENT_TESTS: 1
@@ -99,9 +122,10 @@ jobs:
 
       # Reruns the deterministic tests too; they take seconds.
       - name: Run host-dependent tests (informational)
+        if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         run: |
-          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.run_stress_tests == true }}" = true ]; then
+          if [ "${{ inputs.run_stress_tests }}" = true ]; then
             swift test --disable-sandbox
           else
             swift test --disable-sandbox --skip "$SLOW_TESTS"
