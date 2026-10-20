@@ -172,8 +172,11 @@ public final class MediaDemuxer: @unchecked Sendable {
         return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
     }
 
-    /// Retrieves or loads on demand the SubtitleDocument for a given track id.
-    public func loadSubtitleDocument(for trackId: Int, url: String, headers: [String: String]) -> SubtitleDocument? {
+    /// Retrieves or loads on demand the SubtitleDocument for a given track id. `interrupt` aborts the read of a local
+    /// file, which then returns `nil`.
+    public func loadSubtitleDocument(
+        for trackId: Int, url: String, headers: [String: String], interrupt: InterruptContext? = nil
+    ) -> SubtitleDocument? {
         lock.lock()
         if let cached = cachedSubtitleDocuments[trackId] {
             lock.unlock()
@@ -194,7 +197,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         // For local files, secondary background extraction can index the entire file quickly.
         let doc = EmbeddedSubtitleReader.extractEmbeddedSubtitles(
-            url: url, headers: headers, streamIndex: track.streamIndex)
+            url: url, headers: headers, streamIndex: track.streamIndex, interrupt: interrupt)
         if let doc {
             lock.lock()
             self.cachedSubtitleDocuments[trackId] = doc
@@ -710,7 +713,16 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
     }
 
-    /// Lists a text subtitle stream (SRT, WebVTT, mov_text, ASS, SSA) as a track.
+    /// Whether a subtitle stream is forced or for the hard of hearing: Matroska and MP4 flag the stream itself, and many
+    /// files leave the title empty; older ones only say so in the title.
+    static func subtitleFlags(title: String, disposition: Int32) -> (isForced: Bool, isSDH: Bool) {
+        (
+            (disposition & AV_DISPOSITION_FORCED) != 0 || title.localizedCaseInsensitiveContains("forced"),
+            (disposition & AV_DISPOSITION_HEARING_IMPAIRED) != 0 || title.localizedCaseInsensitiveContains("sdh")
+        )
+    }
+
+    /// Lists a text (SRT, WebVTT, mov_text, ASS, SSA) or bitmap (PGS, VobSub, DVB) subtitle stream as a track.
     private func registerSubtitleTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
         let codecId = stream.pointee.codecpar.pointee.codec_id
         let isTextSub =
@@ -726,8 +738,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
             lang = String(cString: langTag.pointee.value)
         }
-        let isForced = title.localizedCaseInsensitiveContains("forced")
-        let isSDH = title.localizedCaseInsensitiveContains("sdh")
+        let (isForced, isSDH) = Self.subtitleFlags(title: title, disposition: stream.pointee.disposition)
         let displayTitle =
             title.isEmpty
             ? (lang.isEmpty ? "Subtitle \(self.subtitleTracks.count + 1)" : lang.uppercased()) : title

@@ -18,6 +18,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let audioDelay: Double?
     /// Path of the selected external subtitle file, when `subtitleTrackId` is `externalSubtitle`.
     public let externalSubtitlePath: String?
+    /// Stream of that file, which tells apart the languages of a VobSub index; `nil` in older records.
+    public let externalSubtitleStreamIndex: Int?
     /// Forced display aspect ratio; see `PlaybackPreferences.videoAspectRatio`.
     public let videoAspectRatio: RationalAspectRatio?
     /// Crop aspect ratio; see `PlaybackPreferences.videoCrop`.
@@ -42,6 +44,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.subtitleDelay = preferences.subtitleDelay
         self.audioDelay = preferences.audioDelay
         self.externalSubtitlePath = preferences.externalSubtitlePath
+        self.externalSubtitleStreamIndex = preferences.externalSubtitleStreamIndex
         self.videoAspectRatio = preferences.videoAspectRatio
         self.videoCrop = preferences.videoCrop
     }
@@ -53,6 +56,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
             subtitleDelay: subtitleDelay,
             audioDelay: audioDelay,
             externalSubtitlePath: externalSubtitlePath,
+            externalSubtitleStreamIndex: externalSubtitleStreamIndex,
             videoAspectRatio: videoAspectRatio,
             videoCrop: videoCrop
         )
@@ -68,6 +72,8 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public var subtitleDelay: Double?
     public var audioDelay: Double?
     public var externalSubtitlePath: String?
+    /// See `PlaybackRecord.externalSubtitleStreamIndex`.
+    public var externalSubtitleStreamIndex: Int?
     /// Display aspect ratio forced on the picture (`VideoGeometrySettings.aspectRatio`); `noGeometryOverride` when the
     /// stream's own is used.
     public var videoAspectRatio: RationalAspectRatio?
@@ -83,6 +89,7 @@ public struct PlaybackPreferences: Sendable, Equatable {
         subtitleDelay: Double? = nil,
         audioDelay: Double? = nil,
         externalSubtitlePath: String? = nil,
+        externalSubtitleStreamIndex: Int? = nil,
         videoAspectRatio: RationalAspectRatio? = nil,
         videoCrop: RationalAspectRatio? = nil
     ) {
@@ -91,6 +98,7 @@ public struct PlaybackPreferences: Sendable, Equatable {
         self.subtitleDelay = subtitleDelay
         self.audioDelay = audioDelay
         self.externalSubtitlePath = externalSubtitlePath
+        self.externalSubtitleStreamIndex = externalSubtitleStreamIndex
         self.videoAspectRatio = videoAspectRatio
         self.videoCrop = videoCrop
     }
@@ -103,6 +111,9 @@ public struct PlaybackPreferences: Sendable, Equatable {
             subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
             audioDelay: audioDelay ?? saved?.audioDelay,
             externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath,
+            // Belongs to the path: a new path with no stream of its own doesn't take the old one's.
+            externalSubtitleStreamIndex: externalSubtitlePath != nil
+                ? externalSubtitleStreamIndex : (externalSubtitleStreamIndex ?? saved?.externalSubtitleStreamIndex),
             videoAspectRatio: videoAspectRatio ?? saved?.videoAspectRatio,
             videoCrop: videoCrop ?? saved?.videoCrop
         )

@@ -241,7 +241,10 @@ flowchart TD
   - Chronological cue indexing with $O(\log N)$ binary search lookup supporting simultaneous and overlapping dialogue lines.
 - [x] **4.2. Embedded Subtitle Demuxing:**
   - Traversal and extraction of subtitle streams (`AVMEDIA_TYPE_SUBTITLE`) from MKV and MP4 containers (`subrip`, `webvtt`, `mov_text`).
-  - Metadata parsing: language codes, titles, `isForced`, and `isSDH` flags.
+  - Metadata parsing: language codes, titles, `isForced`, and `isSDH` flags (from the stream's disposition, or from
+    its title when it has none).
+  - [ ] Subtitle codecs not listed as tracks yet: CEA-608 / 708 captions in H.264 / HEVC SEI (US broadcast, HLS), DVB
+    Teletext, TTML / IMSC (MP4, DASH), and the plain-text `text`, MicroDVD, SubViewer and SAMI.
 - [x] **4.3. Dynamic Positioning & ASS/SSA Tags:**
   - Parsing of ASS/SSA alignment tags (`{\an1}` – `{\an9}`).
   - Dynamic positioning in `SubtitleOverlayView`: top-aligned cues render at the top of the display surface without colliding with bottom subtitles.
@@ -257,17 +260,31 @@ flowchart TD
     the visible picture (`subtitleRenderSize`, reported by `SubtitleOverlayView`), off the main thread, one render at
     a time. Until that size is known, and with "Original ASS Styling" off (`usesAuthoredSubtitleStyles`), the text
     cues are drawn in the user's subtitle style as before. Hosts get the plain text and `rawPayload` either way.
+    A frame is a picture per group of images near each other (a sign at the top and the dialogue at the bottom make
+    two), not one the size of the frame; pictures show and go without the text's fade.
   - [ ] libass is stepped at the 20 Hz time update, so fades and moves are not frame-smooth; no style override mode
     yet (`ass_set_selective_style_override`).
+  - [ ] The pixel aspect given to libass is the stream's SAR, not the one a forced display aspect ratio makes.
   - [x] Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`), VobSub (DVD) and DVB, decoded by `BitmapSubtitleDecoder`
     (`avcodec_decode_subtitle2`) into `SubtitleImageCue`s that keep palette indices, not pixels, and are drawn by
     `SubtitleOverlayView` over the visible picture. A canvas of other proportions than the picture (a 16:9 PGS on a rip
     with the bars cut off) is fitted whole with one scale on both axes. A set ends at its duration or, as PGS gives none, at the set that clears or replaces it,
     however late (5 s for the last). Palette indices of a whole film take tens of MB (about 10 KB a set on a sample,
     more with full-width captions); storing RLE and expanding on demand is left for later.
-  - [x] External `.sup` (PGS) and `.idx` (VobSub, one track per language; a dropped `.sub` loads through its `.idx`),
-    also found next to the media; their pictures are read when the track is selected.
+  - [x] External `.sup` (PGS) and `.idx` (VobSub, one track per language; a dropped or picked `.sub` loads through its
+    `.idx`, one with none is refused), also found next to the media; their pictures are read when the track is
+    selected.
+  - [x] Background reads of a track (embedded tracks of local files, external bitmap files) are cancelled, blocking
+    I/O included (`FFmpegInterrupt`), once the track is no longer selected or the media stops; one read per track.
   - [ ] Bitmap subtitles on HDR / XDR output aren't limited to SDR white yet; VobSub and DVB are untested on real discs.
+  - [ ] Bitmap tracks of local files show nothing until the whole file is read: for an MPEG-TS remux that is every
+    byte of it. Collecting pictures in-band meanwhile, as for network sources, is left for later.
+  - [ ] A crop set in the player fits a PGS canvas of the uncropped picture into the cropped one, so pictures shrink
+    (about 1.3× for 2.35:1 on 16:9); they should be placed on the whole picture and moved inside the visible part.
+  - [ ] Forced-only display: the forced flag of PGS sets (`AV_SUBTITLE_FLAG_FORCED`) is ignored, though Blu-ray discs
+    often keep forced sets inside the full track.
+  - [ ] Position and scale (`sub-pos` / `sub-scale` in mpv) for ASS and bitmap subtitles; the subtitle style applies
+    to plain text only. A second subtitle track shown at once.
 
 ---
 
@@ -280,9 +297,9 @@ flowchart TD
   - Hotkey adjustments (`Z` / `X`) stepping timing by ±100ms with real-time OSD indication.
   - Manual entry field in Quick Settings (`Subtitles` pane).
   - Remembered per file in `PlaybackHistoryStore`, like the track selection; a selected external subtitle file is
-    remembered by path and loaded again when the media is reopened.
+    remembered by path (and stream, for the languages of a VobSub index) and loaded again when the media is reopened.
 - [x] **4.6.2. Drag-and-Drop Subtitle Attachment:**
-  - Dropping `.srt` or `.vtt` on the video or the playlist drawer attaches the file to the media playing and selects
+  - Dropping a subtitle file (`.srt`, `.vtt`, `.ass`, `.ssa`, `.sup`, `.idx` or a VobSub `.sub`) on the video or the playlist drawer attaches the file to the media playing and selects
     it, with an OSD confirmation (`SubtitleFileDrop`); dropped together with a video, it attaches to that video.
   - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` included;
     dropped, a `.sub` with no `.idx` (MicroDVD) says on the OSD that the format isn't supported yet.
@@ -498,7 +515,10 @@ flowchart TD
   - Document the setup (view hierarchy, transparent web view background) with a minimal host example.
 - [x] **6.5. Subtitle Events for Hosts:**
   - `onSubtitleCuesChanged`: the cues on screen (subtitle delay applied) changed; not called per time tick. `text` is plain,
-    `rawPayload` carries the ASS event line. Bitmap subtitles are drawn by the player and reported as `[]`.
+    `rawPayload` carries the ASS event line. Bitmap subtitles are drawn by the player and reported as `[]`, and so is
+    the end of the media (`stop()`).
+  - [ ] Hosts can't draw ASS themselves yet: `rawPayload` is a Matroska event (`ReadOrder,Layer,Style,…`) for embedded
+    tracks but a `Dialogue:` line for `.ass` files, and the script header (styles) and attached fonts aren't exposed.
 
 ---
 

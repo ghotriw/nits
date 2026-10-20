@@ -15,6 +15,10 @@ public enum SidecarSubtitles {
     /// Extensions of subtitle formats not supported yet (MicroDVD, or the data half of VobSub).
     static let unsupportedExtensions: Set<String> = ["sub"]
 
+    /// Extensions an open panel for subtitle files offers: the loadable ones, and a VobSub `.sub`, which loads
+    /// through the `.idx` next to it.
+    public static let pickableExtensions: [String] = extensions.union(["sub"]).sorted()
+
     /// Whether the URL names a local subtitle file of a format the player loads.
     public static func isSubtitleFile(_ url: URL) -> Bool {
         url.isFileURL && extensions.contains(url.pathExtension.lowercased())

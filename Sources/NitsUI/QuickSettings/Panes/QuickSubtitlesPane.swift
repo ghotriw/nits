@@ -370,12 +370,7 @@ public struct QuickSubtitlesPane: View {
         let openPanel = NSOpenPanel()
         openPanel.title = "Select Subtitle File"
         openPanel.prompt = "Load"
-        openPanel.allowedContentTypes = [
-            UTType(filenameExtension: "srt"),
-            UTType(filenameExtension: "vtt"),
-            UTType(filenameExtension: "ass"),
-            UTType(filenameExtension: "ssa"),
-        ].compactMap { $0 }
+        openPanel.allowedContentTypes = SidecarSubtitles.pickableExtensions.compactMap { UTType(filenameExtension: $0) }
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
         openPanel.canChooseFiles = true

@@ -386,7 +386,7 @@ extension PlayerEngine {
         audioTracks = []
         selectedAudioTrackId = -1
         subtitleTracks = []
-        selectedSubtitleTrackId = nil
+        resetSubtitles()
         endDeferringTracksChanged()
         actionButtons = []
         trackNavigation = TrackNavigation()
@@ -435,6 +435,7 @@ extension PlayerEngine {
                 if url.isFileURL {
                     preferences.subtitleTrackId = PlaybackRecord.externalSubtitle
                     preferences.externalSubtitlePath = url.path
+                    preferences.externalSubtitleStreamIndex = track?.streamIndex
                 }
             } else if track != nil {
                 preferences.subtitleTrackId = id
@@ -636,12 +637,7 @@ extension PlayerEngine {
         self.audioTracks = demuxer.audioTracks
         self.selectedAudioTrackId = demuxer.selectedAudioTrackIndex
         self.subtitleTracks = demuxer.subtitleTracks
-        self.selectedSubtitleTrackId = nil
-        self.activeSubtitleDocument = nil
-        self.currentSubtitleCues.removeAll()
-        self.currentSubtitleImages.removeAll()
-        self.loadedSubtitleDocuments.removeAll()
-        self.lastObservedLiveSubtitleVersion = -1
+        resetSubtitles()
         // Set directly, not via `setSubtitleDelay`: nothing to re-save, and the track below picks its cues with it.
         let savedDelay = savedTracks?.subtitleDelay ?? 0
         self.subtitleDelay =
@@ -683,7 +679,9 @@ extension PlayerEngine {
             } else if saved == PlaybackRecord.externalSubtitle {
                 // A moved or deleted file falls back to the demuxer default.
                 if let path = savedTracks?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
-                    let trackId = addExternalSubtitles(url: URL(fileURLWithPath: path)).first
+                    let trackId = externalSubtitleTrack(
+                        among: addExternalSubtitles(url: URL(fileURLWithPath: path)),
+                        streamIndex: savedTracks?.externalSubtitleStreamIndex)
                 {
                     selectSubtitleTrack(id: trackId, persistHistory: false)
                     AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")

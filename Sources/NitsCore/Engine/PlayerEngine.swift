@@ -426,8 +426,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored var activeSubtitleDocument: SubtitleDocument? = nil {
         didSet { syncAuthoredSubtitles() }
     }
-    /// External bitmap subtitle files being read (`path#stream`), so one is read once.
-    @ObservationIgnored var loadingBitmapDocuments: Set<String> = []
+    /// Subtitle tracks being read in the background, by track id: one read per track, cancelled once the track is no
+    /// longer selected or the media closes.
+    @ObservationIgnored var subtitleLoads: [Int: SubtitleLoad] = [:]
     @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
     @ObservationIgnored var authoredRendererTrackId: Int?
     @ObservationIgnored var authoredScript: AssScript?

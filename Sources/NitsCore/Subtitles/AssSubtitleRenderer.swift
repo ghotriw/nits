@@ -51,9 +51,14 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
             ass_set_fonts(renderer, nil, "Helvetica Neue", Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
 
             if script.isCompleteFile {
-                var bytes = [CChar](script.header.map { CChar(bitPattern: $0) })
-                // Already UTF-8: with a code page libass would run it through iconv for nothing.
-                state.track = ass_read_memory(library, &bytes, bytes.count, nil)
+                // libass takes a mutable buffer (it copies it); a script with [Fonts] can run to megabytes, so the
+                // bytes aren't converted one by one. Already UTF-8: with a code page libass would run it through iconv.
+                var header = script.header
+                state.track = header.withUnsafeMutableBytes { bytes in
+                    bytes.baseAddress.map {
+                        ass_read_memory(library, $0.assumingMemoryBound(to: CChar.self), bytes.count, nil)
+                    } ?? nil
+                }
             } else {
                 state.track = ass_new_track(library)
                 if let track = state.track {
@@ -127,43 +132,94 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
             let isFirst = !state.hasRendered
             state.hasRendered = true
             guard change != 0 || isFirst else { return .unchanged }
-            guard let images, let region = Self.compose(images) else { return .frame(nil) }
+            let regions = images.map { Self.compose($0) } ?? []
+            guard !regions.isEmpty else { return .frame(nil) }
             return .frame(
                 SubtitleImageCue(
                     id: SubtitleImageCue.makeID(), startTime: seconds, endTime: seconds, canvasWidth: state.frameWidth,
-                    canvasHeight: state.frameHeight, regions: [region]))
+                    canvasHeight: state.frameHeight, regions: regions))
         }
     }
 
-    /// Blends libass' alpha masks (each with its color, back to front) into one premultiplied BGRA picture that covers
-    /// just the area they touch.
-    static func compose(_ first: UnsafeMutablePointer<ASS_Image>) -> SubtitleImageCue.Region? {
-        var minX = Int.max
-        var minY = Int.max
-        var maxX = Int.min
-        var maxY = Int.min
+    /// Pixels between two of libass' images up to which they still make one picture: the glyph runs of a line do.
+    static let clusterMargin = 16
+
+    /// A rectangle of the frame in pixels, `max` exclusive.
+    private struct Bounds {
+        var minX: Int
+        var minY: Int
+        var maxX: Int
+        var maxY: Int
+
+        init(_ image: ASS_Image) {
+            minX = Int(image.dst_x)
+            minY = Int(image.dst_y)
+            maxX = minX + Int(image.w)
+            maxY = minY + Int(image.h)
+        }
+
+        func isNear(_ other: Bounds) -> Bool {
+            minX - clusterMargin < other.maxX && other.minX - clusterMargin < maxX
+                && minY - clusterMargin < other.maxY && other.minY - clusterMargin < maxY
+        }
+
+        func union(_ other: Bounds) -> Bounds {
+            var result = self
+            result.minX = min(minX, other.minX)
+            result.minY = min(minY, other.minY)
+            result.maxX = max(maxX, other.maxX)
+            result.maxY = max(maxY, other.maxY)
+            return result
+        }
+    }
+
+    /// Blends libass' alpha masks (each with its color, back to front) into premultiplied BGRA pictures, one per group
+    /// of images near each other. A sign at the top and the dialogue at the bottom make two small pictures, not one
+    /// the size of the frame that would be allocated, filled and uploaded with every animated frame.
+    static func compose(_ first: UnsafeMutablePointer<ASS_Image>) -> [SubtitleImageCue.Region] {
+        var images: [ASS_Image] = []
         var node: UnsafeMutablePointer<ASS_Image>? = first
         while let image = node?.pointee {
-            if image.w > 0, image.h > 0 {
-                minX = min(minX, Int(image.dst_x))
-                minY = min(minY, Int(image.dst_y))
-                maxX = max(maxX, Int(image.dst_x) + Int(image.w))
-                maxY = max(maxY, Int(image.dst_y) + Int(image.h))
-            }
+            // libass' alpha is transparency: 0 is opaque.
+            if image.w > 0, image.h > 0, image.color & 0xFF != 0xFF, image.bitmap != nil { images.append(image) }
             node = image.next
         }
-        guard minX < maxX, minY < maxY else { return nil }
 
-        let width = maxX - minX
-        let height = maxY - minY
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        pixels.withUnsafeMutableBufferPointer { destination in
-            node = first
-            while let image = node?.pointee {
-                node = image.next
-                // libass' alpha is transparency: 0 is opaque.
+        // Groups of images, each in libass' order. A group that grows may reach others, so merging repeats.
+        var groups: [(bounds: Bounds, members: [Int])] = []
+        for (index, image) in images.enumerated() {
+            var bounds = Bounds(image)
+            var members = [index]
+            var other = 0
+            while other < groups.count {
+                if groups[other].bounds.isNear(bounds) {
+                    bounds = bounds.union(groups[other].bounds)
+                    members += groups[other].members
+                    groups.remove(at: other)
+                    other = 0
+                } else {
+                    other += 1
+                }
+            }
+            groups.append((bounds, members))
+        }
+        return groups.map { group in
+            compose(group.members.sorted().map { images[$0] }, in: group.bounds)
+        }
+    }
+
+    private static func compose(_ images: [ASS_Image], in bounds: Bounds) -> SubtitleImageCue.Region {
+        let minX = bounds.minX
+        let minY = bounds.minY
+        let width = bounds.maxX - minX
+        let height = bounds.maxY - minY
+        // Filled in place: a copy of the picture into `Data` afterwards would double the work.
+        var pixels = Data(count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let destination = raw.bindMemory(to: UInt8.self)
+            for image in images {
                 let opacity = 255 - (image.color & 0xFF)
-                guard image.w > 0, image.h > 0, opacity > 0, let mask = image.bitmap else { continue }
+                guard let mask = image.bitmap else { continue }
                 let red = image.color >> 24
                 let green = (image.color >> 16) & 0xFF
                 let blue = (image.color >> 8) & 0xFF
@@ -186,7 +242,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
                 }
             }
         }
-        return SubtitleImageCue.Region(x: minX, y: minY, width: width, height: height, premultipliedBGRA: Data(pixels))
+        return SubtitleImageCue.Region(x: minX, y: minY, width: width, height: height, premultipliedBGRA: pixels)
     }
 
     /// libass reports through a C callback with a printf-style format; its warnings (a missing font) reach the log.

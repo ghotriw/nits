@@ -190,6 +190,28 @@ struct PlaybackHistoryStoreTests {
         store.savePreferences(for: path, duration: 1000.0, PlaybackPreferences(subtitleTrackId: 1))
         #expect(store.savedPreferences(for: path)?.subtitleTrackId == 1)
     }
+
+    @Test("The stream of a saved VobSub index is kept with its path, and a new path doesn't inherit it")
+    func testExternalSubtitleStream() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        let path = "/movies/disc.mkv"
+        store.savePreferences(
+            for: path, duration: 1000.0,
+            PlaybackPreferences(
+                subtitleTrackId: PlaybackRecord.externalSubtitle, externalSubtitlePath: "/movies/disc.idx",
+                externalSubtitleStreamIndex: 1))
+        #expect(store.savedPreferences(for: path)?.externalSubtitleStreamIndex == 1)
+
+        // A save that doesn't touch the subtitle file keeps its stream.
+        store.savePreferences(for: path, duration: 1000.0, PlaybackPreferences(subtitleDelay: 0.5))
+        #expect(store.savedPreferences(for: path)?.externalSubtitleStreamIndex == 1)
+
+        store.savePreferences(
+            for: path, duration: 1000.0,
+            PlaybackPreferences(
+                subtitleTrackId: PlaybackRecord.externalSubtitle, externalSubtitlePath: "/movies/disc.en.srt"))
+        #expect(store.savedPreferences(for: path)?.externalSubtitleStreamIndex == nil)
+    }
 }
 
 @Suite("PlaybackHistoryStore Picture Geometry")

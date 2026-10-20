@@ -257,10 +257,9 @@ public struct ControlSubtitleTrackButton: View {
         let loadTarget = ControlMenuHelper { [weak engine, weak uiState] in
             let panel = NSOpenPanel()
             panel.title = "Select Subtitle File"
-            panel.allowedContentTypes = [
-                UTType(filenameExtension: "srt"),
-                UTType(filenameExtension: "vtt"),
-            ].compactMap { $0 }
+            panel.allowedContentTypes = SidecarSubtitles.pickableExtensions.compactMap {
+                UTType(filenameExtension: $0)
+            }
             panel.allowsMultipleSelection = false
             panel.canChooseDirectories = false
             panel.canChooseFiles = true

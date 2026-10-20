@@ -326,7 +326,9 @@ draws its own gets the same data from `onSubtitleCuesChanged`.
     events, attached fonts, or the whole file) for libass.
 - **libass** (`AssSubtitleRenderer`, ISC) draws at the pixel size of the visible picture, which the view reports as
   `subtitleRenderSize`; the engine renders off the main thread, one render at a time, the latest requested time
-  last. The result is one premultiplied BGRA picture per frame, shown through the same image path as bitmap cues. The
+  last. The result is a premultiplied BGRA picture per group of images near each other (a sign at the top and the
+  dialogue at the bottom are two, not one the size of the frame), shown through the same image path as bitmap cues,
+  without the fade the text gets. The
   engine keeps `isDrawingAuthoredSubtitles` so the overlay doesn't draw the text cues again. Fonts come from Core
   Text (no Fontconfig), plus the attachments of the container. The pixel aspect passed is the video's SAR: script
   coordinates are in the video's own pixels, the frame in square ones. The frame is the visible part of the picture
@@ -336,7 +338,12 @@ draws its own gets the same data from `onSubtitleCuesChanged`.
   does, would need a frame as large as the zoomed picture.
 - **Sources**: an embedded track is read whole from a second demuxer (`EmbeddedSubtitleReader`) for local files and
   collected in-band, as packets pass, for network ones (`liveSubtitleVersion`); external `.srt` / `.vtt` / `.ass` /
-  `.ssa` / `.sup` / `.idx` files are parsed or, for bitmaps, read when the track is selected.
+  `.ssa` / `.sup` / `.idx` files are parsed or, for bitmaps, read when the track is selected. A background read
+  (`subtitleLoads`, one per track) is cancelled through its `FFmpegInterrupt`, blocking I/O included, once its track
+  is no longer selected or the media stops: a whole-file read of an MPEG-TS remux reads every byte of it. `stop()`
+  and every load reset the subtitle state (`resetSubtitles`), so hosts get `[]`.
+- **Track flags**: forced and SDH come from the stream's disposition, or from its title; an external file's from its
+  name. History saves an external file by path and stream, which tells apart the languages of a VobSub index.
 - **Dependencies**: libass, FreeType, HarfBuzz, FriBidi and libunibreak are built by `scripts/build_dependencies.sh`
   with FFmpeg and ship as dylibs; `CLibass` is the system library target.
 

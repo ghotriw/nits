@@ -1,3 +1,4 @@
+import CFFmpeg
 import Foundation
 import Testing
 
@@ -87,6 +88,28 @@ struct AssSubtitleTests {
         #expect(abs(large.width - small.width * 2) <= 4 && abs(large.x - small.x * 2) <= 4)
     }
 
+    @Test("A sign at the top and dialogue at the bottom make two small pictures, not one the size of the frame")
+    func composesSeparatePictures() throws {
+        let both =
+            Self.header + """
+                Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,Hello
+                Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(100,20)\\1c&H0000FF&\\bord0\\p1}m 0 0 l 200 0 200 40 0 40{\\p0}
+                """
+        let renderer = try #require(
+            AssSubtitleRenderer(script: AssScript(header: Data(both.utf8), isCompleteFile: true)))
+        renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        guard case .frame(let cue) = renderer.render(at: 1.0) else {
+            Issue.record("Nothing drawn")
+            return
+        }
+        let regions = try #require(cue?.regions).sorted { $0.y < $1.y }
+        try #require(regions.count == 2, "Regions: \(regions.map { ($0.x, $0.y, $0.width, $0.height) })")
+        #expect(regions[0].y + regions[0].height < 100, "The drawing is at the top")
+        #expect(regions[1].y > 360 / 2, "The text is in the lower half")
+        let area = regions.reduce(0) { $0 + $1.width * $1.height }
+        #expect(area < 640 * 360 / 4)
+    }
+
     @Test("Stream events are fed once, whatever the number of times the list is passed")
     func feedsStreamEventsOnce() throws {
         var script = AssScript(header: Data(Self.header.utf8), events: [])
@@ -127,6 +150,25 @@ struct AssSubtitleTrackTests {
         let document = SubtitleDocument.parseASS(script)
         #expect(document.cues.map(\.text) == ["Well, yes, indeed\nsecond line"])
         #expect(document.cues.first?.endTime == 2.5)
+    }
+
+    @Test("A packet with no duration lasts as long for libass as its text cue does")
+    func eventWithoutDuration() throws {
+        var payload = Array("0,0,Default,,0,0,0,,Late".utf8)
+        try payload.withUnsafeMutableBufferPointer { bytes in
+            var packet = AVPacket()
+            packet.data = bytes.baseAddress
+            packet.size = Int32(bytes.count)
+            packet.pts = 3000
+            packet.duration = 0
+            let timebase = AVRational(num: 1, den: 1000)
+            let event = try #require(EmbeddedSubtitleReader.assEvent(from: &packet, timebase: timebase))
+            let cue = try #require(
+                EmbeddedSubtitleReader.parseSubtitleCue(
+                    pkt: &packet, timebase: timebase, codecId: AV_CODEC_ID_ASS, cueIndex: 1))
+            #expect(event.start == 3 && event.duration == EmbeddedSubtitleReader.fallbackCueDuration)
+            #expect(cue.startTime == event.start && cue.endTime - cue.startTime == event.duration)
+        }
     }
 
     @Test("An embedded ASS track keeps its header and events for libass next to the plain text")
@@ -184,6 +226,24 @@ struct AssSubtitleTrackTests {
 
         engine.selectSubtitleTrack(id: nil)
         #expect(!engine.isDrawingAuthoredSubtitles && engine.currentSubtitleImages.isEmpty)
+    }
+
+    @Test("A time asked for while a replaced renderer was busy is still drawn, by the new one", .hostDependent)
+    @MainActor
+    func pendingRenderSurvivesRendererSwitch() async throws {
+        let script = AssScript(header: Data(AssSubtitleTests.script.utf8), isCompleteFile: true)
+        let engine = PlayerEngine.makeForTesting()
+        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
+        let replaced = try #require(AssSubtitleRenderer(script: script))
+        let current = try #require(AssSubtitleRenderer(script: script))
+        engine.authoredRenderer = replaced
+        engine.renderAuthoredSubtitles(at: 1.0)
+        // Paused: no time tick follows, so only the pending request can draw the new renderer's first frame.
+        engine.authoredRenderer = current
+        engine.renderAuthoredSubtitles(at: 1.0)
+        try #require(engine.pendingAuthoredRenderTime == 1.0)
+        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.currentSubtitleImages.isEmpty)
     }
 
     @Test("Without a render size an ASS file shows as plain text, and with one it is drawn")

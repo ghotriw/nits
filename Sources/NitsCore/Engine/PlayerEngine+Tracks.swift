@@ -41,6 +41,7 @@ extension PlayerEngine {
     func selectSubtitleTrack(id: Int?, persistHistory: Bool) {
         guard let id else {
             // Disable subtitles
+            cancelSubtitleLoads()
             self.selectedSubtitleTrackId = nil
             self.activeSubtitleDocument = nil
             self.currentSubtitleCues.removeAll()
@@ -54,6 +55,8 @@ extension PlayerEngine {
         }
 
         guard let track = subtitleTracks.first(where: { $0.id == id }) else { return }
+        // Skipping through tracks must not leave a whole-file read running for each one passed.
+        cancelSubtitleLoads(except: id)
         self.selectedSubtitleTrackId = id
         // The previous track's cues (and libass script) go until this one's document is there.
         self.activeSubtitleDocument = nil
@@ -68,7 +71,17 @@ extension PlayerEngine {
             self.activeSubtitleDocument = loadedSubtitleDocuments[id]
             self.updateActiveSubtitles(at: currentTime)
             if activeSubtitleDocument == nil, track.format == .bitmap, let url = track.externalURL {
-                loadExternalBitmapDocument(trackId: id, url: url, streamIndex: track.streamIndex)
+                let streamIndex = track.streamIndex
+                // Pictures are read when the track is selected, as the pictures of a DVD run to tens of megabytes.
+                loadSubtitleDocument(trackId: id) { interrupt in
+                    EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+                        url: url.path, headers: [:], streamIndex: streamIndex, interrupt: interrupt)
+                } isCurrent: { engine in
+                    // Another file may have been opened meanwhile, with tracks of the same ids.
+                    engine.subtitleTracks.contains {
+                        $0.id == id && $0.externalURL == url && $0.streamIndex == streamIndex
+                    }
+                }
             }
         } else if let path = currentPath {
             if MediaURL.isNetworkURL(path) {
@@ -88,23 +101,11 @@ extension PlayerEngine {
             } else {
                 let headers = self.currentHeaders
                 let demuxer = self.demuxer
-                Task.detached(priority: .userInitiated) { [weak self, demuxer, path, headers] in
-                    let doc = demuxer?.loadSubtitleDocument(for: id, url: path, headers: headers)
-                    await MainActor.run {
-                        // Track ids restart with every file: a result is only for the demuxer it was asked of.
-                        guard let self, self.demuxer === demuxer else { return }
-                        if let doc { self.loadedSubtitleDocuments[id] = doc }
-                        guard self.selectedSubtitleTrackId == id else { return }
-                        if let doc {
-                            self.activeSubtitleDocument = doc
-                            self.updateActiveSubtitles(at: self.currentTime)
-                        } else {
-                            AppLog.warning(
-                                .subtitles,
-                                "Warning: Failed to extract embedded subtitle document for track id=\(id)"
-                            )
-                        }
-                    }
+                loadSubtitleDocument(trackId: id) { interrupt in
+                    demuxer?.loadSubtitleDocument(for: id, url: path, headers: headers, interrupt: interrupt)
+                } isCurrent: { engine in
+                    // Track ids restart with every file: a result is only for the demuxer it was asked of.
+                    engine.demuxer === demuxer
                 }
             }
         }
@@ -126,12 +127,19 @@ extension PlayerEngine {
     /// Adds a subtitle file as tracks (several for a VobSub index with more than one language), or finds the ones
     /// already made from it; empty if the file can't be read.
     func addExternalSubtitles(url: URL) -> [Int] {
+        // A VobSub `.sub` loads through its `.idx`, whichever of the two was picked.
+        let url = SidecarSubtitles.vobSubIndex(forDataFile: url) ?? url
+        // One with no index is MicroDVD text or VobSub data on its own. Read as text, any bytes decode (Latin-1) into
+        // a track with no cues.
+        guard !SidecarSubtitles.isUnsupportedSubtitleFile(url) else {
+            AppLog.warning(.subtitles, "Unsupported subtitle file (a .sub with no .idx next to it): \(url.path)")
+            return []
+        }
         if SidecarSubtitles.isBitmapSubtitleFile(url) { return addExternalBitmapSubtitles(url: url) }
         return addExternalSubtitle(url: url).map { [$0] } ?? []
     }
 
-    /// Adds a PGS (`.sup`) or VobSub (`.idx`) file. Its pictures are read when a track is selected, as the pictures
-    /// of a DVD run to tens of megabytes.
+    /// Adds a PGS (`.sup`) or VobSub (`.idx`) file. Its pictures are read when a track is selected.
     private func addExternalBitmapSubtitles(url: URL) -> [Int] {
         let url = url.standardizedFileURL
         let existing = subtitleTracks.filter { $0.externalURL == url }
@@ -164,33 +172,71 @@ extension PlayerEngine {
         return ids
     }
 
-    private func loadExternalBitmapDocument(trackId id: Int, url: URL, streamIndex: Int) {
-        let key = "\(url.path)#\(streamIndex)"
-        // Selecting the track again while it is read waits for that read.
-        guard loadingBitmapDocuments.insert(key).inserted else { return }
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let document = EmbeddedSubtitleReader.extractEmbeddedSubtitles(
-                url: url.path, headers: [:], streamIndex: streamIndex)
+    /// A subtitle track read in the background: its task, and the interrupt that aborts the FFmpeg I/O the task may be
+    /// blocked in, which cancelling the task alone wouldn't.
+    struct SubtitleLoad {
+        let task: Task<Void, Never>
+        let interrupt: FFmpegInterrupt
+
+        func cancel() {
+            interrupt.cancel()
+            task.cancel()
+        }
+    }
+
+    /// Reads a track's document off the main thread and shows it if the track is still selected. Selecting the track
+    /// again while it is read waits for that read. `isCurrent` says whether the result still belongs to the tracks
+    /// listed when it arrives.
+    private func loadSubtitleDocument(
+        trackId id: Int,
+        read: @escaping @Sendable (FFmpegInterrupt) -> SubtitleDocument?,
+        isCurrent: @escaping @MainActor @Sendable (PlayerEngine) -> Bool
+    ) {
+        guard subtitleLoads[id] == nil else { return }
+        let interrupt = FFmpegInterrupt()
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            let document = read(interrupt)
             await MainActor.run {
                 guard let self else { return }
-                self.loadingBitmapDocuments.remove(key)
+                if self.subtitleLoads[id]?.interrupt === interrupt { self.subtitleLoads[id] = nil }
+                guard !interrupt.isCancelled, isCurrent(self) else { return }
                 guard let document else {
-                    AppLog.warning(.subtitles, "Can't read the pictures of \(url.lastPathComponent)")
+                    AppLog.warning(.subtitles, "Can't read subtitle track \(id)")
                     return
                 }
-                // Another file may have been opened meanwhile, with tracks of the same ids.
-                guard
-                    self.subtitleTracks.contains(where: {
-                        $0.id == id && $0.externalURL == url && $0.streamIndex == streamIndex
-                    })
-                else { return }
-                // Kept even if another track was chosen meanwhile, so selecting this one again doesn't read the file.
                 self.loadedSubtitleDocuments[id] = document
                 guard self.selectedSubtitleTrackId == id else { return }
                 self.activeSubtitleDocument = document
                 self.updateActiveSubtitles(at: self.currentTime)
             }
         }
+        subtitleLoads[id] = SubtitleLoad(task: task, interrupt: interrupt)
+    }
+
+    /// Cancels the background reads of tracks other than `kept`.
+    func cancelSubtitleLoads(except kept: Int? = nil) {
+        for (id, load) in subtitleLoads where id != kept {
+            load.cancel()
+            subtitleLoads[id] = nil
+        }
+    }
+
+    /// Takes the media's subtitles away: what is on screen (hosts get `[]`), the libass renderer, the documents read
+    /// and the reads still running.
+    func resetSubtitles() {
+        cancelSubtitleLoads()
+        selectedSubtitleTrackId = nil
+        activeSubtitleDocument = nil
+        currentSubtitleCues.removeAll()
+        currentSubtitleImages.removeAll()
+        loadedSubtitleDocuments.removeAll()
+        lastObservedLiveSubtitleVersion = -1
+    }
+
+    /// The track of an external file to restore: the saved stream (one language of a VobSub index), else the first.
+    func externalSubtitleTrack(among ids: [Int], streamIndex: Int?) -> Int? {
+        guard let streamIndex else { return ids.first }
+        return ids.first { id in subtitleTracks.first { $0.id == id }?.streamIndex == streamIndex } ?? ids.first
     }
 
     /// Adds a text subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
@@ -468,8 +514,9 @@ extension PlayerEngine {
             await MainActor.run {
                 guard let self else { return }
                 self.isAuthoredRenderRunning = false
-                guard renderer === self.authoredRenderer else { return }
-                if case .frame(let cue) = output {
+                // A frame of a renderer since replaced is dropped, but a time asked for meanwhile is still rendered
+                // (by the current renderer): paused, nothing else would draw it.
+                if renderer === self.authoredRenderer, case .frame(let cue) = output {
                     self.currentSubtitleImages = cue.map { [$0] } ?? []
                 }
                 if let next = self.pendingAuthoredRenderTime {

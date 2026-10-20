@@ -114,57 +114,56 @@ public struct SubtitleOverlayView: View {
             let horizontalMargin = max(16.0, 32.0 * scale)
 
             ZStack {
-                if !cues.isEmpty || !images.isEmpty {
-                    ZStack {
-                        imageLayer(in: videoFrame)
+                // Pictures come and go at once, without the text's fade: a typeset sign belongs to its shot, and a
+                // libass frame fades by itself (`\fad`).
+                imageLayer(in: videoFrame)
 
-                        VStack(spacing: 8 * scale) {
-                            // Top aligned cues
-                            if !topCues.isEmpty {
-                                VStack(spacing: 6 * scale) {
-                                    ForEach(topCues) { cue in
-                                        cueRow(
-                                            cue, effectiveFontSize: effectiveFontSize,
-                                            horizontalMargin: horizontalMargin,
-                                            scale: scale)
-                                    }
-                                }
-                                .padding(.top, verticalEdgePadding)
-                            }
-
-                            Spacer()
-
-                            // Center aligned cues
-                            if !centerCues.isEmpty {
-                                VStack(spacing: 6 * scale) {
-                                    ForEach(centerCues) { cue in
-                                        cueRow(
-                                            cue, effectiveFontSize: effectiveFontSize,
-                                            horizontalMargin: horizontalMargin,
-                                            scale: scale)
-                                    }
+                if !cues.isEmpty {
+                    VStack(spacing: 8 * scale) {
+                        // Top aligned cues
+                        if !topCues.isEmpty {
+                            VStack(spacing: 6 * scale) {
+                                ForEach(topCues) { cue in
+                                    cueRow(
+                                        cue, effectiveFontSize: effectiveFontSize,
+                                        horizontalMargin: horizontalMargin,
+                                        scale: scale)
                                 }
                             }
+                            .padding(.top, verticalEdgePadding)
+                        }
 
-                            Spacer()
+                        Spacer()
 
-                            // Bottom aligned cues
-                            if !bottomCues.isEmpty {
-                                VStack(spacing: 6 * scale) {
-                                    ForEach(bottomCues) { cue in
-                                        cueRow(
-                                            cue, effectiveFontSize: effectiveFontSize,
-                                            horizontalMargin: horizontalMargin,
-                                            scale: scale)
-                                    }
+                        // Center aligned cues
+                        if !centerCues.isEmpty {
+                            VStack(spacing: 6 * scale) {
+                                ForEach(centerCues) { cue in
+                                    cueRow(
+                                        cue, effectiveFontSize: effectiveFontSize,
+                                        horizontalMargin: horizontalMargin,
+                                        scale: scale)
                                 }
-                                .padding(.bottom, verticalEdgePadding)
                             }
                         }
-                        .frame(width: videoFrame.width, height: videoFrame.height)
-                        .position(x: videoFrame.midX, y: videoFrame.midY)
+
+                        Spacer()
+
+                        // Bottom aligned cues
+                        if !bottomCues.isEmpty {
+                            VStack(spacing: 6 * scale) {
+                                ForEach(bottomCues) { cue in
+                                    cueRow(
+                                        cue, effectiveFontSize: effectiveFontSize,
+                                        horizontalMargin: horizontalMargin,
+                                        scale: scale)
+                                }
+                            }
+                            .padding(.bottom, verticalEdgePadding)
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: videoFrame.width, height: videoFrame.height)
+                    .position(x: videoFrame.midX, y: videoFrame.midY)
                     .transition(.opacity.animation(.easeInOut(duration: 0.12)))
                 }
             }
@@ -217,10 +216,12 @@ public struct SubtitleOverlayView: View {
     }
 
     /// Pictures of the regions on screen, so a redraw of the view (the time ticks) doesn't expand and wrap the pixels
-    /// again. A cue's regions never change, and libass frames get a new id with every render.
+    /// again. A cue's regions never change, and libass frames get a new id with every render. A libass frame may hold a
+    /// picture per sign on screen, so the count is roomy; bytes bound the frames already replaced.
     private nonisolated(unsafe) static let imageCache: NSCache<NSString, CGImage> = {
         let cache = NSCache<NSString, CGImage>()
-        cache.countLimit = 8
+        cache.countLimit = 32
+        cache.totalCostLimit = 64 << 20
         return cache
     }()
 
@@ -228,7 +229,7 @@ public struct SubtitleOverlayView: View {
         let key = "\(cue)-\(index)" as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
         guard let image = makeImage(region) else { return nil }
-        imageCache.setObject(image, forKey: key)
+        imageCache.setObject(image, forKey: key, cost: region.width * region.height * 4)
         return image
     }
 

@@ -1,3 +1,4 @@
+import CFFmpeg
 import Foundation
 import NitsTestSupport
 import Testing
@@ -239,6 +240,24 @@ struct SidecarSubtitleTests {
         #expect(tags("The.Movie.2019.1080p.srt") == .init())
         #expect(tags("film.x264.srt") == .init())
         #expect(tags("film.und.srt") == .init())
+    }
+
+    @Test("Forced and SDH come from the stream's flags, or from its title when it has none")
+    func testStreamFlags() {
+        let flags = { (title: String, disposition: Int32) in
+            let (forced, sdh) = MediaDemuxer.subtitleFlags(title: title, disposition: disposition)
+            return [forced, sdh]
+        }
+        #expect(flags("", 0) == [false, false])
+        #expect(flags("", AV_DISPOSITION_FORCED) == [true, false])
+        #expect(flags("", AV_DISPOSITION_HEARING_IMPAIRED | AV_DISPOSITION_DEFAULT) == [false, true])
+        #expect(flags("English (Forced)", 0) == [true, false])
+        #expect(flags("English SDH", 0) == [false, true])
+    }
+
+    @Test("Open panels offer every loadable subtitle file, and the data half of VobSub")
+    func testPickableExtensions() {
+        #expect(Set(SidecarSubtitles.pickableExtensions) == SidecarSubtitles.extensions.union(["sub"]))
     }
 }
 

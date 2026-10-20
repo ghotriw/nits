@@ -21,10 +21,16 @@ enum EmbeddedSubtitleReader {
         }
     }
 
+    /// How long a cue whose packet carries no duration stays on screen.
+    static let fallbackCueDuration = 4.0
+
     /// Dedicated fast extraction of text subtitles from media stream without disturbing playback queues.
-    static func extractEmbeddedSubtitles(url: String, headers: [String: String], streamIndex: Int)
-        -> SubtitleDocument?
-    {
+    ///
+    /// Reads the whole file, which for an MPEG-TS remux means every byte of it: `interrupt` aborts the read, blocking
+    /// I/O included (a stalled network volume), and a cancelled or interrupted read returns `nil`, never part of a track.
+    static func extractEmbeddedSubtitles(
+        url: String, headers: [String: String], streamIndex: Int, interrupt: FFmpegInterrupt? = nil
+    ) -> SubtitleDocument? {
         var options: OpaquePointer? = nil
         defer { if options != nil { av_dict_free(&options) } }
 
@@ -36,7 +42,10 @@ enum EmbeddedSubtitleReader {
             }
         }
 
-        var tempCtx: UnsafeMutablePointer<AVFormatContext>? = nil
+        var tempCtx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
+        guard let allocated = tempCtx else { return nil }
+        // `interrupt` outlives the context: the caller keeps it for the read, and the context is closed below.
+        interrupt?.install(on: allocated)
         let ret = avformat_open_input(&tempCtx, url, nil, &options)
         guard ret == 0, let ctx = tempCtx else { return nil }
         defer { avformat_close_input(&tempCtx) }
@@ -87,6 +96,7 @@ enum EmbeddedSubtitleReader {
             }
             av_packet_unref(&pkt)
         }
+        if Task.isCancelled || interrupt?.isCancelled == true { return nil }
 
         let script =
             isASS
@@ -126,10 +136,11 @@ enum EmbeddedSubtitleReader {
         else { return nil }
         let noPTS = Int64.min  // AV_NOPTS_VALUE
         let rawPTS = pkt.pointee.pts != noPTS ? pkt.pointee.pts : pkt.pointee.dts
-        guard rawPTS != noPTS, pkt.pointee.duration > 0 else { return nil }
+        guard rawPTS != noPTS else { return nil }
         let seconds = { (ticks: Int64) in Double(ticks) * Double(timebase.num) / Double(timebase.den) }
-        return AssScript.Event(
-            payload: payload, start: max(0, seconds(rawPTS)), duration: seconds(pkt.pointee.duration))
+        // As long as the text cue of the same packet (`parseSubtitleCue`), so libass doesn't leave it out.
+        let duration = pkt.pointee.duration > 0 ? seconds(pkt.pointee.duration) : fallbackCueDuration
+        return AssScript.Event(payload: payload, start: max(0, seconds(rawPTS)), duration: duration)
     }
 
     /// Parses an individual subtitle AVPacket into a SubtitleCue.
@@ -189,8 +200,7 @@ enum EmbeddedSubtitleReader {
         if pkt.pointee.duration > 0 {
             durationSec = Double(pkt.pointee.duration) * Double(timebase.num) / Double(timebase.den)
         } else {
-            // Default display duration 4.0 seconds if unspecified
-            durationSec = 4.0
+            durationSec = fallbackCueDuration
         }
 
         return SubtitleCue(

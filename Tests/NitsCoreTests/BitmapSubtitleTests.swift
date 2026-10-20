@@ -143,6 +143,18 @@ struct ExternalBitmapSubtitleFileTests {
         let idxIds = engine.addExternalSubtitles(url: index)
         #expect(supIds.count == 1 && idxIds.count == 2)
         #expect(engine.addExternalSubtitles(url: sup) == supIds, "Adding a file again reuses its tracks")
+        let data = directory.appendingPathComponent("disc.sub")
+        #expect(engine.addExternalSubtitles(url: data) == idxIds, "A picked .sub loads through its .idx")
+        let lone = directory.appendingPathComponent("microdvd.sub")
+        try Data("{0}{25}Hello\n".utf8).write(to: lone)
+        let trackCount = engine.subtitleTracks.count
+        #expect(engine.addExternalSubtitles(url: lone).isEmpty, "A .sub with no index makes no empty track")
+        #expect(engine.subtitleTracks.count == trackCount)
+
+        // History restores the saved language of the index; an unknown or missing stream falls back to the first.
+        #expect(engine.externalSubtitleTrack(among: idxIds, streamIndex: 1) == idxIds[1])
+        #expect(engine.externalSubtitleTrack(among: idxIds, streamIndex: 7) == idxIds[0])
+        #expect(engine.externalSubtitleTrack(among: idxIds, streamIndex: nil) == idxIds[0])
 
         let supTrack = try #require(engine.subtitleTracks.first { $0.id == supIds[0] })
         #expect(supTrack.format == .bitmap && supTrack.isExternal && supTrack.language == "en")
@@ -263,7 +275,7 @@ struct BitmapSubtitleLoadingTests {
         _ = engine.addExternalSubtitles(url: directory.appendingPathComponent("other.sup"))
         try await Task.sleep(for: .milliseconds(500))
         #expect(engine.loadedSubtitleDocuments[id] == nil)
-        #expect(engine.loadingBitmapDocuments.isEmpty)
+        #expect(engine.subtitleLoads.isEmpty)
     }
 
     @Test("Selecting a track again while its file is read starts no second read")
@@ -273,9 +285,53 @@ struct BitmapSubtitleLoadingTests {
         let engine = PlayerEngine.makeForTesting()
         let id = try #require(engine.addExternalSubtitles(url: file).first)
         engine.selectSubtitleTrack(id: id)
-        #expect(engine.loadingBitmapDocuments.count == 1)
+        let load = try #require(engine.subtitleLoads[id])
         engine.selectSubtitleTrack(id: id)
-        #expect(engine.loadingBitmapDocuments.count == 1)
+        #expect(engine.subtitleLoads.count == 1 && engine.subtitleLoads[id]?.interrupt === load.interrupt)
+    }
+
+    @Test("Selecting another track, or none, cancels the read of the track left")
+    func cancelsReadOfTrackLeft() throws {
+        let (directory, file) = try makeSupFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let other = directory.appendingPathComponent("other.sup")
+        try SyntheticTestMediaFactory.pgsStream.write(to: other)
+        let engine = PlayerEngine.makeForTesting()
+        let first = try #require(engine.addExternalSubtitles(url: file).first)
+        let second = try #require(engine.addExternalSubtitles(url: other).first)
+
+        engine.selectSubtitleTrack(id: first)
+        let firstLoad = try #require(engine.subtitleLoads[first])
+        engine.selectSubtitleTrack(id: second)
+        #expect(firstLoad.interrupt.isCancelled)
+        #expect(Array(engine.subtitleLoads.keys) == [second])
+
+        let secondLoad = try #require(engine.subtitleLoads[second])
+        engine.selectSubtitleTrack(id: nil)
+        #expect(secondLoad.interrupt.isCancelled && engine.subtitleLoads.isEmpty)
+    }
+
+    @Test("Stopping takes the subtitles off the screen, tells the host, and cancels reads")
+    func stopClearsSubtitles() throws {
+        let (directory, sup) = try makeSupFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = PlayerEngine.makeForTesting()
+        let id = try #require(engine.addExternalSubtitles(url: sup).first)
+        engine.selectSubtitleTrack(id: id)
+        let load = try #require(engine.subtitleLoads[id])
+        // What a track had put on screen.
+        engine.currentSubtitleCues = [SubtitleCue(id: 1, startTime: 0, endTime: 5, text: "Hello")]
+        engine.currentSubtitleImages = [
+            SubtitleImageCue(id: 1, startTime: 0, endTime: 9, canvasWidth: 1, canvasHeight: 1, regions: [])
+        ]
+
+        var reported: [[SubtitleCue]] = []
+        engine.onSubtitleCuesChanged = { reported.append($0) }
+        engine.stop()
+        #expect(reported.last == [])
+        #expect(engine.currentSubtitleCues.isEmpty && engine.currentSubtitleImages.isEmpty)
+        #expect(engine.activeSubtitleDocument == nil && engine.loadedSubtitleDocuments.isEmpty)
+        #expect(load.interrupt.isCancelled && engine.subtitleLoads.isEmpty)
     }
 
     @Test("Switching to another track takes the previous track's pictures off the screen, paused or not")
