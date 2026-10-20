@@ -121,6 +121,29 @@ public struct QuickSubtitlesPane: View {
             Divider()
                 .overlay(Color.white.opacity(0.12))
 
+            if engine.subtitleTracks.contains(where: { $0.format == .ass }) {
+                Toggle(isOn: $engine.usesAuthoredSubtitleStyles) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Original ASS Styling")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Text(
+                            "Fonts, colors and positions from the subtitle file. Off shows its text in the style below."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .onChange(of: engine.usesAuthoredSubtitleStyles) { _, enabled in
+                    UserDefaults.standard.set(enabled, forKey: PlayerConfiguration.keyAuthoredSubtitleStyles)
+                }
+
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+            }
+
             // Appearance & Styling Section
             VStack(alignment: .leading, spacing: 14) {
                 HStack {

@@ -247,6 +247,8 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 - FFmpeg: the app bundle ships its own LGPL build (`scripts/setup_dependencies.sh`); plain
   `swift build` / `swift test` fall back to Homebrew (`brew install ffmpeg`), which also provides
   the `ffmpeg` CLI used to generate test media
+- libass (ASS / SSA subtitles) ships in the same bundle; plain `swift build` falls back to Homebrew
+  (`brew install libass`)
 
 ## Building
 
@@ -254,7 +256,7 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 swift build -c release
 ```
 
-Build a signed `.app` bundle with embedded FFmpeg / dav1d and launch it:
+Build a signed `.app` bundle with embedded FFmpeg / dav1d / libass and launch it:
 
 ```bash
 ./scripts/bundle_app.sh --run
@@ -278,5 +280,5 @@ swift test
 
 [MIT](LICENSE)
 
-Bundled FFmpeg (LGPL-2.1+) and dav1d (BSD-2-Clause), and the mpv-derived tone-mapping shader
+Bundled FFmpeg (LGPL-2.1+), dav1d (BSD-2-Clause), libass (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak, and the mpv-derived tone-mapping shader
 (LGPL-2.1+), keep their own licenses — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

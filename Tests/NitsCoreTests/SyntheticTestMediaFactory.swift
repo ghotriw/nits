@@ -82,6 +82,11 @@ public enum SyntheticTestMediaFactory {
         case chaptersMKV
         /// Same as `chaptersMKV` in MP4 (QuickTime chapter track + Nero `chpl`)
         case chaptersMP4
+        /// H.264 MKV (6s, 320x240) with a PGS track made by `pgsStream`: a bar shown 0-1.5 s (cleared by an empty set)
+        /// and one from 2.5 s that is never cleared
+        case pgsSubtitlesMKV
+        /// H.264 MKV (6s, 640x360) with the ASS track `AssSubtitleTests.script`: "Hello" 0-2 s and a red box from 3 s
+        case assSubtitlesMKV
 
         public var filename: String {
             switch self {
@@ -155,6 +160,10 @@ public enum SyntheticTestMediaFactory {
                 return "synth_chapters_h264.mkv"
             case .chaptersMP4:
                 return "synth_chapters_h264.mp4"
+            case .pgsSubtitlesMKV:
+                return "synth_pgs_subtitles.mkv"
+            case .assSubtitlesMKV:
+                return "synth_ass_subtitles.mkv"
             }
         }
     }
@@ -259,6 +268,19 @@ public enum SyntheticTestMediaFactory {
                 return nil
             }
         }
+        if preset == .assSubtitlesMKV {
+            guard FileManager.default.createFile(atPath: metadataPath, contents: Data(AssSubtitleTests.script.utf8))
+            else {
+                print("[SyntheticTestMediaFactory] Failed to write the ASS script for \(preset.rawValue)")
+                return nil
+            }
+        }
+        if preset == .pgsSubtitlesMKV {
+            guard FileManager.default.createFile(atPath: metadataPath, contents: pgsStream) else {
+                print("[SyntheticTestMediaFactory] Failed to write the PGS stream for \(preset.rawValue)")
+                return nil
+            }
+        }
 
         let encodedPath = partialPath()
         defer { try? FileManager.default.removeItem(atPath: encodedPath) }
@@ -324,6 +346,26 @@ public enum SyntheticTestMediaFactory {
 
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
+        case .assSubtitlesMKV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=640x360:rate=24:duration=6",
+                "-f", "ass", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:s",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
+                "-metadata:s:s:0", "language=eng",
+                outputPath,
+            ]
+        case .pgsSubtitlesMKV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=24:duration=6",
+                "-f", "sup", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:s",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
+                "-metadata:s:s:0", "language=eng",
+                outputPath,
+            ]
         case .chaptersMKV, .chaptersMP4:
             return [
                 "-y",
@@ -775,5 +817,56 @@ public enum SyntheticTestMediaFactory {
         }
         args.append(outputPath)
         return args
+    }
+}
+
+extension SyntheticTestMediaFactory {
+    /// The bar `pgsStream` draws, on its 320x240 canvas.
+    static let pgsBar = (x: 96, y: 180, width: 128, height: 32)
+
+    /// A hand-built PGS stream (`.sup`): the white `pgsBar` shown from 0 s to 1.5 s (an empty display set clears
+    /// it), then again from 2.5 s with no end. FFmpeg shifts the first set to 0 when it reads the stream, so it starts there. It can mux PGS but not encode it, and a few hundred bytes made
+    /// here keep binary files out of the repository.
+    static var pgsStream: Data {
+        func segment(_ type: UInt8, at seconds: Double, _ payload: [UInt8]) -> [UInt8] {
+            let pts = UInt32(seconds * 90_000)
+            func be32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded: value >> (24 - 8 * $0)) } }
+            func be16(_ value: Int) -> [UInt8] {
+                [UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
+            }
+            return [0x50, 0x47] + be32(pts) + be32(0) + [type] + be16(payload.count) + payload
+        }
+        func be16(_ value: Int) -> [UInt8] {
+            [UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
+        }
+        let bar = pgsBar
+
+        // Per row: a run of `width` pixels of color 1 (14-bit length form), then end of line.
+        let row: [UInt8] = [0x00, 0xC0 | UInt8(bar.width >> 8), UInt8(bar.width & 0xFF), 0x01, 0x00, 0x00]
+        let bitmap = Array((0..<bar.height).map { _ in row }.joined())
+
+        func displaySet(at seconds: Double, composition: Int, showing: Bool) -> [UInt8] {
+            // Video size, 24 fps, composition number, epoch start, no palette update, palette 0, object count.
+            var pcs = be16(320) + be16(240) + [0x20] + be16(composition) + [0x80, 0x00, 0x00, showing ? 1 : 0]
+            if showing { pcs += be16(0) + [0x00, 0x00] + be16(bar.x) + be16(bar.y) }
+            var set = segment(0x16, at: seconds, pcs)
+            if showing {
+                set += segment(
+                    0x17, at: seconds, [1, 0] + be16(bar.x) + be16(bar.y) + be16(bar.width) + be16(bar.height))
+                // Palette 0, version 0; entry 1: white (Y 235, Cr 128, Cb 128), opaque.
+                set += segment(0x14, at: seconds, [0, 0, 1, 235, 128, 128, 255])
+                // Object 0, version 0, first and last fragment, data length (with the 4 size bytes), width, height.
+                let length = bitmap.count + 4
+                set += segment(
+                    0x15, at: seconds,
+                    be16(0) + [0, 0xC0, UInt8(length >> 16), UInt8((length >> 8) & 0xFF), UInt8(length & 0xFF)]
+                        + be16(bar.width) + be16(bar.height) + bitmap)
+            }
+            return set + segment(0x80, at: seconds, [])
+        }
+
+        return Data(
+            displaySet(at: 0, composition: 0, showing: true) + displaySet(at: 1.5, composition: 1, showing: false)
+                + displaySet(at: 2.5, composition: 2, showing: true))
     }
 }

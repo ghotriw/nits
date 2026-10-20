@@ -24,13 +24,18 @@ jobs:
             echo "version=$DEPS_VERSION"
             echo "ffmpeg=$FFMPEG_VERSION"
             echo "dav1d=$DAV1D_VERSION"
+            echo "libass=$LIBASS_VERSION"
+            echo "freetype=$FREETYPE_VERSION"
+            echo "harfbuzz=$HARFBUZZ_VERSION"
+            echo "fribidi=$FRIBIDI_VERSION"
+            echo "libunibreak=$LIBUNIBREAK_VERSION"
             echo "archive=$DEPS_ARCHIVE_NAME"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install build tools
         run: brew install pkg-config meson ninja
 
-      - name: Compile dav1d and FFmpeg (macOS 15.0, arm64)
+      - name: Compile dav1d, FFmpeg and libass (macOS 15.0, arm64)
         run: ./scripts/build_dependencies.sh --package
 
       - name: Report checksum
@@ -54,6 +59,7 @@ jobs:
             Prebuilt LGPL dependencies for Nits:
             - dav1d ${{ steps.deps.outputs.dav1d }}
             - FFmpeg ${{ steps.deps.outputs.ffmpeg }} (libavcodec, libavformat, libavutil, libswresample, libswscale)
+            - libass ${{ steps.deps.outputs.libass }} (ISC), FreeType ${{ steps.deps.outputs.freetype }} (FTL), HarfBuzz ${{ steps.deps.outputs.harfbuzz }} (MIT), FriBidi ${{ steps.deps.outputs.fribidi }} (LGPL-2.1+), libunibreak ${{ steps.deps.outputs.libunibreak }} (zlib)
             - Target: macOS 15.0+ (`-mmacosx-version-min=15.0`), Apple Silicon (`arm64`)
             Source archives the libraries were built from are attached (LGPL source offer).
           files: |
@@ -61,3 +67,8 @@ jobs:
             .build/dist/${{ steps.deps.outputs.archive }}.sha256
             .build/src/ffmpeg-${{ steps.deps.outputs.ffmpeg }}.tar.xz
             .build/src/dav1d-${{ steps.deps.outputs.dav1d }}.tar.bz2
+            .build/src/libass-${{ steps.deps.outputs.libass }}.tar.xz
+            .build/src/freetype-${{ steps.deps.outputs.freetype }}.tar.xz
+            .build/src/harfbuzz-${{ steps.deps.outputs.harfbuzz }}.tar.xz
+            .build/src/fribidi-${{ steps.deps.outputs.fribidi }}.tar.xz
+            .build/src/libunibreak-${{ steps.deps.outputs.libunibreak }}.tar.gz

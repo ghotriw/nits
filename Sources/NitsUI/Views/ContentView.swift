@@ -134,7 +134,8 @@ public struct ContentView: View {
 
             // Subtitles Overlay
             SubtitleOverlayView(
-                cues: engine.currentSubtitleCues,
+                cues: engine.isDrawingAuthoredSubtitles ? [] : engine.currentSubtitleCues,
+                images: engine.currentSubtitleImages,
                 fontSize: engine.subtitleFontSize,
                 textColor: Color(hex: engine.subtitleTextColorHex) ?? .white,
                 backgroundColor: Color(hex: engine.subtitleBgColorHex) ?? .black,
@@ -144,7 +145,8 @@ public struct ContentView: View {
                 videoWidth: engine.videoWidth,
                 videoHeight: engine.videoHeight,
                 sampleAspectRatio: engine.sampleAspectRatio,
-                geometry: engine.videoGeometry
+                geometry: engine.videoGeometry,
+                onRenderSizeChange: { engine.subtitleRenderSize = $0 }
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)

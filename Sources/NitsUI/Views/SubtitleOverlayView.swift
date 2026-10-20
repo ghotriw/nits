@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct SubtitleOverlayView: View {
     public let cues: [SubtitleCue]
+    public let images: [SubtitleImageCue]
     public let fontSize: Double
     public let textColor: Color
     public let backgroundColor: Color
@@ -13,10 +14,14 @@ public struct SubtitleOverlayView: View {
     public let videoHeight: Int
     public let sampleAspectRatio: RationalAspectRatio
     public let geometry: VideoGeometrySettings
+    /// Called with the size in pixels of the picture area subtitles are drawn on, when it changes: what a renderer of
+    /// styled subtitles needs to draw at.
+    public let onRenderSizeChange: ((CGSize) -> Void)?
     @Environment(\.displayScale) private var displayScale
 
     public init(
         cues: [SubtitleCue],
+        images: [SubtitleImageCue] = [],
         fontSize: Double = 24.0,
         textColor: Color = .white,
         backgroundColor: Color = .black,
@@ -26,9 +31,11 @@ public struct SubtitleOverlayView: View {
         videoWidth: Int = 0,
         videoHeight: Int = 0,
         sampleAspectRatio: RationalAspectRatio = .square,
-        geometry: VideoGeometrySettings = VideoGeometrySettings()
+        geometry: VideoGeometrySettings = VideoGeometrySettings(),
+        onRenderSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.cues = cues
+        self.images = images
         self.fontSize = fontSize
         self.textColor = textColor
         self.backgroundColor = backgroundColor
@@ -39,6 +46,7 @@ public struct SubtitleOverlayView: View {
         self.videoHeight = videoHeight
         self.sampleAspectRatio = sampleAspectRatio
         self.geometry = geometry
+        self.onRenderSizeChange = onRenderSizeChange
     }
 
     public init(
@@ -69,6 +77,10 @@ public struct SubtitleOverlayView: View {
         )
     }
 
+    nonisolated static func pixelSize(of frame: CGRect, scale: CGFloat) -> CGSize {
+        CGSize(width: (frame.width * scale).rounded(), height: (frame.height * scale).rounded())
+    }
+
     public static let referenceViewportHeight: Double = 720.0
     public static let minFontSize: Double = 14.0
     public static let maxFontSize: Double = 72.0
@@ -86,70 +98,151 @@ public struct SubtitleOverlayView: View {
     }
 
     public var body: some View {
-        if !cues.isEmpty {
-            GeometryReader { proxy in
-                let containerSize = proxy.size
-                let videoFrame = Self.computeVideoFrame(
-                    containerSize: containerSize,
-                    videoWidth: videoWidth,
-                    videoHeight: videoHeight,
-                    sampleAspectRatio: sampleAspectRatio,
-                    geometry: geometry,
-                    backingScale: displayScale
-                )
-                let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
-                let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
-                let verticalEdgePadding = max(20.0, 40.0 * scale)
-                let horizontalMargin = max(16.0, 32.0 * scale)
+        GeometryReader { proxy in
+            let containerSize = proxy.size
+            let videoFrame = Self.computeVideoFrame(
+                containerSize: containerSize,
+                videoWidth: videoWidth,
+                videoHeight: videoHeight,
+                sampleAspectRatio: sampleAspectRatio,
+                geometry: geometry,
+                backingScale: displayScale
+            )
+            let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
+            let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
+            let verticalEdgePadding = max(20.0, 40.0 * scale)
+            let horizontalMargin = max(16.0, 32.0 * scale)
 
-                ZStack {
-                    VStack(spacing: 8 * scale) {
-                        // Top aligned cues
-                        if !topCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(topCues) { cue in
-                                    cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize, horizontalMargin: horizontalMargin,
-                                        scale: scale)
+            ZStack {
+                if !cues.isEmpty || !images.isEmpty {
+                    ZStack {
+                        imageLayer(in: videoFrame)
+
+                        VStack(spacing: 8 * scale) {
+                            // Top aligned cues
+                            if !topCues.isEmpty {
+                                VStack(spacing: 6 * scale) {
+                                    ForEach(topCues) { cue in
+                                        cueRow(
+                                            cue, effectiveFontSize: effectiveFontSize,
+                                            horizontalMargin: horizontalMargin,
+                                            scale: scale)
+                                    }
+                                }
+                                .padding(.top, verticalEdgePadding)
+                            }
+
+                            Spacer()
+
+                            // Center aligned cues
+                            if !centerCues.isEmpty {
+                                VStack(spacing: 6 * scale) {
+                                    ForEach(centerCues) { cue in
+                                        cueRow(
+                                            cue, effectiveFontSize: effectiveFontSize,
+                                            horizontalMargin: horizontalMargin,
+                                            scale: scale)
+                                    }
                                 }
                             }
-                            .padding(.top, verticalEdgePadding)
-                        }
 
-                        Spacer()
+                            Spacer()
 
-                        // Center aligned cues
-                        if !centerCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(centerCues) { cue in
-                                    cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize, horizontalMargin: horizontalMargin,
-                                        scale: scale)
+                            // Bottom aligned cues
+                            if !bottomCues.isEmpty {
+                                VStack(spacing: 6 * scale) {
+                                    ForEach(bottomCues) { cue in
+                                        cueRow(
+                                            cue, effectiveFontSize: effectiveFontSize,
+                                            horizontalMargin: horizontalMargin,
+                                            scale: scale)
+                                    }
                                 }
+                                .padding(.bottom, verticalEdgePadding)
                             }
                         }
-
-                        Spacer()
-
-                        // Bottom aligned cues
-                        if !bottomCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(bottomCues) { cue in
-                                    cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize, horizontalMargin: horizontalMargin,
-                                        scale: scale)
-                                }
-                            }
-                            .padding(.bottom, verticalEdgePadding)
-                        }
+                        .frame(width: videoFrame.width, height: videoFrame.height)
+                        .position(x: videoFrame.midX, y: videoFrame.midY)
                     }
-                    .frame(width: videoFrame.width, height: videoFrame.height)
-                    .position(x: videoFrame.midX, y: videoFrame.midY)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.12)))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .transition(.opacity.animation(.easeInOut(duration: 0.12)))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: Self.pixelSize(of: videoFrame, scale: displayScale), initial: true) { _, size in
+                onRenderSizeChange?(size)
+            }
         }
+    }
+
+    /// Bitmap cues: each region placed on its canvas, which sits over the visible picture so cues follow crop and
+    /// zoom like the text does.
+    @ViewBuilder
+    private func imageLayer(in videoFrame: CGRect) -> some View {
+        ForEach(images) { cue in
+            let canvas = CGSize(
+                width: Double(cue.canvasWidth > 0 ? cue.canvasWidth : videoWidth),
+                height: Double(cue.canvasHeight > 0 ? cue.canvasHeight : videoHeight))
+            ForEach(Array(cue.regions.enumerated()), id: \.offset) { index, region in
+                let frame = Self.imageFrame(of: region, canvas: canvas, in: videoFrame)
+                if !frame.isEmpty, let image = Self.cachedImage(of: region, cue: cue.id, index: index) {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                }
+            }
+        }
+    }
+
+    /// Where a bitmap region lands in `videoFrame`. A canvas of the picture's proportions is stretched over it. One
+    /// of other proportions (PGS keeps the 16:9 of the disc while a rip cut the black bars off) is fitted whole and
+    /// centered with its scale kept equal on both axes, so the picture isn't distorted and nothing leaves the frame.
+    nonisolated public static func imageFrame(
+        of region: SubtitleImageCue.Region, canvas: CGSize, in videoFrame: CGRect
+    ) -> CGRect {
+        guard canvas.width > 0, canvas.height > 0, videoFrame.width > 0, videoFrame.height > 0 else { return .zero }
+        var scaleX = videoFrame.width / canvas.width
+        var scaleY = videoFrame.height / canvas.height
+        if abs(scaleX / scaleY - 1) > 0.01 {
+            scaleX = min(scaleX, scaleY)
+            scaleY = scaleX
+        }
+        let originX = videoFrame.minX + (videoFrame.width - canvas.width * scaleX) / 2
+        let originY = videoFrame.minY + (videoFrame.height - canvas.height * scaleY) / 2
+        return CGRect(
+            x: originX + Double(region.x) * scaleX, y: originY + Double(region.y) * scaleY,
+            width: Double(region.width) * scaleX, height: Double(region.height) * scaleY)
+    }
+
+    /// Pictures of the regions on screen, so a redraw of the view (the time ticks) doesn't expand and wrap the pixels
+    /// again. A cue's regions never change, and libass frames get a new id with every render.
+    private nonisolated(unsafe) static let imageCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 8
+        return cache
+    }()
+
+    private static func cachedImage(of region: SubtitleImageCue.Region, cue: Int, index: Int) -> CGImage? {
+        let key = "\(cue)-\(index)" as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
+        guard let image = makeImage(region) else { return nil }
+        imageCache.setObject(image, forKey: key)
+        return image
+    }
+
+    nonisolated static func makeImage(_ region: SubtitleImageCue.Region) -> CGImage? {
+        guard region.width > 0, region.height > 0,
+            let provider = CGDataProvider(data: region.premultipliedBGRA() as CFData)
+        else { return nil }
+        return CGImage(
+            width: region.width, height: region.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: region.width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+                .union(.byteOrder32Little),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
     /// The part of the container the picture covers (`VideoLayout.visibleRect`), matching the placement of

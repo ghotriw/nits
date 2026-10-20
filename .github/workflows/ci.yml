@@ -56,19 +56,19 @@ jobs:
 
       # Restore/save explicitly: actions/cache only saves on job success, so a later failing test
       # would otherwise force a full FFmpeg rebuild on every run.
-      - name: Restore LGPL FFmpeg / dav1d
+      - name: Restore LGPL FFmpeg / dav1d / libass
         id: deps-cache
         uses: actions/cache/restore@v4
         with:
           path: .build/dependencies
           key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
 
-      - name: Set up LGPL FFmpeg / dav1d
+      - name: Set up LGPL FFmpeg / dav1d / libass
         run: |
           ./scripts/setup_dependencies.sh
           echo "PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig" >> "$GITHUB_ENV"
 
-      - name: Save LGPL FFmpeg / dav1d
+      - name: Save LGPL FFmpeg / dav1d / libass
         if: steps.deps-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:

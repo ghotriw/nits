@@ -18,20 +18,35 @@ public struct SubtitleCue: Sendable, Equatable, Identifiable {
     public let endTime: Double  // in seconds
     public let text: String  // clean text
     public let alignment: SubtitleAlignment
+    /// The cue as the source stored it (an ASS event line, tags included) for hosts that render it themselves;
+    /// `nil` for formats whose `text` already says it all.
+    public let rawPayload: String?
 
     public init(
         id: Int,
         startTime: Double,
         endTime: Double,
         text: String,
-        alignment: SubtitleAlignment = .bottomCenter
+        alignment: SubtitleAlignment = .bottomCenter,
+        rawPayload: String? = nil
     ) {
         self.id = id
         self.startTime = startTime
         self.endTime = endTime
         self.text = text
         self.alignment = alignment
+        self.rawPayload = rawPayload
     }
+}
+
+/// How a subtitle track stores its cues, which decides how they are decoded and drawn.
+public enum SubtitleFormat: Sendable, Equatable {
+    /// Plain or lightly marked-up text: SRT, WebVTT, mov_text.
+    case text
+    /// Advanced SubStation Alpha / SubStation Alpha: styled, positioned text.
+    case ass
+    /// Pre-rendered pictures: PGS, VobSub, DVB.
+    case bitmap
 }
 
 /// Metadata and descriptor for a subtitle stream or external subtitle file.
@@ -44,6 +59,7 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
     public let externalURL: URL?
     public let isForced: Bool
     public let isSDH: Bool
+    public let format: SubtitleFormat
 
     public var isExternal: Bool { externalURL != nil }
 
@@ -54,8 +70,10 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
         language: String,
         externalURL: URL? = nil,
         isForced: Bool = false,
-        isSDH: Bool = false
+        isSDH: Bool = false,
+        format: SubtitleFormat = .text
     ) {
+        self.format = format
         self.id = id
         self.streamIndex = streamIndex
         self.title = title

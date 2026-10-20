@@ -22,7 +22,11 @@ enum SubtitleFileDrop {
             return
         }
 
-        let supported = urls.filter(SidecarSubtitles.isSubtitleFile)
+        // A VobSub `.sub` loads through its `.idx`; dropped together, the pair is one file.
+        var seen = Set<URL>()
+        let supported = urls.map { SidecarSubtitles.vobSubIndex(forDataFile: $0) ?? $0 }
+            .filter(SidecarSubtitles.isSubtitleFile)
+            .filter { seen.insert($0.standardizedFileURL).inserted }
         guard let lastSupported = supported.last else {
             let format = urls[0].pathExtension.uppercased()
             osd.show(.custom(symbol: "captions.bubble", text: "\(format) subtitles aren't supported yet"))

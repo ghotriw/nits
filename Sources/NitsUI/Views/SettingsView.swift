@@ -482,6 +482,7 @@ public struct SettingsView: View {
             subtitleTextColorHex: savedConfig.subtitleTextColorHex,
             subtitleBgColorHex: savedConfig.subtitleBgColorHex,
             subtitleBgOpacity: savedConfig.subtitleBgOpacity,
+            usesAuthoredSubtitleStyles: savedConfig.usesAuthoredSubtitleStyles,
             enableOSD: enableOSD,
             osdDuration: osdDuration,
             enableDebugOSD: enableDebugOSD,

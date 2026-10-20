@@ -32,7 +32,7 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 - Format / lint: `./scripts/format.sh` / `./scripts/format.sh lint` (pre-push runs `check`)
 - Tests: `swift test`; after touching seek, decoding, audio or track switching also run
   `swift test --filter PlaybackStressTests`.
-- App bundle: `./scripts/bundle_app.sh` — embeds the LGPL FFmpeg / dav1d from
+- App bundle: `./scripts/bundle_app.sh` — embeds the LGPL FFmpeg / dav1d and libass (with FreeType, HarfBuzz, FriBidi, libunibreak) from
   `scripts/setup_dependencies.sh` (versions, flags and the release checksum live in
   `scripts/deps_config.sh`; bump `DEPS_VERSION` when changing them). `format.sh` and CI build and
   test against `.build/dependencies` when present, otherwise SwiftPM falls back to Homebrew FFmpeg.

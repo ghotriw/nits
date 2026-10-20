@@ -4,6 +4,23 @@ import Foundation
 /// Text subtitle packets (SRT, WebVTT, mov_text, ASS, SSA) as cues, and whole-track extraction from a
 /// secondary demuxer that never disturbs playback.
 enum EmbeddedSubtitleReader {
+    /// The bitmap subtitle streams of a subtitle file: one for a `.sup`, one per language for a VobSub `.idx`.
+    static func bitmapSubtitleStreams(of url: URL) -> [(index: Int, language: String)] {
+        var tempCtx: UnsafeMutablePointer<AVFormatContext>? = nil
+        // The streams of a .sup and of a VobSub index exist once the header is read; probing would read pictures too.
+        guard avformat_open_input(&tempCtx, url.path, nil, nil) == 0, let ctx = tempCtx else { return [] }
+        defer { avformat_close_input(&tempCtx) }
+        return (0..<Int(ctx.pointee.nb_streams)).compactMap { index in
+            guard let stream = ctx.pointee.streams[index], let parameters = stream.pointee.codecpar,
+                BitmapSubtitleDecoder.isBitmapCodec(parameters.pointee.codec_id)
+            else { return nil }
+            let language = av_dict_get(stream.pointee.metadata, "language", nil, 0).map {
+                String(cString: $0.pointee.value)
+            }
+            return (index, language ?? "")
+        }
+    }
+
     /// Dedicated fast extraction of text subtitles from media stream without disturbing playback queues.
     static func extractEmbeddedSubtitles(url: String, headers: [String: String], streamIndex: Int)
         -> SubtitleDocument?
@@ -41,7 +58,12 @@ enum EmbeddedSubtitleReader {
         guard timebase.den > 0 else { return nil }
 
         var cues: [SubtitleCue] = []
+        var imageCues: [SubtitleImageCue] = []
         var cueIndex = 0
+        let bitmapDecoder = BitmapSubtitleDecoder.isBitmapCodec(codecId) ? BitmapSubtitleDecoder(stream: stream) : nil
+        let isASS = codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA
+        var assEvents: [AssScript.Event] = []
+        if BitmapSubtitleDecoder.isBitmapCodec(codecId), bitmapDecoder == nil { return nil }
 
         var pkt = AVPacket()
 
@@ -49,16 +71,65 @@ enum EmbeddedSubtitleReader {
         while !Task.isCancelled && av_read_frame(ctx, &pkt) >= 0 {
             MediaDemuxer.rebase(&pkt, origin: origin, in: ctx)
             if pkt.stream_index == streamIndex {
-                if let cue = Self.parseSubtitleCue(pkt: &pkt, timebase: timebase, codecId: codecId, cueIndex: cueIndex)
-                {
-                    cueIndex += 1
-                    cues.append(cue)
+                if let bitmapDecoder {
+                    imageCues.apply(bitmapDecoder.decode(&pkt))
+                } else {
+                    if isASS, let event = Self.assEvent(from: &pkt, timebase: timebase) {
+                        assEvents.append(event)
+                    }
+                    if let cue = Self.parseSubtitleCue(
+                        pkt: &pkt, timebase: timebase, codecId: codecId, cueIndex: cueIndex)
+                    {
+                        cueIndex += 1
+                        cues.append(cue)
+                    }
                 }
             }
             av_packet_unref(&pkt)
         }
 
-        return SubtitleDocument(cues: cues)
+        let script =
+            isASS
+            ? AssScript(header: Self.assHeader(of: stream), events: assEvents, fonts: Self.attachedFonts(in: ctx))
+            : nil
+        return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
+    }
+
+    /// The stream's script header (script info and styles): the codec private data of an ASS / SSA track.
+    static func assHeader(of stream: UnsafeMutablePointer<AVStream>) -> Data {
+        guard let parameters = stream.pointee.codecpar, let extradata = parameters.pointee.extradata,
+            parameters.pointee.extradata_size > 0
+        else { return Data() }
+        return Data(bytes: extradata, count: Int(parameters.pointee.extradata_size))
+    }
+
+    /// The fonts a container attaches (Matroska attachments), which ASS scripts may name instead of installed fonts.
+    static func attachedFonts(in ctx: UnsafeMutablePointer<AVFormatContext>) -> [AssScript.Font] {
+        let fontExtensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
+        return (0..<Int(ctx.pointee.nb_streams)).compactMap { index in
+            guard let stream = ctx.pointee.streams[index], let parameters = stream.pointee.codecpar,
+                parameters.pointee.codec_type == AVMEDIA_TYPE_ATTACHMENT, let extradata = parameters.pointee.extradata,
+                parameters.pointee.extradata_size > 0,
+                let tag = av_dict_get(stream.pointee.metadata, "filename", nil, 0)
+            else { return nil }
+            let name = String(cString: tag.pointee.value)
+            guard fontExtensions.contains((name as NSString).pathExtension.lowercased()) else { return nil }
+            return AssScript.Font(
+                name: name, data: Data(bytes: extradata, count: Int(parameters.pointee.extradata_size)))
+        }
+    }
+
+    /// An ASS / SSA packet as the event libass takes: the packet's text with its time and duration.
+    static func assEvent(from pkt: UnsafePointer<AVPacket>, timebase: AVRational) -> AssScript.Event? {
+        guard pkt.pointee.size > 0, pkt.pointee.data != nil, timebase.den > 0,
+            let payload = String(data: Data(bytes: pkt.pointee.data, count: Int(pkt.pointee.size)), encoding: .utf8)
+        else { return nil }
+        let noPTS = Int64.min  // AV_NOPTS_VALUE
+        let rawPTS = pkt.pointee.pts != noPTS ? pkt.pointee.pts : pkt.pointee.dts
+        guard rawPTS != noPTS, pkt.pointee.duration > 0 else { return nil }
+        let seconds = { (ticks: Int64) in Double(ticks) * Double(timebase.num) / Double(timebase.den) }
+        return AssScript.Event(
+            payload: payload, start: max(0, seconds(rawPTS)), duration: seconds(pkt.pointee.duration))
     }
 
     /// Parses an individual subtitle AVPacket into a SubtitleCue.
@@ -88,7 +159,9 @@ enum EmbeddedSubtitleReader {
         // For ASS / SSA subtitles, strip the leading comma-separated metadata fields
         // Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text (8 commas before text)
         // Or if raw line has "Dialogue: " prefix (9 commas before text)
-        if codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA {
+        let isASS = codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA
+        let rawPayload = isASS ? rawString : nil
+        if isASS {
             if rawString.hasPrefix("Dialogue:") {
                 let parts = rawString.components(separatedBy: ",")
                 if parts.count >= 10 {
@@ -102,6 +175,8 @@ enum EmbeddedSubtitleReader {
             }
         }
 
+        // A vector drawing (`{\p1}m 0 0 l ...`) is not text; libass draws it from the script.
+        if isASS, rawString.range(of: #"\{[^}]*\\p[1-9]"#, options: .regularExpression) != nil { return nil }
         let alignment = SubtitleDocument.parseAlignment(from: rawString)
         let clean = SubtitleDocument.cleanFormattingTags(rawString).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
@@ -123,7 +198,8 @@ enum EmbeddedSubtitleReader {
             startTime: max(0.0, startSec),
             endTime: max(startSec + 0.5, startSec + durationSec),
             text: clean,
-            alignment: alignment
+            alignment: alignment,
+            rawPayload: rawPayload
         )
     }
 }

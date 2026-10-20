@@ -179,6 +179,16 @@ public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var currentSubtitleText: String? { get }
     @MainActor var currentSubtitleCue: SubtitleCue? { get }
     @MainActor var currentSubtitleCues: [SubtitleCue] { get }
+    /// Called with the cues on screen whenever they change (not per time tick).
+    @MainActor var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)? { get set }
+    /// Bitmap subtitles on screen; the player draws them.
+    @MainActor var currentSubtitleImages: [SubtitleImageCue] { get }
+    /// Draw ASS / SSA subtitles with libass as authored (default) instead of as plain text in the style below.
+    @MainActor var usesAuthoredSubtitleStyles: Bool { get set }
+    /// Size in pixels of the area subtitles are drawn on; libass draws ASS subtitles once it is set.
+    @MainActor var subtitleRenderSize: CGSize { get set }
+    /// Whether libass draws the selected track, so its text cues aren't to be drawn again.
+    @MainActor var isDrawingAuthoredSubtitles: Bool { get }
     @MainActor var subtitleFontSize: Double { get set }
     @MainActor var subtitleFontName: String { get set }
     @MainActor var subtitleFontWeight: String { get set }

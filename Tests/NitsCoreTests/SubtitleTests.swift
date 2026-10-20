@@ -221,7 +221,7 @@ struct SidecarSubtitleTests {
         }
 
         let found = SidecarSubtitles.urls(for: directory.appendingPathComponent("movie.mkv"))
-        #expect(found.map(\.lastPathComponent) == ["movie.en.forced.vtt", "Movie.EN.srt", "movie.srt"])
+        #expect(found.map(\.lastPathComponent) == ["movie.ass", "movie.en.forced.vtt", "Movie.EN.srt", "movie.srt"])
         #expect(SidecarSubtitles.urls(for: URL(string: "https://example.com/movie.mkv")!).isEmpty)
     }
 
@@ -239,5 +239,50 @@ struct SidecarSubtitleTests {
         #expect(tags("The.Movie.2019.1080p.srt") == .init())
         #expect(tags("film.x264.srt") == .init())
         #expect(tags("film.und.srt") == .init())
+    }
+}
+
+@Suite("Subtitle cue events")
+@MainActor
+struct SubtitleCueEventTests {
+    private func makeEngine() -> PlayerEngine {
+        let engine = PlayerEngine.makeForTesting()
+        engine.activeSubtitleDocument = SubtitleDocument(cues: [
+            SubtitleCue(id: 1, startTime: 10.0, endTime: 12.0, text: "First"),
+            SubtitleCue(
+                id: 2, startTime: 20.0, endTime: 22.0, text: "Second", rawPayload: "0,0,Default,,0,0,0,,Second"),
+        ])
+        return engine
+    }
+
+    @Test("Cues are reported when they start and end, not on every tick")
+    func reportsOnlyChanges() {
+        let engine = makeEngine()
+        var reports: [[String]] = []
+        engine.onSubtitleCuesChanged = { reports.append($0.map(\.text)) }
+
+        for time in [5.0, 9.9, 10.0, 10.5, 11.9, 12.1, 15.0] {
+            engine.updateActiveSubtitles(at: time)
+        }
+        #expect(reports == [["First"], []])
+    }
+
+    @Test("A delay change, a seek and a track switch report the cues they land on")
+    func reportsDelaySeekAndSwitch() {
+        let engine = makeEngine()
+        engine.currentTime = 11.0
+        engine.updateActiveSubtitles(at: 11.0)
+        var reports: [[String]] = []
+        engine.onSubtitleCuesChanged = { reports.append($0.map(\.text)) }
+
+        engine.setSubtitleDelay(2.0)  // "First" now spans 12...14
+        #expect(reports == [[]])
+        engine.updateActiveSubtitles(at: 21.0)  // "Second" spans 22...24, so 21 shows nothing
+        engine.updateActiveSubtitles(at: 23.0)
+        #expect(reports == [[], ["Second"]])
+        #expect(engine.currentSubtitleCues.first?.rawPayload == "0,0,Default,,0,0,0,,Second")
+
+        engine.selectSubtitleTrack(id: nil)
+        #expect(reports.last == [])
     }
 }

@@ -250,9 +250,24 @@ flowchart TD
   - Proportional font scaling dynamically adapting text sizes to video dimensions.
   - Comprehensive styling settings: font family, weight, point size (16–54 pt), text color, background box color, and opacity with live interactive previews.
   - Persistence across sessions via `UserDefaults`.
-- [ ] **4.5. Advanced ASS/SSA Typesetting & Bitmap Subtitles:**
-  - Full ASS drawing, vector shapes, and styling support via `libass` integration.
-  - Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`) and VOBSUB (DVD).
+- [x] **4.5. Advanced ASS/SSA Typesetting & Bitmap Subtitles:**
+  - [x] ASS / SSA drawn by libass (`AssSubtitleRenderer`): styles, positioning, animations, karaoke, vector drawings and
+    the fonts a Matroska file attaches; fonts come from Core Text. Embedded tracks keep their header and events
+    (`AssScript`) next to the plain-text cues, `.ass` / `.ssa` files load whole. libass draws at the pixel size of
+    the visible picture (`subtitleRenderSize`, reported by `SubtitleOverlayView`), off the main thread, one render at
+    a time. Until that size is known, and with "Original ASS Styling" off (`usesAuthoredSubtitleStyles`), the text
+    cues are drawn in the user's subtitle style as before. Hosts get the plain text and `rawPayload` either way.
+  - [ ] libass is stepped at the 20 Hz time update, so fades and moves are not frame-smooth; no style override mode
+    yet (`ass_set_selective_style_override`).
+  - [x] Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`), VobSub (DVD) and DVB, decoded by `BitmapSubtitleDecoder`
+    (`avcodec_decode_subtitle2`) into `SubtitleImageCue`s that keep palette indices, not pixels, and are drawn by
+    `SubtitleOverlayView` over the visible picture. A canvas of other proportions than the picture (a 16:9 PGS on a rip
+    with the bars cut off) is fitted whole with one scale on both axes. A set ends at its duration or, as PGS gives none, at the set that clears or replaces it,
+    however late (5 s for the last). Palette indices of a whole film take tens of MB (about 10 KB a set on a sample,
+    more with full-width captions); storing RLE and expanding on demand is left for later.
+  - [x] External `.sup` (PGS) and `.idx` (VobSub, one track per language; a dropped `.sub` loads through its `.idx`),
+    also found next to the media; their pictures are read when the track is selected.
+  - [ ] Bitmap subtitles on HDR / XDR output aren't limited to SDR white yet; VobSub and DVB are untested on real discs.
 
 ---
 
@@ -270,7 +285,7 @@ flowchart TD
   - Dropping `.srt` or `.vtt` on the video or the playlist drawer attaches the file to the media playing and selects
     it, with an OSD confirmation (`SubtitleFileDrop`); dropped together with a video, it attaches to that video.
   - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` included;
-    dropped, these say on the OSD that the format isn't supported yet.
+    dropped, a `.sub` with no `.idx` (MicroDVD) says on the OSD that the format isn't supported yet.
 - [x] **4.6.3. Sidecar Subtitle Discovery:**
   - `movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to a local `movie.mkv` are added as tracks on load
     (`SidecarSubtitles`); language, forced and SDH tags come from the file name.
@@ -481,8 +496,9 @@ flowchart TD
     smooth (no dropped frames from compositing), HDR / EDR is preserved on XDR displays in windowed and fullscreen
     mode, and Picture in Picture still works.
   - Document the setup (view hierarchy, transparent web view background) with a minimal host example.
-- [ ] **6.5. Subtitle Events for Hosts:**
-  - Callback for subtitle cue changes, so a host that draws subtitles in its own overlay needs no polling.
+- [x] **6.5. Subtitle Events for Hosts:**
+  - `onSubtitleCuesChanged`: the cues on screen (subtitle delay applied) changed; not called per time tick. `text` is plain,
+    `rawPayload` carries the ASS event line. Bitmap subtitles are drawn by the player and reported as `[]`.
 
 ---
 

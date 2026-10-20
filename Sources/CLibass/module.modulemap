@@ -1,0 +1,5 @@
+module CLibass [system] {
+    header "CLibass.h"
+    link "ass"
+    export *
+}

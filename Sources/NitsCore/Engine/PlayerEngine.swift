@@ -288,6 +288,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleTextColorHex = config.subtitleTextColorHex
         self.subtitleBgColorHex = config.subtitleBgColorHex
         self.subtitleBgOpacity = config.subtitleBgOpacity
+        self.usesAuthoredSubtitleStyles = config.usesAuthoredSubtitleStyles
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
@@ -377,7 +378,18 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var currentSubtitleCue: SubtitleCue? {
         currentSubtitleCues.first
     }
-    public var currentSubtitleCues: [SubtitleCue] = []
+    public var currentSubtitleCues: [SubtitleCue] = [] {
+        didSet {
+            if oldValue != currentSubtitleCues { onSubtitleCuesChanged?(currentSubtitleCues) }
+        }
+    }
+    /// Called with the cues on screen (subtitle delay applied) whenever they change: a cue starts or ends, a seek or
+    /// a track switch lands on other ones, and with `[]` when subtitles are off or the media stops. Not called per
+    /// time tick. Cue `text` is plain; `rawPayload` carries an ASS event for hosts that draw it themselves.
+    public var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)?
+    /// Bitmap subtitles (PGS, VobSub, DVB) on screen, subtitle delay applied. Drawn by the player; hosts get no
+    /// events for them (`onSubtitleCuesChanged` reports `[]` meanwhile).
+    public var currentSubtitleImages: [SubtitleImageCue] = []
     public var currentSubtitleText: String? {
         currentSubtitleCue?.text
     }
@@ -395,7 +407,34 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public internal(set) var audioDelay: Double = 0
     /// Audio played early is read that far ahead of the picture, within the demuxer's video packet queue.
     public static let audioDelayRange: ClosedRange<Double> = -1.0...1.0
-    var activeSubtitleDocument: SubtitleDocument? = nil
+    /// Draw ASS / SSA subtitles with libass as authored; off draws their text in the subtitle style above.
+    public var usesAuthoredSubtitleStyles: Bool = true {
+        didSet {
+            if oldValue != usesAuthoredSubtitleStyles { syncAuthoredSubtitles() }
+        }
+    }
+    /// Size in pixels of the area subtitles are drawn on (the visible picture), reported by the view that draws them.
+    /// Until it is set, ASS subtitles show as plain text, as for a host that draws its own.
+    public var subtitleRenderSize: CGSize = .zero {
+        didSet {
+            if oldValue != subtitleRenderSize { syncAuthoredSubtitles() }
+        }
+    }
+    /// Whether libass draws the selected track, so its text cues (`currentSubtitleCues`) aren't to be drawn again.
+    public internal(set) var isDrawingAuthoredSubtitles = false
+    // Nothing observes it; the macro would compare whole documents (events, fonts) on every set.
+    @ObservationIgnored var activeSubtitleDocument: SubtitleDocument? = nil {
+        didSet { syncAuthoredSubtitles() }
+    }
+    /// External bitmap subtitle files being read (`path#stream`), so one is read once.
+    @ObservationIgnored var loadingBitmapDocuments: Set<String> = []
+    @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
+    @ObservationIgnored var authoredRendererTrackId: Int?
+    @ObservationIgnored var authoredScript: AssScript?
+    /// Counts renderer starts and drops, so a renderer made in the background for a track since left is thrown away.
+    @ObservationIgnored var authoredGeneration = 0
+    @ObservationIgnored var isAuthoredRenderRunning = false
+    @ObservationIgnored var pendingAuthoredRenderTime: Double?
     var lastObservedLiveSubtitleVersion: Int = -1
 
     var loadedSubtitleDocuments: [Int: SubtitleDocument] = [:]
@@ -756,6 +795,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleTextColorHex = configuration.subtitleTextColorHex
         self.subtitleBgColorHex = configuration.subtitleBgColorHex
         self.subtitleBgOpacity = configuration.subtitleBgOpacity
+        self.usesAuthoredSubtitleStyles = configuration.usesAuthoredSubtitleStyles
         self.enableOSD = configuration.enableOSD
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress

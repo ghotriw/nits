@@ -44,6 +44,7 @@ extension PlayerEngine {
             self.selectedSubtitleTrackId = nil
             self.activeSubtitleDocument = nil
             self.currentSubtitleCues.removeAll()
+            self.currentSubtitleImages.removeAll()
             self.lastObservedLiveSubtitleVersion = -1
             demuxer?.selectSubtitleTrack(trackId: nil)
             if persistHistory {
@@ -54,6 +55,10 @@ extension PlayerEngine {
 
         guard let track = subtitleTracks.first(where: { $0.id == id }) else { return }
         self.selectedSubtitleTrackId = id
+        // The previous track's cues (and libass script) go until this one's document is there.
+        self.activeSubtitleDocument = nil
+        self.currentSubtitleCues = []
+        self.currentSubtitleImages = []
         demuxer?.selectSubtitleTrack(trackId: id)
         if persistHistory {
             saveCurrentPlaybackProgress()
@@ -62,6 +67,9 @@ extension PlayerEngine {
         if track.isExternal {
             self.activeSubtitleDocument = loadedSubtitleDocuments[id]
             self.updateActiveSubtitles(at: currentTime)
+            if activeSubtitleDocument == nil, track.format == .bitmap, let url = track.externalURL {
+                loadExternalBitmapDocument(trackId: id, url: url, streamIndex: track.streamIndex)
+            }
         } else if let path = currentPath {
             if MediaURL.isNetworkURL(path) {
                 // For network streams: bind immediately to in-band demuxed cues.
@@ -83,9 +91,11 @@ extension PlayerEngine {
                 Task.detached(priority: .userInitiated) { [weak self, demuxer, path, headers] in
                     let doc = demuxer?.loadSubtitleDocument(for: id, url: path, headers: headers)
                     await MainActor.run {
-                        guard let self, self.selectedSubtitleTrackId == id else { return }
+                        // Track ids restart with every file: a result is only for the demuxer it was asked of.
+                        guard let self, self.demuxer === demuxer else { return }
+                        if let doc { self.loadedSubtitleDocuments[id] = doc }
+                        guard self.selectedSubtitleTrackId == id else { return }
                         if let doc {
-                            self.loadedSubtitleDocuments[id] = doc
                             self.activeSubtitleDocument = doc
                             self.updateActiveSubtitles(at: self.currentTime)
                         } else {
@@ -109,11 +119,81 @@ extension PlayerEngine {
         // The added tracks and the selection are reported once.
         beginDeferringTracksChanged()
         defer { endDeferringTracksChanged() }
-        guard let trackId = urls.compactMap({ addExternalSubtitle(url: $0) }).last else { return }
+        guard let trackId = urls.flatMap({ addExternalSubtitles(url: $0) }).last else { return }
         selectSubtitleTrack(id: trackId)
     }
 
-    /// Adds a subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
+    /// Adds a subtitle file as tracks (several for a VobSub index with more than one language), or finds the ones
+    /// already made from it; empty if the file can't be read.
+    func addExternalSubtitles(url: URL) -> [Int] {
+        if SidecarSubtitles.isBitmapSubtitleFile(url) { return addExternalBitmapSubtitles(url: url) }
+        return addExternalSubtitle(url: url).map { [$0] } ?? []
+    }
+
+    /// Adds a PGS (`.sup`) or VobSub (`.idx`) file. Its pictures are read when a track is selected, as the pictures
+    /// of a DVD run to tens of megabytes.
+    private func addExternalBitmapSubtitles(url: URL) -> [Int] {
+        let url = url.standardizedFileURL
+        let existing = subtitleTracks.filter { $0.externalURL == url }
+        if !existing.isEmpty { return existing.map(\.id) }
+
+        let streams = EmbeddedSubtitleReader.bitmapSubtitleStreams(of: url)
+        guard !streams.isEmpty else {
+            AppLog.error(.subtitles, "No bitmap subtitle stream in \(url)")
+            return []
+        }
+        let name = url.deletingPathExtension().lastPathComponent
+        let tags = SidecarSubtitles.tags(of: url)
+        var ids: [Int] = []
+        for stream in streams {
+            let id = 1000 + subtitleTracks.count
+            let language = stream.language.isEmpty ? (tags.language ?? "und") : stream.language
+            subtitleTracks.append(
+                SubtitleTrack(
+                    id: id,
+                    streamIndex: stream.index,
+                    title: streams.count > 1 ? "\(name) (\(language))" : "\(name) (External)",
+                    language: language,
+                    externalURL: url,
+                    isForced: tags.isForced,
+                    isSDH: tags.isSDH,
+                    format: .bitmap
+                ))
+            ids.append(id)
+        }
+        return ids
+    }
+
+    private func loadExternalBitmapDocument(trackId id: Int, url: URL, streamIndex: Int) {
+        let key = "\(url.path)#\(streamIndex)"
+        // Selecting the track again while it is read waits for that read.
+        guard loadingBitmapDocuments.insert(key).inserted else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let document = EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+                url: url.path, headers: [:], streamIndex: streamIndex)
+            await MainActor.run {
+                guard let self else { return }
+                self.loadingBitmapDocuments.remove(key)
+                guard let document else {
+                    AppLog.warning(.subtitles, "Can't read the pictures of \(url.lastPathComponent)")
+                    return
+                }
+                // Another file may have been opened meanwhile, with tracks of the same ids.
+                guard
+                    self.subtitleTracks.contains(where: {
+                        $0.id == id && $0.externalURL == url && $0.streamIndex == streamIndex
+                    })
+                else { return }
+                // Kept even if another track was chosen meanwhile, so selecting this one again doesn't read the file.
+                self.loadedSubtitleDocuments[id] = document
+                guard self.selectedSubtitleTrackId == id else { return }
+                self.activeSubtitleDocument = document
+                self.updateActiveSubtitles(at: self.currentTime)
+            }
+        }
+    }
+
+    /// Adds a text subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
     func addExternalSubtitle(url: URL) -> Int? {
         let url = url.isFileURL ? url.standardizedFileURL : url
         if let existing = subtitleTracks.first(where: { $0.externalURL == url }) {
@@ -134,8 +214,13 @@ extension PlayerEngine {
             return nil
         }
 
-        let isVTT = url.pathExtension.lowercased() == "vtt" || validContent.hasPrefix("WEBVTT")
-        let document = isVTT ? SubtitleDocument.parseWebVTT(validContent) : SubtitleDocument.parseSRT(validContent)
+        let fileExtension = url.pathExtension.lowercased()
+        let isASS = fileExtension == "ass" || fileExtension == "ssa"
+        let isVTT = fileExtension == "vtt" || validContent.hasPrefix("WEBVTT")
+        let document =
+            isASS
+            ? SubtitleDocument.parseASS(validContent)
+            : (isVTT ? SubtitleDocument.parseWebVTT(validContent) : SubtitleDocument.parseSRT(validContent))
 
         let trackId = 1000 + subtitleTracks.count
         let trackName = url.deletingPathExtension().lastPathComponent
@@ -147,7 +232,8 @@ extension PlayerEngine {
             language: tags.language ?? "und",
             externalURL: url,
             isForced: tags.isForced,
-            isSDH: tags.isSDH
+            isSDH: tags.isSDH,
+            format: isASS ? .ass : .text
         )
         subtitleTracks.append(track)
         loadedSubtitleDocuments[trackId] = document
@@ -158,7 +244,7 @@ extension PlayerEngine {
     func addSidecarSubtitles(for path: String) -> [Int] {
         guard !MediaURL.isNetworkURL(path) else { return [] }
         let mediaURL = URL(string: path).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: path)
-        let ids = SidecarSubtitles.urls(for: mediaURL).compactMap { addExternalSubtitle(url: $0) }
+        let ids = SidecarSubtitles.urls(for: mediaURL).flatMap { addExternalSubtitles(url: $0) }
         if !ids.isEmpty {
             AppLog.info(.subtitles, "Found \(ids.count) subtitle file(s) next to the media")
         }
@@ -258,19 +344,21 @@ extension PlayerEngine {
                 self.lastObservedLiveSubtitleVersion = currentVersion
                 self.activeSubtitleDocument = demuxer.getLiveSubtitleDocument()
             }
-            if let doc = self.activeSubtitleDocument {
-                self.currentSubtitleCues = doc.activeCues(at: seconds)
-            } else {
-                self.currentSubtitleCues = []
-            }
+            showSubtitles(of: activeSubtitleDocument, at: seconds)
             return
         }
 
-        if let doc = self.activeSubtitleDocument {
-            self.currentSubtitleCues = doc.activeCues(at: seconds)
-        } else {
-            self.currentSubtitleCues = []
+        showSubtitles(of: activeSubtitleDocument, at: seconds)
+    }
+
+    private func showSubtitles(of document: SubtitleDocument?, at seconds: Double) {
+        currentSubtitleCues = document?.activeCues(at: seconds) ?? []
+        if isDrawingAuthoredSubtitles {
+            renderAuthoredSubtitles(at: seconds)
+            return
         }
+        let images = document?.activeImageCues(at: seconds) ?? []
+        if images != currentSubtitleImages { currentSubtitleImages = images }
     }
 }
 
@@ -294,6 +382,101 @@ extension PlayerEngine {
         if tracksChangedDeferralDepth == 0, hasDeferredTracksChange {
             hasDeferredTracksChange = false
             onTracksChanged?()
+        }
+    }
+}
+
+// MARK: - Authored (libass) subtitles
+
+extension PlayerEngine {
+    /// Keeps libass in step with the selected track, the setting and the size to draw at: starts its renderer for an
+    /// ASS track, hands it the events a live source has read since, and drops it when it no longer applies. Nothing
+    /// here waits for libass: creating the renderer (fonts) and feeding it happen off the main thread.
+    func syncAuthoredSubtitles() {
+        let selected = selectedSubtitleTrackId.flatMap { id in subtitleTracks.first { $0.id == id } }
+        guard usesAuthoredSubtitleStyles, subtitleRenderSize.width >= 1, subtitleRenderSize.height >= 1,
+            selected?.format == .ass, let script = activeSubtitleDocument?.assScript, let trackId = selected?.id
+        else {
+            dropAuthoredRenderer()
+            return
+        }
+
+        authoredScript = script
+        if authoredRendererTrackId != trackId {
+            startAuthoredRenderer(for: script, trackId: trackId)
+        } else {
+            renderAuthoredSubtitles(at: currentTime - subtitleDelay)
+        }
+    }
+
+    private func dropAuthoredRenderer() {
+        guard authoredRendererTrackId != nil || isDrawingAuthoredSubtitles else { return }
+        authoredGeneration += 1
+        authoredRenderer = nil
+        authoredRendererTrackId = nil
+        authoredScript = nil
+        pendingAuthoredRenderTime = nil
+        isDrawingAuthoredSubtitles = false
+        if !currentSubtitleImages.isEmpty { currentSubtitleImages = [] }
+    }
+
+    /// Creates the renderer in the background. The text cues stay hidden meanwhile, so a track doesn't flash as plain
+    /// text before it appears styled; if libass can't read the script, the text is shown after all.
+    private func startAuthoredRenderer(for script: AssScript, trackId: Int) {
+        authoredGeneration += 1
+        let generation = authoredGeneration
+        authoredRenderer = nil
+        authoredRendererTrackId = trackId
+        pendingAuthoredRenderTime = nil
+        isDrawingAuthoredSubtitles = true
+        AppLog.info(.subtitles, "Drawing subtitle track \(trackId) with libass")
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let renderer = AssSubtitleRenderer(script: script)
+            await MainActor.run {
+                guard let self, self.authoredGeneration == generation else { return }
+                guard let renderer else {
+                    AppLog.warning(.subtitles, "libass can't read the script of subtitle track \(trackId)")
+                    self.isDrawingAuthoredSubtitles = false
+                    return
+                }
+                self.authoredRenderer = renderer
+                self.renderAuthoredSubtitles(at: self.currentTime - self.subtitleDelay)
+            }
+        }
+    }
+
+    /// Renders off the main thread, at most one at a time; a time asked for meanwhile is rendered next. The events
+    /// read since the last render go to libass in the same task, as it may be busy with a frame.
+    func renderAuthoredSubtitles(at seconds: Double) {
+        guard let renderer = authoredRenderer else { return }
+        guard !isAuthoredRenderRunning else {
+            pendingAuthoredRenderTime = seconds
+            return
+        }
+        isAuthoredRenderRunning = true
+        let size = subtitleRenderSize
+        let video = (width: videoWidth, height: videoHeight)
+        // The pixel aspect of the video's own pixels: ASS coordinates are in them, the frame is in square ones.
+        let pixelAspect = sampleAspectRatio.multiplier
+        let events = authoredScript?.events ?? []
+        Task.detached(priority: .userInitiated) { [weak self] in
+            renderer.addEvents(events)
+            renderer.configure(
+                frameWidth: Int(size.width.rounded()), frameHeight: Int(size.height.rounded()), videoWidth: video.width,
+                videoHeight: video.height, pixelAspect: pixelAspect)
+            let output = renderer.render(at: seconds)
+            await MainActor.run {
+                guard let self else { return }
+                self.isAuthoredRenderRunning = false
+                guard renderer === self.authoredRenderer else { return }
+                if case .frame(let cue) = output {
+                    self.currentSubtitleImages = cue.map { [$0] } ?? []
+                }
+                if let next = self.pendingAuthoredRenderTime {
+                    self.pendingAuthoredRenderTime = nil
+                    self.renderAuthoredSubtitles(at: next)
+                }
+            }
         }
     }
 }

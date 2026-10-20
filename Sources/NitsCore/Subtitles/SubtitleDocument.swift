@@ -3,10 +3,16 @@ import Foundation
 /// Fast parser and lookup container for timed subtitle cues (SRT, WebVTT).
 public struct SubtitleDocument: Sendable, Equatable {
     public let cues: [SubtitleCue]
+    /// Bitmap cues (PGS, VobSub, DVB) of a track; a track has either these or `cues`.
+    public let imageCues: [SubtitleImageCue]
+    /// What libass draws an ASS / SSA track from; `cues` hold the same dialogue as plain text.
+    public let assScript: AssScript?
 
-    public init(cues: [SubtitleCue]) {
+    public init(cues: [SubtitleCue], imageCues: [SubtitleImageCue] = [], assScript: AssScript? = nil) {
+        self.assScript = assScript
         // Ensure cues are sorted chronologically by startTime
         self.cues = cues.sorted { $0.startTime < $1.startTime }
+        self.imageCues = imageCues.sorted { $0.startTime < $1.startTime }
     }
 
     /// Fast lookup for single active subtitle cue (returns the first matching cue).
@@ -17,30 +23,42 @@ public struct SubtitleDocument: Sendable, Equatable {
     /// Finds all subtitle cues active at given playback timestamp.
     /// Supports overlapping/simultaneous dialogs (e.g. top + bottom lines).
     public func activeCues(at time: Double) -> [SubtitleCue] {
-        guard !cues.isEmpty else { return [] }
+        Self.active(in: cues, at: time, start: \.startTime, end: \.endTime)
+    }
 
-        // Binary search to find the partition index where cues[i].startTime > time
+    /// The bitmap cues on screen at the timestamp.
+    public func activeImageCues(at time: Double) -> [SubtitleImageCue] {
+        Self.active(in: imageCues, at: time, start: \.startTime, end: \.endTime)
+    }
+
+    /// The items of a list sorted by start that contain the time, in list order.
+    private static func active<Item>(
+        in items: [Item], at time: Double, start: KeyPath<Item, Double>, end: KeyPath<Item, Double>
+    ) -> [Item] {
+        guard !items.isEmpty else { return [] }
+
+        // Binary search to find the partition index where items[i].start > time
         var low = 0
-        var high = cues.count
+        var high = items.count
 
         while low < high {
             let mid = (low + high) / 2
-            if cues[mid].startTime <= time {
+            if items[mid][keyPath: start] <= time {
                 low = mid + 1
             } else {
                 high = mid
             }
         }
 
-        // low is the first cue with startTime > time.
-        // Scan backwards to collect all cues that are still active (endTime >= time).
-        var matched: [SubtitleCue] = []
+        // low is the first item with start > time.
+        // Scan backwards to collect all items that are still active (end >= time).
+        var matched: [Item] = []
         var i = low - 1
         while i >= 0 {
-            let cue = cues[i]
-            if time <= cue.endTime {
-                matched.append(cue)
-            } else if (time - cue.startTime) > 300.0 {
+            let item = items[i]
+            if time <= item[keyPath: end] {
+                matched.append(item)
+            } else if (time - item[keyPath: start]) > 300.0 {
                 // Heuristic early break: subtitle cues rarely last more than 5 minutes.
                 break
             }
@@ -168,6 +186,49 @@ public struct SubtitleDocument: Sendable, Equatable {
         }
 
         return SubtitleDocument(cues: cues)
+    }
+
+    /// Parses an ASS / SSA script: the dialogue as plain-text cues (what hosts and the plain-text setting show) and
+    /// the whole script for libass.
+    public static func parseASS(_ text: String) -> SubtitleDocument {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        var cues: [SubtitleCue] = []
+        var fields: [String] = []
+        var inEvents = false
+        for rawLine in normalized.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inEvents = line.lowercased() == "[events]"
+                continue
+            }
+            guard inEvents else { continue }
+            if line.lowercased().hasPrefix("format:") {
+                fields = line.dropFirst("format:".count).split(separator: ",").map {
+                    $0.trimmingCharacters(in: .whitespaces).lowercased()
+                }
+            } else if line.lowercased().hasPrefix("dialogue:"), let startField = fields.firstIndex(of: "start"),
+                let endField = fields.firstIndex(of: "end"), let textField = fields.firstIndex(of: "text")
+            {
+                // The text is the last field and may hold commas.
+                let values = line.dropFirst("dialogue:".count).split(
+                    separator: ",", maxSplits: fields.count - 1, omittingEmptySubsequences: false)
+                guard values.count == fields.count,
+                    let start = parseTimestamp(values[startField].trimmingCharacters(in: .whitespaces)),
+                    let end = parseTimestamp(values[endField].trimmingCharacters(in: .whitespaces))
+                else { continue }
+                let raw = String(values[textField])
+                // A vector drawing (`{\p1}m 0 0 l ...`) is not text.
+                if raw.range(of: #"\{[^}]*\\p[1-9]"#, options: .regularExpression) != nil { continue }
+                let clean = cleanFormattingTags(raw)
+                guard !clean.isEmpty else { continue }
+                cues.append(
+                    SubtitleCue(
+                        id: cues.count + 1, startTime: start, endTime: end, text: clean,
+                        alignment: parseAlignment(from: raw), rawPayload: String(line)))
+            }
+        }
+        return SubtitleDocument(
+            cues: cues, assScript: AssScript(header: Data(normalized.utf8), isCompleteFile: true))
     }
 
     /// Detects ASS/SSA alignment tags like {\an8}, {\an7}, {\an1}, etc.

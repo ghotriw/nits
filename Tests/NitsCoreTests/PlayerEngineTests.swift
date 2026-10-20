@@ -736,6 +736,11 @@ struct PlayerEngineTests {
             var currentSubtitleText: String? = nil
             var currentSubtitleCue: SubtitleCue? = nil
             var currentSubtitleCues: [SubtitleCue] = []
+            var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)? = nil
+            var currentSubtitleImages: [SubtitleImageCue] = []
+            var usesAuthoredSubtitleStyles: Bool = true
+            var subtitleRenderSize: CGSize = .zero
+            var isDrawingAuthoredSubtitles: Bool = false
             var subtitleFontSize: Double = 16.0
             var subtitleFontName: String = "Helvetica"
             var subtitleFontWeight: String = "Regular"

@@ -24,9 +24,17 @@ let package = Package(
                 .apt(["libavformat-dev", "libavcodec-dev", "libavutil-dev", "libswresample-dev", "libswscale-dev"]),
             ]
         ),
+        .systemLibrary(
+            name: "CLibass",
+            pkgConfig: "libass",
+            providers: [
+                .brew(["libass"]),
+                .apt(["libass-dev"]),
+            ]
+        ),
         .target(
             name: "NitsCore",
-            dependencies: ["CFFmpeg"],
+            dependencies: ["CFFmpeg", "CLibass"],
             resources: [
                 .process("Video/HDRToneMapping.metal"),
                 .process("Video/BT2390ToneMapping.metal"),

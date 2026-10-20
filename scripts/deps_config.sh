@@ -1,25 +1,30 @@
 # shellcheck shell=bash
-# Shared configuration for the bundled LGPL FFmpeg / dav1d build.
+# Shared configuration for the bundled LGPL FFmpeg / dav1d / libass build.
 # Sourced by build_dependencies.sh, setup_dependencies.sh and bundle_app.sh; must stay bash 3.2 compatible.
 #
 # Bump DEPS_VERSION whenever versions or configure flags change, run the "Build and Release
 # Dependencies" workflow, then paste the SHA-256 it prints into DEPS_ARCHIVE_SHA256.
 
-DEPS_VERSION="1.0.0"
+DEPS_VERSION="1.1.0"
 FFMPEG_VERSION="9.0.2"
 DAV1D_VERSION="1.5.0"
+LIBASS_VERSION="0.17.5"
+FREETYPE_VERSION="2.14.3"
+HARFBUZZ_VERSION="14.5.0"
+FRIBIDI_VERSION="1.0.17"
+LIBUNIBREAK_VERSION="8.0"
 DEPS_ARCH="arm64"
 DEPS_MIN_MACOS="15.0"
 
 # SHA-256 of the release asset for DEPS_VERSION. Empty = not published yet: setup builds from source.
-DEPS_ARCHIVE_SHA256="20710574bb5f579d788c7cd2e9790ce04f4391d4373cf92e793ce0110b7b704d"
+DEPS_ARCHIVE_SHA256=""
 
 DEPS_ARCHIVE_NAME="nits-deps-macos15-${DEPS_ARCH}-v${DEPS_VERSION}.tar.gz"
 DEPS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-v${DEPS_VERSION}/${DEPS_ARCHIVE_NAME}"
 
 # Written into the prefix by build_dependencies.sh; a mismatch means the prefix is stale.
 DEPS_STAMP_FILE=".nits-deps"
-DEPS_STAMP="deps=${DEPS_VERSION} ffmpeg=${FFMPEG_VERSION} dav1d=${DAV1D_VERSION} arch=${DEPS_ARCH} minos=${DEPS_MIN_MACOS}"
+DEPS_STAMP="deps=${DEPS_VERSION} ffmpeg=${FFMPEG_VERSION} dav1d=${DAV1D_VERSION} libass=${LIBASS_VERSION} freetype=${FREETYPE_VERSION} harfbuzz=${HARFBUZZ_VERSION} fribidi=${FRIBIDI_VERSION} libunibreak=${LIBUNIBREAK_VERSION} arch=${DEPS_ARCH} minos=${DEPS_MIN_MACOS}"
 
 DEPS_REQUIRED_LIBS=(
     "libavformat.63.dylib"
@@ -28,6 +33,11 @@ DEPS_REQUIRED_LIBS=(
     "libswresample.7.dylib"
     "libswscale.10.dylib"
     "libdav1d.7.dylib"
+    "libass.9.dylib"
+    "libfreetype.6.dylib"
+    "libharfbuzz.0.dylib"
+    "libfribidi.0.dylib"
+    "libunibreak.8.dylib"
 )
 
 deps_stamp_matches() {

@@ -94,6 +94,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Subtitle background opacity (0.0 ... 1.0, default 0.65).
     public var subtitleBgOpacity: Double
 
+    /// Draw ASS / SSA subtitles with libass as their authors styled and positioned them (default), rather than as
+    /// plain text in the subtitle style above.
+    public var usesAuthoredSubtitleStyles: Bool
+
     /// Subtitle font family / design (default "System Rounded").
     public var subtitleFontName: String
 
@@ -180,6 +184,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleTextColorHex: String = "#FFFFFF",
         subtitleBgColorHex: String = "#000000",
         subtitleBgOpacity: Double = 0.65,
+        usesAuthoredSubtitleStyles: Bool = true,
         enableOSD: Bool = true,
         osdDuration: Double = 1.3,
         enableDebugOSD: Bool = false,
@@ -221,6 +226,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleTextColorHex = subtitleTextColorHex
         self.subtitleBgColorHex = subtitleBgColorHex
         self.subtitleBgOpacity = subtitleBgOpacity
+        self.usesAuthoredSubtitleStyles = usesAuthoredSubtitleStyles
         self.enableOSD = enableOSD
         self.osdDuration = osdDuration
         self.enableDebugOSD = enableDebugOSD
@@ -257,6 +263,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleTextColorHex = "Nits.subtitleTextColorHex"
     public static let keySubtitleBgColorHex = "Nits.subtitleBgColorHex"
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
+    public static let keyAuthoredSubtitleStyles = "Nits.subtitleAuthoredStyles"
     public static let keyEnableOSD = "Nits.enableOSD"
     public static let keyOSDDuration = "Nits.osdDuration"
     public static let keyEnableDebugOSD = "Nits.enableDebugOSD"
@@ -315,6 +322,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if let bgColor = userDefaults.string(forKey: keySubtitleBgColorHex) {
             config.subtitleBgColorHex = bgColor
+        }
+        if userDefaults.object(forKey: keyAuthoredSubtitleStyles) != nil {
+            config.usesAuthoredSubtitleStyles = userDefaults.bool(forKey: keyAuthoredSubtitleStyles)
         }
         if let bgOpacity = userDefaults.object(forKey: keySubtitleBgOpacity) as? NSNumber {
             config.subtitleBgOpacity = bgOpacity.doubleValue
@@ -402,6 +412,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleTextColorHex, forKey: Self.keySubtitleTextColorHex)
         userDefaults.set(subtitleBgColorHex, forKey: Self.keySubtitleBgColorHex)
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
+        userDefaults.set(usesAuthoredSubtitleStyles, forKey: Self.keyAuthoredSubtitleStyles)
         userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
         userDefaults.set(osdDuration, forKey: Self.keyOSDDuration)
         userDefaults.set(enableDebugOSD, forKey: Self.keyEnableDebugOSD)

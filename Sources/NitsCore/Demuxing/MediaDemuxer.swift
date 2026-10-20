@@ -51,10 +51,21 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var subtitleTracks: [SubtitleTrack] = []
     public private(set) var selectedSubtitleTrackId: Int? = nil
     private var selectedSubtitleStreamIndex: Int = -1
+    /// Whether pictures and ASS events are collected as packets pass: for network sources only, which can't be read
+    /// whole. A local file is read whole by `EmbeddedSubtitleReader`, and a list growing all through playback would
+    /// only hold memory.
+    private var collectsLiveSubtitles = false
     private struct LiveSubtitleState {
         var cues: [SubtitleCue] = []
+        var imageCues: [SubtitleImageCue] = []
+        /// The script of the selected ASS / SSA track: header and fonts from the stream, events as they are read.
+        var assScript: AssScript?
+        /// Payloads of the events in `assScript`, to leave out an event read again.
+        var assPayloads: Set<String> = []
         var version: Int = 0
     }
+    /// Decodes the selected track when it is a bitmap one; used under `lock`, like `processSubtitlePacket`.
+    private var liveBitmapDecoder: BitmapSubtitleDecoder?
     /// Live in-band subtitle state is guarded by its own lightweight lock, NOT the I/O `lock`.
     /// `lock` is held across blocking `av_read_frame` / `av_seek_frame` calls (hundreds of ms on
     /// network streams); readers on the main thread must never contend with it.
@@ -122,10 +133,29 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.selectedSubtitleTrackId = trackId
         liveSubtitleState.withLock { state in
             state.cues.removeAll()
+            state.imageCues.removeAll()
+            state.assScript = nil
+            state.assPayloads.removeAll()
             state.version += 1
         }
+        liveBitmapDecoder = nil
         if let trackId, let track = subtitleTracks.first(where: { $0.id == trackId }) {
             self.selectedSubtitleStreamIndex = track.streamIndex
+            if collectsLiveSubtitles, track.format == .ass, let ctx = formatCtx,
+                track.streamIndex < Int(ctx.pointee.nb_streams),
+                let stream = ctx.pointee.streams[track.streamIndex]
+            {
+                let script = AssScript(
+                    header: EmbeddedSubtitleReader.assHeader(of: stream),
+                    fonts: EmbeddedSubtitleReader.attachedFonts(in: ctx))
+                liveSubtitleState.withLock { $0.assScript = script }
+            }
+            if collectsLiveSubtitles, track.format == .bitmap, let ctx = formatCtx,
+                track.streamIndex < Int(ctx.pointee.nb_streams),
+                let stream = ctx.pointee.streams[track.streamIndex]
+            {
+                liveBitmapDecoder = BitmapSubtitleDecoder(stream: stream)
+            }
             AppLog.info(
                 .subtitles,
                 "Subtitle track selected: id=\(trackId), streamIndex=\(track.streamIndex), title='\(track.title)'"
@@ -138,8 +168,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
     /// Never touches the I/O lock, so it is safe to call from the main thread during network reads/seeks.
     public func getLiveSubtitleDocument() -> SubtitleDocument {
-        let cues = liveSubtitleState.withLock { $0.cues }
-        return SubtitleDocument(cues: cues)
+        let (cues, imageCues, script) = liveSubtitleState.withLock { ($0.cues, $0.imageCues, $0.assScript) }
+        return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
     }
 
     /// Retrieves or loads on demand the SubtitleDocument for a given track id.
@@ -180,8 +210,28 @@ public final class MediaDemuxer: @unchecked Sendable {
             let stream = ctx.pointee.streams[selectedSubtitleStreamIndex]
         else { return }
 
+        if let liveBitmapDecoder {
+            let output = liveBitmapDecoder.decode(pkt)
+            liveSubtitleState.withLock { state in
+                // A seek back decodes sets that are there already.
+                if state.imageCues.apply(output, deduplicating: true) { state.version += 1 }
+            }
+            return
+        }
+
         let timebase = stream.pointee.time_base
         let codecId = stream.pointee.codecpar.pointee.codec_id
+        // Only a selected ASS track keeps events (the script is there then); other codecs aren't decoded for them.
+        if liveSubtitleState.withLock({ $0.assScript != nil }),
+            let event = EmbeddedSubtitleReader.assEvent(from: pkt, timebase: timebase)
+        {
+            liveSubtitleState.withLock { state in
+                // A seek back reads events again; libass drops a repeated ReadOrder, but the list shouldn't grow.
+                guard state.assScript != nil, state.assPayloads.insert(event.payload).inserted else { return }
+                state.assScript?.events.append(event)
+                state.version += 1
+            }
+        }
         let nextIndex = liveSubtitleState.withLock { $0.cues.count } + 1
 
         guard
@@ -410,6 +460,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             return nil
         }
         self.formatCtx = formatCtx
+        self.collectsLiveSubtitles = isNetworkURL
 
         let streamInfoRet = avformat_find_stream_info(formatCtx, nil)
         guard streamInfoRet >= 0 else {
@@ -665,7 +716,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         let isTextSub =
             (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
                 || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
-        guard isTextSub else { return }
+        let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
+        guard isTextSub || isBitmapSub else { return }
         var title = ""
         var lang = ""
         if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
@@ -686,7 +738,8 @@ public final class MediaDemuxer: @unchecked Sendable {
             title: displayTitle,
             language: lang,
             isForced: isForced,
-            isSDH: isSDH
+            isSDH: isSDH,
+            format: isBitmapSub ? .bitmap : (codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA ? .ass : .text)
         )
         self.subtitleTracks.append(subTrack)
     }
@@ -1239,6 +1292,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         guard let ctx = formatCtx else { return }
         audioQueue.removeAll()
         videoQueue.removeAll()
+        liveBitmapDecoder?.flush()
         lastAudioPts = -1
         isEOFInternal = false
         // After the seek's own reads: a keyframe search that backs off, or reads to the end, would leave them ahead.

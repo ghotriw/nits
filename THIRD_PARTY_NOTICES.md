@@ -11,6 +11,11 @@ build details are in `Contents/Resources/ThirdPartyLicenses`.
 |---|---|---|
 | [FFmpeg](https://ffmpeg.org) (libavformat, libavcodec, libavutil, libswresample, libswscale) | LGPL-2.1-or-later | Unmodified upstream release; the exact source archive is attached to the matching `deps-v*` [GitHub release](https://github.com/ghotriw/nits/releases). Built by [`scripts/build_dependencies.sh`](scripts/build_dependencies.sh). |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | BSD-2-Clause | Same as above. |
+| [libass](https://github.com/libass/libass) | ISC | Same as above. Draws ASS / SSA subtitles; fonts come from Core Text. |
+| [FreeType](https://freetype.org) | FreeType License (FTL) | Same as above. Used by libass and HarfBuzz. |
+| [HarfBuzz](https://harfbuzz.github.io) | "Old MIT" | Same as above. Text shaping for libass. |
+| [FriBidi](https://github.com/fribidi/fribidi) | LGPL-2.1-or-later | Same as above. Bidirectional text for libass. |
+| [libunibreak](https://github.com/adah1972/libunibreak) | zlib | Same as above. Line breaking for libass. |
 
 FFmpeg is built without `--enable-gpl`, `--enable-version3` or `--enable-nonfree`. Being dynamically
 linked, the libraries can be replaced with your own builds of the same major versions (re-sign the

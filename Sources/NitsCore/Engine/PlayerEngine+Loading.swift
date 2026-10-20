@@ -639,6 +639,7 @@ extension PlayerEngine {
         self.selectedSubtitleTrackId = nil
         self.activeSubtitleDocument = nil
         self.currentSubtitleCues.removeAll()
+        self.currentSubtitleImages.removeAll()
         self.loadedSubtitleDocuments.removeAll()
         self.lastObservedLiveSubtitleVersion = -1
         // Set directly, not via `setSubtitleDelay`: nothing to re-save, and the track below picks its cues with it.
@@ -682,7 +683,7 @@ extension PlayerEngine {
             } else if saved == PlaybackRecord.externalSubtitle {
                 // A moved or deleted file falls back to the demuxer default.
                 if let path = savedTracks?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
-                    let trackId = addExternalSubtitle(url: URL(fileURLWithPath: path))
+                    let trackId = addExternalSubtitles(url: URL(fileURLWithPath: path)).first
                 {
                     selectSubtitleTrack(id: trackId, persistHistory: false)
                     AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")

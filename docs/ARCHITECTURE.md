@@ -310,6 +310,36 @@ can't drift apart.
   (`PlaybackPreferences.noGeometryOverride` records "none", since `nil` keeps the saved value);
   scaling is a session choice with a default in Settings; zoom and pan reset on load.
 
+### Subtitles
+
+Subtitles never touch the video pipeline: they are drawn by `SubtitleOverlayView` above the video, and a host that
+draws its own gets the same data from `onSubtitleCuesChanged`.
+
+- **Three kinds of track** (`SubtitleTrack.format`), all held in a `SubtitleDocument` that
+  `updateActiveSubtitles(at:)` looks up each time tick (20 Hz) with the subtitle delay applied:
+  - `.text` (SRT, WebVTT, mov_text): `SubtitleCue`s, drawn by SwiftUI in the user's subtitle style.
+  - `.bitmap` (PGS, VobSub, DVB): `BitmapSubtitleDecoder` (`avcodec_decode_subtitle2`) makes `SubtitleImageCue`s that
+    keep palette indices, not pixels; a set ends at its duration, or, as PGS gives none, at the set that clears or replaces it, however late (5 s for the last).
+    The overlay fits the cue's canvas over the visible picture (`imageFrame`), whole and with equal scale on both axes
+    when its proportions differ from the picture's (a 16:9 PGS on a rip with the bars cut off).
+  - `.ass`: the plain-text `cues` (hosts, VoiceOver, the "plain text" setting) plus an `AssScript` (stream header,
+    events, attached fonts, or the whole file) for libass.
+- **libass** (`AssSubtitleRenderer`, ISC) draws at the pixel size of the visible picture, which the view reports as
+  `subtitleRenderSize`; the engine renders off the main thread, one render at a time, the latest requested time
+  last. The result is one premultiplied BGRA picture per frame, shown through the same image path as bitmap cues. The
+  engine keeps `isDrawingAuthoredSubtitles` so the overlay doesn't draw the text cues again. Fonts come from Core
+  Text (no Fontconfig), plus the attachments of the container. The pixel aspect passed is the video's SAR: script
+  coordinates are in the video's own pixels, the frame in square ones. The frame is the visible part of the picture
+  (after crop and zoom), so a script's whole play resolution is stretched over what is visible: dialogue stays on
+  screen, but typeset signs no longer line up with the picture once it is zoomed or cropped. That is deliberate, the
+  same rule as for text (subtitles stay inside the visible picture); drawing on the whole picture and clipping, as mpv
+  does, would need a frame as large as the zoomed picture.
+- **Sources**: an embedded track is read whole from a second demuxer (`EmbeddedSubtitleReader`) for local files and
+  collected in-band, as packets pass, for network ones (`liveSubtitleVersion`); external `.srt` / `.vtt` / `.ass` /
+  `.ssa` / `.sup` / `.idx` files are parsed or, for bitmaps, read when the track is selected.
+- **Dependencies**: libass, FreeType, HarfBuzz, FriBidi and libunibreak are built by `scripts/build_dependencies.sh`
+  with FFmpeg and ship as dylibs; `CLibass` is the system library target.
+
 ## Metal tone-mapper (`HDRToneMapping.metal`)
 
 - **Input** — biplanar YCbCr: `r16Unorm` luma + `rg16Unorm` chroma for 10-bit (VideoToolbox

@@ -32,6 +32,7 @@ jobs:
             echo "deps=$DEPS_VERSION"
             echo "ffmpeg=$FFMPEG_VERSION"
             echo "dav1d=$DAV1D_VERSION"
+            echo "libass=$LIBASS_VERSION"
             echo "prerelease=$([[ "$version" == *-* ]] && echo true || echo false)"
           } >> "$GITHUB_OUTPUT"
 
@@ -57,7 +58,7 @@ jobs:
         run: brew install pkg-config meson ninja
 
       # Same key as ci.yml; caches saved on main are readable from tag runs.
-      - name: Restore LGPL FFmpeg / dav1d
+      - name: Restore LGPL FFmpeg / dav1d / libass
         uses: actions/cache/restore@v4
         with:
           path: .build/dependencies
@@ -92,7 +93,7 @@ jobs:
             `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
             System Settings → Privacy & Security → Open Anyway.
 
-            Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause).
+            Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause), libass ${{ steps.meta.outputs.libass }} (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak.
             Their source archives are attached to
             [deps-v${{ steps.meta.outputs.deps }}](https://github.com/${{ github.repository }}/releases/tag/deps-v${{ steps.meta.outputs.deps }}).
           files: |
