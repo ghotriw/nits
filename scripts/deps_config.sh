@@ -17,7 +17,7 @@ DEPS_ARCH="arm64"
 DEPS_MIN_MACOS="15.0"
 
 # SHA-256 of the release asset for DEPS_VERSION. Empty = not published yet: setup builds from source.
-DEPS_ARCHIVE_SHA256=""
+DEPS_ARCHIVE_SHA256="8f273c3bbd6f5219f60634639c7116ac216ddc1204b1e818c3e2fe5efd2cf520"
 
 DEPS_ARCHIVE_NAME="nits-deps-macos15-${DEPS_ARCH}-v${DEPS_VERSION}.tar.gz"
 DEPS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-v${DEPS_VERSION}/${DEPS_ARCHIVE_NAME}"
