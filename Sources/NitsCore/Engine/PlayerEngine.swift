@@ -422,9 +422,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     /// Whether libass draws the selected track, so its text cues (`currentSubtitleCues`) aren't to be drawn again.
     public internal(set) var isDrawingAuthoredSubtitles = false
+    /// The selected track's cues and script. Setting it updates the libass renderer's script without rendering
+    /// (`renderIfReady: false`), so callers that assign a document must follow with `updateActiveSubtitles(at:)` (or
+    /// `showSubtitles(of:at:)`) to draw at the target timestamp without queuing a duplicate render pass.
     // Nothing observes it; the macro would compare whole documents (events, fonts) on every set.
     @ObservationIgnored var activeSubtitleDocument: SubtitleDocument? = nil {
-        didSet { syncAuthoredSubtitles() }
+        didSet { syncAuthoredSubtitles(renderIfReady: false) }
     }
     /// Subtitle tracks being read in the background, by track id: one read per track, cancelled once the track is no
     /// longer selected or the media closes.

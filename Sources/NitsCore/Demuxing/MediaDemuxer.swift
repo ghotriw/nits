@@ -217,10 +217,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
     }
 
-    /// Identifies the current track selection for `mergeLiveSubtitles`, with the stream to read for it (`-1` for none).
-    /// Never touches the I/O lock, like `getLiveSubtitleDocument()`.
-    var liveSubtitleSelection: (id: Int, streamIndex: Int) {
-        liveSubtitleState.withLock { ($0.selection, $0.streamIndex) }
+    /// Identifies the current track selection and reading stretch for `mergeLiveSubtitles`, with the stream to read
+    /// for it (`-1` for none). Never touches the I/O lock, like `getLiveSubtitleDocument()`.
+    var liveSubtitleSelection: (id: Int, streamIndex: Int, span: Int) {
+        liveSubtitleState.withLock { ($0.selection, $0.streamIndex, $0.readSpan) }
     }
 
     /// The part of the timeline a window read (`EmbeddedSubtitleReader.readSubtitles`) must read so the selected track
@@ -262,13 +262,15 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
     }
 
-    /// Adds the packets of a window read (`EmbeddedSubtitleReader.readSubtitles`) for the selection `selection` to
-    /// what playback collected, leaving out what is there already. Dropped if another track was chosen meanwhile.
+    /// Adds the packets of a window read (`EmbeddedSubtitleReader.readSubtitles`) for the selection `selection` and
+    /// reading stretch `span` to what playback collected, leaving out what is there already. Dropped (returning
+    /// `false`) if another track was chosen or a seek started another stretch meanwhile.
+    @discardableResult
     func mergeLiveSubtitles(
-        _ packets: EmbeddedSubtitleReader.Packets, covering range: ClosedRange<Double>, selection: Int
-    ) {
+        _ packets: EmbeddedSubtitleReader.Packets, covering range: ClosedRange<Double>, selection: Int, span: Int
+    ) -> Bool {
         liveSubtitleState.withLock { state in
-            guard state.selection == selection else { return }
+            guard state.selection == selection, state.readSpan == span else { return false }
             for cue in packets.cues { Self.addLiveCue(cue, to: &state) }
             // The window ends where playback reads from, or reads on ahead of it: it joins the stretch being read.
             state.imageCues.merge(
@@ -279,6 +281,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
             state.cover(range)
             state.version += 1
+            return true
         }
     }
 

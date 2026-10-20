@@ -208,8 +208,8 @@ struct AssSubtitleTrackTests {
 
         demuxer.seek(to: 3, exact: false)
         #expect(demuxer.subtitleWindow(around: 3) == 0...3, "From the preroll up to where reads restart")
-        let selection = demuxer.liveSubtitleSelection.id
-        demuxer.mergeLiveSubtitles(.init(), covering: 0...3, selection: selection)
+        let selection = demuxer.liveSubtitleSelection
+        #expect(demuxer.mergeLiveSubtitles(.init(), covering: 0...3, selection: selection.id, span: selection.span))
         #expect(demuxer.subtitleWindow(around: 3) == nil)
 
         // A forward keyframe seek landed past its target: what it jumped over wasn't read, what was read isn't again.
@@ -218,7 +218,7 @@ struct AssSubtitleTrackTests {
 
         // A negative delay: the track is due past everything read, so it is read ahead, in steps.
         #expect(demuxer.subtitleWindow(around: 20) == 10...30)
-        demuxer.mergeLiveSubtitles(.init(), covering: 10...30, selection: selection)
+        #expect(demuxer.mergeLiveSubtitles(.init(), covering: 10...30, selection: selection.id, span: selection.span))
         #expect(demuxer.subtitleWindow(around: 21) == nil, "Most of the lookahead is left")
         #expect(demuxer.subtitleWindow(around: 26) == 30...36)
     }
@@ -237,18 +237,27 @@ struct AssSubtitleTrackTests {
 
         // Playback reads on from 2 s: the window up to there is missing until merged.
         demuxer.seek(to: 2, exact: false)
+        let postSeek = demuxer.liveSubtitleSelection
         #expect(demuxer.subtitleWindow(around: 2) == 0...2)
-        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
-        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
+        #expect(demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: postSeek.id, span: postSeek.span))
+        #expect(demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: postSeek.id, span: postSeek.span))
         let document = demuxer.getLiveSubtitleDocument()
         #expect(document.cues.map(\.text) == ["Hello"], "Merged twice, listed once")
         #expect(document.assScript?.events.count == packets.assEvents.count)
         #expect(demuxer.subtitleWindow(around: 2) == nil)
 
-        // A read for a track since chosen again (another selection) is dropped.
+        // A read for a track since chosen again (another selection) or an earlier stretch (before a seek) is dropped.
         demuxer.selectSubtitleTrack(trackId: demuxer.subtitleTracks.first?.id)
-        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
+        let reselected = demuxer.liveSubtitleSelection
+        #expect(!demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: postSeek.id, span: reselected.span))
         #expect(demuxer.getLiveSubtitleDocument().cues.isEmpty)
+
+        demuxer.seek(to: 2, exact: false)
+        #expect(
+            !demuxer.mergeLiveSubtitles(
+                packets, covering: 0...2, selection: reselected.id, span: reselected.span))
+        #expect(demuxer.getLiveSubtitleDocument().cues.isEmpty)
+        #expect(demuxer.subtitleWindow(around: 2) == 0...2, "A dropped window must not mark its range as covered")
     }
 
     @Test(

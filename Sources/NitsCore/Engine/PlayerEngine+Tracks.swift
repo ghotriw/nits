@@ -126,12 +126,13 @@ extension PlayerEngine {
                 }
                 return
             }
-            demuxer.mergeLiveSubtitles(packets, covering: range, selection: selection.id)
+            let merged = demuxer.mergeLiveSubtitles(
+                packets, covering: range, selection: selection.id, span: selection.span)
             await MainActor.run {
                 guard let self, self.demuxer === demuxer else { return }
                 if self.subtitleRefresh?.interrupt === interrupt { self.subtitleRefresh = nil }
                 // Paused, no time tick would show what was read.
-                self.updateActiveSubtitles(at: self.currentTime)
+                if merged { self.updateActiveSubtitles(at: self.currentTime) }
             }
         }
         subtitleRefresh = SubtitleLoad(task: task, interrupt: interrupt)
@@ -473,7 +474,7 @@ extension PlayerEngine {
     /// Keeps libass in step with the selected track, the setting and the size to draw at: starts its renderer for an
     /// ASS track, hands it the events a live source has read since, and drops it when it no longer applies. Nothing
     /// here waits for libass: creating the renderer (fonts) and feeding it happen off the main thread.
-    func syncAuthoredSubtitles() {
+    func syncAuthoredSubtitles(renderIfReady: Bool = true) {
         let selected = selectedSubtitleTrackId.flatMap { id in subtitleTracks.first { $0.id == id } }
         guard usesAuthoredSubtitleStyles, subtitleRenderSize.width >= 1, subtitleRenderSize.height >= 1,
             selected?.format == .ass, let script = activeSubtitleDocument?.assScript, let trackId = selected?.id
@@ -485,7 +486,7 @@ extension PlayerEngine {
         authoredScript = script
         if authoredRendererTrackId != trackId {
             startAuthoredRenderer(for: script, trackId: trackId)
-        } else {
+        } else if renderIfReady {
             renderAuthoredSubtitles(at: currentTime - subtitleDelay)
         }
     }
