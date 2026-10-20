@@ -20,7 +20,8 @@ struct BitmapSubtitleTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .pgsSubtitlesMKV) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let track = try #require(demuxer.subtitleTracks.first)
-        let document = try #require(demuxer.loadSubtitleDocument(for: track.id, url: path, headers: [:]))
+        let document = try #require(
+            EmbeddedSubtitleReader.extractEmbeddedSubtitles(url: path, headers: [:], streamIndex: track.streamIndex))
 
         #expect(document.cues.isEmpty)
         let cues = document.imageCues
@@ -43,6 +44,37 @@ struct BitmapSubtitleTests {
         #expect(document.activeImageCues(at: 1.0).map(\.id) == [cues[0].id])
         #expect(document.activeImageCues(at: 2.0).isEmpty)
         #expect(document.activeImageCues(at: 4.0).map(\.id) == [cues[1].id])
+    }
+
+    @Test("A window of an MPEG-TS stream is read on its rebased timeline, from past its start")
+    func readsTransportStreamWindow() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .dvbSubtitlesTS) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let track = try #require(demuxer.subtitleTracks.first)
+        #expect(track.format == .bitmap)
+        let whole = try #require(
+            EmbeddedSubtitleReader.readSubtitles(url: path, headers: [:], streamIndex: track.streamIndex, in: 0...10))
+        let first = try #require(whole.bitmapOutputs.compactMap(\.cue).first)
+        #expect(abs(first.startTime) < 0.05, "The bar is at \(first.startTime) s, not on the stream's own clock")
+        let clears = whole.bitmapOutputs.filter { $0.cue == nil }.compactMap(\.truncatePreviousAt)
+        #expect(clears.contains { abs($0 - 5.13) < 0.05 }, "Clears: \(clears)")
+
+        // From 4 s on: the seek goes to the stream's own 5.5 s or so, and finds the clear, not the bar.
+        let late = try #require(
+            EmbeddedSubtitleReader.readSubtitles(url: path, headers: [:], streamIndex: track.streamIndex, in: 4...10))
+        #expect(late.bitmapOutputs.compactMap(\.cue).isEmpty)
+        #expect(late.bitmapOutputs.contains { ($0.truncatePreviousAt ?? 0) > 5 })
+    }
+
+    @Test("A window of a Matroska stream from past its start finds the packets in it")
+    func readsMatroskaWindow() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .pgsSubtitlesMKV) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let track = try #require(demuxer.subtitleTracks.first)
+        let sets = try #require(
+            EmbeddedSubtitleReader.readSubtitles(url: path, headers: [:], streamIndex: track.streamIndex, in: 1...3))
+        let times = sets.bitmapOutputs.compactMap(\.truncatePreviousAt).map { ($0 * 10).rounded() / 10 }
+        #expect(times.contains(1.5) && times.contains(2.5), "Read: \(times)")
     }
 
     @Test("Premultiplying scales color by alpha and leaves unknown indices transparent")
@@ -73,12 +105,64 @@ struct BitmapSubtitleTests {
                 SubtitleImageCue(id: 0, startTime: 1, endTime: 2, canvasWidth: 320, canvasHeight: 240, regions: [])
             ])
         engine.selectedSubtitleTrackId = track.id
+        // The document above stands for what the demuxer collected.
+        engine.lastObservedLiveSubtitleVersion = try #require(engine.demuxer?.liveSubtitleVersion)
         engine.updateActiveSubtitles(at: 1.5)
         #expect(engine.currentSubtitleImages.map(\.id) == [0])
         engine.updateActiveSubtitles(at: 2.5)
         #expect(engine.currentSubtitleImages.isEmpty)
         #expect(engine.currentSubtitleCues.isEmpty)
         #expect(textReports == 0)
+    }
+
+    @Test(
+        "A PGS track of a local file shows at once, from a window read, not after reading the whole file",
+        .hostDependent)
+    @MainActor
+    func engineShowsEmbeddedTrackAtOnce() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .pgsSubtitlesMKV) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        engine.pause()
+        // Playback has read past the set at 0 s and its clear at 1.5 s (which the file keeps after the picture at
+        // 1.67 s): only a window read reaching where playback reads from can bring both back.
+        let demuxer = try #require(engine.demuxer)
+        for _ in 0..<100 where demuxer.readAheadSeconds < 1.7 { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(demuxer.readAheadSeconds >= 1.7, "Read ahead only to \(demuxer.readAheadSeconds) s")
+        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        #expect(engine.subtitleLoads.isEmpty, "No whole-file read")
+        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        let shown = try #require(engine.currentSubtitleImages.first, "The set at 0 s never showed")
+        #expect(abs(shown.startTime) < 0.01)
+        #expect(abs(shown.endTime - 1.5) < 0.01, "The set ends at \(shown.endTime) s, not at its clear")
+    }
+
+    @Test("A negative delay shows a set playback hasn't read yet, read ahead in a window", .hostDependent)
+    @MainActor
+    func negativeDelayReadsAhead() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .pgsSubtitlesMKV) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        // Paused once playing: a pause before the load starts playback is overridden by it.
+        for _ in 0..<100 where !engine.isPlaying { try await Task.sleep(for: .milliseconds(10)) }
+        engine.pause()
+        try #require(!engine.isPlaying)
+        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        // Under load playback may have read past the set at 2.5 s before the pause: then it isn't missing, and there is
+        // nothing to check here.
+        guard let demuxer = engine.demuxer, demuxer.readAheadSeconds < 2.5 else { return }
+
+        // At 0 s with a delay of -3 s the track is due at 3 s: the set at 2.5 s.
+        engine.setSubtitleDelay(-3)
+        for _ in 0..<100 where engine.currentSubtitleImages.first.map({ $0.startTime < 2 }) ?? true {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let shown = try #require(engine.currentSubtitleImages.first, "Nothing shown at -3 s")
+        #expect(abs(shown.startTime - 2.5) < 0.01)
     }
 }
 
@@ -242,6 +326,36 @@ struct BitmapSubtitleListTests {
         #expect(cues.map(\.endTime) == [4])
         let late = cues.apply(.init(truncatePreviousAt: 8, cue: nil))
         #expect(!late, "Nothing was on screen at 8 s")
+    }
+
+    @Test("A clear playback read before the window brought its set still ends that set, and applies once")
+    func windowMergeReplaysEnds() {
+        // Playback decoded the clear at 1.5 s (nothing to end yet) and a set at 30 s; the window brings the set at 0.
+        var later = cue(30, 35, estimated: true)
+        later.readSpan = 1
+        var cues = [later]
+        let truncations = [1.5, 30]
+        let window = [BitmapSubtitleDecoder.Output(truncatePreviousAt: 0, cue: cue(0, 5, estimated: true))]
+        cues.merge(window: window, span: 1, replaying: truncations)
+        let sorted = cues.sorted { $0.startTime < $1.startTime }
+        #expect(sorted.map(\.endTime) == [1.5, 35], "The set at 0 s lasted until 30 s")
+
+        cues.merge(window: window, span: 1, replaying: truncations)
+        #expect(cues.count == 2 && cues.sorted { $0.startTime < $1.startTime }.map(\.endTime) == [1.5, 35])
+    }
+
+    @Test("A set isn't ended by one read after a seek, which may have skipped what really ended it")
+    func endsOnlyWithinStretch() {
+        var cues: [SubtitleImageCue] = []
+        cues.apply(.init(truncatePreviousAt: 5, cue: cue(5, 10, estimated: true)), span: 1)
+        // A seek to 100: the first set there is at 103.
+        cues.apply(.init(truncatePreviousAt: 103, cue: cue(103, 108, estimated: true)), span: 2)
+        #expect(cues.first { $0.startTime == 5 }?.endTime == 10, "The set at 5 s lasted until 103 s")
+
+        // Read again after a seek back, nothing skipped this time: its clear ends it.
+        cues.apply(.init(truncatePreviousAt: 5, cue: cue(5, 10, estimated: true)), deduplicating: true, span: 3)
+        cues.apply(.init(truncatePreviousAt: 7), span: 3)
+        #expect(cues.first { $0.startTime == 5 }?.endTime == 7)
     }
 
     @Test("Cues the player makes get ids no other cue has")

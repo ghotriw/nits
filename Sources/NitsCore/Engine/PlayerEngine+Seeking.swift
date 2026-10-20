@@ -249,6 +249,10 @@ extension PlayerEngine {
         // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
         self.currentTime = completedSeconds
         updateActiveSubtitles(at: completedSeconds)
+        // Playback reads on from where the seek landed, past the target after a forward keyframe seek; a cue that
+        // started before is read in a window. Once per settled seek, not per scrub step, on its own demuxer.
+        demuxer?.noteSubtitleReadsStart(at: completedSeconds)
+        refreshEmbeddedSubtitles(around: completedSeconds)
         onTimeUpdate?(completedSeconds, duration)
 
         if isRelativeSeekInFlight {

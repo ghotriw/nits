@@ -336,11 +336,30 @@ draws its own gets the same data from `onSubtitleCuesChanged`.
   screen, but typeset signs no longer line up with the picture once it is zoomed or cropped. That is deliberate, the
   same rule as for text (subtitles stay inside the visible picture); drawing on the whole picture and clipping, as mpv
   does, would need a frame as large as the zoomed picture.
-- **Sources**: an embedded track is read whole from a second demuxer (`EmbeddedSubtitleReader`) for local files and
-  collected in-band, as packets pass, for network ones (`liveSubtitleVersion`); external `.srt` / `.vtt` / `.ass` /
-  `.ssa` / `.sup` / `.idx` files are parsed or, for bitmaps, read when the track is selected. A background read
-  (`subtitleLoads`, one per track) is cancelled through its `FFmpegInterrupt`, blocking I/O included, once its track
-  is no longer selected or the media stops: a whole-file read of an MPEG-TS remux reads every byte of it. `stop()`
+- **Embedded tracks** come from the packets playback reads, for every source, as in mpv and VLC
+  (`processSubtitlePacket`, `liveSubtitleVersion`): never from a read of the whole file, which for Matroska means
+  every byte of it (matroskadec ignores `AVDISCARD_ALL` and reads every block), minutes on a network volume. That
+  misses what lies before where playback reads from: the cue on screen when a track is chosen or a seek lands, and,
+  for a track chosen mid-play, everything playback read ahead before. A second demuxer reads that window
+  (`MediaDemuxer.subtitleWindow`: from 10 s before the time up to where playback reads from, to the end if it read
+  there already; `EmbeddedSubtitleReader.readSubtitles`), as mpv's refresh seek and Matroska subtitle preroll do,
+  and the result joins the lists (`mergeLiveSubtitles`) unless they cover it already (spans read since the track was
+  chosen, restarted at each seek and raised to where it landed, and windows merged). It is read when a track is
+  chosen, a load with a start time or a seek has landed (once, not per scrub step), and the subtitle delay changes.
+  A negative delay can show the track ahead of everything playback has read: the time tick then reads ahead, up to
+  10 s past the track's time, again once half of that is used (`windowLookahead`); a failed read isn't retried per
+  tick.
+  PGS sets carry the stretch of reading they came from (`readSpan`, a new one per seek): a set only ends a set of the
+  same stretch, as a seek may have skipped the packet that really ended it. A window joins the stretch being read;
+  its sets merge before the ends playback read in it are applied again (`merge(window:span:replaying:)`), so a clear
+  read by playback before the window arrived still ends its set. A picture stream that isn't cover art (or else
+  sound) tells how far the read has come, by decode time, 0.5 s past the window's end. Window reads run at
+  `.utility`, below playback's own reads of the same file, and a failed one is logged. Network sources get no window
+  read: some serve a URL once. Skipping a window by the Matroska index isn't done: FFmpeg's index mixes the Cues with
+  blocks read so far, so it can't tell a window with no subtitle packet.
+- **External files**: `.srt` / `.vtt` / `.ass` / `.ssa` are parsed whole; `.sup` / `.idx` are read whole when the track
+  is selected (`extractEmbeddedSubtitles`). Background reads (`subtitleLoads`, `subtitleRefresh`) are cancelled through
+  their `FFmpegInterrupt`, blocking I/O included, once their track is no longer selected or the media stops. `stop()`
   and every load reset the subtitle state (`resetSubtitles`), so hosts get `[]`.
 - **Track flags**: forced and SDH come from the stream's disposition, or from its title; an external file's from its
   name. History saves an external file by path and stream, which tells apart the languages of a VobSub index.

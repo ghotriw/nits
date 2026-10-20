@@ -903,6 +903,9 @@ extension PlayerEngine {
         self.currentTime = effectiveStartTime
         self.isLoaded = true
         self.isLoading = false
+        // The track was chosen above, before the start time was applied: the cue on screen at a resume point is read
+        // in a window (a start at 0 needs none, playback reads from there).
+        refreshEmbeddedSubtitles(around: effectiveStartTime)
 
         // Synchronously re-anchor clock and reset FrameQueue so any subsequent play() or display tick
         // observes the clean timeline start and cannot drop initial frames with stale clock from previous media

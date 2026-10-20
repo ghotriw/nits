@@ -274,11 +274,26 @@ flowchart TD
   - [x] External `.sup` (PGS) and `.idx` (VobSub, one track per language; a dropped or picked `.sub` loads through its
     `.idx`, one with none is refused), also found next to the media; their pictures are read when the track is
     selected.
-  - [x] Background reads of a track (embedded tracks of local files, external bitmap files) are cancelled, blocking
-    I/O included (`FFmpegInterrupt`), once the track is no longer selected or the media stops; one read per track.
-  - [ ] Bitmap subtitles on HDR / XDR output aren't limited to SDR white yet; VobSub and DVB are untested on real discs.
-  - [ ] Bitmap tracks of local files show nothing until the whole file is read: for an MPEG-TS remux that is every
-    byte of it. Collecting pictures in-band meanwhile, as for network sources, is left for later.
+  - [x] Embedded tracks (text, ASS, pictures) come from the packets playback reads, for local files as for network
+    ones, as in mpv and VLC; a whole-file read (every byte of a Matroska file) made a track on a network volume show
+    nothing for minutes. What playback can't give comes from a window read (mpv's refresh seek and subtitle preroll):
+    from 10 s before the time up to where playback reads from, when a track is chosen or a load or seek lands, and up
+    to 10 s ahead, in steps, while a negative subtitle delay shows the track ahead of what playback has read; never
+    what the lists hold already. Window reads run below playback's own (`.utility`). Background reads are cancelled, blocking I/O included (`FFmpegInterrupt`), once their
+    track is no longer selected or the media stops. A PGS set is only ended by a set read in the same stretch of
+    reading (between seeks), as a seek may have skipped the one that really ended it.
+  - [ ] One secondary demuxer opened and probed per window read; keeping one per media, and following sound rather
+    than pictures in MPEG-TS (cheaper to parse), wait for a measurement of seeks on a network volume.
+  - [ ] Skipping a window the Matroska Cues show to hold no subtitle packet, as mpv's subtitle preroll does: FFmpeg's
+    index of a subtitle stream mixes the Cues (parsed at the first seek) with blocks read so far, and doesn't expose
+    `CueDuration`, which tells Cues that list every subtitle block; with Cues for none, no packets in the index
+    doesn't mean none in the file.
+  - [ ] Network sources get no window read (some serve a URL once): after a seek, a cue that started before the
+    landing keyframe shows from the next one.
+  - [x] VobSub checked on a real file (2026-10-20): 27 VobSub tracks of a 2160p MKV on an SMB volume show at once
+    after a track switch and after seeks.
+  - [ ] Bitmap subtitles on HDR / XDR output aren't limited to SDR white yet; PGS from a real Blu-ray remux and DVB
+    are untested on real files.
   - [ ] A crop set in the player fits a PGS canvas of the uncropped picture into the cropped one, so pictures shrink
     (about 1.3× for 2.35:1 on 16:9); they should be placed on the whole picture and moved inside the visible part.
   - [ ] Forced-only display: the forced flag of PGS sets (`AV_SUBTITLE_FLAG_FORCED`) is ignored, though Blu-ray discs

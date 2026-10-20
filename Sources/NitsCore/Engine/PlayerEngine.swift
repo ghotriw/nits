@@ -429,6 +429,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Subtitle tracks being read in the background, by track id: one read per track, cancelled once the track is no
     /// longer selected or the media closes.
     @ObservationIgnored var subtitleLoads: [Int: SubtitleLoad] = [:]
+    /// The window read of the selected embedded track around the time shown (`refreshEmbeddedSubtitles`).
+    @ObservationIgnored var subtitleRefresh: SubtitleLoad?
     @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
     @ObservationIgnored var authoredRendererTrackId: Int?
     @ObservationIgnored var authoredScript: AssScript?

@@ -177,7 +177,8 @@ struct AssSubtitleTrackTests {
         let demuxer = try #require(MediaDemuxer(url: path))
         let track = try #require(demuxer.subtitleTracks.first)
         #expect(track.format == .ass)
-        let document = try #require(demuxer.loadSubtitleDocument(for: track.id, url: path, headers: [:]))
+        let document = try #require(
+            EmbeddedSubtitleReader.extractEmbeddedSubtitles(url: path, headers: [:], streamIndex: track.streamIndex))
 
         #expect(document.cues.map(\.text) == ["Hello"], "Only the dialogue is text")
         #expect(document.cues.first?.rawPayload?.contains("Default") == true)
@@ -188,12 +189,66 @@ struct AssSubtitleTrackTests {
         #expect(abs(script.events[0].duration - 2) < 0.01 && abs(script.events[1].start - 3) < 0.01)
     }
 
-    @Test("A local file collects no live events or pictures: it is read whole instead")
-    func localFileKeepsNoLiveList() throws {
+    @Test("A local file's ASS track is collected as packets pass, like a network one's")
+    func localFileCollectsLive() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         demuxer.selectSubtitleTrack(trackId: try #require(demuxer.subtitleTracks.first).id)
-        #expect(demuxer.getLiveSubtitleDocument().assScript == nil)
+        let script = try #require(demuxer.getLiveSubtitleDocument().assScript, "No script to collect events into")
+        #expect(String(decoding: script.header, as: UTF8.self).contains("PlayResX: 640"))
+    }
+
+    @Test(
+        "The window to read runs from the preroll up to where playback reads, and is skipped where nothing is missing")
+    func windowToRead() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        demuxer.selectSubtitleTrack(trackId: try #require(demuxer.subtitleTracks.first).id)
+        #expect(demuxer.subtitleWindow(around: 0) == nil, "Opened and not read yet: playback reads from 0")
+
+        demuxer.seek(to: 3, exact: false)
+        #expect(demuxer.subtitleWindow(around: 3) == 0...3, "From the preroll up to where reads restart")
+        let selection = demuxer.liveSubtitleSelection.id
+        demuxer.mergeLiveSubtitles(.init(), covering: 0...3, selection: selection)
+        #expect(demuxer.subtitleWindow(around: 3) == nil)
+
+        // A forward keyframe seek landed past its target: what it jumped over wasn't read, what was read isn't again.
+        demuxer.noteSubtitleReadsStart(at: 5)
+        #expect(demuxer.subtitleWindow(around: 5) == 3...5)
+
+        // A negative delay: the track is due past everything read, so it is read ahead, in steps.
+        #expect(demuxer.subtitleWindow(around: 20) == 10...30)
+        demuxer.mergeLiveSubtitles(.init(), covering: 10...30, selection: selection)
+        #expect(demuxer.subtitleWindow(around: 21) == nil, "Most of the lookahead is left")
+        #expect(demuxer.subtitleWindow(around: 26) == 30...36)
+    }
+
+    @Test("A window read finds the cue on screen and joins what playback collected once, for its own selection only")
+    func windowReadMerges() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        demuxer.selectSubtitleTrack(trackId: try #require(demuxer.subtitleTracks.first).id)
+        let selection = demuxer.liveSubtitleSelection
+        let packets = try #require(
+            EmbeddedSubtitleReader.readSubtitles(
+                url: path, headers: [:], streamIndex: selection.streamIndex, in: 0...2))
+        #expect(packets.cues.map(\.text) == ["Hello"])
+        #expect(packets.assEvents.contains { $0.payload.hasSuffix("Hello") })
+
+        // Playback reads on from 2 s: the window up to there is missing until merged.
+        demuxer.seek(to: 2, exact: false)
+        #expect(demuxer.subtitleWindow(around: 2) == 0...2)
+        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
+        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
+        let document = demuxer.getLiveSubtitleDocument()
+        #expect(document.cues.map(\.text) == ["Hello"], "Merged twice, listed once")
+        #expect(document.assScript?.events.count == packets.assEvents.count)
+        #expect(demuxer.subtitleWindow(around: 2) == nil)
+
+        // A read for a track since chosen again (another selection) is dropped.
+        demuxer.selectSubtitleTrack(trackId: demuxer.subtitleTracks.first?.id)
+        demuxer.mergeLiveSubtitles(packets, covering: 0...2, selection: selection.id)
+        #expect(demuxer.getLiveSubtitleDocument().cues.isEmpty)
     }
 
     @Test(

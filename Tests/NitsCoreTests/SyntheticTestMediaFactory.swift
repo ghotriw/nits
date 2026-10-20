@@ -87,6 +87,10 @@ public enum SyntheticTestMediaFactory {
         case pgsSubtitlesMKV
         /// H.264 MKV (6s, 640x360) with the ASS track `AssSubtitleTests.script`: "Hello" 0-2 s and a red box from 3 s
         case assSubtitlesMKV
+        /// H.264 MPEG-TS (6s, 320x240) with a DVB track FFmpeg converts from `pgsStream`: a timeline that starts at
+        /// about 1.48 s (rebased to 0), the bar at 0 s cleared at about 5.13 s (the conversion drops the set at 2.5 s),
+        /// and no index
+        case dvbSubtitlesTS
 
         public var filename: String {
             switch self {
@@ -164,6 +168,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_pgs_subtitles.mkv"
             case .assSubtitlesMKV:
                 return "synth_ass_subtitles.mkv"
+            case .dvbSubtitlesTS:
+                return "synth_dvb_subtitles.ts"
             }
         }
     }
@@ -275,7 +281,7 @@ public enum SyntheticTestMediaFactory {
                 return nil
             }
         }
-        if preset == .pgsSubtitlesMKV {
+        if preset == .pgsSubtitlesMKV || preset == .dvbSubtitlesTS {
             guard FileManager.default.createFile(atPath: metadataPath, contents: pgsStream) else {
                 print("[SyntheticTestMediaFactory] Failed to write the PGS stream for \(preset.rawValue)")
                 return nil
@@ -364,6 +370,17 @@ public enum SyntheticTestMediaFactory {
                 "-map", "0:v", "-map", "1:s",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
                 "-metadata:s:s:0", "language=eng",
+                outputPath,
+            ]
+        case .dvbSubtitlesTS:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=24:duration=6",
+                "-f", "sup", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:s",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "dvbsub",
+                "-metadata:s:s:0", "language=eng",
+                "-f", "mpegts",
                 outputPath,
             ]
         case .chaptersMKV, .chaptersMP4:

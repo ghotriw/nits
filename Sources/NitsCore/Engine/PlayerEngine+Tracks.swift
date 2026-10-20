@@ -83,32 +83,58 @@ extension PlayerEngine {
                     }
                 }
             }
-        } else if let path = currentPath {
-            if MediaURL.isNetworkURL(path) {
-                // For network streams: bind immediately to in-band demuxed cues.
-                // Do NOT launch a background secondary demuxer that hangs trying to reach EOF or fails on single-token URLs.
-                let liveDoc = demuxer?.getLiveSubtitleDocument() ?? SubtitleDocument(cues: [])
-                self.lastObservedLiveSubtitleVersion = demuxer?.liveSubtitleVersion ?? -1
-                self.activeSubtitleDocument = liveDoc
-                self.updateActiveSubtitles(at: currentTime)
-                AppLog.info(
-                    .subtitles,
-                    "Selected network subtitle track id=\(id) ('\(track.title)'). Active in-band streaming."
-                )
-            } else if let cached = loadedSubtitleDocuments[id] {
-                self.activeSubtitleDocument = cached
-                self.updateActiveSubtitles(at: currentTime)
-            } else {
-                let headers = self.currentHeaders
-                let demuxer = self.demuxer
-                loadSubtitleDocument(trackId: id) { interrupt in
-                    demuxer?.loadSubtitleDocument(for: id, url: path, headers: headers, interrupt: interrupt)
-                } isCurrent: { engine in
-                    // Track ids restart with every file: a result is only for the demuxer it was asked of.
-                    engine.demuxer === demuxer
+        } else if let demuxer {
+            // Embedded tracks come from the packets playback reads, as in mpv and VLC: a read of the whole file would
+            // read every byte of it (Matroska ignores discarded streams), minutes on a network volume. A window read
+            // fills in the cue on screen now.
+            self.lastObservedLiveSubtitleVersion = demuxer.liveSubtitleVersion
+            self.activeSubtitleDocument = demuxer.getLiveSubtitleDocument()
+            self.updateActiveSubtitles(at: currentTime)
+            refreshEmbeddedSubtitles(around: currentTime)
+        }
+    }
+
+    /// Reads what the selected embedded track misses around `seconds` (playback time; the subtitle delay is applied
+    /// here) from a secondary demuxer (`MediaDemuxer.subtitleWindow`, `EmbeddedSubtitleReader.readSubtitles`) and adds
+    /// it to what playback collects. Called when the track is chosen, a load or seek has landed, and the subtitle delay
+    /// changes, and from the time tick while a negative delay shows the track ahead of what playback has read; a newer
+    /// request cancels the one running. Network sources aren't opened a second time: some serve a URL once.
+    func refreshEmbeddedSubtitles(around seconds: Double) {
+        guard let demuxer, let path = currentPath, !MediaURL.isNetworkURL(path),
+            let track = subtitleTracks.first(where: { $0.id == selectedSubtitleTrackId }), !track.isExternal,
+            let range = demuxer.subtitleWindow(around: max(0, seconds - subtitleDelay))
+        else { return }
+        let selection = demuxer.liveSubtitleSelection
+        guard selection.streamIndex >= 0 else { return }
+
+        subtitleRefresh?.cancel()
+        let headers = currentHeaders
+        let interrupt = FFmpegInterrupt()
+        // Below playback's own reads, which refill the buffer after a seek from the same file.
+        let task = Task.detached(priority: .utility) { [weak self] in
+            // A read that failed stays the running one, so the time tick (`updateActiveSubtitles`) doesn't try it again
+            // twenty times a second; the next track switch, seek or delay change replaces it.
+            guard
+                let packets = EmbeddedSubtitleReader.readSubtitles(
+                    url: path, headers: headers, streamIndex: selection.streamIndex, in: range, interrupt: interrupt)
+            else {
+                if !interrupt.isCancelled {
+                    AppLog.warning(
+                        .subtitles,
+                        "Can't read subtitle stream \(selection.streamIndex) from \(range.lowerBound) s to "
+                            + "\(range.upperBound) s; what playback reads still shows")
                 }
+                return
+            }
+            demuxer.mergeLiveSubtitles(packets, covering: range, selection: selection.id)
+            await MainActor.run {
+                guard let self, self.demuxer === demuxer else { return }
+                if self.subtitleRefresh?.interrupt === interrupt { self.subtitleRefresh = nil }
+                // Paused, no time tick would show what was read.
+                self.updateActiveSubtitles(at: self.currentTime)
             }
         }
+        subtitleRefresh = SubtitleLoad(task: task, interrupt: interrupt)
     }
 
     public func loadExternalSubtitle(url: URL) {
@@ -213,12 +239,15 @@ extension PlayerEngine {
         subtitleLoads[id] = SubtitleLoad(task: task, interrupt: interrupt)
     }
 
-    /// Cancels the background reads of tracks other than `kept`.
+    /// Cancels the background reads of tracks other than `kept`, and the window read of an embedded track, which a
+    /// track switch replaces.
     func cancelSubtitleLoads(except kept: Int? = nil) {
         for (id, load) in subtitleLoads where id != kept {
             load.cancel()
             subtitleLoads[id] = nil
         }
+        subtitleRefresh?.cancel()
+        subtitleRefresh = nil
     }
 
     /// Takes the media's subtitles away: what is on screen (hosts get `[]`), the libass renderer, the documents read
@@ -321,6 +350,8 @@ extension PlayerEngine {
         subtitleDelay = clamped
         AppLog.info(.subtitles, "Subtitle delay changed to \(clamped)s")
         updateActiveSubtitles(at: currentTime)
+        // The track is due at another time now, which may lie outside what was read.
+        refreshEmbeddedSubtitles(around: currentTime)
         saveCurrentPlaybackProgress()
     }
 
@@ -376,15 +407,19 @@ extension PlayerEngine {
 
     func updateActiveSubtitles(at seconds: Double) {
         // A cue due at `t` shows at `t + subtitleDelay`.
+        let playbackSeconds = seconds
         let seconds = seconds - subtitleDelay
         if let id = selectedSubtitleTrackId,
             let track = subtitleTracks.first(where: { $0.id == id }),
             !track.isExternal,
-            let demuxer,
-            let path = currentPath,
-            MediaURL.isNetworkURL(path)
+            let demuxer
         {
-            // For live network streams, refresh the document only when in-band cues version changes
+            // Shown ahead of the picture, the track may be due past what playback has read: read on ahead of it,
+            // unless a read is under way (no restart per time tick).
+            if subtitleDelay < 0, subtitleRefresh == nil {
+                refreshEmbeddedSubtitles(around: playbackSeconds)
+            }
+            // Embedded tracks grow as playback reads them: refresh the document only when its version changes
             let currentVersion = demuxer.liveSubtitleVersion
             if currentVersion != self.lastObservedLiveSubtitleVersion || self.activeSubtitleDocument == nil {
                 self.lastObservedLiveSubtitleVersion = currentVersion

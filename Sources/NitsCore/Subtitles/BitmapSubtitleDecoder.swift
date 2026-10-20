@@ -6,7 +6,7 @@ import Foundation
 /// Not thread-safe: the owner serializes calls. A decoder follows one stream in order; `flush()` after a seek.
 final class BitmapSubtitleDecoder {
     /// What one packet changes.
-    struct Output {
+    struct Output: Sendable {
         /// The set shown before this packet is replaced or cleared at this time.
         var truncatePreviousAt: Double?
         var cue: SubtitleImageCue?

@@ -68,6 +68,9 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
     /// The stream gave no end (PGS never does): `endTime` is a guess that the next display set, which clears or
     /// replaces this one, replaces by its own time, later or earlier.
     let endIsEstimated: Bool
+    /// The stretch of reading the set came from, when sets are collected as playback reads (`apply(_:span:)`): a seek
+    /// starts another, and a set's end only comes from a later set of the same one, with nothing unread between them.
+    var readSpan = 0
 
     public init(
         id: Int,
@@ -104,9 +107,11 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
 
     /// The same set ending at `time`, sooner or later than it was thought to.
     func ending(at time: Double) -> SubtitleImageCue {
-        SubtitleImageCue(
+        var ended = SubtitleImageCue(
             id: id, startTime: startTime, endTime: max(time, startTime), canvasWidth: canvasWidth,
             canvasHeight: canvasHeight, regions: regions)
+        ended.readSpan = readSpan
+        return ended
     }
 
     /// Identity and timing only: comparing pictures would make every on-screen check read megabytes.
@@ -122,13 +127,18 @@ extension [SubtitleImageCue] {
     /// starts at that time, not before it, so it is left alone, and so are the sets from further on that the list
     /// still holds. With `deduplicating`, a set starting where one already does is left out. Returns whether the list
     /// changed.
+    ///
+    /// With `span` (sets collected as playback reads, across seeks), the output was read in that stretch of reading:
+    /// it ends the set concerned only if that set was read in the same one, as a seek may have skipped the packet that
+    /// really ended it; its own set is marked with it, and so is a set it repeats, read again without a gap now.
     @discardableResult
-    mutating func apply(_ output: BitmapSubtitleDecoder.Output, deduplicating: Bool = false) -> Bool {
+    mutating func apply(_ output: BitmapSubtitleDecoder.Output, deduplicating: Bool = false, span: Int? = nil) -> Bool {
         var changed = false
         if let time = output.truncatePreviousAt,
             let index = indices.filter({ self[$0].startTime < time }).max(by: {
                 self[$0].startTime < self[$1].startTime
-            })
+            }),
+            span == nil || self[index].readSpan == span
         {
             let previous = self[index]
             let updated = previous.endIsEstimated ? previous.ending(at: time) : previous.truncated(at: time)
@@ -137,10 +147,31 @@ extension [SubtitleImageCue] {
                 changed = true
             }
         }
-        if let cue = output.cue, !(deduplicating && contains { abs($0.startTime - cue.startTime) < 0.05 }) {
-            append(cue)
-            changed = true
+        if var cue = output.cue {
+            if let span { cue.readSpan = span }
+            if deduplicating, let existing = firstIndex(where: { abs($0.startTime - cue.startTime) < 0.05 }) {
+                // Read again with its end this time (a window's set, ended within the window).
+                if self[existing].endIsEstimated, !cue.endIsEstimated {
+                    self[existing] = self[existing].ending(at: cue.endTime)
+                    changed = true
+                }
+                if let span { self[existing].readSpan = span }
+            } else {
+                append(cue)
+                changed = true
+            }
         }
         return changed
+    }
+
+    /// Adds the sets of a window read (ends among them applied) to the ones playback collected in the stretch of
+    /// reading `span`, which the window joins, then applies again the ends playback read in it (`truncations`). It may
+    /// have read the set that clears or replaces one of the window's before the window arrived, with nothing in the
+    /// list yet for it to end. A time applied twice changes nothing.
+    mutating func merge(window outputs: [BitmapSubtitleDecoder.Output], span: Int, replaying truncations: [Double]) {
+        var window: [SubtitleImageCue] = []
+        for output in outputs { window.apply(output) }
+        for cue in window { apply(BitmapSubtitleDecoder.Output(cue: cue), deduplicating: true, span: span) }
+        for time in truncations.sorted() { apply(BitmapSubtitleDecoder.Output(truncatePreviousAt: time), span: span) }
     }
 }
