@@ -152,7 +152,7 @@ enum EmbeddedSubtitleReader {
 
     /// The packets of one subtitle stream within `range` of the timeline (`upperBound` may be `infinity`: to the end).
     ///
-    /// Playback collects a track as it reads (`MediaDemuxer.processSubtitlePacket`), from where it reads on; this
+    /// Playback collects a track as it reads (`LiveSubtitleTracker.processPacket`), from where it reads on; this
     /// fills in what it can't (`MediaDemuxer.subtitleWindow`): the cue on screen when a track is chosen or a seek
     /// lands, as mpv's refresh seek and subtitle preroll do, and what playback read before the track was chosen. A
     /// picture or sound stream tells the time, so the read stops at the range's end. `nil` when the file can't be read

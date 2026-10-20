@@ -16,22 +16,22 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// should compare it against this instead.
     public static let exactSeekTargetAttachmentKey: String = "Nits.ExactSeekTarget"
 
-    private var formatCtx: UnsafeMutablePointer<AVFormatContext>?
-    private var videoStreamIndex: Int = -1
-    private var audioStreamIndex: Int = -1
-    public private(set) var timebase: AVRational = AVRational(num: 1, den: 1000)
-    public private(set) var audioTimebase: AVRational = AVRational(num: 1, den: 1000)
-    public private(set) var codec: VideoCodec = .hevc
-    public private(set) var hasVideo: Bool = false
-    public private(set) var nominalFrameDuration: Double = 1.0 / 24.0
+    var formatCtx: UnsafeMutablePointer<AVFormatContext>?
+    var videoStreamIndex: Int = -1
+    var audioStreamIndex: Int = -1
+    public internal(set) var timebase: AVRational = AVRational(num: 1, den: 1000)
+    public internal(set) var audioTimebase: AVRational = AVRational(num: 1, den: 1000)
+    public internal(set) var codec: VideoCodec = .hevc
+    public internal(set) var hasVideo: Bool = false
+    public internal(set) var nominalFrameDuration: Double = 1.0 / 24.0
     /// The stream is interlaced: it signals a field order (`field_order` TT / BB / TB / BT), or it is standard
     /// definition DV, interlaced by format but without a field order. Frames may still be flagged interlaced
     /// individually when this is `false`.
-    public private(set) var isInterlaced: Bool = false
-    public private(set) var hasAudio: Bool = false
-    public private(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
-    public private(set) var audioChannels: Int = 0
-    public private(set) var audioSampleRate: Int = 0
+    public internal(set) var isInterlaced: Bool = false
+    public internal(set) var hasAudio: Bool = false
+    public internal(set) var audioCodecId: AVCodecID = AV_CODEC_ID_NONE
+    public internal(set) var audioChannels: Int = 0
+    public internal(set) var audioSampleRate: Int = 0
     public struct AudioTrack: Sendable, Identifiable, Equatable {
         public let id: Int
         public let streamIndex: Int
@@ -42,81 +42,26 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let sampleRate: Int
     }
 
-    public private(set) var audioTracks: [AudioTrack] = []
-    public private(set) var selectedAudioTrackIndex: Int = -1
-    public private(set) var audioExtraData: Data? = nil
-    public private(set) var embeddedArtworkData: Data? = nil
-    public private(set) var chapters: [MediaChapter] = []
+    public internal(set) var audioTracks: [AudioTrack] = []
+    public internal(set) var selectedAudioTrackIndex: Int = -1
+    public internal(set) var audioExtraData: Data? = nil
+    public internal(set) var embeddedArtworkData: Data? = nil
+    public internal(set) var chapters: [MediaChapter] = []
 
-    public private(set) var subtitleTracks: [SubtitleTrack] = []
+    public internal(set) var subtitleTracks: [SubtitleTrack] = []
     public private(set) var selectedSubtitleTrackId: Int? = nil
-    private var selectedSubtitleStreamIndex: Int = -1
-    /// The selected subtitle track as packets pass (as mpv and VLC take embedded subtitles), for every source: a read
-    /// of the whole file would read every byte of it, slow on a network volume.
-    private struct LiveSubtitleState {
-        /// What makes a text cue the same one read again (a seek back, a window read).
-        struct CueKey: Hashable {
-            let milliseconds: Int64
-            let text: String
-
-            init(_ cue: SubtitleCue) {
-                milliseconds = Int64((cue.startTime * 1000).rounded())
-                text = cue.text
-            }
-        }
-
-        var cues: [SubtitleCue] = []
-        var cueKeys: Set<CueKey> = []
-        var imageCues: [SubtitleImageCue] = []
-        /// The script of the selected ASS / SSA track: header and fonts from the stream, events as they are read.
-        var assScript: AssScript?
-        /// Payloads of the events in `assScript`, to leave out an event read again.
-        var assPayloads: Set<String> = []
-        var version: Int = 0
-        /// Counts track selections, so a read made for a track since left isn't merged (`mergeLiveSubtitles`).
-        var selection = 0
-        /// Stream of the selected track, `-1` for none.
-        var streamIndex = -1
-        /// Timeline ranges whose packets of the selected stream are in the lists: spans read before the last seek and
-        /// windows merged, sorted and apart. The span being read now runs from `spanStart` to `readAheadSeconds`, and on
-        /// as playback reads: `nil` while a seek is under way, `infinity` when the reads were at the end already.
-        var coverage: [ClosedRange<Double>] = []
-        var spanStart: Double?
-        /// The stretch of reading playback is in: a seek starts another (`SubtitleImageCue.readSpan`).
-        var readSpan = 0
-        /// Times at which sets playback read in `readSpan` ended the set before them (`BitmapSubtitleDecoder.Output`),
-        /// applied again after a window merge: the set they end may only arrive with it.
-        var bitmapTruncations: [Double] = []
-
-        mutating func cover(_ range: ClosedRange<Double>) {
-            var merged = range
-            coverage.removeAll { other in
-                guard other.overlaps(merged) else { return false }
-                merged = min(merged.lowerBound, other.lowerBound)...max(merged.upperBound, other.upperBound)
-                return true
-            }
-            coverage.append(merged)
-            coverage.sort { $0.lowerBound < $1.lowerBound }
-        }
-    }
-    /// Decodes the selected track when it is a bitmap one; used under `lock`, like `processSubtitlePacket`.
-    private var liveBitmapDecoder: BitmapSubtitleDecoder?
-    /// Live in-band subtitle state is guarded by its own lightweight lock, NOT the I/O `lock`.
-    /// `lock` is held across blocking `av_read_frame` / `av_seek_frame` calls (hundreds of ms on
-    /// network streams); readers on the main thread must never contend with it.
-    /// Lock order: `lock` -> `liveSubtitleState` (never the reverse).
-    private let liveSubtitleState = OSAllocatedUnfairLock(initialState: LiveSubtitleState())
+    let subtitleTracker = LiveSubtitleTracker()
     public var liveSubtitleVersion: Int {
-        liveSubtitleState.withLock { $0.version }
+        subtitleTracker.version
     }
     /// Furthest timeline second read from the audio and video streams since the last seek (`-infinity` before any),
     /// `infinity` once the input has been read to its end. Its own lock: `lock` is held through blocking reads.
-    private let readAheadState = OSAllocatedUnfairLock(initialState: -Double.infinity)
+    let readAheadState = OSAllocatedUnfairLock(initialState: -Double.infinity)
     /// Timeline second up to which packets have been read ahead of playback; see `readAheadState`.
     public var readAheadSeconds: Double {
         readAheadState.withLock { $0 }
     }
-    private var lastAudioPts: Int64 = -1
+    var lastAudioPts: Int64 = -1
     public var currentAudioPtsSeconds: Double {
         lock.lock()
         defer { lock.unlock() }
@@ -167,99 +112,33 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.selectedSubtitleTrackId = trackId
         // Packets from where the reads are now on belong to the new track; what came before is for a window read.
         let readAhead = readAheadState.withLock { $0 }
-        let streamIndex = trackId.flatMap { id in subtitleTracks.first { $0.id == id }?.streamIndex } ?? -1
-        liveSubtitleState.withLock { state in
-            state.streamIndex = streamIndex
-            state.cues.removeAll()
-            state.cueKeys.removeAll()
-            state.imageCues.removeAll()
-            state.assScript = nil
-            state.assPayloads.removeAll()
-            state.version += 1
-            state.selection += 1
-            state.coverage.removeAll()
-            state.readSpan += 1
-            state.bitmapTruncations.removeAll()
-            // Nothing read since opening (`-infinity`): reads start at the beginning. At the end, nothing more comes.
-            state.spanStart = readAhead.isFinite ? readAhead : (readAhead < 0 ? 0 : .infinity)
-        }
-        liveBitmapDecoder = nil
-        if let trackId, let track = subtitleTracks.first(where: { $0.id == trackId }) {
-            self.selectedSubtitleStreamIndex = track.streamIndex
-            if track.format == .ass, let ctx = formatCtx,
-                track.streamIndex < Int(ctx.pointee.nb_streams),
-                let stream = ctx.pointee.streams[track.streamIndex]
-            {
-                let script = AssScript(
-                    header: EmbeddedSubtitleReader.assHeader(of: stream),
-                    fonts: EmbeddedSubtitleReader.attachedFonts(in: ctx))
-                liveSubtitleState.withLock { $0.assScript = script }
-            }
-            if track.format == .bitmap, let ctx = formatCtx,
-                track.streamIndex < Int(ctx.pointee.nb_streams),
-                let stream = ctx.pointee.streams[track.streamIndex]
-            {
-                liveBitmapDecoder = BitmapSubtitleDecoder(stream: stream)
-            }
-            AppLog.info(
-                .subtitles,
-                "Subtitle track selected: id=\(trackId), streamIndex=\(track.streamIndex), title='\(track.title)'"
-            )
-        } else {
-            self.selectedSubtitleStreamIndex = -1
-        }
+        subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
     }
 
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
     /// Never touches the I/O lock, so it is safe to call from the main thread during network reads/seeks.
     public func getLiveSubtitleDocument() -> SubtitleDocument {
-        let (cues, imageCues, script) = liveSubtitleState.withLock { ($0.cues, $0.imageCues, $0.assScript) }
-        return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
+        subtitleTracker.getLiveSubtitleDocument()
     }
 
     /// Identifies the current track selection and reading stretch for `mergeLiveSubtitles`, with the stream to read
     /// for it (`-1` for none). Never touches the I/O lock, like `getLiveSubtitleDocument()`.
     var liveSubtitleSelection: (id: Int, streamIndex: Int, span: Int) {
-        liveSubtitleState.withLock { ($0.selection, $0.streamIndex, $0.readSpan) }
+        subtitleTracker.liveSubtitleSelection
     }
 
     /// The part of the timeline a window read (`EmbeddedSubtitleReader.readSubtitles`) must read so the selected track
     /// is whole at `time` (track time: the subtitle delay applied), less what the lists hold already; `nil` when
     /// nothing is missing.
-    ///
-    /// It starts `windowPreroll` before `time` and ends where playback reads from (`spanStart`): what lies between was
-    /// read before the track was chosen, or skipped by a seek. When `time` is past everything playback has read (a
-    /// negative subtitle delay shows the track ahead of the picture by more than playback reads ahead), it ends
-    /// `windowLookahead` past `time` instead, so such a track is read ahead in steps. While a seek is under way there is
-    /// none: its landing asks again.
     func subtitleWindow(around time: Double) -> ClosedRange<Double>? {
-        let start = max(0, time - EmbeddedSubtitleReader.windowPreroll)
         let readAhead = readAheadState.withLock { $0 }
-        let window: ClosedRange<Double>? = liveSubtitleState.withLock { state in
-            guard let spanStart = state.spanStart else { return nil }
-            let isAhead = time > max(spanStart, readAhead)
-            let end = isAhead ? time + EmbeddedSubtitleReader.windowLookahead : spanStart
-            guard end > start else { return nil }
-            // What the lists hold from the start on isn't read again.
-            var covered = state.coverage
-            if readAhead >= spanStart { covered.append(spanStart...readAhead) }
-            var lower = start
-            while let range = covered.first(where: { $0.contains(lower) && $0.upperBound > lower }) {
-                lower = range.upperBound
-            }
-            // Read ahead again only once half of the last lookahead is used: a read per step, not per time tick.
-            if isAhead, lower > time + EmbeddedSubtitleReader.windowLookahead / 2 { return nil }
-            return lower < end ? lower...end : nil
-        }
-        return window
+        return subtitleTracker.subtitleWindow(around: time, readAhead: readAhead)
     }
 
     /// Playback reads from `seconds` on, not from the seek target: a forward keyframe seek lands past it, and what it
     /// jumped over wasn't read. Called with the time a seek landed at.
     func noteSubtitleReadsStart(at seconds: Double) {
-        liveSubtitleState.withLock { state in
-            if let start = state.spanStart, seconds > start { state.spanStart = seconds }
-        }
+        subtitleTracker.noteSubtitleReadsStart(at: seconds)
     }
 
     /// Adds the packets of a window read (`EmbeddedSubtitleReader.readSubtitles`) for the selection `selection` and
@@ -269,178 +148,34 @@ public final class MediaDemuxer: @unchecked Sendable {
     func mergeLiveSubtitles(
         _ packets: EmbeddedSubtitleReader.Packets, covering range: ClosedRange<Double>, selection: Int, span: Int
     ) -> Bool {
-        liveSubtitleState.withLock { state in
-            guard state.selection == selection, state.readSpan == span else { return false }
-            for cue in packets.cues { Self.addLiveCue(cue, to: &state) }
-            // The window ends where playback reads from, or reads on ahead of it: it joins the stretch being read.
-            state.imageCues.merge(
-                window: packets.bitmapOutputs, span: state.readSpan, replaying: state.bitmapTruncations)
-            for event in packets.assEvents where state.assScript != nil {
-                guard state.assPayloads.insert(event.payload).inserted else { continue }
-                state.assScript?.events.append(event)
-            }
-            state.cover(range)
-            state.version += 1
-            return true
-        }
+        subtitleTracker.mergeLiveSubtitles(packets, covering: range, selection: selection, span: span)
     }
 
-    /// Adds a text cue unless the list has it (a seek back or a window read reads it again); ids follow the list.
-    @discardableResult
-    private static func addLiveCue(_ cue: SubtitleCue, to state: inout LiveSubtitleState) -> Bool {
-        // A cue read again has the same timestamp; a set of keys keeps a long track from comparing every cue.
-        guard state.cueKeys.insert(LiveSubtitleState.CueKey(cue)).inserted else { return false }
-        state.cues.append(
-            SubtitleCue(
-                id: state.cues.count + 1, startTime: cue.startTime, endTime: cue.endTime, text: cue.text,
-                alignment: cue.alignment, rawPayload: cue.rawPayload))
-        return true
-    }
-
-    /// Ingests a subtitle packet into liveSubtitleCues (called with lock held).
-    private func processSubtitlePacket(_ pkt: UnsafeMutablePointer<AVPacket>) {
-        guard let ctx = formatCtx, selectedSubtitleStreamIndex >= 0,
-            selectedSubtitleStreamIndex < Int(ctx.pointee.nb_streams),
-            let stream = ctx.pointee.streams[selectedSubtitleStreamIndex]
-        else { return }
-
-        if let liveBitmapDecoder {
-            let output = liveBitmapDecoder.decode(pkt)
-            liveSubtitleState.withLock { state in
-                if let time = output.truncatePreviousAt { state.bitmapTruncations.append(time) }
-                // A seek back decodes sets that are there already; one read before a seek isn't ended by this one.
-                if state.imageCues.apply(output, deduplicating: true, span: state.readSpan) { state.version += 1 }
-            }
-            return
-        }
-
-        let timebase = stream.pointee.time_base
-        let codecId = stream.pointee.codecpar.pointee.codec_id
-        // Only a selected ASS track keeps events (the script is there then); other codecs aren't decoded for them.
-        if liveSubtitleState.withLock({ $0.assScript != nil }),
-            let event = EmbeddedSubtitleReader.assEvent(from: pkt, timebase: timebase)
-        {
-            liveSubtitleState.withLock { state in
-                // A seek back reads events again; libass drops a repeated ReadOrder, but the list shouldn't grow.
-                guard state.assScript != nil, state.assPayloads.insert(event.payload).inserted else { return }
-                state.assScript?.events.append(event)
-                state.version += 1
-            }
-        }
-        guard
-            let newCue = EmbeddedSubtitleReader.parseSubtitleCue(
-                pkt: pkt, timebase: timebase, codecId: codecId, cueIndex: 0)
-        else {
-            return
-        }
-
-        liveSubtitleState.withLock { state in
-            if Self.addLiveCue(newCue, to: &state) { state.version += 1 }
-        }
-    }
-
-    // Packet queue for demuxed audio packets
-    public struct DemuxedAudioPacket: Sendable {
-        public let data: Data
-        public let pts: Int64
-        public let dts: Int64
-        public let duration: Int64
-        public let isKeyFrame: Bool
-    }
-
-    /// Copies an audio packet's payload and timing out of FFmpeg's buffer.
-    private static func makeAudioPacket(_ pkt: AVPacket) -> DemuxedAudioPacket {
-        DemuxedAudioPacket(
-            data: Data(bytes: pkt.data, count: Int(pkt.size)),
-            pts: pkt.pts,
-            dts: pkt.dts,
-            duration: pkt.duration,
-            isKeyFrame: (pkt.flags & AV_PKT_FLAG_KEY) != 0
-        )
-    }
-
-    // Packet queue for demuxed video packets (preserves video if audio pump reads ahead)
-    private struct DemuxedVideoPacket: Sendable {
-        let data: Data
-        let pts: Int64
-        let dts: Int64
-        let duration: Int64
-        let flags: Int32
-    }
-
-    /// Fast FIFO queue avoiding O(N) array shifts on pop.
-    private struct PacketFifoQueue<T: Sendable>: Sendable {
-        private var elements: [T?] = []
-        private var headIndex: Int = 0
-
-        var isEmpty: Bool {
-            headIndex >= elements.count
-        }
-
-        var count: Int {
-            max(0, elements.count - headIndex)
-        }
-
-        mutating func append(_ element: T) {
-            elements.append(element)
-        }
-
-        mutating func popFirst() -> T? {
-            guard headIndex < elements.count else { return nil }
-            let element = elements[headIndex]
-            elements[headIndex] = nil
-            headIndex += 1
-            // Periodically compact buffer to prevent unbounded growth while preserving O(1) amortized pop
-            if headIndex > 64 && headIndex * 2 >= elements.count {
-                elements.removeFirst(headIndex)
-                headIndex = 0
-            }
-            return element
-        }
-
-        mutating func removeAll(keepingCapacity: Bool = false) {
-            elements.removeAll(keepingCapacity: keepingCapacity)
-            headIndex = 0
-        }
-
-        mutating func removeAll(where shouldBeRemoved: (T) -> Bool) {
-            var active: [T] = []
-            active.reserveCapacity(count)
-            for i in headIndex..<elements.count {
-                if let el = elements[i], !shouldBeRemoved(el) {
-                    active.append(el)
-                }
-            }
-            elements = active.map { Optional($0) }
-            headIndex = 0
-        }
-    }
-
-    private var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
-    private var videoQueue = PacketFifoQueue<DemuxedVideoPacket>()
+    var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
+    var videoQueue = PacketFifoQueue<DemuxedVideoPacket>()
     private let maxAudioQueueCount = 500
     private let maxVideoQueueCount = 180
-    public private(set) var formatDescription: CMVideoFormatDescription?
-    public private(set) var durationSeconds: Double = 0
-    public private(set) var width: Int = 0
-    public private(set) var height: Int = 0
+    public internal(set) var formatDescription: CMVideoFormatDescription?
+    public internal(set) var durationSeconds: Double = 0
+    public internal(set) var width: Int = 0
+    public internal(set) var height: Int = 0
     /// Sample Aspect Ratio (Pixel Aspect Ratio) from stream metadata (e.g. 720:959 or 1:1)
-    public private(set) var sampleAspectRatio: RationalAspectRatio = .square
+    public internal(set) var sampleAspectRatio: RationalAspectRatio = .square
     /// Effective Display Aspect Ratio (DAR) taking SAR into account: (width * sar.multiplier) / height
     public var displayAspectRatio: Double {
         RationalAspectRatio.computeDisplayAspectRatio(width: width, height: height, sar: sampleAspectRatio)
     }
-    public private(set) var maxPeakNits: Float = 1000.0
-    public private(set) var maxFallNits: Float = 0.0
-    public private(set) var colorPrimaries: CFString = kCVImageBufferColorPrimaries_ITU_R_709_2
-    public private(set) var transferFunction: CFString = kCVImageBufferTransferFunction_ITU_R_709_2
-    public private(set) var yCbCrMatrix: CFString = kCVImageBufferYCbCrMatrix_ITU_R_709_2
-    public private(set) var isFullRange: Bool = false
-    public private(set) var bitDepth: Int = 8
-    public private(set) var isDolbyVisionProfile5: Bool = false
-    public private(set) var dolbyVisionProfile: Int? = nil
-    public private(set) var dolbyVisionCompatibilityId: Int? = nil
-    public private(set) var dolbyVisionConfigData: Data? = nil
+    public internal(set) var maxPeakNits: Float = 1000.0
+    public internal(set) var maxFallNits: Float = 0.0
+    public internal(set) var colorPrimaries: CFString = kCVImageBufferColorPrimaries_ITU_R_709_2
+    public internal(set) var transferFunction: CFString = kCVImageBufferTransferFunction_ITU_R_709_2
+    public internal(set) var yCbCrMatrix: CFString = kCVImageBufferYCbCrMatrix_ITU_R_709_2
+    public internal(set) var isFullRange: Bool = false
+    public internal(set) var bitDepth: Int = 8
+    public internal(set) var isDolbyVisionProfile5: Bool = false
+    public internal(set) var dolbyVisionProfile: Int? = nil
+    public internal(set) var dolbyVisionCompatibilityId: Int? = nil
+    public internal(set) var dolbyVisionConfigData: Data? = nil
     public var dolbyVisionProfileString: String? {
         guard let p = dolbyVisionProfile else { return nil }
         if p == 8 {
@@ -457,7 +192,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if p == 9 { return "9" }
         return "\(p)"
     }
-    public private(set) var isAnnexBStream: Bool = false
+    public internal(set) var isAnnexBStream: Bool = false
     public var isHDR: Bool {
         if isDolbyVisionProfile5 { return true }
         if let p = dolbyVisionProfile {
@@ -479,16 +214,19 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         return false
     }
-    private var masteringDisplay: Data?
-    private var contentLightLevel: Data?
+    var masteringDisplay: Data?
+    var contentLightLevel: Data?
 
     /// Cancels this demuxer's blocking I/O; share one across demuxers to cancel a whole load.
     public typealias InterruptContext = FFmpegInterrupt
 
     private let interruptContext: InterruptContext
     private let ownsInterruptContext: Bool
-    private let lock = OSAllocatedUnfairLock()
-    private var isEOFInternal: Bool = false
+    /// I/O lock is held across blocking `av_read_frame` / `av_seek_frame` calls (hundreds of ms on
+    /// network streams); readers on the main thread must never contend with it.
+    /// Lock order: `lock` -> the lock inside `subtitleTracker` (never the reverse).
+    let lock = OSAllocatedUnfairLock()
+    var isEOFInternal: Bool = false
     public var isEOF: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -609,257 +347,6 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
     }
 
-    // MARK: - Stream discovery
-
-    /// Adopts `stream` as the video stream: geometry, timing, colorimetry, Dolby Vision and HDR metadata.
-    private func configureVideoStream(
-        _ stream: UnsafeMutablePointer<AVStream>, index: Int, codec detectedCodec: VideoCodec,
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>
-    ) {
-        let codecpar = stream.pointee.codecpar!
-        self.videoStreamIndex = index
-        self.timebase = stream.pointee.time_base
-        self.codec = detectedCodec
-        self.width = Int(codecpar.pointee.width)
-        self.height = Int(codecpar.pointee.height)
-
-        // Guess or extract Sample Aspect Ratio (SAR / PAR)
-        let guessedSAR = av_guess_sample_aspect_ratio(formatCtx, stream, nil)
-        if guessedSAR.num > 0 && guessedSAR.den > 0 {
-            self.sampleAspectRatio = RationalAspectRatio(
-                numerator: Int(guessedSAR.num), denominator: Int(guessedSAR.den))
-        } else if stream.pointee.sample_aspect_ratio.num > 0 && stream.pointee.sample_aspect_ratio.den > 0 {
-            self.sampleAspectRatio = RationalAspectRatio(
-                numerator: Int(stream.pointee.sample_aspect_ratio.num),
-                denominator: Int(stream.pointee.sample_aspect_ratio.den)
-            )
-        } else if codecpar.pointee.sample_aspect_ratio.num > 0 && codecpar.pointee.sample_aspect_ratio.den > 0 {
-            self.sampleAspectRatio = RationalAspectRatio(
-                numerator: Int(codecpar.pointee.sample_aspect_ratio.num),
-                denominator: Int(codecpar.pointee.sample_aspect_ratio.den)
-            )
-        } else {
-            self.sampleAspectRatio = .square
-        }
-
-        if stream.pointee.duration > 0 {
-            self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
-        } else if formatCtx.pointee.duration > 0 {
-            self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
-        }
-
-        // Nominal frame duration from the average frame rate, else the base rate (DV can report an average of
-        // 60000 fps), within a sanity range of 1 to 240 fps.
-        let plausibleDuration = { (rate: AVRational) -> Double? in
-            guard rate.num > 0 && rate.den > 0 else { return nil }
-            let duration = Double(rate.den) / Double(rate.num)
-            return duration >= (1.0 / 240.0) && duration <= 1.0 ? duration : nil
-        }
-        self.nominalFrameDuration =
-            plausibleDuration(stream.pointee.avg_frame_rate) ?? plausibleDuration(stream.pointee.r_frame_rate)
-            ?? (1.0 / 24.0)
-
-        let fieldOrder = codecpar.pointee.field_order
-        let isStandardDefinitionDV = codecpar.pointee.codec_id == AV_CODEC_ID_DVVIDEO && height <= 576
-        self.isInterlaced =
-            fieldOrder == AV_FIELD_UNKNOWN ? isStandardDefinitionDV : fieldOrder != AV_FIELD_PROGRESSIVE
-
-        let colorimetry = StreamColorimetry(codecParameters: codecpar, width: width, height: height)
-        self.colorPrimaries = colorimetry.colorPrimaries
-        self.transferFunction = colorimetry.transferFunction
-        self.yCbCrMatrix = colorimetry.yCbCrMatrix
-        self.isFullRange = colorimetry.isFullRange
-        self.bitDepth = colorimetry.bitDepth
-
-        // Dolby Vision Detection (Profiles 5, 8.1, 8.4):
-        // In MP4/MKV it is identified by dvvC/dvcC box (or stream side data).
-        // Profile 5 uses IPTc2 color space with PQ transfer function.
-        // Profile 8 uses standard BT.2020 PQ (8.1) or HLG (8.4) with dynamic RPU metadata.
-        if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
-            let extraData = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
-            if let parsed = HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: extraData) {
-                self.dolbyVisionProfile = parsed.profile
-                self.dolbyVisionCompatibilityId = parsed.compatibilityId
-                self.dolbyVisionConfigData = parsed.configData
-                self.bitDepth = 10
-                if parsed.profile == 5 {
-                    self.isDolbyVisionProfile5 = true
-                }
-                AppLog.info(
-                    .video,
-                    "Detected Dolby Vision Profile \(parsed.profile) (dvcC/dvvC payload: \(parsed.configData.count) bytes, compatibility id: \(parsed.compatibilityId))"
-                )
-            }
-        }
-
-        readHDRSideData(of: codecpar)
-    }
-
-    /// Dolby Vision configuration (when extradata had none), content light level and mastering display from
-    /// the stream's coded side data. Mastering luminance only fills in a peak still at its 1000-nit default.
-    private func readHDRSideData(of codecpar: UnsafeMutablePointer<AVCodecParameters>) {
-        let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
-        guard sideDataCount > 0, let sideDataList = codecpar.pointee.coded_side_data else { return }
-        for s in 0..<sideDataCount {
-            let sd = sideDataList[s]
-            if self.dolbyVisionProfile == nil && sd.type == AV_PKT_DATA_DOVI_CONF, let sdData = sd.data,
-                sd.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
-            {
-                let doviConf = UnsafeMutableRawPointer(sdData).assumingMemoryBound(
-                    to: AVDOVIDecoderConfigurationRecord.self)
-                let dvProfile = Int(doviConf.pointee.dv_profile)
-                let compatId = Int(doviConf.pointee.dv_bl_signal_compatibility_id & 0x0F)
-                self.dolbyVisionProfile = dvProfile
-                self.dolbyVisionCompatibilityId = compatId
-                self.bitDepth = 10
-                if dvProfile == 5 {
-                    self.isDolbyVisionProfile5 = true
-                }
-                self.dolbyVisionConfigData = HDRMetadataEncoding.dolbyVisionConfigurationBox(doviConf.pointee)
-                AppLog.info(
-                    .video,
-                    "Detected Dolby Vision Profile \(dvProfile) via FFmpeg side data (compatibility id: \(compatId))"
-                )
-            } else if sd.type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL, let sdData = sd.data,
-                sd.size >= MemoryLayout<AVContentLightMetadata>.size
-            {
-                let clm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(to: AVContentLightMetadata.self)
-                if clm.pointee.MaxCLL > 0 {
-                    self.maxPeakNits = Float(clm.pointee.MaxCLL)
-                }
-                if clm.pointee.MaxFALL > 0 {
-                    self.maxFallNits = Float(clm.pointee.MaxFALL)
-                }
-                self.contentLightLevel = HDRMetadataEncoding.contentLightLevelInfo(clm.pointee)
-                AppLog.info(
-                    .video,
-                    "Extracted ContentLightLevel from side data: MaxCLL=\(clm.pointee.MaxCLL), MaxFALL=\(clm.pointee.MaxFALL)"
-                )
-            } else if sd.type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA, let sdData = sd.data,
-                sd.size >= MemoryLayout<AVMasteringDisplayMetadata>.size
-            {
-                let mdm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(to: AVMasteringDisplayMetadata.self)
-                if mdm.pointee.has_luminance != 0 && mdm.pointee.max_luminance.den > 0 {
-                    let maxLum = Float(mdm.pointee.max_luminance.num) / Float(mdm.pointee.max_luminance.den)
-                    if self.maxPeakNits == 1000.0 && maxLum > 0 {
-                        self.maxPeakNits = maxLum
-                    }
-                }
-                if mdm.pointee.has_primaries != 0 && mdm.pointee.has_luminance != 0 {
-                    self.masteringDisplay = HDRMetadataEncoding.masteringDisplayColourVolume(mdm.pointee)
-                }
-            }
-        }
-    }
-
-    /// Lists an audio stream as a track; the first one becomes the active track.
-    private func registerAudioTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
-        let codecId = stream.pointee.codecpar.pointee.codec_id
-        // Read track metadata (title, language)
-        var title = ""
-        var lang = ""
-        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            title = String(cString: titleTag.pointee.value)
-        }
-        if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
-            lang = String(cString: langTag.pointee.value)
-        }
-        let codecNameStr: String
-        if let codecDesc = avcodec_descriptor_get(codecId), let name = codecDesc.pointee.name {
-            codecNameStr = String(cString: name)
-        } else {
-            codecNameStr = "audio"
-        }
-
-        let track = AudioTrack(
-            id: self.audioTracks.count,
-            streamIndex: index,
-            title: title,
-            language: lang,
-            codecName: codecNameStr,
-            channels: Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels),
-            sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate)
-        )
-        self.audioTracks.append(track)
-
-        if self.audioStreamIndex < 0 {
-            // First audio stream found - select as default
-            self.audioStreamIndex = index
-            self.selectedAudioTrackIndex = track.id
-            self.audioTimebase = stream.pointee.time_base
-            self.audioCodecId = codecId
-            self.hasAudio = true
-            self.audioChannels = track.channels
-            self.audioSampleRate = track.sampleRate
-            if let ed = stream.pointee.codecpar.pointee.extradata, stream.pointee.codecpar.pointee.extradata_size > 0 {
-                self.audioExtraData = Data(bytes: ed, count: Int(stream.pointee.codecpar.pointee.extradata_size))
-            }
-        }
-    }
-
-    /// Whether a subtitle stream is forced or for the hard of hearing: Matroska and MP4 flag the stream itself, and many
-    /// files leave the title empty; older ones only say so in the title.
-    static func subtitleFlags(title: String, disposition: Int32) -> (isForced: Bool, isSDH: Bool) {
-        (
-            (disposition & AV_DISPOSITION_FORCED) != 0 || title.localizedCaseInsensitiveContains("forced"),
-            (disposition & AV_DISPOSITION_HEARING_IMPAIRED) != 0 || title.localizedCaseInsensitiveContains("sdh")
-        )
-    }
-
-    /// Lists a text (SRT, WebVTT, mov_text, ASS, SSA) or bitmap (PGS, VobSub, DVB) subtitle stream as a track.
-    private func registerSubtitleTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
-        let codecId = stream.pointee.codecpar.pointee.codec_id
-        let isTextSub =
-            (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
-                || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
-        let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
-        guard isTextSub || isBitmapSub else { return }
-        var title = ""
-        var lang = ""
-        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            title = String(cString: titleTag.pointee.value)
-        }
-        if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
-            lang = String(cString: langTag.pointee.value)
-        }
-        let (isForced, isSDH) = Self.subtitleFlags(title: title, disposition: stream.pointee.disposition)
-        let displayTitle =
-            title.isEmpty
-            ? (lang.isEmpty ? "Subtitle \(self.subtitleTracks.count + 1)" : lang.uppercased()) : title
-
-        let subTrack = SubtitleTrack(
-            id: self.subtitleTracks.count,
-            streamIndex: index,
-            title: displayTitle,
-            language: lang,
-            isForced: isForced,
-            isSDH: isSDH,
-            format: isBitmapSub ? .bitmap : (codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA ? .ass : .text)
-        )
-        self.subtitleTracks.append(subTrack)
-    }
-
-    /// Container chapters as FFmpeg exports them (MKV default edition, flattened; MP4 chapter track or
-    /// Nero `chpl`). Chapters without a start are skipped; an unset end stays `nil`.
-    private static func readChapters(from formatCtx: UnsafeMutablePointer<AVFormatContext>) -> [MediaChapter.Raw] {
-        let count = Int(formatCtx.pointee.nb_chapters)
-        guard count > 0, let list = formatCtx.pointee.chapters else { return [] }
-        let noPTS = Int64.min  // AV_NOPTS_VALUE
-        return (0..<count).compactMap { index in
-            guard let chapter = list[index]?.pointee, chapter.start != noPTS,
-                chapter.time_base.num > 0, chapter.time_base.den > 0
-            else { return nil }
-            let num = Double(chapter.time_base.num)
-            let den = Double(chapter.time_base.den)
-            let title = av_dict_get(chapter.metadata, "title", nil, 0).map { String(cString: $0.pointee.value) }
-            return MediaChapter.Raw(
-                title: title,
-                start: Double(chapter.start) * num / den,
-                end: chapter.end != noPTS && chapter.end > chapter.start ? Double(chapter.end) * num / den : nil
-            )
-        }
-    }
-
     /// MPEG-TS / MPEG-PS: no index, and timestamps that continue the source clock. Seeking there bisects on
     /// timestamps and lands on whichever packet is nearest, not on a keyframe.
     package static func isUnindexedStream(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
@@ -901,7 +388,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// `av_read_frame` with timestamps on the zero-based timeline. Records how far audio and video have been read
     /// (`readAheadSeconds`).
-    private func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
+    func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
         let ret = av_read_frame(ctx, &pkt)
         if ret >= 0 {
             Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
@@ -931,329 +418,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         readAheadState.withLock { $0 = max($0, end) }
     }
 
-    private func extractVideoFormatDescription() -> CMVideoFormatDescription? {
-        guard let ctx = formatCtx else { return nil }
-        let codecParameters: UnsafePointer<AVCodecParameters>? =
-            videoStreamIndex >= 0
-            ? ctx.pointee.streams[videoStreamIndex].map { UnsafePointer($0.pointee.codecpar) } : nil
-
-        // Step 1: Try parsing from container extradata (avcC / hvcC / Annex B header)
-        var parameterSets = VideoFormatDescriptionBuilder.ParameterSets()
-        if let codecpar = codecParameters, let extradata = codecpar.pointee.extradata,
-            codecpar.pointee.extradata_size > 0,
-            let parsed = VideoFormatDescriptionBuilder.parameterSets(
-                fromExtradata: Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size)), codec: codec)
-        {
-            parameterSets = parsed.sets
-            self.isAnnexBStream = parsed.isAnnexB
-        }
-        var (vps, sps, pps) = (parameterSets.vps, parameterSets.sps, parameterSets.pps)
-        var masteringDisplay: Data?
-        var contentLightLevel: Data?
-
-        let hasExtradataParams: Bool
-        if codec == .hevc {
-            hasExtradataParams = (vps != nil && sps != nil && pps != nil)
-        } else {
-            hasExtradataParams = (sps != nil && pps != nil)
-        }
-
-        // Step 2: Fallback to scanning packets if extradata is missing or for SEI mastering info
-        var packetsScanned = 0
-        let maxPacketsToScan = hasExtradataParams ? 30 : 120
-        var pkt = AVPacket()
-
-        while packetsScanned < maxPacketsToScan && readPacket(ctx, &pkt) >= 0 {
-            packetsScanned += 1
-            if pkt.stream_index == videoStreamIndex {
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
-                // If extradata was missing or empty, detect whether the stream is Annex B from the first video packet
-                if !hasExtradataParams && packetsScanned == 1 && data.count >= 3 {
-                    if data[0] == 0 && data[1] == 0
-                        && (data[2] == 1 || (data.count > 3 && data[2] == 0 && data[3] == 1))
-                    {
-                        self.isAnnexBStream = true
-                    }
-                }
-                let nalus = NALUnitParser.extractNALUnits(from: data, isAnnexB: self.isAnnexBStream)
-                for naluData in nalus {
-                    guard !naluData.isEmpty else { continue }
-                    if codec == .hevc {
-                        let nalType = (naluData[0] >> 1) & 0x3F
-                        if vps == nil && nalType == 32 {
-                            vps = naluData
-                        } else if sps == nil && nalType == 33 {
-                            sps = naluData
-                        } else if pps == nil && nalType == 34 {
-                            pps = naluData
-                        } else if nalType == 39 {
-                            applyHDRSEI(
-                                naluData: naluData, masteringDisplay: &masteringDisplay,
-                                contentLightLevel: &contentLightLevel)
-                        }
-                    } else if codec == .h264 {
-                        let nalType = naluData[0] & 0x1F
-                        if sps == nil && nalType == 7 {
-                            sps = naluData
-                        } else if pps == nil && nalType == 8 {
-                            pps = naluData
-                        }
-                    }
-                }
-                av_packet_unref(&pkt)
-
-                let hasParameters: Bool
-                if codec == .hevc {
-                    hasParameters = (vps != nil && sps != nil && pps != nil)
-                } else if codec == .h264 {
-                    hasParameters = (sps != nil && pps != nil)
-                } else {
-                    hasParameters = true
-                }
-
-                if hasParameters && (masteringDisplay != nil || packetsScanned > 20) {
-                    break
-                }
-            } else {
-                av_packet_unref(&pkt)
-            }
-        }
-
-        // Rewind to the beginning. A timestamp seek in MPEG-TS / MPEG-PS bisects and can land past the first
-        // packet, dropping the keyframe that starts the file (H.264 then can't decode its first GOP). Their data
-        // starts at the first byte, so rewind there.
-        if Self.isUnindexedStream(ctx) {
-            avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
-        } else {
-            av_seek_frame(
-                ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
-        }
-        readAheadState.withLock { $0 = -.infinity }
-
-        self.masteringDisplay = masteringDisplay
-        self.contentLightLevel = contentLightLevel
-
-        let builder = VideoFormatDescriptionBuilder(
-            codec: codec,
-            width: width,
-            height: height,
-            colorPrimaries: colorPrimaries,
-            transferFunction: transferFunction,
-            yCbCrMatrix: yCbCrMatrix,
-            isFullRange: isFullRange,
-            bitDepth: bitDepth,
-            sampleAspectRatio: sampleAspectRatio,
-            masteringDisplay: masteringDisplay,
-            contentLightLevel: contentLightLevel,
-            parameterSets: .init(vps: vps, sps: sps, pps: pps),
-            dolbyVision: dolbyVisionProfile.flatMap { profile in
-                dolbyVisionConfigData.map { (profile: profile, configData: $0) }
-            }
-        )
-        return builder.make(codecParameters: codecParameters)
-    }
-
-    /// Collects HDR metadata from an HEVC prefix SEI NAL unit. Mastering display luminance only fills in
-    /// a peak still at its 1000-nit default; MaxCLL overrides it.
-    private func applyHDRSEI(naluData: Data, masteringDisplay: inout Data?, contentLightLevel: inout Data?) {
-        for message in VideoFormatDescriptionBuilder.hdrSEIMessages(inPrefixSEI: naluData) {
-            switch message {
-            case .masteringDisplay(let data, let maxLuminanceNits):
-                masteringDisplay = data
-                if self.maxPeakNits == 1000.0 && maxLuminanceNits > 0 {
-                    self.maxPeakNits = maxLuminanceNits
-                }
-            case .contentLightLevel(let data, let maxCLL, let maxFALL):
-                contentLightLevel = data
-                if maxCLL > 0 {
-                    self.maxPeakNits = Float(maxCLL)
-                }
-                if maxFALL > 0 {
-                    self.maxFallNits = Float(maxFALL)
-                }
-            }
-        }
-    }
-
-    private var targetPts: Int64 = -1
+    var targetPts: Int64 = -1
     /// `timelineOrigin(of:)` of this file; subtracted from every packet read, added back when seeking.
-    private var timelineOrigin: Int64 = 0
-    private var targetAudioPts: Int64 = -1
-
-    private func createVideoSample(from rawData: Data, pts: Int64, dts: Int64, duration: Int64) -> CMSampleBuffer? {
-        rawData.withUnsafeBytes { raw in
-            createVideoSample(
-                bytes: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                count: rawData.count,
-                pts: pts,
-                dts: dts,
-                duration: duration
-            )
-        }
-    }
-
-    private func createVideoSample(
-        bytes: UnsafePointer<UInt8>?,
-        count: Int,
-        pts: Int64,
-        dts: Int64,
-        duration: Int64
-    ) -> CMSampleBuffer? {
-        guard let formatDesc = formatDescription, let bytes, count > 0 else { return nil }
-
-        var doviMetadata: DolbyVisionFrameMetadata?
-        if codec == .hevc && dolbyVisionProfile != nil {
-            if let nalu = NALUnitParser.findNALUnit62(bytes: bytes, count: count, isAnnexB: self.isAnnexBStream) {
-                doviMetadata = DolbyVisionRPUParser.parse(naluData: nalu)
-            }
-        }
-
-        let mem: UnsafeMutableRawPointer
-        let finalSize: Int
-        if !codec.requiresHVCC {
-            finalSize = count
-            guard let allocated = malloc(finalSize) else { return nil }
-            memcpy(allocated, bytes, finalSize)
-            mem = allocated
-        } else {
-            let isAnnexB: Bool
-            if isAnnexBStream {
-                isAnnexB =
-                    (bytes[0] == 0 && bytes[1] == 0 && (bytes[2] == 1 || (count > 3 && bytes[2] == 0 && bytes[3] == 1)))
-            } else {
-                isAnnexB = false
-            }
-
-            if !isAnnexB {
-                finalSize = count
-                guard let allocated = malloc(finalSize) else { return nil }
-                memcpy(allocated, bytes, finalSize)
-                mem = allocated
-            } else {
-                let (hvccData, hvccSize) = NALUnitParser.packetDataToHVCC(
-                    pktData: bytes,
-                    count: count,
-                    isAnnexBStream: true
-                )
-                guard hvccSize > 0, let allocated = malloc(hvccSize) else { return nil }
-                _ = hvccData.withUnsafeBytes { rawBytes in
-                    memcpy(allocated, rawBytes.baseAddress!, hvccSize)
-                }
-                mem = allocated
-                finalSize = hvccSize
-            }
-        }
-
-        var blockBuffer: CMBlockBuffer?
-        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault,
-            memoryBlock: mem,
-            blockLength: finalSize,
-            blockAllocator: kCFAllocatorMalloc,
-            customBlockSource: nil,
-            offsetToData: 0,
-            dataLength: finalSize,
-            flags: 0,
-            blockBufferOut: &blockBuffer
-        )
-
-        if blockStatus != kCMBlockBufferNoErr {
-            free(mem)
-            return nil
-        }
-
-        let noPtsValue = Int64.min
-        let ptsVal = pts != noPtsValue ? pts : dts
-        let dtsVal = dts != noPtsValue ? dts : ptsVal
-
-        let timebaseDen = timebase.den
-        let timebaseNum = Int64(timebase.num)
-        var timing = CMSampleTimingInfo(
-            duration: duration > 0 ? CMTime(value: duration * timebaseNum, timescale: timebaseDen) : .invalid,
-            presentationTimeStamp: CMTime(value: ptsVal * timebaseNum, timescale: timebaseDen),
-            decodeTimeStamp: CMTime(value: dtsVal * timebaseNum, timescale: timebaseDen)
-        )
-
-        var sampleBuffer: CMSampleBuffer?
-        var sampleSize = finalSize
-        let status = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: blockBuffer,
-            formatDescription: formatDesc,
-            sampleCount: 1,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleSizeEntryCount: 1,
-            sampleSizeArray: &sampleSize,
-            sampleBufferOut: &sampleBuffer
-        )
-
-        let isBeforeTarget = targetPts >= 0 && ptsVal < targetPts
-        // In decode order the first sample past the target is often a P-frame, followed by B-frames that
-        // still precede it, so keep flagging preroll for a second past the target. Bounded so that a
-        // timestamp discontinuity (MPEG-TS) can't hide every following frame.
-        let reorderWindow = Int64(timebaseDen) / max(timebaseNum, 1)
-        if targetPts >= 0 && ptsVal >= targetPts + reorderWindow {
-            targetPts = -1
-        }
-
-        if status == noErr, let sb = sampleBuffer {
-            CMSetAttachment(
-                sb, key: kCVImageBufferColorPrimariesKey, value: colorPrimaries,
-                attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            CMSetAttachment(
-                sb, key: kCVImageBufferTransferFunctionKey, value: transferFunction,
-                attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            CMSetAttachment(
-                sb, key: kCVImageBufferYCbCrMatrixKey, value: yCbCrMatrix,
-                attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            if !sampleAspectRatio.isSquare {
-                let parDict: NSDictionary = [
-                    kCVImageBufferPixelAspectRatioHorizontalSpacingKey: sampleAspectRatio.numerator,
-                    kCVImageBufferPixelAspectRatioVerticalSpacingKey: sampleAspectRatio.denominator,
-                ]
-                CMSetAttachment(
-                    sb, key: kCVImageBufferPixelAspectRatioKey, value: parDict,
-                    attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            }
-            if let masteringDisplay {
-                CMSetAttachment(
-                    sb, key: kCVImageBufferMasteringDisplayColorVolumeKey, value: masteringDisplay as CFData,
-                    attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            }
-            if let contentLightLevel {
-                CMSetAttachment(
-                    sb, key: kCVImageBufferContentLightLevelInfoKey, value: contentLightLevel as CFData,
-                    attachmentMode: kCMAttachmentMode_ShouldPropagate)
-            }
-            if let doviMetadata {
-                CMSetAttachment(
-                    sb, key: Self.dolbyVisionMetadataAttachmentKey as CFString,
-                    value: DolbyVisionMetadataBox(metadata: doviMetadata),
-                    attachmentMode: kCMAttachmentMode_ShouldNotPropagate
-                )
-            }
-
-            if isBeforeTarget || pts == noPtsValue {
-                if let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: true)
-                    as? [NSMutableDictionary], let first = attachments.first
-                {
-                    if isBeforeTarget {
-                        first[kCMSampleAttachmentKey_DoNotDisplay] = true
-                    }
-                    if isBeforeTarget {
-                        first[Self.exactSeekTargetAttachmentKey] =
-                            Double(targetPts) * Double(timebaseNum) / Double(timebaseDen)
-                    }
-                    if pts == noPtsValue {
-                        first[Self.presentationTimeUnknownAttachmentKey] = true
-                    }
-                }
-            }
-            return sb
-        }
-        return nil
-    }
+    var timelineOrigin: Int64 = 0
+    var targetAudioPts: Int64 = -1
 
     public func nextVideoSample() -> CMSampleBuffer? {
         lock.lock()
@@ -1284,11 +452,11 @@ public final class MediaDemuxer: @unchecked Sendable {
                 }
             } else if pkt.stream_index == audioStreamIndex {
                 // Buffer audio packet for Stage 2 audio pipeline
-                audioQueue.append(Self.makeAudioPacket(pkt))
+                audioQueue.append(DemuxedAudioPacket(pkt))
                 av_packet_unref(&pkt)
-            } else if pkt.stream_index == selectedSubtitleStreamIndex {
+            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
                 // Intercept subtitle packets in-band (crucial for network streams and single-connection media servers)
-                processSubtitlePacket(&pkt)
+                subtitleTracker.processPacket(&pkt, in: ctx)
                 av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)
@@ -1338,33 +506,18 @@ public final class MediaDemuxer: @unchecked Sendable {
                     }
                     targetAudioPts = -1
                 }
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
-                let isKey = (pkt.flags & AV_PKT_FLAG_KEY) != 0
-                let audioPacket = DemuxedAudioPacket(
-                    data: data,
-                    pts: pktPts,
-                    dts: pkt.dts,
-                    duration: pktDuration,
-                    isKeyFrame: isKey
-                )
+                let audioPacket = DemuxedAudioPacket(pkt)
                 self.lastAudioPts = pktPts
                 av_packet_unref(&pkt)
                 return audioPacket
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
-                let videoPacket = DemuxedVideoPacket(
-                    data: data,
-                    pts: pkt.pts,
-                    dts: pkt.dts,
-                    duration: pkt.duration,
-                    flags: pkt.flags
-                )
+                let videoPacket = DemuxedVideoPacket(pkt)
                 videoQueue.append(videoPacket)
                 av_packet_unref(&pkt)
-            } else if pkt.stream_index == selectedSubtitleStreamIndex {
+            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
                 // Intercept subtitle packets in-band
-                processSubtitlePacket(&pkt)
+                subtitleTracker.processPacket(&pkt, in: ctx)
                 av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)
@@ -1374,228 +527,6 @@ public final class MediaDemuxer: @unchecked Sendable {
             self.isEOFInternal = true
         }
         return nil
-    }
-
-    /// - Parameter forward: Keyframe (non-exact) seeks only. When `true`, lands on the first keyframe at or
-    ///   after `seconds` instead of the one before it. Required for sparse-GOP streams (e.g. AV1 with 10 s+
-    ///   keyframe intervals) where a backward search would snap a +5 s step back to the same keyframe.
-    /// - Parameter audioDelay: Seconds audio plays late against the picture. When positive, the audio heard with the
-    ///   landed keyframe precedes it and is read too (see `readAudioAhead`).
-    public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let ctx = formatCtx else { return }
-        audioQueue.removeAll()
-        videoQueue.removeAll()
-        liveBitmapDecoder?.flush()
-        lastAudioPts = -1
-        isEOFInternal = false
-        // The subtitle packets read so far stay in the lists; reads go on from `seconds`, once the seek's own reads (which
-        // leave the read-ahead mark where it was) are done.
-        let previousReadAhead = readAheadState.withLock { $0 }
-        liveSubtitleState.withLock { state in
-            if let start = state.spanStart, previousReadAhead >= start { state.cover(start...previousReadAhead) }
-            state.spanStart = nil
-            // The seek's own reads already belong to the next stretch: they start where it lands.
-            state.readSpan += 1
-            state.bitmapTruncations.removeAll()
-        }
-        // After the seek's own reads: a keyframe search that backs off, or reads to the end, would leave them ahead.
-        defer {
-            readAheadState.withLock { $0 = seconds }
-            liveSubtitleState.withLock { $0.spanStart = seconds }
-        }
-        if audioTimebase.den > 0 && audioTimebase.num > 0 {
-            self.targetAudioPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
-        } else {
-            self.targetAudioPts = -1
-        }
-        guard timebase.num > 0 else { return }
-        let target = Int64(seconds * Double(timebase.den) / Double(timebase.num))
-        // If not exact (keyframe seek), don't set targetPts threshold so that the keyframe sample is displayed immediately
-        self.targetPts = exact ? target : -1
-        let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
-        let useForward = forward && !exact
-        let rawTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
-        var ret: Int32 = -1
-        if useForward {
-            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, 0)
-        }
-        if ret < 0 {
-            // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
-            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, AVSEEK_FLAG_BACKWARD)
-        }
-        AppLog.debug(
-            .demuxer,
-            "av_seek_frame to targetPts: \(target) (exact: \(exact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
-        )
-        if ret >= 0, videoStreamIndex >= 0, Self.isUnindexedStream(ctx) {
-            syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: exact)
-        } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
-            readAudioAhead(ctx, audioStartSeconds: exact ? seconds - audioDelay : nil, audioDelay: audioDelay)
-        }
-    }
-
-    /// Reads the audio that plays with the landed keyframe when audio is delayed against the picture.
-    ///
-    /// A seek lands on a keyframe and reads on from there, but the muxer stores audio next to video of the same
-    /// time: the audio for `audioDelay` before the keyframe lies before it in the file and would be skipped, leaving
-    /// that much silence after every keyframe seek. Once the keyframe is known, this seeks back to one at or before
-    /// the audio start and reads up to the landed keyframe again, keeping the audio and dropping the video before it
-    /// (nothing extra is decoded). Reading then continues after the keyframe as it would have.
-    ///
-    /// - Parameter audioStartSeconds: Where audio must start (exact seeks), or `nil` for the keyframe minus
-    ///   `audioDelay` (keyframe seeks).
-    private func readAudioAhead(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, audioStartSeconds: Double?, audioDelay: Double
-    ) {
-        // The landed keyframe, with the audio stored before it, as plain reading would queue them.
-        var pkt = AVPacket()
-        var keyframe: DemuxedVideoPacket?
-        while keyframe == nil, readPacket(ctx, &pkt) >= 0 {
-            defer { av_packet_unref(&pkt) }
-            if pkt.stream_index == audioStreamIndex {
-                audioQueue.append(Self.makeAudioPacket(pkt))
-            } else if pkt.stream_index == selectedSubtitleStreamIndex {
-                processSubtitlePacket(&pkt)
-            } else if pkt.stream_index == videoStreamIndex {
-                keyframe = DemuxedVideoPacket(
-                    data: Data(bytes: pkt.data, count: Int(pkt.size)),
-                    pts: pkt.pts, dts: pkt.dts, duration: pkt.duration, flags: pkt.flags)
-            }
-        }
-        guard let keyframe else { return }
-        videoQueue.append(keyframe)
-
-        let keyTime = keyframe.pts != Int64.min ? keyframe.pts : keyframe.dts
-        let keySeconds = Double(keyTime) * Double(timebase.num) / Double(timebase.den)
-        let audioStart = max(audioStartSeconds ?? keySeconds - audioDelay, 0)
-        guard audioStart < keySeconds else { return }
-
-        let rawStart =
-            Int64(audioStart * Double(timebase.den) / Double(timebase.num))
-            + Self.timelineOffset(timelineOrigin, in: timebase)
-        guard av_seek_frame(ctx, Int32(videoStreamIndex), rawStart, AVSEEK_FLAG_BACKWARD) >= 0 else {
-            restoreAfterAudioAhead(ctx, keyTime: keyTime)
-            return
-        }
-        var audio: [DemuxedAudioPacket] = []
-        var budget = 50_000
-        while budget > 0, readPacket(ctx, &pkt) >= 0 {
-            budget -= 1
-            defer { av_packet_unref(&pkt) }
-            if pkt.stream_index == audioStreamIndex {
-                audio.append(Self.makeAudioPacket(pkt))
-            } else if pkt.stream_index == selectedSubtitleStreamIndex {
-                processSubtitlePacket(&pkt)
-            } else if pkt.stream_index == videoStreamIndex, (pkt.pts != Int64.min ? pkt.pts : pkt.dts) == keyTime {
-                // Back at the keyframe, already queued: the audio read on the way replaces the audio queued above.
-                audioQueue.removeAll()
-                for packet in audio {
-                    audioQueue.append(packet)
-                }
-                return
-            }
-        }
-        AppLog.warning(.demuxer, "Keyframe at \(keySeconds)s not reached again while reading audio ahead of it")
-        restoreAfterAudioAhead(ctx, keyTime: keyTime)
-    }
-
-    /// Returns to just after the landed keyframe (already queued, with the audio stored before it) when reading audio
-    /// ahead of it failed.
-    private func restoreAfterAudioAhead(_ ctx: UnsafeMutablePointer<AVFormatContext>, keyTime: Int64) {
-        let rawKey = keyTime + Self.timelineOffset(timelineOrigin, in: timebase)
-        guard av_seek_frame(ctx, Int32(videoStreamIndex), rawKey, AVSEEK_FLAG_BACKWARD) >= 0 else { return }
-        var pkt = AVPacket()
-        while readPacket(ctx, &pkt) >= 0 {
-            defer { av_packet_unref(&pkt) }
-            if pkt.stream_index == videoStreamIndex, (pkt.pts != Int64.min ? pkt.pts : pkt.dts) >= keyTime {
-                return
-            }
-        }
-    }
-
-    /// MPEG-TS / MPEG-PS have no index: `av_seek_frame` bisects on timestamps and lands on whatever
-    /// packet is nearest, usually mid-GOP, which the decoder can't start from. Skips ahead to the next
-    /// video keyframe and queues it; for exact seeks, backs off further each time that keyframe is past
-    /// the target.
-    ///
-    /// The muxer interleaves audio up to ~0.7 s away from the video of the same time, so audio read
-    /// before the keyframe can still be needed: on the attempt that lands it is queued like any audio
-    /// read ahead of video (`nextAudioPacket` drops what precedes `targetAudioPts`). Subtitle cues are
-    /// kept on every attempt; re-reading them after a back-off is deduplicated.
-    private func syncToVideoKeyframe(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64, requireAtOrBeforeTarget: Bool
-    ) {
-        let oneSecond = Int64(Double(timebase.den) / Double(timebase.num))
-        let maxAttempts = 5
-        var seekTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
-        for attempt in 0..<maxAttempts {
-            var pkt = AVPacket()
-            var landed = false
-            var budget = 20_000
-            var audioBeforeKeyframe: [DemuxedAudioPacket] = []
-            while budget > 0, readPacket(ctx, &pkt) >= 0 {
-                budget -= 1
-                defer { av_packet_unref(&pkt) }
-                if pkt.stream_index == audioStreamIndex {
-                    audioBeforeKeyframe.append(Self.makeAudioPacket(pkt))
-                    continue
-                }
-                if pkt.stream_index == selectedSubtitleStreamIndex {
-                    processSubtitlePacket(&pkt)
-                    continue
-                }
-                guard pkt.stream_index == videoStreamIndex, (pkt.flags & AV_PKT_FLAG_KEY) != 0 else { continue }
-                let keyPts = pkt.pts != Int64.min ? pkt.pts : pkt.dts
-                let isLastChance = attempt == maxAttempts - 1
-                if requireAtOrBeforeTarget && keyPts > target && !isLastChance {
-                    break
-                }
-                videoQueue.append(
-                    DemuxedVideoPacket(
-                        data: Data(bytes: pkt.data, count: Int(pkt.size)),
-                        pts: pkt.pts, dts: pkt.dts, duration: pkt.duration, flags: pkt.flags))
-                landed = true
-                break
-            }
-            if landed {
-                for packet in audioBeforeKeyframe {
-                    audioQueue.append(packet)
-                }
-                return
-            }
-            seekTarget -= oneSecond << attempt
-            // Before the first timestamp the bisection fails: restart from the first byte instead.
-            if av_seek_frame(ctx, Int32(videoStreamIndex), seekTarget, AVSEEK_FLAG_BACKWARD) < 0 {
-                _ = avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
-            }
-        }
-        AppLog.warning(.demuxer, "No video keyframe found while syncing seek to \(target)")
-    }
-
-    /// Adjusts the target audio presentation timestamp (e.g. to align with the actual decoded keyframe PTS).
-    public func setTargetAudioPts(seconds: Double) {
-        lock.lock()
-        defer { lock.unlock() }
-        if audioTimebase.den > 0 && audioTimebase.num > 0 {
-            self.targetAudioPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
-        } else {
-            self.targetAudioPts = -1
-        }
-    }
-
-    /// Discards any audio packets queued prior to the specified target time in seconds.
-    /// This prevents stale audio packets accumulated during video preroll/seeking from corrupting the synchronizer.
-    public func purgeAudio(beforeSeconds seconds: Double) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard audioTimebase.den > 0 && audioTimebase.num > 0 else {
-            audioQueue.removeAll()
-            return
-        }
-        let thresholdPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
-        audioQueue.removeAll { $0.pts < thresholdPts }
     }
 
     public func cancel() {

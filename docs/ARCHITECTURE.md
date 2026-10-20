@@ -337,8 +337,8 @@ draws its own gets the same data from `onSubtitleCuesChanged`.
   same rule as for text (subtitles stay inside the visible picture); drawing on the whole picture and clipping, as mpv
   does, would need a frame as large as the zoomed picture.
 - **Embedded tracks** come from the packets playback reads, for every source, as in mpv and VLC
-  (`processSubtitlePacket`, `liveSubtitleVersion`): never from a read of the whole file, which for Matroska means
-  every byte of it (matroskadec ignores `AVDISCARD_ALL` and reads every block), minutes on a network volume. That
+  (`LiveSubtitleTracker.processPacket`, `liveSubtitleVersion`): never from a read of the whole file, which for Matroska
+  means every byte of it (matroskadec ignores `AVDISCARD_ALL` and reads every block), minutes on a network volume. That
   misses what lies before where playback reads from: the cue on screen when a track is chosen or a seek lands, and,
   for a track chosen mid-play, everything playback read ahead before. A second demuxer reads that window
   (`MediaDemuxer.subtitleWindow`: from 10 s before the time up to where playback reads from, to the end if it read
