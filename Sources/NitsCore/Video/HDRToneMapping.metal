@@ -6,7 +6,8 @@ struct VertexOutput {
     float2 texCoords;
 };
 
-vertex VertexOutput hdrVertexShader(uint vertexID [[vertex_id]]) {
+// sourceRect: the part of the frame drawn, normalized with the origin at the top left (xy origin, zw size).
+vertex VertexOutput hdrVertexShader(uint vertexID [[vertex_id]], constant float4 &sourceRect [[buffer(0)]]) {
     float2 positions[4] = {
         float2(-1.0, -1.0),
         float2( 1.0, -1.0),
@@ -22,7 +23,7 @@ vertex VertexOutput hdrVertexShader(uint vertexID [[vertex_id]]) {
 
     VertexOutput out;
     out.position = float4(positions[vertexID], 0.0, 1.0);
-    out.texCoords = texCoords[vertexID];
+    out.texCoords = sourceRect.xy + texCoords[vertexID] * sourceRect.zw;
     return out;
 }
 

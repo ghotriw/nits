@@ -24,6 +24,118 @@ public struct QuickVideoPane: View {
         }
     }
 
+    private var isPictureAdjusted: Bool {
+        let geometry = engine.videoGeometry
+        return geometry.aspectRatio != nil || geometry.crop != nil || geometry.zoom != 1.0 || geometry.pan != .zero
+    }
+
+    private var pictureSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Picture", systemImage: "aspectratio")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                if isPictureAdjusted {
+                    Button("Reset") {
+                        engine.setVideoAspectRatio(nil)
+                        engine.setVideoCrop(nil)
+                        engine.resetVideoZoom()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    pictureLabel("Aspect Ratio")
+                    Picker(
+                        "Aspect Ratio",
+                        selection: Binding(
+                            get: { engine.videoGeometry.aspectRatio },
+                            set: { engine.setVideoAspectRatio($0) }
+                        )
+                    ) {
+                        Text("Default (\(formattedRatio(engine.displayAspectRatio)))").tag(RationalAspectRatio?.none)
+                        ForEach(RationalAspectRatio.displayPresets, id: \.self) { ratio in
+                            Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    pictureLabel("Crop")
+                    Picker(
+                        "Crop",
+                        selection: Binding(
+                            get: { engine.videoGeometry.crop },
+                            set: { engine.setVideoCrop($0) }
+                        )
+                    ) {
+                        Text("None").tag(RationalAspectRatio?.none)
+                        ForEach(RationalAspectRatio.displayPresets, id: \.self) { ratio in
+                            Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    pictureLabel("Scaling")
+                    Picker(
+                        "Scaling",
+                        selection: Binding(
+                            get: { engine.videoGeometry.scaling },
+                            set: { engine.setVideoScaling($0) }
+                        )
+                    ) {
+                        ForEach(VideoScaling.allCases) { scaling in
+                            Text(scaling.title).tag(scaling)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    pictureLabel("Zoom")
+                    HStack(spacing: 6) {
+                        Button {
+                            engine.stepVideoZoom(by: -1)
+                        } label: {
+                            Image(systemName: "minus.magnifyingglass")
+                        }
+                        .disabled(engine.videoGeometry.zoom <= VideoGeometrySettings.zoomRange.lowerBound)
+                        Text("\(Int((engine.videoGeometry.zoom * 100).rounded()))%")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(engine.videoGeometry.zoom == 1.0 ? .white.opacity(0.7) : Color.accentColor)
+                            .frame(minWidth: 44)
+                        Button {
+                            engine.stepVideoZoom(by: 1)
+                        } label: {
+                            Image(systemName: "plus.magnifyingglass")
+                        }
+                        .disabled(engine.videoGeometry.zoom >= VideoGeometrySettings.zoomRange.upperBound)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text("Aspect ratio and crop are remembered for this file. Drag the picture to move it while it is zoomed.")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+    }
+
+    private func pictureLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12))
+            .foregroundStyle(.white.opacity(0.7))
+    }
+
+    private func formattedRatio(_ ratio: Double) -> String {
+        String(format: "%.2f:1", ratio)
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             // Playback Speed Section (First Item)
@@ -107,6 +219,14 @@ public struct QuickVideoPane: View {
                 )
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.55))
+            }
+
+            // Picture geometry: aspect ratio, crop, scaling, zoom
+            if engine.hasVideo {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+
+                pictureSection
             }
 
             // Deinterlacing - only for interlaced video

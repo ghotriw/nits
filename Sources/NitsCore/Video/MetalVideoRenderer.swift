@@ -84,10 +84,18 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private var lastPixelBuffer: CVPixelBuffer?
     private let renderLock = OSAllocatedUnfairLock()
     private let uniformsLock = OSAllocatedUnfairLock(initialState: ToneMapUniforms())
+    private let sourceRectLock = OSAllocatedUnfairLock(initialState: CGRect(x: 0, y: 0, width: 1, height: 1))
 
     public var uniforms: ToneMapUniforms {
         get { uniformsLock.withLock { $0 } }
         set { uniformsLock.withLock { $0 = newValue } }
+    }
+
+    /// The part of the frame drawn into the layer, normalized with the origin at the top left (crop, zoom, pan;
+    /// see `VideoLayout.sourceRect`). The whole frame by default.
+    public var sourceRect: CGRect {
+        get { sourceRectLock.withLock { $0 } }
+        set { sourceRectLock.withLock { $0 = newValue } }
     }
 
     public func updateUniforms(_ modify: @Sendable (inout ToneMapUniforms) -> Void) {
@@ -230,6 +238,10 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         }
 
         encoder.setRenderPipelineState(pipelineState)
+        let source = sourceRect
+        var sourceRectBytes = SIMD4<Float>(
+            Float(source.minX), Float(source.minY), Float(source.width), Float(source.height))
+        encoder.setVertexBytes(&sourceRectBytes, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         encoder.setFragmentTexture(yTexture, index: 0)
         encoder.setFragmentTexture(uvTexture, index: 1)
 

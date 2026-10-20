@@ -71,6 +71,8 @@ struct DolbyVisionTrimShaderTests {
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(lumaTexture, index: 0)
         encoder.setFragmentTexture(chromaTexture, index: 1)
+        var sourceRect = SIMD4<Float>(0, 0, 1, 1)
+        encoder.setVertexBytes(&sourceRect, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         var bytes = uniforms
         encoder.setFragmentBytes(&bytes, length: MemoryLayout<ToneMapUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

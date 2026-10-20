@@ -2,7 +2,7 @@ import Foundation
 
 /// Rational Aspect Ratio representing horizontal-to-vertical pixel or display proportions
 /// (e.g. Sample Aspect Ratio / Pixel Aspect Ratio 720:959 or 1:1).
-public struct RationalAspectRatio: Sendable, Equatable, Hashable {
+public struct RationalAspectRatio: Sendable, Equatable, Hashable, Codable {
     public let numerator: Int
     public let denominator: Int
 

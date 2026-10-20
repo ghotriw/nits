@@ -150,6 +150,62 @@ public struct PlayerCommands: Commands {
                 Button("1.0 (Maximum)") { playerActions?.metalSharpness = 1.0 }
             }
             .disabled(playerActions == nil)
+
+            Divider()
+
+            let hasVideo = playerActions?.hasVideo ?? false
+            Picker(
+                "Aspect Ratio",
+                selection: Binding(
+                    get: { playerActions?.videoGeometry.aspectRatio },
+                    set: { playerActions?.setVideoAspectRatio($0) }
+                )
+            ) {
+                Text("Default").tag(RationalAspectRatio?.none)
+                ForEach(RationalAspectRatio.displayPresets, id: \.self) { ratio in
+                    Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
+                }
+            }
+            .disabled(!hasVideo)
+
+            Picker(
+                "Crop",
+                selection: Binding(
+                    get: { playerActions?.videoGeometry.crop },
+                    set: { playerActions?.setVideoCrop($0) }
+                )
+            ) {
+                Text("None").tag(RationalAspectRatio?.none)
+                ForEach(RationalAspectRatio.displayPresets, id: \.self) { ratio in
+                    Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
+                }
+            }
+            .disabled(!hasVideo)
+
+            Picker(
+                "Scaling",
+                selection: Binding(
+                    get: { playerActions?.videoGeometry.scaling ?? .fit },
+                    set: { playerActions?.setVideoScaling($0) }
+                )
+            ) {
+                ForEach(VideoScaling.allCases) { scaling in
+                    Text(scaling.title).tag(scaling)
+                }
+            }
+            .disabled(!hasVideo)
+
+            Button("Zoom In") { playerActions?.stepVideoZoom(by: 1) }
+                .keyboardShortcut("=", modifiers: [.option, .command])
+                .disabled(!hasVideo)
+            Button("Zoom Out") { playerActions?.stepVideoZoom(by: -1) }
+                .keyboardShortcut("-", modifiers: [.option, .command])
+                .disabled(!hasVideo)
+            Button("Actual Zoom") { playerActions?.resetVideoZoom() }
+                .keyboardShortcut("0", modifiers: [.option, .command])
+                .disabled(
+                    !hasVideo
+                        || (playerActions?.videoGeometry.zoom == 1.0 && playerActions?.videoGeometry.pan == .zero))
         }
 
         CommandMenu("View") {

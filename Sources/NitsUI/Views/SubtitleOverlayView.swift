@@ -11,7 +11,9 @@ public struct SubtitleOverlayView: View {
     public let fontWeight: String
     public let videoWidth: Int
     public let videoHeight: Int
-    public let displayAspectRatio: Double
+    public let sampleAspectRatio: RationalAspectRatio
+    public let geometry: VideoGeometrySettings
+    @Environment(\.displayScale) private var displayScale
 
     public init(
         cues: [SubtitleCue],
@@ -23,7 +25,8 @@ public struct SubtitleOverlayView: View {
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
         videoHeight: Int = 0,
-        displayAspectRatio: Double = 0.0
+        sampleAspectRatio: RationalAspectRatio = .square,
+        geometry: VideoGeometrySettings = VideoGeometrySettings()
     ) {
         self.cues = cues
         self.fontSize = fontSize
@@ -34,7 +37,8 @@ public struct SubtitleOverlayView: View {
         self.fontWeight = fontWeight
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
-        self.displayAspectRatio = displayAspectRatio
+        self.sampleAspectRatio = sampleAspectRatio
+        self.geometry = geometry
     }
 
     public init(
@@ -47,7 +51,8 @@ public struct SubtitleOverlayView: View {
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
         videoHeight: Int = 0,
-        displayAspectRatio: Double = 0.0
+        sampleAspectRatio: RationalAspectRatio = .square,
+        geometry: VideoGeometrySettings = VideoGeometrySettings()
     ) {
         self.init(
             cues: cue.map { [$0] } ?? [],
@@ -59,7 +64,8 @@ public struct SubtitleOverlayView: View {
             fontWeight: fontWeight,
             videoWidth: videoWidth,
             videoHeight: videoHeight,
-            displayAspectRatio: displayAspectRatio
+            sampleAspectRatio: sampleAspectRatio,
+            geometry: geometry
         )
     }
 
@@ -81,13 +87,15 @@ public struct SubtitleOverlayView: View {
 
     public var body: some View {
         if !cues.isEmpty {
-            GeometryReader { geometry in
-                let containerSize = geometry.size
+            GeometryReader { proxy in
+                let containerSize = proxy.size
                 let videoFrame = Self.computeVideoFrame(
                     containerSize: containerSize,
                     videoWidth: videoWidth,
                     videoHeight: videoHeight,
-                    displayAspectRatio: displayAspectRatio
+                    sampleAspectRatio: sampleAspectRatio,
+                    geometry: geometry,
+                    backingScale: displayScale
                 )
                 let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
                 let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
@@ -144,13 +152,15 @@ public struct SubtitleOverlayView: View {
         }
     }
 
-    /// Calculates the aspect-fit frame of the video inside the container,
-    /// matching the placement of NativeVideoHostView / MetalVideoRenderer.
+    /// The part of the container the picture covers (`VideoLayout.visibleRect`), matching the placement of
+    /// NativeVideoHostView / MetalVideoRenderer: cues stay on the visible picture when it is cropped or zoomed.
     nonisolated public static func computeVideoFrame(
         containerSize: CGSize,
         videoWidth: Int,
         videoHeight: Int,
-        displayAspectRatio: Double = 0.0
+        sampleAspectRatio: RationalAspectRatio = .square,
+        geometry: VideoGeometrySettings = VideoGeometrySettings(),
+        backingScale: CGFloat = 1.0
     ) -> CGRect {
         guard containerSize.width > 0, containerSize.height > 0 else {
             return CGRect(origin: .zero, size: containerSize)
@@ -158,21 +168,14 @@ public struct SubtitleOverlayView: View {
         guard videoWidth > 0, videoHeight > 0 else {
             return CGRect(origin: .zero, size: containerSize)
         }
-        let aspect: Double = displayAspectRatio > 0 ? displayAspectRatio : (Double(videoWidth) / Double(videoHeight))
-
-        let containerAspect = Double(containerSize.width) / Double(containerSize.height)
-
-        if containerAspect > aspect {
-            // Container is wider than video: pillarbox on sides
-            let targetWidth = Double(containerSize.height) * aspect
-            let offsetX = (Double(containerSize.width) - targetWidth) / 2.0
-            return CGRect(x: offsetX, y: 0, width: targetWidth, height: Double(containerSize.height))
-        } else {
-            // Container is taller than video: letterbox on top/bottom
-            let targetHeight = Double(containerSize.width) / aspect
-            let offsetY = (Double(containerSize.height) - targetHeight) / 2.0
-            return CGRect(x: 0, y: offsetY, width: Double(containerSize.width), height: targetHeight)
-        }
+        return VideoGeometry.layout(
+            viewSize: containerSize,
+            videoWidth: videoWidth,
+            videoHeight: videoHeight,
+            sampleAspectRatio: sampleAspectRatio,
+            settings: geometry,
+            backingScale: backingScale
+        ).visibleRect
     }
 
     @ViewBuilder

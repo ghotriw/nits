@@ -18,6 +18,10 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let audioDelay: Double?
     /// Path of the selected external subtitle file, when `subtitleTrackId` is `externalSubtitle`.
     public let externalSubtitlePath: String?
+    /// Forced display aspect ratio; see `PlaybackPreferences.videoAspectRatio`.
+    public let videoAspectRatio: RationalAspectRatio?
+    /// Crop aspect ratio; see `PlaybackPreferences.videoCrop`.
+    public let videoCrop: RationalAspectRatio?
 
     /// Sentinel value for `subtitleTrackId` meaning the user explicitly disabled subtitles.
     public static let subtitlesOff = -1
@@ -38,6 +42,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.subtitleDelay = preferences.subtitleDelay
         self.audioDelay = preferences.audioDelay
         self.externalSubtitlePath = preferences.externalSubtitlePath
+        self.videoAspectRatio = preferences.videoAspectRatio
+        self.videoCrop = preferences.videoCrop
     }
 
     public var preferences: PlaybackPreferences {
@@ -46,7 +52,9 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
             subtitleTrackId: subtitleTrackId,
             subtitleDelay: subtitleDelay,
             audioDelay: audioDelay,
-            externalSubtitlePath: externalSubtitlePath
+            externalSubtitlePath: externalSubtitlePath,
+            videoAspectRatio: videoAspectRatio,
+            videoCrop: videoCrop
         )
     }
 }
@@ -60,19 +68,31 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public var subtitleDelay: Double?
     public var audioDelay: Double?
     public var externalSubtitlePath: String?
+    /// Display aspect ratio forced on the picture (`VideoGeometrySettings.aspectRatio`); `noGeometryOverride` when the
+    /// stream's own is used.
+    public var videoAspectRatio: RationalAspectRatio?
+    /// Crop of the picture (`VideoGeometrySettings.crop`); `noGeometryOverride` when it is not cropped.
+    public var videoCrop: RationalAspectRatio?
+
+    /// Saved for "no override", which `nil` can't say: it keeps the saved value.
+    public static let noGeometryOverride = RationalAspectRatio(numerator: 0, denominator: 0)
 
     public init(
         audioTrackId: Int? = nil,
         subtitleTrackId: Int? = nil,
         subtitleDelay: Double? = nil,
         audioDelay: Double? = nil,
-        externalSubtitlePath: String? = nil
+        externalSubtitlePath: String? = nil,
+        videoAspectRatio: RationalAspectRatio? = nil,
+        videoCrop: RationalAspectRatio? = nil
     ) {
         self.audioTrackId = audioTrackId
         self.subtitleTrackId = subtitleTrackId
         self.subtitleDelay = subtitleDelay
         self.audioDelay = audioDelay
         self.externalSubtitlePath = externalSubtitlePath
+        self.videoAspectRatio = videoAspectRatio
+        self.videoCrop = videoCrop
     }
 
     /// These preferences with the fields left `nil` taken from `saved`.
@@ -82,13 +102,16 @@ public struct PlaybackPreferences: Sendable, Equatable {
             subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
             subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
             audioDelay: audioDelay ?? saved?.audioDelay,
-            externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath
+            externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath,
+            videoAspectRatio: videoAspectRatio ?? saved?.videoAspectRatio,
+            videoCrop: videoCrop ?? saved?.videoCrop
         )
     }
 
     /// Whether there is a preference worth keeping without a resume position.
     var isEmpty: Bool {
         audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0 && (audioDelay ?? 0) == 0
+            && videoAspectRatio?.isValid != true && videoCrop?.isValid != true
     }
 }
 

@@ -191,3 +191,42 @@ struct PlaybackHistoryStoreTests {
         #expect(store.savedPreferences(for: path)?.subtitleTrackId == 1)
     }
 }
+
+@Suite("PlaybackHistoryStore Picture Geometry")
+struct PlaybackHistoryGeometryTests {
+    private let path = "/Users/test/Movies/letterboxed.mkv"
+    private let wide = RationalAspectRatio(numerator: 239, denominator: 100)
+
+    @Test("Aspect override and crop are kept without a resume position and can be cleared")
+    func testSavesAndClearsGeometry() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        store.savePosition(
+            for: path, position: 0, duration: 3600,
+            preferences: PlaybackPreferences(videoAspectRatio: PlaybackPreferences.noGeometryOverride, videoCrop: wide))
+        #expect(store.savedPreferences(for: path)?.videoCrop == wide)
+        #expect(store.savedPreferences(for: path)?.videoAspectRatio?.isValid == false)
+
+        // `nil` keeps the saved crop.
+        store.savePreferences(for: path, duration: 3600, PlaybackPreferences(subtitleDelay: 0.5))
+        #expect(store.savedPreferences(for: path)?.videoCrop == wide)
+
+        // Cleared with nothing else to keep: the record goes away.
+        store.savePosition(
+            for: path, position: 0, duration: 3600,
+            preferences: PlaybackPreferences(
+                subtitleDelay: 0, videoAspectRatio: PlaybackPreferences.noGeometryOverride,
+                videoCrop: PlaybackPreferences.noGeometryOverride))
+        #expect(store.savedPreferences(for: path) == nil)
+    }
+
+    @Test("Records saved before picture geometry existed still decode")
+    func testDecodesRecordsWithoutGeometry() throws {
+        let defaults = InMemoryUserDefaults()
+        let store = PlaybackHistoryStore(userDefaults: defaults)
+        let legacy = #"{"position":120,"duration":3600,"lastUpdated":0,"subtitleDelay":0.2}"#
+        defaults.set(Data(legacy.utf8), forKey: store.storageKey(for: path))
+        let preferences = try #require(store.savedPreferences(for: path))
+        #expect(preferences.subtitleDelay == 0.2)
+        #expect(preferences.videoAspectRatio == nil && preferences.videoCrop == nil)
+    }
+}

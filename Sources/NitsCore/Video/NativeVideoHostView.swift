@@ -6,6 +6,9 @@ public final class NativeVideoHostView: NSView {
     public var onFilesDrop: (([URL]) -> Void)?
     private let engine: PlayerEngine
     private let rootLayer = CALayer()
+    /// Holds the display layer and clips it to the visible part of the picture when it is cropped or larger than
+    /// the view (see `layout()`); covers the view without clipping otherwise.
+    private let videoClipLayer = CALayer()
 
     public init(engine: PlayerEngine) {
         self.engine = engine
@@ -21,16 +24,29 @@ public final class NativeVideoHostView: NSView {
         return rootLayer
     }
 
+    /// The part of this view the picture covers (in its coordinates), for hosts that draw over the video; updated
+    /// on every layout.
+    public private(set) var presentedVideoRect: CGRect = .zero
+
+    /// Whether the picture is larger than the view (zoomed or filled), so a host can let drags move it.
+    public private(set) var canPanVideo = false
+
+    /// A window movable by its background doesn't move from a drag on a picture that can be panned.
+    public override var mouseDownCanMoveWindow: Bool {
+        !canPanVideo
+    }
+
     private func setup() {
         registerForDraggedTypes([.fileURL])
         wantsLayer = true
         rootLayer.backgroundColor = NSColor.black.cgColor
 
         // Add AVSampleBufferDisplayLayer
+        videoClipLayer.frame = rootLayer.bounds
+        rootLayer.addSublayer(videoClipLayer)
         engine.displayLayer.backgroundColor = NSColor.black.cgColor
-        engine.displayLayer.frame = rootLayer.bounds
-        engine.displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        rootLayer.addSublayer(engine.displayLayer)
+        engine.displayLayer.frame = videoClipLayer.bounds
+        videoClipLayer.addSublayer(engine.displayLayer)
 
         // Add CAMetalLayer
         if let metalLayer = engine.metalRenderer?.metalLayer {
@@ -108,18 +124,46 @@ public final class NativeVideoHostView: NSView {
 
     public override func layout() {
         super.layout()
-        let videoFrame = aspectFitVideoFrame()
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        // PiP shows the display layer as the stream lays it out: it mirrors the layer itself, without the clip.
+        let isPictureInPicture = engine.pictureInPictureLayerGeometry != nil
+        let settings = isPictureInPicture ? VideoGeometrySettings() : engine.videoGeometry
+        let videoLayout = VideoGeometry.layout(
+            viewSize: bounds.size,
+            videoWidth: engine.videoWidth,
+            videoHeight: engine.videoHeight,
+            sampleAspectRatio: engine.sampleAspectRatio,
+            settings: settings,
+            backingScale: scale
+        )
+        let visibleFrame = viewRect(videoLayout.visibleRect)
+        presentedVideoRect = visibleFrame
+        canPanVideo = videoLayout.panLimit != .zero
 
         // No implicit animation: the video layers would lag behind the window being resized.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        switch engine.pictureInPictureLayerGeometry {
-        case nil:
-            engine.displayLayer.frame = bounds
-        case .pipWindow(let size):
-            engine.displayLayer.frame = CGRect(origin: .zero, size: size)
-        case .videoRect:
-            engine.displayLayer.frame = videoFrame
+        if settings.isSourceAspectFit {
+            // The layout without overrides stays as it always was: the layer covers the view and fits the video.
+            videoClipLayer.frame = bounds
+            videoClipLayer.masksToBounds = false
+            engine.displayLayer.videoGravity = .resizeAspect
+            switch engine.pictureInPictureLayerGeometry {
+            case nil:
+                engine.displayLayer.frame = bounds
+            case .pipWindow(let size):
+                engine.displayLayer.frame = CGRect(origin: .zero, size: size)
+            case .videoRect:
+                engine.displayLayer.frame = visibleFrame
+            }
+        } else {
+            // The layer takes the whole (zoomed, uncropped) frame and is stretched to it; the clip layer cuts it to
+            // the visible part, so crop, stretch and zoom need no change to the buffers.
+            let frame = viewRect(videoLayout.frameRect)
+            videoClipLayer.frame = visibleFrame
+            videoClipLayer.masksToBounds = true
+            engine.displayLayer.videoGravity = .resize
+            engine.displayLayer.frame = frame.offsetBy(dx: -visibleFrame.minX, dy: -visibleFrame.minY)
         }
         if engine.pictureInPictureLayerGeometry != nil {
             // AVKit draws its "playing in picture in picture" placeholder as a sublayer of the display layer and
@@ -133,42 +177,33 @@ public final class NativeVideoHostView: NSView {
             }
         }
 
-        var drawableSizeChanged = false
-        if let metalLayer = engine.metalRenderer?.metalLayer {
-            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        var needsRedraw = false
+        if let renderer = engine.metalRenderer {
+            let metalLayer = renderer.metalLayer
             // On whole pixels: a fractional frame makes the compositor resample the drawable, softening the picture.
-            let metalFrame = backingAlignedRect(videoFrame, options: .alignAllEdgesNearest)
+            // The drawable covers only the visible part, so a zoomed picture never costs more than the view.
+            let metalFrame = backingAlignedRect(visibleFrame, options: .alignAllEdgesNearest)
             let drawableSize = CGSize(
                 width: (metalFrame.width * scale).rounded(), height: (metalFrame.height * scale).rounded())
-            drawableSizeChanged = metalLayer.drawableSize != drawableSize
+            let sourceRect = videoLayout.sourceRect(for: viewRect(metalFrame))
+            needsRedraw = metalLayer.drawableSize != drawableSize || renderer.sourceRect != sourceRect
             metalLayer.contentsScale = scale
             metalLayer.frame = metalFrame
             metalLayer.drawableSize = drawableSize
+            renderer.sourceRect = sourceRect
         }
         CATransaction.commit()
 
         // While playing, the next frame comes within a frame duration; a redraw would only compete with the display
         // link for drawables.
-        if drawableSizeChanged, engine.isMetalLayerVisible, !engine.isPlaying {
+        if needsRedraw, engine.isMetalLayerVisible, !engine.isPlaying {
             engine.metalRenderer?.redrawLastFrame()
         }
     }
 
-    /// Aspect-fit frame of the video in the view, matching AVSampleBufferDisplayLayer `resizeAspect` (SAR / DAR).
-    private func aspectFitVideoFrame() -> CGRect {
-        let videoAspect = CGFloat(engine.displayAspectRatio > 0 ? engine.displayAspectRatio : 16.0 / 9.0)
-        let viewAspect = bounds.width / max(bounds.height, 1)
-        if viewAspect > videoAspect {
-            // View is wider than video: letterbox on sides
-            let targetWidth = bounds.height * videoAspect
-            let offsetX = (bounds.width - targetWidth) / 2.0
-            return CGRect(x: offsetX, y: 0, width: targetWidth, height: bounds.height)
-        } else {
-            // View is taller than video: letterbox on top/bottom
-            let targetHeight = bounds.width / videoAspect
-            let offsetY = (bounds.height - targetHeight) / 2.0
-            return CGRect(x: 0, y: offsetY, width: bounds.width, height: targetHeight)
-        }
+    /// `rect` with its origin moved between the top left (`VideoLayout`) and this view's bottom left; its own inverse.
+    private func viewRect(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height)
     }
 
     /// Accepts files only when the host handles them, so an embedding host without drop handlers shows no copy cursor.

@@ -47,6 +47,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyExactSeekOnSinglePress)
     private var exactSeekOnSinglePress: Bool = true
 
+    @AppStorage(PlayerConfiguration.keyVideoScaling)
+    private var videoScaling: VideoScaling = .fit
+
     @AppStorage(PlayerConfiguration.keyNetworkThumbnailPolicy)
     private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
 
@@ -379,6 +382,25 @@ public struct SettingsView: View {
             }
 
             Section {
+                Picker("Default Scaling", selection: $videoScaling) {
+                    ForEach(VideoScaling.allCases) { scaling in
+                        Text(scaling.title).tag(scaling)
+                    }
+                }
+                .onChange(of: videoScaling) { _, _ in
+                    notifyChange()
+                }
+
+                Text(
+                    "How the picture fills the window. Change it for the session from the Video menu or with W; aspect ratio and crop are remembered per file."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Picture")
+            }
+
+            Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Default Sharpness (CAS):")
@@ -468,6 +490,7 @@ public struct SettingsView: View {
             autoLoadFolderMedia: autoLoadFolderMedia,
             seekStepSeconds: seekStepSeconds,
             exactSeekOnSinglePress: exactSeekOnSinglePress,
+            videoScaling: videoScaling,
             networkThumbnailPolicy: networkThumbnailPolicy,
             pictureInPictureWindowBehavior: pictureInPictureWindowBehavior,
             pausesOnPictureInPicture: pausesOnPictureInPicture,

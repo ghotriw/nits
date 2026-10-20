@@ -38,6 +38,7 @@ flowchart TD
     M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
     M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
     M5 -.-> M5Y["Stage 5.11: Skip Intro, Next Episode & Host Queue ✓"]
+    M5 -.-> M5Z["Stage 5.12: Aspect Ratio, Crop, Zoom & Pan ⏳"]
 ```
 
 ---
@@ -399,6 +400,60 @@ flowchart TD
 
 ---
 
+### Stage 5.12: Video Geometry — Aspect Ratio, Crop, Zoom & Pan — [IN PROGRESS] ⏳
+
+> How the picture sits in the window: fix a wrongly flagged aspect ratio, cut away burnt-in black bars, fill an
+> ultrawide screen, zoom into detail. Presentation only: decoding, frame queue, pacing and A/V sync stay untouched,
+> and the default (source aspect, fit) lays the layers out exactly as before.
+
+- [x] **5.12.1. Shared Geometry Model (`VideoGeometry`, NitsCore):**
+  - `VideoGeometrySettings` (`Sendable`, `Codable`): aspect override, crop, scaling, zoom, pan. `VideoGeometry.layout`
+    maps view size + coded size + SAR + settings to a `VideoLayout` (in the manner of mpv's `mp_get_src_dst_rects`):
+    the whole frame's rect, the cropped picture's rect, the visible part clipped to the view, and the normalized part
+    of the frame it shows.
+  - The only geometry code: `NativeVideoHostView`, `SubtitleOverlayView.computeVideoFrame`, the timeline preview and
+    PiP's hand-back rect use it. `PlayerEngine.contentAspectRatio` is the ratio as shown.
+- [x] **5.12.2. Aspect Ratio Override:**
+  - Default (SAR / DAR from the stream, 1.5) or a forced display ratio for the whole frame: 4:3, 16:9, 16:10, 1.85:1,
+    2.21:1, 2.35:1, 2.39:1, 5:4, 1:1 (the VLC / IINA lists). Fixes anamorphic files flagged square and vice versa.
+- [x] **5.12.3. Crop:**
+  - Crop to a ratio (centered, same list) for letterboxed or pillarboxed masters, e.g. 2.39:1 inside 16:9; applied
+    after the aspect override.
+- [x] **5.12.4. Scaling Modes:**
+  - Fit (letterbox, default), Fill (zoom until the view is covered, edges cut), Stretch (ignore aspect, fill the view),
+    Original Size (1 video pixel = 1 backing pixel, larger video is fit).
+  - Zoom `0.5×`–`4×` in four steps per doubling; pan per axis in `-1...1` of how far the picture overhangs the view,
+    so it never leaves the view and survives resizing. Zoom and pan reset on load.
+- [ ] **5.12.5. Presentation on Both Surfaces:**
+  - `AVSampleBufferDisplayLayer` sits in a clip layer; with a non-default geometry the clip layer takes the visible
+    rect (`masksToBounds`) and the display layer the whole frame's rect with `videoGravity = .resize`, so crop, stretch
+    and zoom need no change to the buffers or the selector-based enqueue path. The default keeps the full-bounds
+    `.resizeAspect` layer without clipping.
+  - Metal: the drawable covers only the visible rect (never larger than the view); the vertex shader maps texture
+    coordinates through the source rect (`MetalVideoRenderer.sourceRect`, vertex buffer 0), so `ToneMapUniforms` and
+    CAS are unchanged. A source rect change redraws the last frame while paused.
+  - Subtitles stay inside the visible part of the video, so Fill and zoom don't push them off-screen; timeline
+    thumbnails follow the aspect override and crop.
+  - Picture in Picture shows the stream's own geometry (it mirrors the display layer itself, without the clip); the
+    window gets the settings back when PiP ends.
+  - To check on an XDR display: EDR highlights, smooth pacing, fullscreen pause / seek with a non-default geometry
+    (Direct Scanout may give way to composition there; that's fine, a stall isn't), and PiP in and out of it.
+- [x] **5.12.6. Controls & Persistence:**
+  - Video menu: Aspect Ratio, Crop and Scaling pickers; Zoom In / Zoom Out / Actual Zoom (`⌥⌘=` / `⌥⌘-` / `⌥⌘0`).
+    Physical keys in `PlayerWindow.sendEvent`: `A` cycles the aspect ratio, `W` cycles scaling (mpv's panscan key).
+    Pinch zooms; dragging a picture larger than the view moves it instead of the window. OSD reports each change.
+  - The Picture section of the Video pane in Quick Settings; Media Info shows the stream's aspect ratio (and SAR) and
+    the one shown.
+  - Aspect override and crop remembered per file in `PlaybackHistoryStore`; Settings → Video & HDR sets the default
+    scaling, and a change from the menu lasts the session.
+  - Engine API: `videoGeometry` / `contentAspectRatio` on `PlayerVideoControlling` and the `setVideo…` methods;
+    `NativeVideoHostView.presentedVideoRect` for hosts that draw over the video (6.5).
+- [ ] **5.12.7. Automatic Black-Bar Detection:**
+  - Crop suggested from the picture (a luma reduction in Metal over sampled frames, like FFmpeg `cropdetect` / mpv
+    `autocrop`); custom crop edges.
+
+---
+
 ### Stage 6: Host Integration (Embeddable View & Engine API) — [IN PROGRESS] ⏳
 
 > Embedding Nits as a high-performance native rendering core inside hybrid host applications (e.g., Emby / Jellyfin web shells).
@@ -421,7 +476,7 @@ flowchart TD
   - Load errors: `playbackState == .failed(message)` / `loadError`.
   - Picture in Picture: public `PictureInPictureController` (NitsKit) that follows the engine by itself; the host
     toggles it and handles its window.
-- [ ] **6.4. Transparent Overlay Compositing:**
+- [x] **6.4. Transparent Overlay Compositing:**
   - Verify a transparent `WKWebView` above `NativeVideoHostView`: mouse and keyboard reach the web view, video stays
     smooth (no dropped frames from compositing), HDR / EDR is preserved on XDR displays in windowed and fullscreen
     mode, and Picture in Picture still works.
@@ -474,6 +529,7 @@ flowchart TD
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
 | **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
 | **Host Action Buttons & Queue** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans and Up Next cards from the host, timed display, auto-press; host-driven Next / Previous; hiding controls |
+| **Video Geometry (Aspect, Crop, Zoom)** | `NitsCore` / `NitsUI` / `NitsKit` | In Progress ⏳ | Aspect override, crop to ratio, Fit / Fill / Stretch / Original, zoom & pan on both surfaces; XDR check and auto-crop pending |
 | **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |

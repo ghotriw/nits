@@ -106,6 +106,21 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var displayAspectRatio: Double {
         RationalAspectRatio.computeDisplayAspectRatio(width: videoWidth, height: videoHeight, sar: sampleAspectRatio)
     }
+    /// Aspect ratio override, crop, scaling, zoom and pan of the picture. Presentation only: the host view lays the
+    /// video layers out from it, nothing else in the pipeline changes.
+    public var videoGeometry = VideoGeometrySettings() {
+        didSet {
+            guard oldValue != videoGeometry else { return }
+            displayLinkHostView?.needsLayout = true
+        }
+    }
+    /// Display aspect ratio of the picture as shown: `displayAspectRatio` with the aspect override and crop of
+    /// `videoGeometry` applied.
+    public var contentAspectRatio: Double {
+        VideoGeometry.contentAspectRatio(
+            videoWidth: videoWidth, videoHeight: videoHeight, sampleAspectRatio: sampleAspectRatio,
+            settings: videoGeometry)
+    }
     public var videoCodecName: String = ""
     public var videoBitDepth: Int = 8
     public var videoColorPrimaries: String = ""
@@ -261,6 +276,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     public func applyConfiguration(_ config: PlayerConfiguration) {
+        let previousVideoScaling = configuration.videoScaling
         self.configuration = config
         self.isToneMappingPermitted = config.enableToneMapping
         self.targetNitsScale = config.targetNitsScale
@@ -275,6 +291,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
+        // Only a new default replaces the scaling chosen for the session.
+        if config.videoScaling != previousVideoScaling {
+            self.videoGeometry.scaling = config.videoScaling
+        }
         self.playlist.setRepeatMode(config.playlistRepeatMode)
         self.playlist.setShuffle(config.playlistIsShuffled)
     }
@@ -765,6 +785,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         displayLayer.videoGravity = .resizeAspect
+        videoGeometry.scaling = configuration.videoScaling
 
         let queue = self.frameQueue
         decoder.setOutputHandler { frame in

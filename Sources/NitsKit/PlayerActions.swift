@@ -23,6 +23,8 @@ public protocol PlayerActions: AnyObject {
     var isChaptersPresented: Bool { get }
     /// Whether a host action button ("Skip Intro") is on screen.
     var isActionButtonVisible: Bool { get }
+    var hasVideo: Bool { get }
+    var videoGeometry: VideoGeometrySettings { get }
 
     var seekStepSeconds: Double { get }
 
@@ -60,6 +62,13 @@ public protocol PlayerActions: AnyObject {
     func dismissJumpToTime()
     func pressActionButton()
     func dismissActionButton()
+    func setVideoAspectRatio(_ ratio: RationalAspectRatio?)
+    func setVideoCrop(_ ratio: RationalAspectRatio?)
+    func setVideoScaling(_ scaling: VideoScaling)
+    func cycleVideoAspectRatio()
+    func cycleVideoScaling()
+    func stepVideoZoom(by steps: Int)
+    func resetVideoZoom()
 }
 
 extension PlayerActions {
@@ -78,6 +87,15 @@ extension PlayerActions {
     public var hasChapters: Bool { false }
     public var isChaptersPresented: Bool { false }
     public var isActionButtonVisible: Bool { false }
+    public var hasVideo: Bool { false }
+    public var videoGeometry: VideoGeometrySettings { VideoGeometrySettings() }
+    public func setVideoAspectRatio(_ ratio: RationalAspectRatio?) {}
+    public func setVideoCrop(_ ratio: RationalAspectRatio?) {}
+    public func setVideoScaling(_ scaling: VideoScaling) {}
+    public func cycleVideoAspectRatio() {}
+    public func cycleVideoScaling() {}
+    public func stepVideoZoom(by steps: Int) {}
+    public func resetVideoZoom() {}
     public func pressActionButton() {}
     public func dismissActionButton() {}
     public func seekForward() {

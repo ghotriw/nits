@@ -14,6 +14,12 @@ public struct ContentView: View {
     /// The pointer is over the action button; holds the controls like hovering the control bar does.
     @State private var isActionButtonHovered: Bool = false
     @State private var hideTimer: Task<Void, Never>?
+    /// Size of the video area, to turn drags into pan.
+    @State private var videoAreaSize: CGSize = .zero
+    /// Pan and zoom when the current drag or pinch began.
+    @State private var panAtGestureStart: CGPoint?
+    @State private var zoomAtGestureStart: Double?
+    @Environment(\.displayScale) private var displayScale
     @FocusState private var isFocused: Bool
 
     @MainActor
@@ -38,9 +44,16 @@ public struct ContentView: View {
                 loadMedia(urls: urls)
             }
             .ignoresSafeArea()
+            .onGeometryChange(for: CGSize.self) {
+                $0.size
+            } action: {
+                videoAreaSize = $0
+            }
             .onTapGesture(count: 2) {
                 onToggleFullscreen?()
             }
+            .gesture(panGesture, including: canPanVideo ? .all : .subviews)
+            .simultaneousGesture(zoomGesture, including: engine.hasVideo ? .all : .subviews)
 
             // In audio-only mode, mask video layer with a solid black backdrop behind artwork
             if engine.isLoaded && !engine.hasVideo {
@@ -130,7 +143,8 @@ public struct ContentView: View {
                 fontWeight: engine.subtitleFontWeight,
                 videoWidth: engine.videoWidth,
                 videoHeight: engine.videoHeight,
-                displayAspectRatio: engine.displayAspectRatio
+                sampleAspectRatio: engine.sampleAspectRatio,
+                geometry: engine.videoGeometry
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -330,6 +344,50 @@ public struct ContentView: View {
         .onAppear {
             onControlsVisibilityChanged?(isControlsVisible)
         }
+    }
+
+    /// Where the picture sits in the video area, as `NativeVideoHostView` lays it out.
+    private var videoLayout: VideoLayout {
+        VideoGeometry.layout(
+            viewSize: videoAreaSize,
+            videoWidth: engine.videoWidth,
+            videoHeight: engine.videoHeight,
+            sampleAspectRatio: engine.sampleAspectRatio,
+            settings: engine.videoGeometry,
+            backingScale: displayScale
+        )
+    }
+
+    /// The picture is larger than the view, so a drag moves it instead of the window.
+    private var canPanVideo: Bool {
+        engine.hasVideo && !engine.isPictureInPictureActive && videoLayout.panLimit != .zero
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 3)
+            .onChanged { value in
+                let start = panAtGestureStart ?? engine.videoGeometry.pan
+                panAtGestureStart = start
+                var geometry = engine.videoGeometry
+                geometry.pan = start
+                engine.setVideoPan(VideoGeometry.pan(geometry, movedBy: value.translation, in: videoLayout))
+            }
+            .onEnded { _ in panAtGestureStart = nil }
+    }
+
+    /// Trackpad pinch zooms the picture.
+    private var zoomGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let start = zoomAtGestureStart ?? engine.videoGeometry.zoom
+                zoomAtGestureStart = start
+                engine.setVideoZoom(start * value.magnification)
+            }
+            .onEnded { _ in
+                zoomAtGestureStart = nil
+                // A pinch that ends close to 1× lands on it, so the picture is exactly fit again.
+                if abs(engine.videoGeometry.zoom - 1) < 0.04 { engine.setVideoZoom(1) }
+            }
     }
 
     private var isInteracting: Bool {

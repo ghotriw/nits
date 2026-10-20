@@ -108,6 +108,14 @@ public final class PlayerWindow: NSWindow {
         case 0x28:  // Physical 'K' (ANSI K) -> Play audio 50 ms later
             actionHandler.stepAudioDelay(by: 0.05)
             return true
+        case 0x00:  // Physical 'A' (ANSI A) -> Cycle the aspect ratio override (VLC / mpv)
+            guard actionHandler.hasVideo else { return false }
+            actionHandler.cycleVideoAspectRatio()
+            return true
+        case 0x0D:  // Physical 'W' (ANSI W) -> Cycle scaling: Fit, Fill, Stretch, Original Size (mpv's panscan key)
+            guard actionHandler.hasVideo else { return false }
+            actionHandler.cycleVideoScaling()
+            return true
         case 0x24, 0x4C:  // Return / keypad Enter -> Press the action button ("Skip Intro") while it is on screen
             guard actionHandler.isActionButtonVisible else { return false }
             actionHandler.pressActionButton()

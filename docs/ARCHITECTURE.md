@@ -280,6 +280,36 @@ included), but a broken private API means no PiP at all, while AVKit's bugs belo
   controller. Automatic PiP is limited to an opt-in "enter PiP when minimizing"; switching apps
   never triggers it, since macOS windows stay visible.
 
+### Video geometry (aspect ratio, crop, zoom)
+
+`PlayerEngine.videoGeometry` (`VideoGeometrySettings`) holds the aspect override, crop, scaling mode,
+zoom and pan. It is presentation only: nothing in decoding, `FrameQueue`, pacing or the clock reads
+it. `VideoGeometry.layout` is the single place that turns it, the view size, the coded size and the
+SAR into rects (`VideoLayout`): the whole frame's rect, the cropped picture's rect, its visible part
+clipped to the view, and the normalized part of the frame shown there. The host view, the subtitle
+overlay, the timeline preview and PiP's hand-back rect all take their geometry from it, so they
+can't drift apart.
+
+- **Display layer.** It sits in a clip layer inside `NativeVideoHostView`. With the default
+  settings the layer covers the view with `.resizeAspect` and nothing clips, the layout before
+  geometry existed. Otherwise the clip layer takes the visible rect with `masksToBounds` and the
+  display layer the whole frame's rect with `.resize`. Crop, stretch and zoom are layer geometry,
+  so the buffers and the selector-based enqueue path stay as they are.
+- **Metal.** The drawable covers only the visible rect, so a zoomed picture never costs more than
+  the view, and the vertex shader maps texture coordinates through `MetalVideoRenderer.sourceRect`
+  (vertex buffer 0). The fragment shader and `ToneMapUniforms` don't change; CAS samples
+  neighbouring texels as before.
+- **PiP** mirrors the display layer itself, not its clipped superlayer, so while it is active the
+  host view lays the layer out with the default settings and gives the window's geometry back when
+  it ends.
+- **Pan** is stored per axis in `-1...1` of how far the picture overhangs the view, not in points,
+  so it can't move the picture off the view and survives a resize. While the picture overhangs,
+  `NativeVideoHostView.mouseDownCanMoveWindow` is `false`, so a drag pans instead of moving the
+  window.
+- **Persistence.** Aspect override and crop describe the file and go to `PlaybackHistoryStore`
+  (`PlaybackPreferences.noGeometryOverride` records "none", since `nil` keeps the saved value);
+  scaling is a session choice with a default in Settings; zoom and pan reset on load.
+
 ## Metal tone-mapper (`HDRToneMapping.metal`)
 
 - **Input** — biplanar YCbCr: `r16Unorm` luma + `rg16Unorm` chroma for 10-bit (VideoToolbox

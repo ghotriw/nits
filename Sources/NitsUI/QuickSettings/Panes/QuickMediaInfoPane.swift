@@ -33,6 +33,15 @@ public struct QuickMediaInfoPane: View {
                         .foregroundStyle(.white.opacity(0.9))
 
                     infoRow(label: "Resolution", value: "\(engine.videoWidth) × \(engine.videoHeight)")
+                    let sourceAspect = String(format: "%.2f:1", engine.displayAspectRatio)
+                    let sar = engine.sampleAspectRatio
+                    infoRow(
+                        label: "Aspect Ratio",
+                        value: sar.isSquare ? sourceAspect : "\(sourceAspect) (SAR \(sar.numerator):\(sar.denominator))"
+                    )
+                    if engine.videoGeometry.aspectRatio != nil || engine.videoGeometry.crop != nil {
+                        infoRow(label: "Shown As", value: String(format: "%.2f:1", engine.contentAspectRatio))
+                    }
                     infoRow(
                         label: "Codec",
                         value: engine.videoCodecName.isEmpty

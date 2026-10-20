@@ -418,13 +418,16 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Track selection and delays to persist. Subtitles are `subtitlesOff` when disabled, and an external
-    /// file is saved by its path; one that isn't a local file can't be restored and keeps the saved selection.
+    /// Track selection, delays and the picture's aspect override and crop to persist. Subtitles are `subtitlesOff`
+    /// when disabled, and an external file is saved by its path; one that isn't a local file can't be restored and
+    /// keeps the saved selection.
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioTrackId: selectedAudioTrackId >= 0 ? selectedAudioTrackId : nil,
             subtitleDelay: subtitleDelay,
-            audioDelay: audioDelay
+            audioDelay: audioDelay,
+            videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
+            videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
         if let id = selectedSubtitleTrackId {
             let track = subtitleTracks.first { $0.id == id }
@@ -655,6 +658,7 @@ extension PlayerEngine {
         if self.audioDelay != 0 {
             AppLog.info(.audio, "Restored audio delay from saved history: \(self.audioDelay)s")
         }
+        restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
         // Before the saved selection: a saved external file that is one of them maps to the same track.
         let sidecarTrackIds = addSidecarSubtitles(for: path)

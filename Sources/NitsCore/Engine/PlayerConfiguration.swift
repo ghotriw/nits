@@ -125,6 +125,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// When disabled, all seeks navigate strictly by keyframes.
     public var exactSeekOnSinglePress: Bool
 
+    /// How the picture is sized to the window (default `.fit`); a change from the Video menu lasts the session.
+    public var videoScaling: VideoScaling
+
     /// Explicit start time in seconds requested on launch (if provided, including `0`, overrides resume history).
     public var startTime: Double?
 
@@ -185,6 +188,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         autoLoadFolderMedia: Bool = true,
         seekStepSeconds: Double = 5.0,
         exactSeekOnSinglePress: Bool = true,
+        videoScaling: VideoScaling = .fit,
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
@@ -225,6 +229,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.autoLoadFolderMedia = autoLoadFolderMedia
         self.seekStepSeconds = seekStepSeconds
         self.exactSeekOnSinglePress = exactSeekOnSinglePress
+        self.videoScaling = videoScaling
         self.startTime = startTime
         self.audioTrack = audioTrack
         self.subtitleTrack = subtitleTrack
@@ -260,6 +265,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
     public static let keySeekStepSeconds = "Nits.seekStepSeconds"
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
+    public static let keyVideoScaling = "Nits.videoScaling"
     public static let keyPlaylistRepeatMode = "Nits.playlistRepeatMode"
     public static let keyPlaylistIsShuffled = "Nits.playlistIsShuffled"
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
@@ -342,6 +348,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyExactSeekOnSinglePress) != nil {
             config.exactSeekOnSinglePress = userDefaults.bool(forKey: keyExactSeekOnSinglePress)
         }
+        if let scalingRaw = userDefaults.string(forKey: keyVideoScaling),
+            let scaling = VideoScaling(rawValue: scalingRaw)
+        {
+            config.videoScaling = scaling
+        }
         if let repeatRaw = userDefaults.string(forKey: keyPlaylistRepeatMode),
             let mode = PlaylistRepeatMode(rawValue: repeatRaw)
         {
@@ -399,6 +410,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
         userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
+        userDefaults.set(videoScaling.rawValue, forKey: Self.keyVideoScaling)
         userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
         userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)

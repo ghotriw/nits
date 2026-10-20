@@ -561,7 +561,8 @@ public struct ControlTimelineSection: View {
                         let cardWidth = TimelineThumbnailPreviewView.size(
                             thumbnail: previewThumbnail,
                             duration: engine.duration,
-                            hasChapterTitle: chapterTitle != nil
+                            hasChapterTitle: chapterTitle != nil,
+                            geometry: engine.videoGeometry
                         ).width
                         // Allowed range for the card's leading edge, in slider coordinates.
                         let (minCardX, maxCardX): (CGFloat, CGFloat) = {
@@ -578,7 +579,8 @@ public struct ControlTimelineSection: View {
                             thumbnail: previewThumbnail,
                             time: previewTime,
                             duration: engine.duration,
-                            chapterTitle: chapterTitle
+                            chapterTitle: chapterTitle,
+                            geometry: engine.videoGeometry
                         )
                         .fixedSize()
                         .offset(x: cardX, y: -31)

@@ -36,7 +36,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 - [x] Timeline thumbnails
 - [x] Timeline chapters
 - [x] Picture-in-Picture
-- [ ] Embedding in web clients (embeddable canvas and engine API; the JS bridge lives in the host)
+- [x] Embedding in web clients
 - [x] Standalone app bundle with embedded FFmpeg
 
 Details: [docs/ROADMAP.md](docs/ROADMAP.md).

@@ -92,6 +92,10 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
     @MainActor var nominalFrameDuration: Double { get }
     @MainActor var sampleAspectRatio: RationalAspectRatio { get }
     @MainActor var displayAspectRatio: Double { get }
+    /// Aspect ratio override, crop, scaling, zoom and pan of the picture; presentation only.
+    @MainActor var videoGeometry: VideoGeometrySettings { get set }
+    /// `displayAspectRatio` with the aspect override and crop of `videoGeometry` applied.
+    @MainActor var contentAspectRatio: Double { get }
     @MainActor var videoCodecName: String { get }
     @MainActor var videoBitDepth: Int { get }
     @MainActor var videoColorPrimaries: String { get }
@@ -332,6 +336,11 @@ extension PlayerPlaybackControlling {
 
 extension PlayerVideoControlling {
     public var isDisplaySleepDisabled: Bool { false }
+    @MainActor public var videoGeometry: VideoGeometrySettings {
+        get { VideoGeometrySettings() }
+        set {}
+    }
+    @MainActor public var contentAspectRatio: Double { displayAspectRatio }
 }
 
 /// Display layer geometry while Picture in Picture uses it (see `PlayerEngine.pictureInPictureLayerGeometry`).

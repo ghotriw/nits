@@ -10,13 +10,19 @@ public struct TimelineThumbnailPreviewView: View {
     public let time: Double
     public let duration: Double
     public let chapterTitle: String?
+    /// The picture's aspect override and crop, so the preview shows the frame as the video does.
+    public let geometry: VideoGeometrySettings
 
     private static let maxImageSize = CGSize(width: 176, height: 132)
     private static let cornerRadius: CGFloat = 8
     /// Width of the chapter title when there is no thumbnail to size it by.
     private static let titleOnlyWidth: CGFloat = 160
 
-    public init(thumbnail: ThumbnailItem?, time: Double, duration: Double, chapterTitle: String? = nil) {
+    public init(
+        thumbnail: ThumbnailItem?, time: Double, duration: Double, chapterTitle: String? = nil,
+        geometry: VideoGeometrySettings = VideoGeometrySettings()
+    ) {
+        self.geometry = Self.previewGeometry(geometry)
         self.thumbnail = thumbnail
         self.time = time
         self.duration = duration
@@ -25,14 +31,25 @@ public struct TimelineThumbnailPreviewView: View {
 
     /// Size of the rendered card (without the chapter title's height), used by the timeline to
     /// position and clamp it.
-    public static func size(thumbnail: ThumbnailItem?, duration: Double, hasChapterTitle: Bool = false) -> CGSize {
+    public static func size(
+        thumbnail: ThumbnailItem?, duration: Double, hasChapterTitle: Bool = false,
+        geometry: VideoGeometrySettings = VideoGeometrySettings()
+    ) -> CGSize {
         guard let thumbnail, thumbnail.width > 0, thumbnail.height > 0 else {
             let labelWidth = timeLabelMinWidth(duration: duration) + 10
             return CGSize(width: hasChapterTitle ? max(labelWidth, titleOnlyWidth) : labelWidth, height: 18)
         }
-        let aspect = CGFloat(thumbnail.width) / CGFloat(thumbnail.height)
+        let aspect = CGFloat(
+            VideoGeometry.contentAspectRatio(
+                videoWidth: thumbnail.width, videoHeight: thumbnail.height, sampleAspectRatio: .square,
+                settings: previewGeometry(geometry)))
         let width = min(maxImageSize.width, maxImageSize.height * aspect)
         return CGSize(width: width.rounded(), height: (width / aspect).rounded())
+    }
+
+    /// Only what changes the picture itself: the aspect override and crop, fit to the card.
+    private static func previewGeometry(_ geometry: VideoGeometrySettings) -> VideoGeometrySettings {
+        VideoGeometrySettings(aspectRatio: geometry.aspectRatio, crop: geometry.crop)
     }
 
     private static func timeLabelMinWidth(duration: Double) -> CGFloat {
@@ -55,17 +72,27 @@ public struct TimelineThumbnailPreviewView: View {
             card
         }
         // The timeline positions the preview by this width.
-        .frame(width: Self.size(thumbnail: thumbnail, duration: duration, hasChapterTitle: chapterTitle != nil).width)
+        .frame(
+            width: Self.size(
+                thumbnail: thumbnail, duration: duration, hasChapterTitle: chapterTitle != nil, geometry: geometry
+            ).width
+        )
         .allowsHitTesting(false)
     }
 
     @ViewBuilder
     private var card: some View {
         if let thumbnail {
-            let size = Self.size(thumbnail: thumbnail, duration: duration)
+            let size = Self.size(thumbnail: thumbnail, duration: duration, geometry: geometry)
+            // The thumbnail already has the stream's display aspect ratio.
+            let frame = VideoGeometry.layout(
+                viewSize: size, videoWidth: thumbnail.width, videoHeight: thumbnail.height,
+                sampleAspectRatio: .square, settings: geometry
+            ).frameRect
             Image(decorative: thumbnail.image, scale: 1.0)
                 .resizable()
-                .aspectRatio(contentMode: .fill)
+                .frame(width: frame.width, height: frame.height)
+                .offset(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2)
                 .frame(width: size.width, height: size.height)
                 .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
                 .overlay(

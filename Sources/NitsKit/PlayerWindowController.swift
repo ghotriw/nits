@@ -568,6 +568,66 @@ extension PlayerWindowController: PlayerActions {
         }
     }
 
+    public var hasVideo: Bool {
+        engine.hasVideo
+    }
+
+    public var videoGeometry: VideoGeometrySettings {
+        engine.videoGeometry
+    }
+
+    public func setVideoAspectRatio(_ ratio: RationalAspectRatio?) {
+        guard engine.hasVideo else { return }
+        engine.setVideoAspectRatio(ratio)
+        showGeometryOSD(
+            symbol: "aspectratio", "Aspect Ratio: \(engine.videoGeometry.aspectRatio?.displayName ?? "Default")")
+    }
+
+    public func setVideoCrop(_ ratio: RationalAspectRatio?) {
+        guard engine.hasVideo else { return }
+        engine.setVideoCrop(ratio)
+        showGeometryOSD(symbol: "crop", "Crop: \(engine.videoGeometry.crop?.displayName ?? "None")")
+    }
+
+    public func setVideoScaling(_ scaling: VideoScaling) {
+        guard engine.hasVideo else { return }
+        engine.setVideoScaling(scaling)
+        showGeometryOSD(symbol: "arrow.up.left.and.arrow.down.right", "Scaling: \(engine.videoGeometry.scaling.title)")
+    }
+
+    public func cycleVideoAspectRatio() {
+        setVideoAspectRatio(RationalAspectRatio.nextDisplayPreset(after: engine.videoGeometry.aspectRatio))
+    }
+
+    public func cycleVideoScaling() {
+        setVideoScaling(engine.videoGeometry.scaling.next)
+    }
+
+    public func stepVideoZoom(by steps: Int) {
+        guard engine.hasVideo else { return }
+        engine.stepVideoZoom(by: steps)
+        showZoomOSD()
+    }
+
+    public func resetVideoZoom() {
+        guard engine.hasVideo else { return }
+        engine.resetVideoZoom()
+        showZoomOSD()
+    }
+
+    private func showZoomOSD() {
+        let zoom = engine.videoGeometry.zoom
+        showGeometryOSD(
+            symbol: zoom == 1 ? "magnifyingglass" : zoom < 1 ? "minus.magnifyingglass" : "plus.magnifyingglass",
+            "Zoom: \(Int((zoom * 100).rounded()))%")
+    }
+
+    private func showGeometryOSD(symbol: String, _ text: String) {
+        if engine.enableOSD {
+            uiState.osd.show(.custom(symbol: symbol, text: text))
+        }
+    }
+
     public func toggleDebugHUD() {
         withAnimation {
             engine.toggleDebugHUD()
