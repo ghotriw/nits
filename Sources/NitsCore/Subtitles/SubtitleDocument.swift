@@ -221,10 +221,18 @@ public struct SubtitleDocument: Sendable, Equatable {
                 if raw.range(of: #"\{[^}]*\\p[1-9]"#, options: .regularExpression) != nil { continue }
                 let clean = cleanFormattingTags(raw)
                 guard !clean.isEmpty else { continue }
+                // Hosts get one field order whatever the file's (SSA's `Marked`, a reordered `Format:`).
+                func value(_ name: String) -> String {
+                    fields.firstIndex(of: name).map { String(values[$0]) } ?? ""
+                }
+                let payload = AssScript.dialogueLine(
+                    start: start, end: end, layer: value("layer"), style: value("style"), name: value("name"),
+                    marginL: value("marginl"), marginR: value("marginr"), marginV: value("marginv"),
+                    effect: value("effect"), text: raw)
                 cues.append(
                     SubtitleCue(
                         id: cues.count + 1, startTime: start, endTime: end, text: clean,
-                        alignment: parseAlignment(from: raw), rawPayload: String(line)))
+                        alignment: parseAlignment(from: raw), rawPayload: payload))
             }
         }
         return SubtitleDocument(

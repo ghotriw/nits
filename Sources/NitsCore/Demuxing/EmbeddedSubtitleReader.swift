@@ -282,7 +282,7 @@ enum EmbeddedSubtitleReader {
         // Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text (8 commas before text)
         // Or if raw line has "Dialogue: " prefix (9 commas before text)
         let isASS = codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA
-        let rawPayload = isASS ? rawString : nil
+        let event = rawString
         if isASS {
             if rawString.hasPrefix("Dialogue:") {
                 let parts = rawString.components(separatedBy: ",")
@@ -314,13 +314,15 @@ enum EmbeddedSubtitleReader {
             durationSec = fallbackCueDuration
         }
 
+        let startTime = max(0.0, startSec)
+        let endTime = max(startSec + 0.5, startSec + durationSec)
         return SubtitleCue(
             id: cueIndex,
-            startTime: max(0.0, startSec),
-            endTime: max(startSec + 0.5, startSec + durationSec),
+            startTime: startTime,
+            endTime: endTime,
             text: clean,
             alignment: alignment,
-            rawPayload: rawPayload
+            rawPayload: isASS ? AssScript.dialogueLine(matroskaEvent: event, start: startTime, end: endTime) : nil
         )
     }
 }

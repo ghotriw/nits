@@ -87,6 +87,8 @@ public enum SyntheticTestMediaFactory {
         case pgsSubtitlesMKV
         /// H.264 MKV (6s, 640x360) with the ASS track `AssSubtitleTests.script`: "Hello" 0-2 s and a red box from 3 s
         case assSubtitlesMKV
+        /// H.264 MKV (4s, 640x360, 60 fps) with the ASS track `AssSubtitleTests.fadeScript`: "Hello" fading in over 0.5-2 s
+        case assFadeSubtitlesMKV
         /// H.264 MPEG-TS (6s, 320x240) with a DVB track FFmpeg converts from `pgsStream`: a timeline that starts at
         /// about 1.48 s (rebased to 0), the bar at 0 s cleared at about 5.13 s (the conversion drops the set at 2.5 s),
         /// and no index
@@ -168,6 +170,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_pgs_subtitles.mkv"
             case .assSubtitlesMKV:
                 return "synth_ass_subtitles.mkv"
+            case .assFadeSubtitlesMKV:
+                return "synth_ass_fade_subtitles.mkv"
             case .dvbSubtitlesTS:
                 return "synth_dvb_subtitles.ts"
             }
@@ -274,8 +278,9 @@ public enum SyntheticTestMediaFactory {
                 return nil
             }
         }
-        if preset == .assSubtitlesMKV {
-            guard FileManager.default.createFile(atPath: metadataPath, contents: Data(AssSubtitleTests.script.utf8))
+        if preset == .assSubtitlesMKV || preset == .assFadeSubtitlesMKV {
+            let script = preset == .assSubtitlesMKV ? AssSubtitleTests.script : AssSubtitleTests.fadeScript
+            guard FileManager.default.createFile(atPath: metadataPath, contents: Data(script.utf8))
             else {
                 print("[SyntheticTestMediaFactory] Failed to write the ASS script for \(preset.rawValue)")
                 return nil
@@ -356,6 +361,16 @@ public enum SyntheticTestMediaFactory {
             return [
                 "-y",
                 "-f", "lavfi", "-i", "color=c=gray:size=640x360:rate=24:duration=6",
+                "-f", "ass", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:s",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
+                "-metadata:s:s:0", "language=eng",
+                outputPath,
+            ]
+        case .assFadeSubtitlesMKV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=640x360:rate=60:duration=4",
                 "-f", "ass", "-i", metadataPath,
                 "-map", "0:v", "-map", "1:s",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
@@ -844,7 +859,10 @@ extension SyntheticTestMediaFactory {
     /// A hand-built PGS stream (`.sup`): the white `pgsBar` shown from 0 s to 1.5 s (an empty display set clears
     /// it), then again from 2.5 s with no end. FFmpeg shifts the first set to 0 when it reads the stream, so it starts there. It can mux PGS but not encode it, and a few hundred bytes made
     /// here keep binary files out of the repository.
-    static var pgsStream: Data {
+    static var pgsStream: Data { pgsStream() }
+
+    /// `pgsStream` with the bar of the set at `forcedAt` marked forced (composition flag 0x40).
+    static func pgsStream(forcedAt forced: Double? = nil) -> Data {
         func segment(_ type: UInt8, at seconds: Double, _ payload: [UInt8]) -> [UInt8] {
             let pts = UInt32(seconds * 90_000)
             func be32(_ value: UInt32) -> [UInt8] { (0..<4).map { UInt8(truncatingIfNeeded: value >> (24 - 8 * $0)) } }
@@ -865,7 +883,7 @@ extension SyntheticTestMediaFactory {
         func displaySet(at seconds: Double, composition: Int, showing: Bool) -> [UInt8] {
             // Video size, 24 fps, composition number, epoch start, no palette update, palette 0, object count.
             var pcs = be16(320) + be16(240) + [0x20] + be16(composition) + [0x80, 0x00, 0x00, showing ? 1 : 0]
-            if showing { pcs += be16(0) + [0x00, 0x00] + be16(bar.x) + be16(bar.y) }
+            if showing { pcs += be16(0) + [0x00, seconds == forced ? 0x40 : 0x00] + be16(bar.x) + be16(bar.y) }
             var set = segment(0x16, at: seconds, pcs)
             if showing {
                 set += segment(

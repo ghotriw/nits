@@ -112,6 +112,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
         didSet {
             guard oldValue != videoGeometry else { return }
             displayLinkHostView?.needsLayout = true
+            // libass draws for the picture's pixel aspect, which a forced aspect ratio changes even when the
+            // area drawn on keeps its size (Stretch).
+            if oldValue.aspectRatio != videoGeometry.aspectRatio { redrawAuthoredSubtitles() }
         }
     }
     /// Display aspect ratio of the picture as shown: `displayAspectRatio` with the aspect override and crop of
@@ -289,6 +292,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleBgColorHex = config.subtitleBgColorHex
         self.subtitleBgOpacity = config.subtitleBgOpacity
         self.usesAuthoredSubtitleStyles = config.usesAuthoredSubtitleStyles
+        self.showsOnlyForcedSubtitles = config.showsOnlyForcedSubtitles
+        self.assStyleOverride = config.assStyleOverride
+        self.subtitleScale = config.subtitleScale
+        self.subtitlePosition = config.subtitlePosition
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
@@ -390,15 +397,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Bitmap subtitles (PGS, VobSub, DVB) on screen, subtitle delay applied. Drawn by the player; hosts get no
     /// events for them (`onSubtitleCuesChanged` reports `[]` meanwhile).
     public var currentSubtitleImages: [SubtitleImageCue] = []
+    /// The selected ASS track's script without its events (`AssScript.hostHeader`: styles, play resolution, embedded
+    /// fonts), for a host that draws ASS itself from the cues' `rawPayload` lines; `nil` for other tracks. There before
+    /// the track's first cue is reported.
+    public var subtitleAssHeader: String? { activeSubtitleDocument?.assScript?.hostHeader }
+    /// The fonts the media attaches for the selected ASS track (Matroska attachments), which its styles may name.
+    public var subtitleAssFonts: [AssScript.Font] { activeSubtitleDocument?.assScript?.fonts ?? [] }
     public var currentSubtitleText: String? {
         currentSubtitleCue?.text
     }
-    public var subtitleFontSize: Double = 24.0
-    public var subtitleFontName: String = "System Rounded"
+    // The style also applies to ASS dialogue with `assStyleOverride`: a change redraws it.
+    public var subtitleFontSize: Double = 24.0 { didSet { restyleAuthoredSubtitles() } }
+    public var subtitleFontName: String = SubtitleSystemFont.rounded.rawValue { didSet { restyleAuthoredSubtitles() } }
     public var subtitleFontWeight: String = "Semibold"
-    public var subtitleTextColorHex: String = "#FFFFFF"
-    public var subtitleBgColorHex: String = "#000000"
-    public var subtitleBgOpacity: Double = 0.65
+    public var subtitleTextColorHex: String = "#FFFFFF" { didSet { restyleAuthoredSubtitles() } }
+    public var subtitleBgColorHex: String = "#000000" { didSet { restyleAuthoredSubtitles() } }
+    public var subtitleBgOpacity: Double = 0.65 { didSet { restyleAuthoredSubtitles() } }
     /// Seconds subtitles are shifted by: positive shows them later, negative earlier. Set with `setSubtitleDelay`.
     public internal(set) var subtitleDelay: Double = 0
     public static let subtitleDelayRange: ClosedRange<Double> = -30.0...30.0
@@ -412,6 +426,39 @@ public final class PlayerEngine: PlayerEngineProtocol {
         didSet {
             if oldValue != usesAuthoredSubtitleStyles { syncAuthoredSubtitles() }
         }
+    }
+    /// Show only the forced sets of bitmap tracks (PGS, VobSub): the signs and foreign-language lines a Blu-ray keeps
+    /// inside its full track. Text tracks don't mark them and show as usual; so does a track flagged forced as a whole.
+    public var showsOnlyForcedSubtitles: Bool = false {
+        didSet {
+            if oldValue != showsOnlyForcedSubtitles { updateActiveSubtitles(at: currentTime) }
+        }
+    }
+    /// How much of the subtitle style above replaces an ASS script's own on its dialogue, when libass draws it.
+    public var assStyleOverride: AssStyleOverride = .none {
+        didSet {
+            if oldValue != assStyleOverride { redrawAuthoredSubtitles() }
+        }
+    }
+    /// Size of ASS dialogue and picture subtitles against the script's or the disc's (`subtitleScaleRange`); plain text
+    /// has `subtitleFontSize`.
+    public var subtitleScale: Double = 1.0 {
+        didSet { if oldValue != subtitleScale { redrawAuthoredSubtitles() } }
+    }
+    public static let subtitleScaleRange: ClosedRange<Double> = 0.5...2.0
+    /// Height of bottom subtitles in percent of the picture from its top (0-100): 100 keeps them where they are, lower
+    /// raises them (mpv's `sub-pos`). Applies to every kind of subtitle.
+    public var subtitlePosition: Double = 100 {
+        didSet { if oldValue != subtitlePosition { redrawAuthoredSubtitles() } }
+    }
+    /// `subtitleScale` as applied: clamped to `subtitleScaleRange`, 1 when it isn't a number.
+    public var effectiveSubtitleScale: Double {
+        let range = Self.subtitleScaleRange
+        return subtitleScale.isFinite ? min(max(subtitleScale, range.lowerBound), range.upperBound) : 1
+    }
+    /// How far bottom subtitles are raised, as a fraction of the picture's height (`subtitlePosition`).
+    public var subtitleRaise: Double {
+        subtitlePosition.isFinite ? (100 - min(max(subtitlePosition, 0), 100)) / 100 : 0
     }
     /// Size in pixels of the area subtitles are drawn on (the visible picture), reported by the view that draws them.
     /// Until it is set, ASS subtitles show as plain text, as for a host that draws its own.
@@ -441,6 +488,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored var authoredGeneration = 0
     @ObservationIgnored var isAuthoredRenderRunning = false
     @ObservationIgnored var pendingAuthoredRenderTime: Double?
+    /// A render a video frame on is due (`scheduleAuthoredAnimationFrame`).
+    @ObservationIgnored var isAuthoredAnimationFrameScheduled = false
     var lastObservedLiveSubtitleVersion: Int = -1
 
     var loadedSubtitleDocuments: [Int: SubtitleDocument] = [:]
@@ -802,6 +851,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.subtitleBgColorHex = configuration.subtitleBgColorHex
         self.subtitleBgOpacity = configuration.subtitleBgOpacity
         self.usesAuthoredSubtitleStyles = configuration.usesAuthoredSubtitleStyles
+        self.showsOnlyForcedSubtitles = configuration.showsOnlyForcedSubtitles
+        self.assStyleOverride = configuration.assStyleOverride
+        self.subtitleScale = configuration.subtitleScale
+        self.subtitlePosition = configuration.subtitlePosition
         self.enableOSD = configuration.enableOSD
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress

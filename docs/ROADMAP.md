@@ -35,7 +35,7 @@ flowchart TD
     M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing 📋"]
     M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range 📋"]
     M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
-    M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop 📋"]
+    M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop ✓"]
     M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
     M5 -.-> M5Y["Stage 5.11: Skip Intro, Next Episode & Host Queue ✓"]
     M5 -.-> M5Z["Stage 5.12: Aspect Ratio, Crop, Zoom & Pan ⏳"]
@@ -262,9 +262,16 @@ flowchart TD
     cues are drawn in the user's subtitle style as before. Hosts get the plain text and `rawPayload` either way.
     A frame is a picture per group of images near each other (a sign at the top and the dialogue at the bottom make
     two), not one the size of the frame; pictures show and go without the text's fade.
-  - [ ] libass is stepped at the 20 Hz time update, so fades and moves are not frame-smooth; no style override mode
-    yet (`ass_set_selective_style_override`).
-  - [ ] The pixel aspect given to libass is the stream's SAR, not the one a forced display aspect ratio makes.
+  - [x] Animations are drawn at the video's frame rate: while libass reports a changed picture (fades, moves,
+    karaoke), the next render comes a frame later from the synchronizer clock rather than at the 20 Hz time tick;
+    the first unchanged render ends it (`scheduleAuthoredAnimationFrame`).
+  - [x] Style override ("Dialogue in My Style", `assStyleOverride`, remembered): As Authored, Font and Size, or Font,
+    Size and Colors from the subtitle style, through libass' selective override (`ass_set_selective_style_override`),
+    which leaves positioned text (signs) alone. The system's rounded, serif and monospaced designs, which Core Text
+    hides from libass, are handed to it as files. The style's weight isn't applied (it would take the script's
+    italics with it).
+  - [x] The pixel aspect given to libass is the one the picture is shown with: a forced display aspect ratio
+    stretches the video's pixels (`VideoGeometry.frameAspectRatio`), a crop doesn't; changing it redraws.
   - [x] Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`), VobSub (DVD) and DVB, decoded by `BitmapSubtitleDecoder`
     (`avcodec_decode_subtitle2`) into `SubtitleImageCue`s that keep palette indices, not pixels, and are drawn by
     `SubtitleOverlayView` over the visible picture. A canvas of other proportions than the picture (a 16:9 PGS on a rip
@@ -292,18 +299,27 @@ flowchart TD
     landing keyframe shows from the next one.
   - [x] VobSub checked on a real file (2026-10-20): 27 VobSub tracks of a 2160p MKV on an SMB volume show at once
     after a track switch and after seeks.
-  - [ ] Bitmap subtitles on HDR / XDR output aren't limited to SDR white yet; PGS from a real Blu-ray remux and DVB
-    are untested on real files.
-  - [ ] A crop set in the player fits a PGS canvas of the uncropped picture into the cropped one, so pictures shrink
-    (about 1.3× for 2.35:1 on 16:9); they should be placed on the whole picture and moved inside the visible part.
-  - [ ] Forced-only display: the forced flag of PGS sets (`AV_SUBTITLE_FLAG_FORCED`) is ignored, though Blu-ray discs
-    often keep forced sets inside the full track.
-  - [ ] Position and scale (`sub-pos` / `sub-scale` in mpv) for ASS and bitmap subtitles; the subtitle style applies
-    to plain text only. A second subtitle track shown at once.
+  - [x] Bitmap subtitles over HDR video stay at most SDR white (8-bit sRGB pictures, `.allowedDynamicRange(.standard)`).
+  - [ ] Checks on real files: PGS from a Blu-ray remux, DVB, and bitmap brightness over HDR video on an XDR display.
+  - [x] A crop or zoom set in the player keeps bitmap subtitles at the scale of the picture: the canvas covers the
+    whole decoded frame, and regions the crop leaves off screen (dialogue in removed bars) move inside the visible
+    part, each half of the frame as a block. Before, the canvas was fitted into the cropped picture and shrank
+    (about 1.3× for 2.35:1 on 16:9).
+  - [x] Forced-only display ("Forced Subtitles Only", `showsOnlyForcedSubtitles`, remembered): bitmap tracks show only
+    the regions their stream marks forced (`AV_SUBTITLE_FLAG_FORCED`, PGS composition objects and DVD forced
+    commands), as Blu-ray discs keep forced sets inside the full track. A track flagged forced as a whole shows in
+    full; text tracks mark no events and are left as they are.
+  - [ ] Forced subtitles chosen by themselves when the audio is in the user's language (mpv's
+    `subs-fallback-forced`); embedded tracks get no automatic selection yet.
+  - [x] Position and scale (mpv's `sub-pos` / `sub-scale`; Quick Settings → Placement, remembered): `subtitlePosition`
+    raises bottom subtitles of every kind, `subtitleScale` sizes ASS dialogue (libass' font scale and line position,
+    dialogue only) and picture subtitles (each half of the frame as a block, from the edge it is near); plain text
+    keeps its font size.
+  - [ ] A second subtitle track shown at once.
 
 ---
 
-### Stage 4.6: Subtitle Timing Calibration & Drag-and-Drop Ingestion — [PLANNED]
+### Stage 4.6: Subtitle Timing Calibration & Drag-and-Drop Ingestion — [COMPLETED] ✓
 
 > Compensate for out-of-sync subtitle releases and simplify subtitle loading.
 
@@ -532,8 +548,10 @@ flowchart TD
   - `onSubtitleCuesChanged`: the cues on screen (subtitle delay applied) changed; not called per time tick. `text` is plain,
     `rawPayload` carries the ASS event line. Bitmap subtitles are drawn by the player and reported as `[]`, and so is
     the end of the media (`stop()`).
-  - [ ] Hosts can't draw ASS themselves yet: `rawPayload` is a Matroska event (`ReadOrder,Layer,Style,…`) for embedded
-    tracks but a `Dialogue:` line for `.ass` files, and the script header (styles) and attached fonts aren't exposed.
+  - [x] Hosts can draw ASS themselves: `rawPayload` is a `Dialogue:` line in one field order
+    (`AssScript.eventFormat`) for embedded tracks and `.ass` / `.ssa` files alike, timed on the media timeline;
+    `subtitleAssHeader` is the script without events (ending in that `Format:`) and `subtitleAssFonts` the attached
+    fonts. Header plus lines draw in libass as in the player.
 
 ---
 
@@ -573,8 +591,8 @@ flowchart TD
 | **Remote HTTP/HTTPS Streaming** | `NitsCore` | Completed ✓ | Auth headers, auto-reconnect, `AVIOInterruptCB` cancellation |
 | **Adaptive Streaming (HLS / DASH)** | `NitsCore` | Planned 📋 | Multi-rendition variant parsing and switching |
 | **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
-| **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Planned 📋 | Subtitle delay offset (`±30s`), direct file drag-and-drop |
-| **Advanced Subtitles (ASS / PGS)** | `NitsCore` | Planned 📋 | `libass` integration and bitmap overlays |
+| **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Completed ✓ | Subtitle delay offset (`±30s`), file drag-and-drop, sidecar discovery |
+| **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | In Progress ⏳ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 pending |
 | **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |

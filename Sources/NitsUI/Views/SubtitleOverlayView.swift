@@ -14,6 +14,10 @@ public struct SubtitleOverlayView: View {
     public let videoHeight: Int
     public let sampleAspectRatio: RationalAspectRatio
     public let geometry: VideoGeometrySettings
+    /// Size of picture subtitles against the stream's (`PlayerEngine.subtitleScale`); text has `fontSize`.
+    public let imageScale: Double
+    /// How far bottom subtitles are raised, as a fraction of the visible picture's height.
+    public let raise: Double
     /// Called with the size in pixels of the picture area subtitles are drawn on, when it changes: what a renderer of
     /// styled subtitles needs to draw at.
     public let onRenderSizeChange: ((CGSize) -> Void)?
@@ -26,12 +30,14 @@ public struct SubtitleOverlayView: View {
         textColor: Color = .white,
         backgroundColor: Color = .black,
         backgroundOpacity: Double = 0.65,
-        fontName: String = "System Rounded",
+        fontName: String = SubtitleSystemFont.rounded.rawValue,
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
         videoHeight: Int = 0,
         sampleAspectRatio: RationalAspectRatio = .square,
         geometry: VideoGeometrySettings = VideoGeometrySettings(),
+        imageScale: Double = 1,
+        raise: Double = 0,
         onRenderSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.cues = cues
@@ -46,6 +52,8 @@ public struct SubtitleOverlayView: View {
         self.videoHeight = videoHeight
         self.sampleAspectRatio = sampleAspectRatio
         self.geometry = geometry
+        self.imageScale = imageScale
+        self.raise = raise
         self.onRenderSizeChange = onRenderSizeChange
     }
 
@@ -55,7 +63,7 @@ public struct SubtitleOverlayView: View {
         textColor: Color = .white,
         backgroundColor: Color = .black,
         backgroundOpacity: Double = 0.65,
-        fontName: String = "System Rounded",
+        fontName: String = SubtitleSystemFont.rounded.rawValue,
         fontWeight: String = "Semibold",
         videoWidth: Int = 0,
         videoHeight: Int = 0,
@@ -100,7 +108,7 @@ public struct SubtitleOverlayView: View {
     public var body: some View {
         GeometryReader { proxy in
             let containerSize = proxy.size
-            let videoFrame = Self.computeVideoFrame(
+            let layout = Self.computeVideoLayout(
                 containerSize: containerSize,
                 videoWidth: videoWidth,
                 videoHeight: videoHeight,
@@ -108,6 +116,7 @@ public struct SubtitleOverlayView: View {
                 geometry: geometry,
                 backingScale: displayScale
             )
+            let videoFrame = layout.visibleRect
             let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
             let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
             let verticalEdgePadding = max(20.0, 40.0 * scale)
@@ -116,7 +125,7 @@ public struct SubtitleOverlayView: View {
             ZStack {
                 // Pictures come and go at once, without the text's fade: a typeset sign belongs to its shot, and a
                 // libass frame fades by itself (`\fad`).
-                imageLayer(in: videoFrame)
+                imageLayer(in: layout)
 
                 if !cues.isEmpty {
                     VStack(spacing: 8 * scale) {
@@ -159,7 +168,7 @@ public struct SubtitleOverlayView: View {
                                         scale: scale)
                                 }
                             }
-                            .padding(.bottom, verticalEdgePadding)
+                            .padding(.bottom, verticalEdgePadding + raise * videoFrame.height)
                         }
                     }
                     .frame(width: videoFrame.width, height: videoFrame.height)
@@ -174,20 +183,22 @@ public struct SubtitleOverlayView: View {
         }
     }
 
-    /// Bitmap cues: each region placed on its canvas, which sits over the visible picture so cues follow crop and
-    /// zoom like the text does.
+    /// Bitmap cues: each region placed on its canvas (`imageFrames`).
     @ViewBuilder
-    private func imageLayer(in videoFrame: CGRect) -> some View {
+    private func imageLayer(in layout: VideoLayout) -> some View {
         ForEach(images) { cue in
             let canvas = CGSize(
                 width: Double(cue.canvasWidth > 0 ? cue.canvasWidth : videoWidth),
                 height: Double(cue.canvasHeight > 0 ? cue.canvasHeight : videoHeight))
+            let frames = Self.imageFrames(of: cue, canvas: canvas, in: layout, scale: imageScale, raise: raise)
             ForEach(Array(cue.regions.enumerated()), id: \.offset) { index, region in
-                let frame = Self.imageFrame(of: region, canvas: canvas, in: videoFrame)
+                let frame = frames[index]
                 if !frame.isEmpty, let image = Self.cachedImage(of: region, cue: cue.id, index: index) {
                     Image(decorative: image, scale: 1)
                         .resizable()
                         .interpolation(.high)
+                        // At most SDR white over HDR video on an XDR display, like the text, as mpv and VLC show them.
+                        .allowedDynamicRange(.standard)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
                 }
@@ -213,6 +224,64 @@ public struct SubtitleOverlayView: View {
         return CGRect(
             x: originX + Double(region.x) * scaleX, y: originY + Double(region.y) * scaleY,
             width: Double(region.width) * scaleX, height: Double(region.height) * scaleY)
+    }
+
+    /// Where each region of `cue` lands. A libass frame covers the visible picture it was drawn for (libass scaled and
+    /// raised its dialogue itself). A stream's canvas covers the whole decoded frame, so a crop or zoom cuts and
+    /// scales it with the picture rather than squeezing it into what is left. The regions of each half of the frame
+    /// are then handled as a block, so lines keep their spacing and a sign at the top doesn't drag the dialogue at the
+    /// bottom: scaled by `scale` from the frame's edge they are near, the bottom block raised by `raise` (a fraction of
+    /// the visible height), and blocks off the visible part (dialogue in the bars a crop removed) moved inside it.
+    nonisolated public static func imageFrames(
+        of cue: SubtitleImageCue, canvas: CGSize, in layout: VideoLayout, scale: Double = 1, raise: Double = 0
+    ) -> [CGRect] {
+        guard cue.placement == .decodedFrame else {
+            return cue.regions.map { imageFrame(of: $0, canvas: canvas, in: layout.visibleRect) }
+        }
+        var frames = cue.regions.map { imageFrame(of: $0, canvas: canvas, in: layout.frameRect) }
+        let bounds = layout.visibleRect
+        guard !bounds.isEmpty else { return frames }
+        let halves = Dictionary(grouping: frames.indices.filter { !frames[$0].isEmpty }) {
+            frames[$0].midY < layout.frameRect.midY
+        }
+        for (isTop, group) in halves {
+            var union = group.dropFirst().reduce(frames[group[0]]) { $0.union(frames[$1]) }
+            if scale != 1 {
+                let anchor = CGPoint(x: union.midX, y: isTop ? union.minY : union.maxY)
+                for index in group {
+                    let frame = frames[index]
+                    frames[index] = CGRect(
+                        x: anchor.x + (frame.minX - anchor.x) * scale, y: anchor.y + (frame.minY - anchor.y) * scale,
+                        width: frame.width * scale, height: frame.height * scale)
+                }
+                union = group.dropFirst().reduce(frames[group[0]]) { $0.union(frames[$1]) }
+            }
+            // Inside the visible part first, then raised from there, as text is from the visible bottom: raised
+            // before, a block a crop pushed up would only come back to the edge. A raise that would take it past the
+            // top stops there.
+            var shift = CGPoint(
+                x: offset(moving: union.minX...union.maxX, into: bounds.minX...bounds.maxX),
+                y: offset(moving: union.minY...union.maxY, into: bounds.minY...bounds.maxY))
+            if !isTop, raise > 0 {
+                let top = union.minY + shift.y
+                shift.y -= min(raise * bounds.height, max(top - bounds.minY, 0))
+            }
+            for index in group { frames[index] = frames[index].offsetBy(dx: shift.x, dy: shift.y) }
+        }
+        return frames
+    }
+
+    /// The shift that brings `span` inside `bounds`, or centers it on them when it is longer.
+    private nonisolated static func offset(
+        moving span: ClosedRange<CGFloat>, into bounds: ClosedRange<CGFloat>
+    ) -> CGFloat {
+        let length = span.upperBound - span.lowerBound
+        if length > bounds.upperBound - bounds.lowerBound {
+            return (bounds.lowerBound + bounds.upperBound - span.lowerBound - span.upperBound) / 2
+        }
+        if span.lowerBound < bounds.lowerBound { return bounds.lowerBound - span.lowerBound }
+        if span.upperBound > bounds.upperBound { return bounds.upperBound - span.upperBound }
+        return 0
     }
 
     /// Pictures of the regions on screen, so a redraw of the view (the time ticks) doesn't expand and wrap the pixels
@@ -256,11 +325,26 @@ public struct SubtitleOverlayView: View {
         geometry: VideoGeometrySettings = VideoGeometrySettings(),
         backingScale: CGFloat = 1.0
     ) -> CGRect {
-        guard containerSize.width > 0, containerSize.height > 0 else {
-            return CGRect(origin: .zero, size: containerSize)
-        }
-        guard videoWidth > 0, videoHeight > 0 else {
-            return CGRect(origin: .zero, size: containerSize)
+        computeVideoLayout(
+            containerSize: containerSize, videoWidth: videoWidth, videoHeight: videoHeight,
+            sampleAspectRatio: sampleAspectRatio, geometry: geometry, backingScale: backingScale
+        ).visibleRect
+    }
+
+    /// The picture's layout in the container; the whole container when either size is unknown.
+    nonisolated public static func computeVideoLayout(
+        containerSize: CGSize,
+        videoWidth: Int,
+        videoHeight: Int,
+        sampleAspectRatio: RationalAspectRatio = .square,
+        geometry: VideoGeometrySettings = VideoGeometrySettings(),
+        backingScale: CGFloat = 1.0
+    ) -> VideoLayout {
+        let container = CGRect(origin: .zero, size: containerSize)
+        guard containerSize.width > 0, containerSize.height > 0, videoWidth > 0, videoHeight > 0 else {
+            return VideoLayout(
+                frameRect: container, contentRect: container, visibleRect: container,
+                sourceRect: CGRect(x: 0, y: 0, width: 1, height: 1), panLimit: .zero)
         }
         return VideoGeometry.layout(
             viewSize: containerSize,
@@ -269,7 +353,7 @@ public struct SubtitleOverlayView: View {
             sampleAspectRatio: sampleAspectRatio,
             settings: geometry,
             backingScale: backingScale
-        ).visibleRect
+        )
     }
 
     @ViewBuilder
@@ -309,18 +393,17 @@ public struct SubtitleOverlayView: View {
 
     public static func resolveFont(name: String, size: Double, weightName: String = "Semibold") -> Font {
         let weight = resolveWeight(weightName)
-        switch name {
-        case "System Rounded", "":
-            return .system(size: size, weight: weight, design: .rounded)
-        case "System", "Standard":
-            return .system(size: size, weight: weight, design: .default)
-        case "System Serif", "Serif":
-            return .system(size: size, weight: weight, design: .serif)
-        case "System Monospaced", "Monospaced":
-            return .system(size: size, weight: weight, design: .monospaced)
-        default:
+        guard let system = SubtitleSystemFont(fontName: name) else {
             return .custom(name, size: size).weight(weight)
         }
+        let design: Font.Design =
+            switch system {
+            case .rounded: .rounded
+            case .standard: .default
+            case .serif: .serif
+            case .monospaced: .monospaced
+            }
+        return .system(size: size, weight: weight, design: design)
     }
 
     @ViewBuilder

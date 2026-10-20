@@ -18,8 +18,9 @@ public struct SubtitleCue: Sendable, Equatable, Identifiable {
     public let endTime: Double  // in seconds
     public let text: String  // clean text
     public let alignment: SubtitleAlignment
-    /// The cue as the source stored it (an ASS event line, tags included) for hosts that render it themselves;
-    /// `nil` for formats whose `text` already says it all.
+    /// For ASS / SSA, the event as a `Dialogue:` line in `AssScript.eventFormat` (tags included), timed like the cue
+    /// on the media timeline, for hosts that draw it themselves after `subtitleAssHeader`; whatever field order the
+    /// file or container used. `nil` for formats whose `text` already says it all.
     public let rawPayload: String?
 
     public init(
@@ -36,6 +37,27 @@ public struct SubtitleCue: Sendable, Equatable, Identifiable {
         self.text = text
         self.alignment = alignment
         self.rawPayload = rawPayload
+    }
+}
+
+/// The designs of the system font the subtitle style offers, by the name `subtitleFontName` stores for each; any
+/// other name is a font family. The one list of these names: the text overlay and libass both resolve through it.
+public enum SubtitleSystemFont: String, CaseIterable, Sendable {
+    case rounded = "System Rounded"
+    case standard = "System"
+    case serif = "System Serif"
+    case monospaced = "System Monospaced"
+
+    /// The design a stored font name stands for, its short alias, or an empty name (the default design); `nil`
+    /// for a font family.
+    public init?(fontName: String) {
+        switch fontName {
+        case Self.rounded.rawValue, "": self = .rounded
+        case Self.standard.rawValue, "Standard": self = .standard
+        case Self.serif.rawValue, "Serif": self = .serif
+        case Self.monospaced.rawValue, "Monospaced": self = .monospaced
+        default: return nil
+        }
     }
 }
 

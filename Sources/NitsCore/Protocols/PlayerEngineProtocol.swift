@@ -183,8 +183,21 @@ public protocol PlayerSubtitleStyling: AnyObject, Sendable {
     @MainActor var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)? { get set }
     /// Bitmap subtitles on screen; the player draws them.
     @MainActor var currentSubtitleImages: [SubtitleImageCue] { get }
+    /// The selected ASS track's script without events, ending in an `[Events]` section whose `Format:` the cues'
+    /// `rawPayload` lines follow; `nil` for other tracks. Available before the track's first cue is reported.
+    @MainActor var subtitleAssHeader: String? { get }
+    /// Fonts the media attaches for the selected ASS track.
+    @MainActor var subtitleAssFonts: [AssScript.Font] { get }
     /// Draw ASS / SSA subtitles with libass as authored (default) instead of as plain text in the style below.
     @MainActor var usesAuthoredSubtitleStyles: Bool { get set }
+    /// Show only the forced sets of bitmap tracks (PGS, VobSub); text tracks are left as they are.
+    @MainActor var showsOnlyForcedSubtitles: Bool { get set }
+    /// How much of the subtitle style replaces an ASS script's own on its dialogue (libass' selective override).
+    @MainActor var assStyleOverride: AssStyleOverride { get set }
+    /// Size of ASS dialogue and picture subtitles (0.5-2); plain text has `subtitleFontSize`.
+    @MainActor var subtitleScale: Double { get set }
+    /// Height of bottom subtitles in percent of the picture from its top; 100 leaves them in place.
+    @MainActor var subtitlePosition: Double { get set }
     /// Size in pixels of the area subtitles are drawn on; libass draws ASS subtitles once it is set.
     @MainActor var subtitleRenderSize: CGSize { get set }
     /// Whether libass draws the selected track, so its text cues aren't to be drawn again.

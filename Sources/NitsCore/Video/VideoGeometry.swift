@@ -127,6 +127,14 @@ public struct VideoLayout: Equatable, Sendable {
     /// How far `contentRect` may move from the center on each axis, in points; pan ±1 moves it that far.
     public var panLimit: CGSize
 
+    public init(frameRect: CGRect, contentRect: CGRect, visibleRect: CGRect, sourceRect: CGRect, panLimit: CGSize) {
+        self.frameRect = frameRect
+        self.contentRect = contentRect
+        self.visibleRect = visibleRect
+        self.sourceRect = sourceRect
+        self.panLimit = panLimit
+    }
+
     /// The normalized part of the decoded frame that `rect` (in the same coordinates as `frameRect`) shows.
     public func sourceRect(for rect: CGRect) -> CGRect {
         guard frameRect.width > 0, frameRect.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
@@ -231,7 +239,8 @@ public enum VideoGeometry {
         return pan
     }
 
-    private static func frameAspectRatio(
+    /// Display aspect ratio of the whole decoded frame: the settings' aspect override, else the stream's; no crop.
+    public static func frameAspectRatio(
         videoWidth: Int, videoHeight: Int, sampleAspectRatio: RationalAspectRatio,
         settings: VideoGeometrySettings
     ) -> Double {

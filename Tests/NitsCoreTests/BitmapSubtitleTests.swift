@@ -392,6 +392,58 @@ struct BitmapSubtitleLoadingTests {
         #expect(engine.subtitleLoads.isEmpty)
     }
 
+    @Test("Forced only shows the sets a full track marks forced, and a track forced as a whole in full")
+    func showsForcedSetsOnly() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("movie.sup")
+        try SyntheticTestMediaFactory.pgsStream(forcedAt: 2.5).write(to: file)
+
+        let document = try #require(
+            EmbeddedSubtitleReader.extractEmbeddedSubtitles(url: file.path, headers: [:], streamIndex: 0))
+        try #require(document.imageCues.count == 2)
+        #expect(document.imageCues.map { $0.regions.map(\.isForced) } == [[false], [true]])
+
+        let engine = PlayerEngine.makeForTesting()
+        let id = try #require(engine.addExternalSubtitles(url: file).first)
+        engine.selectedSubtitleTrackId = id
+        engine.activeSubtitleDocument = document
+        engine.showsOnlyForcedSubtitles = true
+        engine.updateActiveSubtitles(at: 1.0)
+        #expect(engine.currentSubtitleImages.isEmpty, "A set not marked forced was shown")
+        engine.updateActiveSubtitles(at: 3.0)
+        #expect(engine.currentSubtitleImages.map(\.id) == [document.imageCues[1].id])
+
+        engine.showsOnlyForcedSubtitles = false
+        engine.updateActiveSubtitles(at: 1.0)
+        #expect(engine.currentSubtitleImages.map(\.id) == [document.imageCues[0].id])
+
+        // A track flagged forced as a whole shows every set, marked or not.
+        let index = try #require(engine.subtitleTracks.firstIndex { $0.id == id })
+        let track = engine.subtitleTracks[index]
+        engine.subtitleTracks[index] = SubtitleTrack(
+            id: track.id, streamIndex: track.streamIndex, title: track.title, language: track.language,
+            externalURL: track.externalURL, isForced: true, format: track.format)
+        engine.showsOnlyForcedSubtitles = true
+        engine.updateActiveSubtitles(at: 1.0)
+        #expect(engine.currentSubtitleImages.map(\.id) == [document.imageCues[0].id])
+    }
+
+    @Test("A set's forced regions keep a stable id of their own; a set with none gives nothing")
+    func forcedOnlyCue() {
+        func region(_ forced: Bool) -> SubtitleImageCue.Region {
+            SubtitleImageCue.Region(x: 0, y: 0, width: 1, height: 1, indices: Data([0]), palette: [], isForced: forced)
+        }
+        func cue(_ regions: [SubtitleImageCue.Region]) -> SubtitleImageCue {
+            SubtitleImageCue(id: 7, startTime: 0, endTime: 1, canvasWidth: 0, canvasHeight: 0, regions: regions)
+        }
+        #expect(cue([region(false)]).forcedOnly() == nil)
+        #expect(cue([region(true)]).forcedOnly()?.id == 7)
+        let mixed = cue([region(false), region(true)]).forcedOnly()
+        #expect(mixed?.id == -7 && mixed?.regions.count == 1)
+    }
+
     @Test("Selecting a track again while its file is read starts no second read")
     func readsOnce() throws {
         let (directory, file) = try makeSupFile()

@@ -439,7 +439,12 @@ extension PlayerEngine {
             renderAuthoredSubtitles(at: seconds)
             return
         }
-        let images = document?.activeImageCues(at: seconds) ?? []
+        var images = document?.activeImageCues(at: seconds) ?? []
+        if showsOnlyForcedSubtitles, !images.isEmpty,
+            subtitleTracks.first(where: { $0.id == selectedSubtitleTrackId })?.isForced != true
+        {
+            images = images.compactMap { $0.forcedOnly() }
+        }
         if images != currentSubtitleImages { currentSubtitleImages = images }
     }
 }
@@ -538,14 +543,27 @@ extension PlayerEngine {
         isAuthoredRenderRunning = true
         let size = subtitleRenderSize
         let video = (width: videoWidth, height: videoHeight)
-        // The pixel aspect of the video's own pixels: ASS coordinates are in them, the frame is in square ones.
-        let pixelAspect = sampleAspectRatio.multiplier
+        // The pixel aspect of the video's own pixels as shown: ASS coordinates are in them, the frame is in square
+        // ones. A forced aspect ratio stretches them; a crop doesn't.
+        let frameAspect = VideoGeometry.frameAspectRatio(
+            videoWidth: video.width, videoHeight: video.height, sampleAspectRatio: sampleAspectRatio,
+            settings: videoGeometry)
+        let pixelAspect =
+            video.width > 0 && video.height > 0 && frameAspect.isNormal
+            ? frameAspect * Double(video.height) / Double(video.width) : sampleAspectRatio.multiplier
         let events = authoredScript?.events ?? []
+        let style = AssSubtitleRenderer.StyleOverride(
+            mode: assStyleOverride, subtitleFontName: subtitleFontName, fontSize: subtitleFontSize,
+            textColorHex: subtitleTextColorHex, backgroundColorHex: subtitleBgColorHex,
+            backgroundOpacity: subtitleBgOpacity)
+        let placement = (scale: effectiveSubtitleScale, raise: subtitleRaise)
         Task.detached(priority: .userInitiated) { [weak self] in
             renderer.addEvents(events)
             renderer.configure(
                 frameWidth: Int(size.width.rounded()), frameHeight: Int(size.height.rounded()), videoWidth: video.width,
                 videoHeight: video.height, pixelAspect: pixelAspect)
+            renderer.setStyleOverride(style)
+            renderer.setPlacement(scale: placement.scale, raise: placement.raise)
             let output = renderer.render(at: seconds)
             await MainActor.run {
                 guard let self else { return }
@@ -554,12 +572,46 @@ extension PlayerEngine {
                 // (by the current renderer): paused, nothing else would draw it.
                 if renderer === self.authoredRenderer, case .frame(let cue) = output {
                     self.currentSubtitleImages = cue.map { [$0] } ?? []
+                    self.scheduleAuthoredAnimationFrame()
                 }
                 if let next = self.pendingAuthoredRenderTime {
                     self.pendingAuthoredRenderTime = nil
                     self.renderAuthoredSubtitles(at: next)
                 }
             }
+        }
+    }
+
+    /// Redraws what libass shows now, for a change of how it draws (style, placement, pixel aspect) rather than of
+    /// time; nothing when libass isn't drawing.
+    func redrawAuthoredSubtitles() {
+        guard isDrawingAuthoredSubtitles else { return }
+        renderAuthoredSubtitles(at: currentTime - subtitleDelay)
+    }
+
+    /// Redraws ASS dialogue in a changed subtitle style, which it only takes with `assStyleOverride`.
+    func restyleAuthoredSubtitles() {
+        if assStyleOverride != .none { redrawAuthoredSubtitles() }
+    }
+
+    /// While the picture libass draws keeps changing (a fade, a move, karaoke), draws it again a video frame later
+    /// rather than at the next time tick (20 Hz), which made animations step. The first render that changes nothing
+    /// ends it, so a still line costs one extra render.
+    func scheduleAuthoredAnimationFrame() {
+        guard !isAuthoredAnimationFrameScheduled, isPlaying else { return }
+        isAuthoredAnimationFrameScheduled = true
+        let interval = min(max(nominalFrameDuration, 1.0 / 120.0), 1.0 / 20.0)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(interval))
+            guard let self else { return }
+            self.isAuthoredAnimationFrameScheduled = false
+            // As the time tick: no render while a seek is landing or before playback runs.
+            guard self.isDrawingAuthoredSubtitles, self.isPlaying, self.isLoaded, !self.isLoading, !self.isSeeking,
+                self.chaseTargetTime == nil
+            else { return }
+            let seconds = self.synchronizer.currentTime().seconds
+            guard seconds.isFinite, seconds >= 0 else { return }
+            self.renderAuthoredSubtitles(at: seconds - self.subtitleDelay)
         }
     }
 }

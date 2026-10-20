@@ -313,15 +313,21 @@ can't drift apart.
 ### Subtitles
 
 Subtitles never touch the video pipeline: they are drawn by `SubtitleOverlayView` above the video, and a host that
-draws its own gets the same data from `onSubtitleCuesChanged`.
+draws its own gets the same data from `onSubtitleCuesChanged`. For ASS, each cue's `rawPayload` is a `Dialogue:` line
+in one field order (`AssScript.eventFormat`) whether the track is a stream or a file, and `subtitleAssHeader` (the
+script without its events, ending in that `Format:`) plus those lines make a script libass in the host draws as the
+player does; `subtitleAssFonts` are the media's attached fonts.
 
 - **Three kinds of track** (`SubtitleTrack.format`), all held in a `SubtitleDocument` that
   `updateActiveSubtitles(at:)` looks up each time tick (20 Hz) with the subtitle delay applied:
   - `.text` (SRT, WebVTT, mov_text): `SubtitleCue`s, drawn by SwiftUI in the user's subtitle style.
   - `.bitmap` (PGS, VobSub, DVB): `BitmapSubtitleDecoder` (`avcodec_decode_subtitle2`) makes `SubtitleImageCue`s that
     keep palette indices, not pixels; a set ends at its duration, or, as PGS gives none, at the set that clears or replaces it, however late (5 s for the last).
-    The overlay fits the cue's canvas over the visible picture (`imageFrame`), whole and with equal scale on both axes
-    when its proportions differ from the picture's (a 16:9 PGS on a rip with the bars cut off).
+    The overlay fits the cue's canvas over the whole decoded frame (`imageFrames`), whole and with equal scale on both
+    axes when its proportions differ from the frame's (a 16:9 PGS on a rip with the bars cut off). A crop or zoom in
+    the player scales the regions with the picture; those left off the visible part are moved inside it, each half
+    of the frame as a block so lines keep their spacing. libass frames (`placement == .visiblePicture`) cover the
+    visible picture instead, as they are drawn for it.
   - `.ass`: the plain-text `cues` (hosts, VoiceOver, the "plain text" setting) plus an `AssScript` (stream header,
     events, attached fonts, or the whole file) for libass.
 - **libass** (`AssSubtitleRenderer`, ISC) draws at the pixel size of the visible picture, which the view reports as
@@ -330,8 +336,16 @@ draws its own gets the same data from `onSubtitleCuesChanged`.
   dialogue at the bottom are two, not one the size of the frame), shown through the same image path as bitmap cues,
   without the fade the text gets. The
   engine keeps `isDrawingAuthoredSubtitles` so the overlay doesn't draw the text cues again. Fonts come from Core
-  Text (no Fontconfig), plus the attachments of the container. The pixel aspect passed is the video's SAR: script
-  coordinates are in the video's own pixels, the frame in square ones. The frame is the visible part of the picture
+  Text (no Fontconfig), plus the attachments of the container. The pixel aspect passed is the one the video is shown
+  with (its SAR, or what a forced aspect ratio makes of it; not a crop): script coordinates are in the video's own
+  pixels, the frame in square ones. Renders follow the 20 Hz time tick, and while one changes the picture (an
+  animation) the next comes a video frame later, from the synchronizer clock. `assStyleOverride` lays the user's
+  subtitle style over dialogue through libass' selective override (lines without positioning; signs keep theirs). Core
+  Text doesn't list the system font's rounded, serif and monospaced designs, so their files are added to libass
+  (`StyleOverride.libassFont`, from the one list of designs `SubtitleSystemFont`; SF Pro itself is found as
+  "System Font"). `subtitleScale` and `subtitlePosition` reach libass as its
+  font scale (dialogue only, `ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE`) and line position; the overlay applies them to
+  text (position) and picture subtitles (both) itself. The frame is the visible part of the picture
   (after crop and zoom), so a script's whole play resolution is stretched over what is visible: dialogue stays on
   screen, but typeset signs no longer line up with the picture once it is zoomed or cropped. That is deliberate, the
   same rule as for text (subtitles stay inside the visible picture); drawing on the whole picture and clipping, as mpv

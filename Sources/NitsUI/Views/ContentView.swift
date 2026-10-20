@@ -146,6 +146,8 @@ public struct ContentView: View {
                 videoHeight: engine.videoHeight,
                 sampleAspectRatio: engine.sampleAspectRatio,
                 geometry: engine.videoGeometry,
+                imageScale: engine.effectiveSubtitleScale,
+                raise: engine.subtitleRaise,
                 onRenderSizeChange: { engine.subtitleRenderSize = $0 }
             )
             .ignoresSafeArea()

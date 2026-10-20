@@ -16,8 +16,13 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
         let palette: [UInt32]
         /// Finished premultiplied BGRA, for pictures a renderer composed (libass) instead of a palette bitmap.
         private let rendered: Data?
+        /// Marked by the stream as shown even to viewers who chose no subtitles (`AV_SUBTITLE_FLAG_FORCED`): a sign or
+        /// foreign-language line that a Blu-ray keeps among the full track's sets.
+        public let isForced: Bool
 
-        public init(x: Int, y: Int, width: Int, height: Int, indices: Data, palette: [UInt32]) {
+        public init(
+            x: Int, y: Int, width: Int, height: Int, indices: Data, palette: [UInt32], isForced: Bool = false
+        ) {
             self.x = x
             self.y = y
             self.width = width
@@ -25,6 +30,7 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
             self.indices = indices
             self.palette = palette
             self.rendered = nil
+            self.isForced = isForced
         }
 
         public init(x: Int, y: Int, width: Int, height: Int, premultipliedBGRA: Data) {
@@ -35,6 +41,7 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
             self.indices = Data()
             self.palette = []
             self.rendered = premultipliedBGRA
+            self.isForced = false
         }
 
         /// Premultiplied BGRA, `width * 4` bytes per row: what `CGImage` takes as `premultipliedFirst` with
@@ -57,6 +64,15 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
         }
     }
 
+    /// What the canvas covers.
+    public enum Placement: Sendable {
+        /// The whole decoded frame, as a subtitle stream authors it (PGS, VobSub, DVB): a crop or zoom of the picture
+        /// moves the regions with it.
+        case decodedFrame
+        /// The visible part of the picture, which a renderer drew at the size of (libass).
+        case visiblePicture
+    }
+
     /// Unique in the process for cues the player makes (`makeID()`), so a view can key pictures by it.
     public let id: Int
     public let startTime: Double
@@ -65,6 +81,7 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
     public let canvasWidth: Int
     public let canvasHeight: Int
     public let regions: [Region]
+    public let placement: Placement
     /// The stream gave no end (PGS never does): `endTime` is a guess that the next display set, which clears or
     /// replaces this one, replaces by its own time, later or earlier.
     let endIsEstimated: Bool
@@ -79,6 +96,7 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
         canvasWidth: Int,
         canvasHeight: Int,
         regions: [Region],
+        placement: Placement = .decodedFrame,
         endIsEstimated: Bool = false
     ) {
         self.endIsEstimated = endIsEstimated
@@ -88,6 +106,7 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
         self.regions = regions
+        self.placement = placement
     }
 
     private static let lastID = OSAllocatedUnfairLock(initialState: 0)
@@ -109,9 +128,21 @@ public struct SubtitleImageCue: Sendable, Identifiable, Equatable {
     func ending(at time: Double) -> SubtitleImageCue {
         var ended = SubtitleImageCue(
             id: id, startTime: startTime, endTime: max(time, startTime), canvasWidth: canvasWidth,
-            canvasHeight: canvasHeight, regions: regions)
+            canvasHeight: canvasHeight, regions: regions, placement: placement)
         ended.readSpan = readSpan
         return ended
+    }
+
+    /// The set with its forced regions only, `nil` when it has none. It keeps a stable id of its own (the negated
+    /// one, never made by `makeID()`), so its pictures don't take the cache entries of the whole set's.
+    public func forcedOnly() -> SubtitleImageCue? {
+        guard regions.contains(where: \.isForced) else { return nil }
+        guard !regions.allSatisfy(\.isForced) else { return self }
+        var forced = SubtitleImageCue(
+            id: -id, startTime: startTime, endTime: endTime, canvasWidth: canvasWidth, canvasHeight: canvasHeight,
+            regions: regions.filter(\.isForced), placement: placement, endIsEstimated: endIsEstimated)
+        forced.readSpan = readSpan
+        return forced
     }
 
     /// Identity and timing only: comparing pictures would make every on-screen check read megabytes.

@@ -121,6 +121,11 @@ public struct QuickSubtitlesPane: View {
             Divider()
                 .overlay(Color.white.opacity(0.12))
 
+            placementSection
+
+            Divider()
+                .overlay(Color.white.opacity(0.12))
+
             if engine.subtitleTracks.contains(where: { $0.format == .ass }) {
                 Toggle(isOn: $engine.usesAuthoredSubtitleStyles) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -140,6 +145,50 @@ public struct QuickSubtitlesPane: View {
                     UserDefaults.standard.set(enabled, forKey: PlayerConfiguration.keyAuthoredSubtitleStyles)
                 }
 
+                if engine.usesAuthoredSubtitleStyles {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Dialogue in My Style")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Picker("Dialogue in My Style", selection: $engine.assStyleOverride) {
+                            ForEach(AssStyleOverride.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .onChange(of: engine.assStyleOverride) { _, mode in
+                            UserDefaults.standard.set(mode.rawValue, forKey: PlayerConfiguration.keyAssStyleOverride)
+                        }
+                        Text("Takes the style below for plain dialogue; signs and positioned text keep the file's.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+            }
+
+            if engine.subtitleTracks.contains(where: { $0.format == .bitmap }) {
+                Toggle(isOn: $engine.showsOnlyForcedSubtitles) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Forced Subtitles Only")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Text(
+                            "Picture tracks (Blu-ray, DVD) show only the lines they mark as forced: signs and foreign speech."
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .onChange(of: engine.showsOnlyForcedSubtitles) { _, enabled in
+                    UserDefaults.standard.set(enabled, forKey: PlayerConfiguration.keyForcedSubtitlesOnly)
+                }
+
                 Divider()
                     .overlay(Color.white.opacity(0.12))
             }
@@ -154,13 +203,14 @@ public struct QuickSubtitlesPane: View {
                     Button("Reset") {
                         withAnimation {
                             engine.subtitleFontSize = 24.0
-                            engine.subtitleFontName = "System Rounded"
+                            engine.subtitleFontName = SubtitleSystemFont.rounded.rawValue
                             engine.subtitleFontWeight = "Semibold"
                             engine.subtitleTextColorHex = "#FFFFFF"
                             engine.subtitleBgColorHex = "#000000"
                             engine.subtitleBgOpacity = 0.65
                             UserDefaults.standard.set(24.0, forKey: PlayerConfiguration.keySubtitleFontSize)
-                            UserDefaults.standard.set("System Rounded", forKey: PlayerConfiguration.keySubtitleFontName)
+                            UserDefaults.standard.set(
+                                SubtitleSystemFont.rounded.rawValue, forKey: PlayerConfiguration.keySubtitleFontName)
                             UserDefaults.standard.set("Semibold", forKey: PlayerConfiguration.keySubtitleFontWeight)
                             UserDefaults.standard.set("#FFFFFF", forKey: PlayerConfiguration.keySubtitleTextColorHex)
                             UserDefaults.standard.set("#000000", forKey: PlayerConfiguration.keySubtitleBgColorHex)
@@ -179,10 +229,10 @@ public struct QuickSubtitlesPane: View {
                         .foregroundStyle(.white.opacity(0.8))
                     Picker("Font Family", selection: $engine.subtitleFontName) {
                         Section("System Designs") {
-                            Text("Rounded").tag("System Rounded")
-                            Text("Standard (SF Pro)").tag("System")
-                            Text("Serif (New York)").tag("System Serif")
-                            Text("Monospaced (SF Mono)").tag("System Monospaced")
+                            Text("Rounded").tag(SubtitleSystemFont.rounded.rawValue)
+                            Text("Standard (SF Pro)").tag(SubtitleSystemFont.standard.rawValue)
+                            Text("Serif (New York)").tag(SubtitleSystemFont.serif.rawValue)
+                            Text("Monospaced (SF Mono)").tag(SubtitleSystemFont.monospaced.rawValue)
                         }
                         Section("Standard Fonts") {
                             ForEach(
@@ -299,6 +349,66 @@ public struct QuickSubtitlesPane: View {
                     Slider(value: $engine.subtitleBgOpacity, in: 0.0...1.0)
                         .onChange(of: engine.subtitleBgOpacity) { _, newOpacity in
                             UserDefaults.standard.set(newOpacity, forKey: PlayerConfiguration.keySubtitleBgOpacity)
+                        }
+                }
+            }
+        }
+    }
+
+    /// Position for every kind of subtitle; scale for the ones the text style doesn't size (ASS, pictures).
+    private var placementSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Placement", systemImage: "arrow.up.and.down.text.horizontal")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                if engine.subtitlePosition != 100 || engine.subtitleScale != 1 {
+                    Button("Reset") {
+                        engine.subtitlePosition = 100
+                        engine.subtitleScale = 1
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Raise")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.8))
+                    Spacer()
+                    Text("\(Int((100 - engine.subtitlePosition).rounded()))%")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                // Raised by moving left to right; stored as mpv's `sub-pos` (100 at the bottom).
+                Slider(
+                    value: Binding(
+                        get: { 100 - engine.subtitlePosition }, set: { engine.subtitlePosition = 100 - $0 }),
+                    in: 0...50, step: 1
+                )
+                .onChange(of: engine.subtitlePosition) { _, position in
+                    UserDefaults.standard.set(position, forKey: PlayerConfiguration.keySubtitlePosition)
+                }
+            }
+
+            if engine.subtitleTracks.contains(where: { $0.format == .ass || $0.format == .bitmap }) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Scale (ASS and Picture Subtitles)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Spacer()
+                        Text("\(Int((engine.subtitleScale * 100).rounded()))%")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                    Slider(value: $engine.subtitleScale, in: PlayerEngine.subtitleScaleRange, step: 0.05)
+                        .onChange(of: engine.subtitleScale) { _, scale in
+                            UserDefaults.standard.set(scale, forKey: PlayerConfiguration.keySubtitleScale)
                         }
                 }
             }

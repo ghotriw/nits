@@ -98,6 +98,18 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// plain text in the subtitle style above.
     public var usesAuthoredSubtitleStyles: Bool
 
+    /// Show only the forced sets of bitmap tracks (PGS, VobSub): the signs and foreign-language lines a Blu-ray keeps
+    /// inside its full track. Text tracks don't mark them and show as usual; so does a track flagged forced as a whole.
+    public var showsOnlyForcedSubtitles: Bool
+    /// How much of the subtitle style above replaces an ASS script's own on its dialogue, when it is drawn as authored.
+    public var assStyleOverride: AssStyleOverride
+    /// Size of ASS dialogue and picture subtitles (PGS, VobSub, DVB) against the script's or the disc's, 0.5-2;
+    /// plain text has its own font size.
+    public var subtitleScale: Double
+    /// Height of bottom subtitles in percent of the picture from its top: 100 keeps them where they are, lower raises
+    /// them (mpv's `sub-pos`). Applies to every kind of subtitle.
+    public var subtitlePosition: Double
+
     /// Subtitle font family / design (default "System Rounded").
     public var subtitleFontName: String
 
@@ -179,12 +191,16 @@ public struct PlayerConfiguration: Sendable, Equatable {
         resumeStartThreshold: Double = 15.0,
         resumeEndThresholdRatio: Double = 0.95,
         subtitleFontSize: Double = 24.0,
-        subtitleFontName: String = "System Rounded",
+        subtitleFontName: String = SubtitleSystemFont.rounded.rawValue,
         subtitleFontWeight: String = "Semibold",
         subtitleTextColorHex: String = "#FFFFFF",
         subtitleBgColorHex: String = "#000000",
         subtitleBgOpacity: Double = 0.65,
         usesAuthoredSubtitleStyles: Bool = true,
+        showsOnlyForcedSubtitles: Bool = false,
+        assStyleOverride: AssStyleOverride = .none,
+        subtitleScale: Double = 1.0,
+        subtitlePosition: Double = 100,
         enableOSD: Bool = true,
         osdDuration: Double = 1.3,
         enableDebugOSD: Bool = false,
@@ -227,6 +243,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleBgColorHex = subtitleBgColorHex
         self.subtitleBgOpacity = subtitleBgOpacity
         self.usesAuthoredSubtitleStyles = usesAuthoredSubtitleStyles
+        self.showsOnlyForcedSubtitles = showsOnlyForcedSubtitles
+        self.assStyleOverride = assStyleOverride
+        self.subtitleScale = subtitleScale
+        self.subtitlePosition = subtitlePosition
         self.enableOSD = enableOSD
         self.osdDuration = osdDuration
         self.enableDebugOSD = enableDebugOSD
@@ -264,6 +284,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleBgColorHex = "Nits.subtitleBgColorHex"
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
     public static let keyAuthoredSubtitleStyles = "Nits.subtitleAuthoredStyles"
+    public static let keyForcedSubtitlesOnly = "Nits.subtitleForcedOnly"
+    public static let keyAssStyleOverride = "Nits.subtitleAssStyleOverride"
+    public static let keySubtitleScale = "Nits.subtitleScale"
+    public static let keySubtitlePosition = "Nits.subtitlePosition"
     public static let keyEnableOSD = "Nits.enableOSD"
     public static let keyOSDDuration = "Nits.osdDuration"
     public static let keyEnableDebugOSD = "Nits.enableDebugOSD"
@@ -325,6 +349,18 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if userDefaults.object(forKey: keyAuthoredSubtitleStyles) != nil {
             config.usesAuthoredSubtitleStyles = userDefaults.bool(forKey: keyAuthoredSubtitleStyles)
+        }
+        if userDefaults.object(forKey: keyForcedSubtitlesOnly) != nil {
+            config.showsOnlyForcedSubtitles = userDefaults.bool(forKey: keyForcedSubtitlesOnly)
+        }
+        if let override = userDefaults.string(forKey: keyAssStyleOverride).flatMap(AssStyleOverride.init(rawValue:)) {
+            config.assStyleOverride = override
+        }
+        if let scale = userDefaults.object(forKey: keySubtitleScale) as? NSNumber {
+            config.subtitleScale = scale.doubleValue
+        }
+        if let position = userDefaults.object(forKey: keySubtitlePosition) as? NSNumber {
+            config.subtitlePosition = position.doubleValue
         }
         if let bgOpacity = userDefaults.object(forKey: keySubtitleBgOpacity) as? NSNumber {
             config.subtitleBgOpacity = bgOpacity.doubleValue
@@ -413,6 +449,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleBgColorHex, forKey: Self.keySubtitleBgColorHex)
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
         userDefaults.set(usesAuthoredSubtitleStyles, forKey: Self.keyAuthoredSubtitleStyles)
+        userDefaults.set(showsOnlyForcedSubtitles, forKey: Self.keyForcedSubtitlesOnly)
+        userDefaults.set(assStyleOverride.rawValue, forKey: Self.keyAssStyleOverride)
+        userDefaults.set(subtitleScale, forKey: Self.keySubtitleScale)
+        userDefaults.set(subtitlePosition, forKey: Self.keySubtitlePosition)
         userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
         userDefaults.set(osdDuration, forKey: Self.keyOSDDuration)
         userDefaults.set(enableDebugOSD, forKey: Self.keyEnableDebugOSD)

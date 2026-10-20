@@ -114,7 +114,8 @@ final class BitmapSubtitleDecoder {
                 }
             }
             return SubtitleImageCue.Region(
-                x: Int(rect.x), y: Int(rect.y), width: width, height: Int(rect.h), indices: indices, palette: palette)
+                x: Int(rect.x), y: Int(rect.y), width: width, height: Int(rect.h), indices: indices, palette: palette,
+                isForced: rect.flags & AV_SUBTITLE_FLAG_FORCED != 0)
         }
     }
 }
