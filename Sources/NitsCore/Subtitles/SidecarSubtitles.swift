@@ -3,8 +3,8 @@ import Foundation
 /// Subtitle files that belong to a media file by name (`movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to
 /// `movie.mkv`), and what a subtitle file's name tells about it.
 public enum SidecarSubtitles {
-    /// Extensions of the text formats `SubtitleDocument` parses.
-    static let textExtensions: Set<String> = ["srt", "vtt", "ass", "ssa"]
+    /// Extensions of the text formats: those `SubtitleDocument` parses, and those FFmpeg reads (`FFmpegTextSubtitles`).
+    static let textExtensions: Set<String> = Set(["srt", "vtt", "ass", "ssa"]).union(FFmpegTextSubtitles.extensions)
 
     /// Extensions of bitmap subtitle files: PGS streams (`.sup`) and VobSub indexes (`.idx`, with their `.sub` data).
     static let bitmapExtensions: Set<String> = ["sup", "idx"]
@@ -12,12 +12,9 @@ public enum SidecarSubtitles {
     /// Extensions of the subtitle formats the player loads.
     static let extensions: Set<String> = textExtensions.union(bitmapExtensions)
 
-    /// Extensions of subtitle formats not supported yet (MicroDVD, or the data half of VobSub).
-    static let unsupportedExtensions: Set<String> = ["sub"]
-
-    /// Extensions an open panel for subtitle files offers: the loadable ones, and a VobSub `.sub`, which loads
-    /// through the `.idx` next to it.
-    public static let pickableExtensions: [String] = extensions.union(["sub"]).sorted()
+    /// Extensions an open panel for subtitle files offers. A VobSub `.sub` among them loads through the `.idx` next to
+    /// it; one with none is read as text (MicroDVD, SubViewer).
+    public static let pickableExtensions: [String] = extensions.sorted()
 
     /// Whether the URL names a local subtitle file of a format the player loads.
     public static func isSubtitleFile(_ url: URL) -> Bool {
@@ -29,13 +26,8 @@ public enum SidecarSubtitles {
         url.isFileURL && bitmapExtensions.contains(url.pathExtension.lowercased())
     }
 
-    /// Whether the URL names a local subtitle file of a format not supported yet: never media, but not loadable.
-    public static func isUnsupportedSubtitleFile(_ url: URL) -> Bool {
-        url.isFileURL && unsupportedExtensions.contains(url.pathExtension.lowercased())
-    }
-
     /// The `.idx` that goes with a VobSub `.sub` file next to it, which is what loads the pair; `nil` for any other
-    /// URL or a `.sub` with no index (MicroDVD text).
+    /// URL or a `.sub` with no index (MicroDVD or SubViewer text).
     public static func vobSubIndex(forDataFile url: URL, fileManager: FileManager = .default) -> URL? {
         guard url.isFileURL, url.pathExtension.lowercased() == "sub" else { return nil }
         let base = url.deletingPathExtension()
@@ -73,7 +65,9 @@ public enum SidecarSubtitles {
             .filter { url in
                 guard extensions.contains(url.pathExtension.lowercased()) else { return false }
                 let name = normalized(url.deletingPathExtension().lastPathComponent)
-                return name == baseName || name.hasPrefix(baseName + ".")
+                guard name == baseName || name.hasPrefix(baseName + ".") else { return false }
+                // A VobSub pair is one file, found as its `.idx`.
+                return vobSubIndex(forDataFile: url, fileManager: fileManager) == nil
             }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }

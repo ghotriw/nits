@@ -192,22 +192,19 @@ struct ExternalBitmapSubtitleFileTests {
         try Data().write(to: url.deletingPathExtension().appendingPathExtension("sub"))
     }
 
-    @Test("Subtitle extensions: text, ASS and bitmap files load, a bare .sub resolves to its index")
+    @Test("Subtitle extensions: text, ASS and bitmap files load, a .sub resolves to its index when it has one")
     func classifiesExtensions() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        for name in ["a.srt", "a.VTT", "a.ass", "a.SSA", "a.sup", "a.idx"] {
+        for name in ["a.srt", "a.VTT", "a.ass", "a.SSA", "a.sup", "a.idx", "a.sub", "a.SMI", "a.sami"] {
             #expect(SidecarSubtitles.isSubtitleFile(directory.appendingPathComponent(name)), "\(name)")
         }
         #expect(SidecarSubtitles.isBitmapSubtitleFile(directory.appendingPathComponent("a.SUP")))
         #expect(!SidecarSubtitles.isBitmapSubtitleFile(directory.appendingPathComponent("a.srt")))
-        for name in ["a.sub"] {
-            let url = directory.appendingPathComponent(name)
-            #expect(!SidecarSubtitles.isSubtitleFile(url) && SidecarSubtitles.isUnsupportedSubtitleFile(url), "\(name)")
-        }
 
         let sub = directory.appendingPathComponent("movie.sub")
-        #expect(SidecarSubtitles.vobSubIndex(forDataFile: sub) == nil, "No index next to it: MicroDVD text")
+        #expect(
+            SidecarSubtitles.vobSubIndex(forDataFile: sub) == nil, "No index next to it: MicroDVD or SubViewer text")
         try writeVobSubIndex(to: directory.appendingPathComponent("movie.idx"))
         #expect(SidecarSubtitles.vobSubIndex(forDataFile: sub)?.lastPathComponent == "movie.idx")
     }
@@ -230,10 +227,10 @@ struct ExternalBitmapSubtitleFileTests {
         let data = directory.appendingPathComponent("disc.sub")
         #expect(engine.addExternalSubtitles(url: data) == idxIds, "A picked .sub loads through its .idx")
         let lone = directory.appendingPathComponent("microdvd.sub")
-        try Data("{0}{25}Hello\n".utf8).write(to: lone)
-        let trackCount = engine.subtitleTracks.count
-        #expect(engine.addExternalSubtitles(url: lone).isEmpty, "A .sub with no index makes no empty track")
-        #expect(engine.subtitleTracks.count == trackCount)
+        try Data("{0}{25}Hello\n{50}{75}Second\n{100}{125}Third\n".utf8).write(to: lone)
+        let loneIds = engine.addExternalSubtitles(url: lone)
+        #expect(loneIds.count == 1, "A .sub with no index is text (MicroDVD)")
+        #expect(engine.subtitleTracks.first { $0.id == loneIds.first }?.format == .text)
 
         // History restores the saved language of the index; an unknown or missing stream falls back to the first.
         #expect(engine.externalSubtitleTrack(among: idxIds, streamIndex: 1) == idxIds[1])
@@ -245,7 +242,7 @@ struct ExternalBitmapSubtitleFileTests {
         let languages = idxIds.compactMap { id in engine.subtitleTracks.first { $0.id == id } }
         #expect(languages.map(\.language) == ["en", "uk"])
         #expect(languages.map(\.streamIndex) == [0, 1])
-        #expect(Set(engine.subtitleTracks.map(\.id)).count == 3)
+        #expect(Set(engine.subtitleTracks.map(\.id)).count == 4)
     }
 
     @Test("Selecting a .sup track reads its pictures in the background")

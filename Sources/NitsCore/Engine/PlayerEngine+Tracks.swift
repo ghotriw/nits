@@ -70,17 +70,30 @@ extension PlayerEngine {
         if track.isExternal {
             self.activeSubtitleDocument = loadedSubtitleDocuments[id]
             self.updateActiveSubtitles(at: currentTime)
-            if activeSubtitleDocument == nil, track.format == .bitmap, let url = track.externalURL {
+            if activeSubtitleDocument == nil, let url = track.externalURL {
                 let streamIndex = track.streamIndex
-                // Pictures are read when the track is selected, as the pictures of a DVD run to tens of megabytes.
-                loadSubtitleDocument(trackId: id) { interrupt in
-                    EmbeddedSubtitleReader.extractEmbeddedSubtitles(
-                        url: url.path, headers: [:], streamIndex: streamIndex, interrupt: interrupt)
-                } isCurrent: { engine in
-                    // Another file may have been opened meanwhile, with tracks of the same ids.
+                // Another file may have been opened meanwhile, with tracks of the same ids.
+                let isCurrent: @MainActor @Sendable (PlayerEngine) -> Bool = { engine in
                     engine.subtitleTracks.contains {
                         $0.id == id && $0.externalURL == url && $0.streamIndex == streamIndex
                     }
+                }
+                if track.format == .bitmap {
+                    // Pictures are read when the track is selected, as the pictures of a DVD run to tens of megabytes.
+                    loadSubtitleDocument(
+                        trackId: id,
+                        read: { interrupt in
+                            EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+                                url: url.path, headers: [:], streamIndex: streamIndex, interrupt: interrupt)
+                        }, isCurrent: isCurrent)
+                } else {
+                    // A format FFmpeg reads. MicroDVD counts frames: without a rate of its own, the video's is the one.
+                    let frameRate = demuxer.flatMap { $0.hasVideo ? 1 / $0.nominalFrameDuration : nil }
+                    loadSubtitleDocument(
+                        trackId: id,
+                        read: { interrupt in
+                            FFmpegTextSubtitles.read(url: url, frameRate: frameRate, interrupt: interrupt)
+                        }, isCurrent: isCurrent)
                 }
             }
         } else if let demuxer {
@@ -155,13 +168,8 @@ extension PlayerEngine {
     /// already made from it; empty if the file can't be read.
     func addExternalSubtitles(url: URL) -> [Int] {
         // A VobSub `.sub` loads through its `.idx`, whichever of the two was picked.
+        // One with no index is MicroDVD or SubViewer text, which FFmpeg reads (VobSub data on its own reads as none).
         let url = SidecarSubtitles.vobSubIndex(forDataFile: url) ?? url
-        // One with no index is MicroDVD text or VobSub data on its own. Read as text, any bytes decode (Latin-1) into
-        // a track with no cues.
-        guard !SidecarSubtitles.isUnsupportedSubtitleFile(url) else {
-            AppLog.warning(.subtitles, "Unsupported subtitle file (a .sub with no .idx next to it): \(url.path)")
-            return []
-        }
         if SidecarSubtitles.isBitmapSubtitleFile(url) { return addExternalBitmapSubtitles(url: url) }
         return addExternalSubtitle(url: url).map { [$0] } ?? []
     }
@@ -270,33 +278,34 @@ extension PlayerEngine {
     }
 
     /// Adds a text subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
+    /// SRT, WebVTT and ASS files are parsed here; the formats FFmpeg reads (`FFmpegTextSubtitles`) only have their
+    /// beginning looked at, and are read in the background when the track is selected.
     func addExternalSubtitle(url: URL) -> Int? {
         let url = url.isFileURL ? url.standardizedFileURL : url
         if let existing = subtitleTracks.first(where: { $0.externalURL == url }) {
             return existing.id
         }
 
-        var content: String? = nil
-        let encodings: [String.Encoding] = [.utf8, .windowsCP1251, .windowsCP1252, .isoLatin1, .utf16]
-        for enc in encodings {
-            if let str = try? String(contentsOf: url, encoding: enc) {
-                content = str
-                break
-            }
-        }
-
-        guard let validContent = content else {
-            AppLog.error(.subtitles, "Unable to decode subtitle file with supported encodings: \(url)")
-            return nil
-        }
-
         let fileExtension = url.pathExtension.lowercased()
         let isASS = fileExtension == "ass" || fileExtension == "ssa"
-        let isVTT = fileExtension == "vtt" || validContent.hasPrefix("WEBVTT")
-        let document =
-            isASS
-            ? SubtitleDocument.parseASS(validContent)
-            : (isVTT ? SubtitleDocument.parseWebVTT(validContent) : SubtitleDocument.parseSRT(validContent))
+        var document: SubtitleDocument?
+        if FFmpegTextSubtitles.extensions.contains(fileExtension) {
+            guard FFmpegTextSubtitles.isReadable(url) else {
+                AppLog.warning(
+                    .subtitles, "No subtitles in a format FFmpeg reads (MicroDVD, SubViewer, SAMI) in \(url.path)")
+                return nil
+            }
+        } else {
+            guard let data = try? Data(contentsOf: url), let content = SubtitleTextEncoding.decode(data) else {
+                AppLog.error(.subtitles, "Unable to decode subtitle file with supported encodings: \(url)")
+                return nil
+            }
+            let isVTT = fileExtension == "vtt" || content.text.hasPrefix("WEBVTT")
+            document =
+                isASS
+                ? SubtitleDocument.parseASS(content.text)
+                : (isVTT ? SubtitleDocument.parseWebVTT(content.text) : SubtitleDocument.parseSRT(content.text))
+        }
 
         let trackId = 1000 + subtitleTracks.count
         let trackName = url.deletingPathExtension().lastPathComponent

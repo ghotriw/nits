@@ -4,12 +4,9 @@ import NitsCore
 /// Subtitle files dropped on the player attach to the media playing instead of opening as media themselves.
 @MainActor
 enum SubtitleFileDrop {
-    /// Splits dropped URLs into subtitle files (supported or not, never media) and everything else, keeping order.
+    /// Splits dropped URLs into subtitle files (never media) and everything else, keeping order.
     static func split(_ urls: [URL]) -> (subtitles: [URL], others: [URL]) {
-        let isSubtitle = { (url: URL) in
-            SidecarSubtitles.isSubtitleFile(url) || SidecarSubtitles.isUnsupportedSubtitleFile(url)
-        }
-        return (urls.filter(isSubtitle), urls.filter { !isSubtitle($0) })
+        (urls.filter(SidecarSubtitles.isSubtitleFile), urls.filter { !SidecarSubtitles.isSubtitleFile($0) })
     }
 
     /// Adds the files as subtitle tracks of the loaded media, selecting the last readable one, and reports the
@@ -22,21 +19,16 @@ enum SubtitleFileDrop {
             return
         }
 
-        // A VobSub `.sub` loads through its `.idx`; dropped together, the pair is one file.
+        // A VobSub `.sub` loads through its `.idx`; dropped together, the pair is one file. `split` let only subtitle
+        // files through, so none is left out here.
         var seen = Set<URL>()
-        let supported = urls.map { SidecarSubtitles.vobSubIndex(forDataFile: $0) ?? $0 }
-            .filter(SidecarSubtitles.isSubtitleFile)
+        let files = urls.map { SidecarSubtitles.vobSubIndex(forDataFile: $0) ?? $0 }
             .filter { seen.insert($0.standardizedFileURL).inserted }
-        guard let lastSupported = supported.last else {
-            let format = urls[0].pathExtension.uppercased()
-            osd.show(.custom(symbol: "captions.bubble", text: "\(format) subtitles aren't supported yet"))
-            return
-        }
 
-        AppLog.info(.subtitles, "Dropped \(supported.count) subtitle file(s) onto the player")
-        engine.loadExternalSubtitles(urls: supported)
+        AppLog.info(.subtitles, "Dropped \(files.count) subtitle file(s) onto the player")
+        engine.loadExternalSubtitles(urls: files)
 
-        let added = Set(supported.map(\.standardizedFileURL))
+        let added = Set(files.map(\.standardizedFileURL))
         if let selected = engine.subtitleTracks.first(where: { $0.id == engine.selectedSubtitleTrackId }),
             let url = selected.externalURL, added.contains(url)
         {
@@ -44,7 +36,8 @@ enum SubtitleFileDrop {
                 title: selected.title, language: selected.language, fallbackId: selected.id + 1)
             osd.show(.subtitleTrack(title: title))
         } else {
-            osd.show(.custom(symbol: "exclamationmark.triangle", text: "Can't read \(lastSupported.lastPathComponent)"))
+            let name = (files.last ?? urls[0]).lastPathComponent
+            osd.show(.custom(symbol: "exclamationmark.triangle", text: "Can't read \(name)"))
         }
     }
 }

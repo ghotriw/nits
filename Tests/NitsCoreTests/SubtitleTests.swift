@@ -226,6 +226,19 @@ struct SidecarSubtitleTests {
         #expect(SidecarSubtitles.urls(for: URL(string: "https://example.com/movie.mkv")!).isEmpty)
     }
 
+    @Test("A VobSub pair is found once, as its .idx, and a .sub without an index on its own (MicroDVD)")
+    func testFindsVobSubPairOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["movie.mkv", "movie.idx", "movie.sub", "movie.uk.sub", "movie.srt"] {
+            try Data().write(to: directory.appendingPathComponent(name))
+        }
+
+        let found = SidecarSubtitles.urls(for: directory.appendingPathComponent("movie.mkv"))
+        #expect(found.map(\.lastPathComponent) == ["movie.idx", "movie.srt", "movie.uk.sub"])
+    }
+
     @Test("Language, forced and SDH tags are read from the end of the file name")
     func testNameTags() {
         func tags(_ name: String) -> SidecarSubtitles.NameTags {
@@ -255,9 +268,10 @@ struct SidecarSubtitleTests {
         #expect(flags("English SDH", 0) == [false, true])
     }
 
-    @Test("Open panels offer every loadable subtitle file, and the data half of VobSub")
+    @Test("Open panels offer every loadable subtitle file: text, FFmpeg's text formats, and both halves of VobSub")
     func testPickableExtensions() {
-        #expect(Set(SidecarSubtitles.pickableExtensions) == SidecarSubtitles.extensions.union(["sub"]))
+        #expect(Set(SidecarSubtitles.pickableExtensions) == SidecarSubtitles.extensions)
+        #expect(Set(["srt", "vtt", "ass", "ssa", "sub", "smi", "sami", "sup", "idx"]) == SidecarSubtitles.extensions)
     }
 }
 

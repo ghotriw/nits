@@ -23,6 +23,8 @@ enum EmbeddedSubtitleReader {
 
     /// How long a cue whose packet carries no duration stays on screen.
     static let fallbackCueDuration = 4.0
+    /// How long a cue stays on screen at least, whatever its packet says: shorter, it would flash by unread.
+    static let minimumCueDuration = 0.5
 
     /// What the packets of one subtitle stream decoded to, before they become a track's document or join what
     /// playback collects (`MediaDemuxer.mergeLiveSubtitles`).
@@ -315,7 +317,7 @@ enum EmbeddedSubtitleReader {
         }
 
         let startTime = max(0.0, startSec)
-        let endTime = max(startSec + 0.5, startSec + durationSec)
+        let endTime = startSec + max(minimumCueDuration, durationSec)
         return SubtitleCue(
             id: cueIndex,
             startTime: startTime,

@@ -243,8 +243,23 @@ flowchart TD
   - Traversal and extraction of subtitle streams (`AVMEDIA_TYPE_SUBTITLE`) from MKV and MP4 containers (`subrip`, `webvtt`, `mov_text`).
   - Metadata parsing: language codes, titles, `isForced`, and `isSDH` flags (from the stream's disposition, or from
     its title when it has none).
+  - [x] MicroDVD and SubViewer (`.sub` with no `.idx`) and SAMI (`.smi`, `.sami`) files, read by FFmpeg
+    (`FFmpegTextSubtitles`: its demuxers, and decoders that turn each format into ASS events) into plain-text cues
+    drawn in the subtitle style, as SRT's are. When the file is added only its beginning is read, and FFmpeg's probes
+    must recognize one of these formats by its content, not just the extension (`isReadable`, `format(of:path:)`; SAMI
+    their probe misses for its case is told by its tags): binary files (VobSub data without its index) and other text
+    make no track, and neither does a file whose demuxer finds no line in it. The rest is read in the background when
+    the track is selected: the whole file decoded in its encoding (`SubtitleTextEncoding`) and handed to FFmpeg as a
+    UTF-8 copy, as most of these demuxers look for ASCII and the decoders drop lines that aren't UTF-8; by the subtitle
+    demuxers only (`format_whitelist`, `file` protocol), so a file found next to the media can't open as a playlist. A
+    MicroDVD file that doesn't give its frame rate counts frames at the video's. Cues last at least half a second, as
+    embedded tracks' do, but no longer than until the next one, so lines a few frames long don't overlap. Matroska's
+    plain `S_TEXT/ASCII` (`text`) streams are listed as text tracks.
+  - [ ] Text subtitle files without a byte order mark that aren't UTF-8 are taken for Windows-1251 (Cyrillic): other
+    code pages (Windows-1250, CP949, Shift JIS) come out garbled. Needs a charset detector (uchardet, as mpv) or a
+    setting.
   - [ ] Subtitle codecs not listed as tracks yet: CEA-608 / 708 captions in H.264 / HEVC SEI (US broadcast, HLS), DVB
-    Teletext, TTML / IMSC (MP4, DASH), and the plain-text `text`, MicroDVD, SubViewer and SAMI.
+    Teletext, TTML / IMSC (MP4, DASH).
 - [x] **4.3. Dynamic Positioning & ASS/SSA Tags:**
   - Parsing of ASS/SSA alignment tags (`{\an1}` – `{\an9}`).
   - Dynamic positioning in `SubtitleOverlayView`: top-aligned cues render at the top of the display surface without colliding with bottom subtitles.
@@ -332,8 +347,8 @@ flowchart TD
 - [x] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - Dropping a subtitle file (`.srt`, `.vtt`, `.ass`, `.ssa`, `.sup`, `.idx` or a VobSub `.sub`) on the video or the playlist drawer attaches the file to the media playing and selects
     it, with an OSD confirmation (`SubtitleFileDrop`); dropped together with a video, it attaches to that video.
-  - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` included;
-    dropped, a `.sub` with no `.idx` (MicroDVD) says on the OSD that the format isn't supported yet.
+  - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` / `.smi` /
+    `.sami` included; a `.sub` with no `.idx` loads as MicroDVD or SubViewer text.
 - [x] **4.6.3. Sidecar Subtitle Discovery:**
   - `movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to a local `movie.mkv` are added as tracks on load
     (`SidecarSubtitles`); language, forced and SDH tags come from the file name.

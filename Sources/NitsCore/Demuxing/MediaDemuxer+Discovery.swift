@@ -200,12 +200,13 @@ extension MediaDemuxer {
         )
     }
 
-    /// Lists a text (SRT, WebVTT, mov_text, ASS, SSA) or bitmap (PGS, VobSub, DVB) subtitle stream as a track.
+    /// Lists a text (SRT, WebVTT, mov_text, plain text, ASS, SSA) or bitmap (PGS, VobSub, DVB) subtitle stream as a
+    /// track. Plain text is Matroska's `S_TEXT/ASCII`: the packet is the line.
     func registerSubtitleTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
         let codecId = stream.pointee.codecpar.pointee.codec_id
         let isTextSub =
             (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
-                || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
+                || codecId == AV_CODEC_ID_TEXT || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
         let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
         guard isTextSub || isBitmapSub else { return }
         var title = ""

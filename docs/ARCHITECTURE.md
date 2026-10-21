@@ -320,7 +320,8 @@ player does; `subtitleAssFonts` are the media's attached fonts.
 
 - **Three kinds of track** (`SubtitleTrack.format`), all held in a `SubtitleDocument` that
   `updateActiveSubtitles(at:)` looks up each time tick (20 Hz) with the subtitle delay applied:
-  - `.text` (SRT, WebVTT, mov_text): `SubtitleCue`s, drawn by SwiftUI in the user's subtitle style.
+  - `.text` (SRT, WebVTT, mov_text, plain text; MicroDVD, SubViewer and SAMI files through FFmpeg's decoders,
+    `FFmpegTextSubtitles`): `SubtitleCue`s, drawn by SwiftUI in the user's subtitle style.
   - `.bitmap` (PGS, VobSub, DVB): `BitmapSubtitleDecoder` (`avcodec_decode_subtitle2`) makes `SubtitleImageCue`s that
     keep palette indices, not pixels; a set ends at its duration, or, as PGS gives none, at the set that clears or replaces it, however late (5 s for the last).
     The overlay fits the cue's canvas over the whole decoded frame (`imageFrames`), whole and with equal scale on both

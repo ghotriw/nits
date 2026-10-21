@@ -35,7 +35,7 @@ public enum MediaURLResolver {
                 recognized.append(contentsOf: media)
             } else if PlaylistManager.supportedExtensions.contains(url.pathExtension.lowercased()) {
                 recognized.append(url)
-            } else if SidecarSubtitles.isSubtitleFile(url) || SidecarSubtitles.isUnsupportedSubtitleFile(url) {
+            } else if SidecarSubtitles.isSubtitleFile(url) {
                 // FFmpeg opens a subtitle file as media with no video; it is never something to play.
                 skipped += 1
             } else {
