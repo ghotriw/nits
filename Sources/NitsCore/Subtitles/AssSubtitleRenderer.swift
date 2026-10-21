@@ -26,11 +26,11 @@ public enum AssStyleOverride: String, CaseIterable, Codable, Sendable, Identifia
 /// Draws an ASS / SSA track with libass: styles, positions, animations, karaoke, vector drawings and the fonts the
 /// media attaches. Output is one finished picture per frame, sized for the area it is drawn on.
 ///
-/// Every libass call happens under one lock, so the renderer can be fed events from the demuxer's thread while
-/// another renders.
+/// Every libass call, of every renderer, runs on one queue (`queue`): the initializer and every method are called
+/// there, through `perform`.
 public final class AssSubtitleRenderer: @unchecked Sendable {
     /// What a render found.
-    public enum Output {
+    public enum Output: Sendable {
         /// Nothing changed since the previous render: keep showing the last picture.
         case unchanged
         /// The picture to show; `nil` when no event is on screen.
@@ -193,7 +193,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
 
     /// `nil` when libass can't set up the script (an unreadable file, no header).
     public init?(script: AssScript) {
-        let created = state.withLockUnchecked { state -> Bool in
+        let created = locked { state -> Bool in
             guard let library = ass_library_init() else { return false }
             state.library = library
             // Fonts embedded in a script file's [Fonts] section, as well as the ones the container attaches.
@@ -238,11 +238,50 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
     }
 
     deinit {
-        Self.release(state)
+        // Never waits: the queue may be stuck in a call that doesn't return, and the last reference may go on the main
+        // thread.
+        let state = state
+        Self.queue.async { Self.timed { Self.release(state) } }
     }
 
-    /// Core Text finds installed fonts and falls back across scripts (CJK, Arabic) on its own. Called again after
-    /// adding a font: libass only sees fonts added before it.
+    /// Where every libass call of every renderer runs, one at a time. libass' Core Text font provider asks `fontd`
+    /// for fonts with a synchronous XPC call that has no timeout, seen never to return while many threads asked at
+    /// once. A call that is stuck holds this queue only, never a thread of Swift's pool (`perform`), and
+    /// `currentCallDuration` tells it.
+    public static let queue = DispatchQueue(label: "Nits.libass", qos: .userInitiated)
+    /// When the call running on `queue` started; `nil` while none runs.
+    private static let callStart = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
+
+    /// Runs `work` on `queue`, suspending until it is done: how a renderer is made and used.
+    public static func perform<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: timed(work)) }
+        }
+    }
+
+    /// How long the call running on `queue` has run, `nil` while none runs: one running for seconds is stuck, and
+    /// anything put on the queue waits behind it.
+    public static var currentCallDuration: Duration? {
+        callStart.withLock { start in start.map { ContinuousClock.now - $0 } }
+    }
+
+    private static func timed<T>(_ work: () -> T) -> T {
+        callStart.withLock { $0 = .now }
+        defer { callStart.withLock { $0 = nil } }
+        return work()
+    }
+
+    /// The renderer's state. Every method, the initializer too, runs on `queue` (`perform`): waiting for it from
+    /// anywhere else could hold a thread for as long as a font request is stuck.
+    private func locked<R>(_ body: (inout State) -> R) -> R {
+        dispatchPrecondition(condition: .onQueue(Self.queue))
+        return state.withLockUnchecked(body)
+    }
+
+    /// Core Text finds installed fonts and falls back across scripts (CJK, Arabic) on its own. Set once: setting them
+    /// again drops every font found so far. A font added later (`ass_add_font`) is taken at the next render, for a
+    /// family libass hasn't looked up yet (a lookup is cached): an override's family is only asked for once its file
+    /// is added, as an unreadable file draws in SF Pro instead.
     private static func setFonts(_ renderer: OpaquePointer) {
         ass_set_fonts(renderer, nil, "Helvetica Neue", Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
     }
@@ -259,7 +298,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
     /// Hands events of a stream to libass; those fed before (counted by position) are skipped, so the whole growing
     /// list of a live source can be passed again.
     public func addEvents(_ events: [AssScript.Event]) {
-        state.withLockUnchecked { state in
+        locked { state in
             guard let track = state.track, state.fedEvents < events.count else { return }
             for event in events[state.fedEvents...] {
                 event.payload.withCString { text in
@@ -275,7 +314,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
     /// Sets the size of the area to draw on, in pixels, and the video it covers (storage size and pixel aspect, which
     /// scripts that scale with the video use). Cheap when nothing changed.
     public func configure(frameWidth: Int, frameHeight: Int, videoWidth: Int, videoHeight: Int, pixelAspect: Double) {
-        state.withLockUnchecked { state in
+        locked { state in
             guard let renderer = state.renderer, frameWidth > 0, frameHeight > 0 else { return }
             if state.frameWidth != frameWidth || state.frameHeight != frameHeight {
                 state.frameWidth = frameWidth
@@ -290,7 +329,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
     /// Sets the user's style laid over the script's dialogue; `nil` or mode `.none` draws the script as authored.
     /// Cheap when nothing changed.
     public func setStyleOverride(_ override: StyleOverride?) {
-        state.withLockUnchecked { state in
+        locked { state in
             guard let renderer = state.renderer, let library = state.library else { return }
             let override = override?.mode == AssStyleOverride.none ? nil : override
             guard override != state.styleOverride else { return }
@@ -304,7 +343,6 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
                             ass_add_font(library, file.lastPathComponent, base, Int32(bytes.count))
                         }
                         state.addedFontFiles.insert(file.path)
-                        Self.setFonts(renderer)
                     } else {
                         // SF Pro rather than libass' default; the file is tried again with the next change of style.
                         AppLog.warning(.subtitles, "Can't read the subtitle font \(file.path)")
@@ -321,7 +359,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
     /// Scales dialogue by `scale` and raises it by `raise` (a fraction of the frame's height, 0 leaves it where the
     /// script puts it); positioned text keeps its size and place. Cheap when nothing changed.
     public func setPlacement(scale: Double, raise: Double) {
-        state.withLockUnchecked { state in
+        locked { state in
             guard let renderer = state.renderer else { return }
             let placement = (scale: scale.isFinite && scale > 0 ? scale : 1, raise: min(max(raise, 0), 1))
             guard placement != state.placement else { return }
@@ -334,7 +372,7 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
 
     /// Renders the events due at `seconds` into the configured frame size.
     public func render(at seconds: Double) -> Output {
-        state.withLockUnchecked { state in
+        locked { state in
             guard let renderer = state.renderer, let track = state.track, state.frameWidth > 0 else {
                 return .unchanged
             }

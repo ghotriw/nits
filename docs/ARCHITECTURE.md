@@ -333,7 +333,16 @@ player does; `subtitleAssFonts` are the media's attached fonts.
     events, attached fonts, or the whole file) for libass.
 - **libass** (`AssSubtitleRenderer`, ISC) draws at the pixel size of the visible picture, which the view reports as
   `subtitleRenderSize`; the engine renders off the main thread, one render at a time, the latest requested time
-  last. The result is a premultiplied BGRA picture per group of images near each other (a sign at the top and the
+  last. Every libass call of every renderer runs on one serial queue (`AssSubtitleRenderer.queue`), and only there
+  (`dispatchPrecondition`): callers await it through `perform`, never holding a thread of Swift's pool. Core Text asks
+  `fontd` for fonts with a synchronous XPC call that has no timeout. While the engine's calls are under way
+  (`libassCallsInFlight`), one running past `libassStallTimeout` (5 s) counts as stuck (`watchLibass`; another's long
+  call, with none of the engine's waiting, is not its business): the media's ASS tracks show their text cues from
+  then on, as anything later put on the queue would wait behind it; the next media tries libass again. Fonts are set
+  once per renderer: `ass_set_fonts` drops every font found so far, and libass takes fonts added later at the next
+  render. A renderer is released on the queue asynchronously, so the main thread never waits for
+  it. Tests reach libass through `LibassRenderer`, which gives up after 20 s with an issue. The result is a
+  premultiplied BGRA picture per group of images near each other (a sign at the top and the
   dialogue at the bottom are two, not one the size of the frame), shown through the same image path as bitmap cues,
   without the fade the text gets. The
   engine keeps `isDrawingAuthoredSubtitles` so the overlay doesn't draw the text cues again. Fonts come from Core

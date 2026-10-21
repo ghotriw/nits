@@ -4,7 +4,9 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("ASS subtitles (libass)", .hostDependent)
+// A minute at most. A font request `fontd` never answers (`AssSubtitleRenderer.queue`) fails a test through
+// `LibassRenderer`'s limit, which holds no thread while it waits, not the run.
+@Suite("ASS subtitles (libass)", .hostDependent, .timeLimit(.minutes(1)))
 struct AssSubtitleTests {
     /// A 640x360 script: white "Hello" at the bottom for 0-2 s, and a red box (a vector drawing) at the top from 3 s.
     static let script = """
@@ -33,10 +35,10 @@ struct AssSubtitleTests {
         String(script.prefix(upTo: script.range(of: "Dialogue:")!.lowerBound))
     }
 
-    private func makeRenderer() throws -> AssSubtitleRenderer {
+    private func makeRenderer() async throws -> LibassRenderer {
         let renderer = try #require(
-            AssSubtitleRenderer(script: AssScript(header: Data(Self.script.utf8), isCompleteFile: true)))
-        renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+            await LibassRenderer(script: AssScript(header: Data(Self.script.utf8), isCompleteFile: true)))
+        await renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
         return renderer
     }
 
@@ -46,29 +48,29 @@ struct AssSubtitleTests {
     }
 
     @Test("A text event is drawn near the bottom, then goes away, and an unchanged frame says so")
-    func drawsTextEvent() throws {
-        let renderer = try makeRenderer()
-        let hello = try #require(region(renderer.render(at: 1.0)), "Nothing drawn for the text event")
+    func drawsTextEvent() async throws {
+        let renderer = try await makeRenderer()
+        let hello = try #require(region(await renderer.render(at: 1.0)), "Nothing drawn for the text event")
         #expect(hello.y > 360 / 2, "Bottom-aligned text starts in the lower half: \(hello.y)")
         #expect(hello.x > 0 && hello.x + hello.width < 640)
         let pixels = [UInt8](hello.premultipliedBGRA())
         #expect(pixels.count == hello.width * hello.height * 4)
         #expect(pixels.contains { $0 > 0xF0 }, "No white pixels")
 
-        guard case .unchanged = renderer.render(at: 1.0) else {
+        guard case .unchanged = await renderer.render(at: 1.0) else {
             Issue.record("A second render at the same time reported a change")
             return
         }
-        guard case .frame(nil) = renderer.render(at: 2.5) else {
+        guard case .frame(nil) = await renderer.render(at: 2.5) else {
             Issue.record("Nothing should be on screen at 2.5 s")
             return
         }
     }
 
     @Test("A vector drawing is placed where the script says, in the frame's pixels")
-    func drawsVectorDrawing() throws {
-        let renderer = try makeRenderer()
-        let box = try #require(region(renderer.render(at: 4.0)), "Nothing drawn for the drawing")
+    func drawsVectorDrawing() async throws {
+        let renderer = try await makeRenderer()
+        let box = try #require(region(await renderer.render(at: 4.0)), "Nothing drawn for the drawing")
         let pixels = [UInt8](box.premultipliedBGRA())
         // The region has margins of nothing around the drawing; its opaque part is the drawing.
         let opaque = (0..<(box.width * box.height)).filter { pixels[$0 * 4 + 3] > 128 }
@@ -85,11 +87,11 @@ struct AssSubtitleTests {
     }
 
     @Test("The picture follows the frame size: scripts scale to the area they are drawn on")
-    func scalesToFrame() throws {
-        let renderer = try makeRenderer()
-        let small = try #require(region(renderer.render(at: 4.0)))
-        renderer.configure(frameWidth: 1280, frameHeight: 720, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
-        let large = try #require(region(renderer.render(at: 4.0)))
+    func scalesToFrame() async throws {
+        let renderer = try await makeRenderer()
+        let small = try #require(region(await renderer.render(at: 4.0)))
+        await renderer.configure(frameWidth: 1280, frameHeight: 720, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        let large = try #require(region(await renderer.render(at: 4.0)))
         #expect(abs(large.width - small.width * 2) <= 4 && abs(large.x - small.x * 2) <= 4)
     }
 
@@ -106,18 +108,18 @@ struct AssSubtitleTests {
     }
 
     @Test("The style override restyles dialogue, leaves positioned drawings alone, and turns off again")
-    func overridesDialogueStyle() throws {
-        let renderer = try makeRenderer()
-        let authored = try #require(pixels(renderer.render(at: 1.0)))
-        let box = try #require(pixels(renderer.render(at: 4.0)))
+    func overridesDialogueStyle() async throws {
+        let renderer = try await makeRenderer()
+        let authored = try #require(pixels(await renderer.render(at: 1.0)))
+        let box = try #require(pixels(await renderer.render(at: 4.0)))
 
-        renderer.setStyleOverride(style(.font))
-        let restyled = try #require(pixels(renderer.render(at: 1.0)), "Nothing drawn after the override")
+        await renderer.setStyleOverride(style(.font))
+        let restyled = try #require(pixels(await renderer.render(at: 1.0)), "Nothing drawn after the override")
         #expect(restyled != authored, "The dialogue kept its font")
-        #expect(pixels(renderer.render(at: 4.0)) == box, "The positioned drawing changed")
+        #expect(pixels(await renderer.render(at: 4.0)) == box, "The positioned drawing changed")
 
-        renderer.setStyleOverride(style(.full, color: "#FF0000"))
-        let red = try #require(region(renderer.render(at: 1.0)))
+        await renderer.setStyleOverride(style(.full, color: "#FF0000"))
+        let red = try #require(region(await renderer.render(at: 1.0)))
         let bytes = [UInt8](red.premultipliedBGRA())
         // Some opaque pixel is red: BGRA (0, 0, ≥ 0xF0, 0xFF).
         #expect(
@@ -125,17 +127,17 @@ struct AssSubtitleTests {
                 bytes[$0 + 3] == 0xFF && bytes[$0 + 2] >= 0xF0 && bytes[$0] < 0x10 && bytes[$0 + 1] < 0x10
             }, "No red in the dialogue")
 
-        renderer.setStyleOverride(style(.none))
-        #expect(pixels(renderer.render(at: 1.0)) == authored)
+        await renderer.setStyleOverride(style(.none))
+        #expect(pixels(await renderer.render(at: 1.0)) == authored)
     }
 
     @Test("The system's rounded, serif and monospaced designs reach libass, which Core Text hides them from")
-    func drawsSystemDesigns() throws {
+    func drawsSystemDesigns() async throws {
         var drawn: [String: Data] = [:]
         for font in ["System Rounded", "System Serif", "System Monospaced", "System", "No Such Font"] {
-            let renderer = try makeRenderer()
-            renderer.setStyleOverride(style(.font, font: font))
-            let picture: Data = try #require(pixels(renderer.render(at: 1.0)), "Nothing drawn in \(font)")
+            let renderer = try await makeRenderer()
+            await renderer.setStyleOverride(style(.font, font: font))
+            let picture: Data = try #require(pixels(await renderer.render(at: 1.0)), "Nothing drawn in \(font)")
             drawn[font] = picture
         }
         // A font libass can't find falls back to its default; each design must differ from that and each other.
@@ -143,35 +145,35 @@ struct AssSubtitleTests {
     }
 
     @Test("A host's script made of the header and the cues' lines draws what the player draws")
-    func hostScriptRoundTrips() throws {
+    func hostScriptRoundTrips() async throws {
         let document = SubtitleDocument.parseASS(Self.script)
         let script = try #require(document.assScript)
         let hostScript = script.hostHeader + document.cues.compactMap(\.rawPayload).joined(separator: "\n") + "\n"
         let host = try #require(
-            AssSubtitleRenderer(script: AssScript(header: Data(hostScript.utf8), isCompleteFile: true)))
-        host.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
-        let player = try makeRenderer()
-        let drawn = try #require(pixels(player.render(at: 1.0)))
-        #expect(pixels(host.render(at: 1.0)) == drawn)
+            await LibassRenderer(script: AssScript(header: Data(hostScript.utf8), isCompleteFile: true)))
+        await host.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        let player = try await makeRenderer()
+        let drawn = try #require(pixels(await player.render(at: 1.0)))
+        #expect(pixels(await host.render(at: 1.0)) == drawn)
     }
 
     @Test("Scale and raise move and size dialogue, not positioned drawings")
-    func placesDialogue() throws {
-        let renderer = try makeRenderer()
-        let line = try #require(region(renderer.render(at: 1.0)))
-        let box = try #require(region(renderer.render(at: 4.0)))
+    func placesDialogue() async throws {
+        let renderer = try await makeRenderer()
+        let line = try #require(region(await renderer.render(at: 1.0)))
+        let box = try #require(region(await renderer.render(at: 4.0)))
 
-        renderer.setPlacement(scale: 1.5, raise: 0.3)
-        let placed = try #require(region(renderer.render(at: 1.0)))
+        await renderer.setPlacement(scale: 1.5, raise: 0.3)
+        let placed = try #require(region(await renderer.render(at: 1.0)))
         #expect(Double(placed.width) > Double(line.width) * 1.3, "Widths \(line.width) → \(placed.width)")
         let bottom = placed.y + placed.height
         #expect(bottom < line.y + line.height - 360 / 5, "Not raised: bottom \(line.y + line.height) → \(bottom)")
-        let drawing = try #require(region(renderer.render(at: 4.0)))
+        let drawing = try #require(region(await renderer.render(at: 4.0)))
         #expect((drawing.x, drawing.y, drawing.width, drawing.height) == (box.x, box.y, box.width, box.height))
     }
 
     @Test("Hex colors of the subtitle style keep their alpha, as the text overlay draws them")
-    func parsesHexColors() throws {
+    func parsesHexColors() async throws {
         typealias Style = AssSubtitleRenderer.StyleOverride
         #expect(Style.rgba(hex: "#12AB34").map { [Double($0.rgb), $0.alpha] } == [Double(0x12AB34), 1])
         let translucent = try #require(Style.rgba(hex: "12AB3480"))
@@ -198,43 +200,62 @@ struct AssSubtitleTests {
     }
 
     @Test("A font file that can't be read draws in SF Pro, not in libass' default")
-    func unreadableFontFileFallsBack() throws {
-        func drawn(_ style: AssSubtitleRenderer.StyleOverride) throws -> Data {
-            let renderer = try makeRenderer()
-            renderer.setStyleOverride(style)
-            return try #require(pixels(renderer.render(at: 1.0)))
+    func unreadableFontFileFallsBack() async throws {
+        func drawn(_ style: AssSubtitleRenderer.StyleOverride) async throws -> Data {
+            let renderer = try await makeRenderer()
+            await renderer.setStyleOverride(style)
+            return try #require(pixels(await renderer.render(at: 1.0)))
         }
         var missing = style(.font, font: "System Rounded")
         missing.fontFile = URL(fileURLWithPath: "/nonexistent/Font.ttf")
-        #expect(try drawn(missing) == drawn(style(.font, font: "System")))
+        #expect(try await drawn(missing) == drawn(style(.font, font: "System")))
+    }
+
+    @Test("A design's file read after it couldn't be draws in that design, though the fonts are set only once")
+    func fontFileReadLaterDraws() async throws {
+        let rounded = style(.font, font: "System Rounded")
+        try #require(rounded.fontFile != nil, "No rounded design on this system")
+        let fresh = try await makeRenderer()
+        await fresh.setStyleOverride(rounded)
+        let expected = try #require(pixels(await fresh.render(at: 1.0)))
+
+        let renderer = try await makeRenderer()
+        var missing = rounded
+        missing.fontFile = URL(fileURLWithPath: "/nonexistent/Font.ttf")
+        await renderer.setStyleOverride(missing)
+        let fallback = try #require(pixels(await renderer.render(at: 1.0)))
+        #expect(fallback != expected, "The rounded design must look different for this to tell")
+        await renderer.setStyleOverride(rounded)
+        #expect(pixels(await renderer.render(at: 1.0)) == expected)
     }
 
     @Test("A fade changes the picture every frame and a still line doesn't: what frame-rate redraws stop on")
-    func reportsAnimationChanges() throws {
+    func reportsAnimationChanges() async throws {
         let renderer = try #require(
-            AssSubtitleRenderer(script: AssScript(header: Data(Self.fadeScript.utf8), isCompleteFile: true)))
-        renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+            await LibassRenderer(script: AssScript(header: Data(Self.fadeScript.utf8), isCompleteFile: true)))
+        await renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
         for frame in 0..<10 {
-            guard case .frame(.some) = renderer.render(at: 0.6 + Double(frame) / 24) else {
+            guard case .frame(.some) = await renderer.render(at: 0.6 + Double(frame) / 24) else {
                 Issue.record("Frame \(frame) of the fade reported no change")
                 return
             }
         }
-        _ = renderer.render(at: 2.5)
-        guard case .unchanged = renderer.render(at: 2.5 + 1.0 / 24) else {
+        _ = await renderer.render(at: 2.5)
+        guard case .unchanged = await renderer.render(at: 2.5 + 1.0 / 24) else {
             Issue.record("A still line reported a change")
             return
         }
     }
 
     @Test("A forced aspect ratio's pixel aspect squeezes the text with the picture and redraws it")
-    func followsPixelAspect() throws {
-        let renderer = try makeRenderer()
+    func followsPixelAspect() async throws {
+        let renderer = try await makeRenderer()
         // 16:9 storage shown at 4:3: the frame drawn on is 480x360 and the video's pixels are 0.75 wide.
-        renderer.configure(frameWidth: 480, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
-        let square = try #require(region(renderer.render(at: 1.0)))
-        renderer.configure(frameWidth: 480, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 0.75)
-        let squeezed = try #require(region(renderer.render(at: 1.0)), "The new pixel aspect wasn't drawn")
+        await renderer.configure(frameWidth: 480, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        let square = try #require(region(await renderer.render(at: 1.0)))
+        await renderer.configure(
+            frameWidth: 480, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 0.75)
+        let squeezed = try #require(region(await renderer.render(at: 1.0)), "The new pixel aspect wasn't drawn")
         // The outline and the region's margins don't scale with the glyphs, so the ratio is only near 0.75.
         let ratio = Double(squeezed.width) / Double(square.width)
         #expect(ratio > 0.7 && ratio < 0.88, "Widths \(square.width) → \(squeezed.width)")
@@ -242,16 +263,16 @@ struct AssSubtitleTests {
     }
 
     @Test("A sign at the top and dialogue at the bottom make two small pictures, not one the size of the frame")
-    func composesSeparatePictures() throws {
+    func composesSeparatePictures() async throws {
         let both =
             Self.header + """
                 Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,Hello
                 Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(100,20)\\1c&H0000FF&\\bord0\\p1}m 0 0 l 200 0 200 40 0 40{\\p0}
                 """
         let renderer = try #require(
-            AssSubtitleRenderer(script: AssScript(header: Data(both.utf8), isCompleteFile: true)))
-        renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
-        guard case .frame(let cue) = renderer.render(at: 1.0) else {
+            await LibassRenderer(script: AssScript(header: Data(both.utf8), isCompleteFile: true)))
+        await renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        guard case .frame(let cue) = await renderer.render(at: 1.0) else {
             Issue.record("Nothing drawn")
             return
         }
@@ -264,20 +285,22 @@ struct AssSubtitleTests {
     }
 
     @Test("Stream events are fed once, whatever the number of times the list is passed")
-    func feedsStreamEventsOnce() throws {
+    func feedsStreamEventsOnce() async throws {
         var script = AssScript(header: Data(Self.header.utf8), events: [])
-        let renderer = try #require(AssSubtitleRenderer(script: script))
-        renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
-        #expect(region(renderer.render(at: 1.0)) == nil, "Events appeared from nowhere")
+        let renderer = try #require(await LibassRenderer(script: script))
+        await renderer.configure(frameWidth: 640, frameHeight: 360, videoWidth: 640, videoHeight: 360, pixelAspect: 1)
+        #expect(region(await renderer.render(at: 1.0)) == nil, "Events appeared from nowhere")
         script.events = [AssScript.Event(payload: "0,0,Default,,0,0,0,,Streamed", start: 0.5, duration: 2)]
-        renderer.addEvents(script.events)
-        renderer.addEvents(script.events)
-        let streamed = try #require(region(renderer.render(at: 1.0)))
+        await renderer.addEvents(script.events)
+        await renderer.addEvents(script.events)
+        let streamed = try #require(region(await renderer.render(at: 1.0)))
         #expect(streamed.width > 0)
     }
 }
 
-@Suite("ASS subtitle tracks")
+// One at a time: a test that holds libass' queue stuck would starve the others' renders here. Elsewhere libass is
+// only reached through `LibassRenderer`, which waits for the queue without holding a thread.
+@Suite("ASS subtitle tracks", .serialized, .timeLimit(.minutes(1)))
 struct AssSubtitleTrackTests {
     @Test("An ASS script becomes plain-text cues for hosts, and drawings are not text")
     func parsesScript() throws {
@@ -495,6 +518,105 @@ struct AssSubtitleTrackTests {
         #expect(larger.regions.first.map(\.width) ?? 0 > restyled.regions.first.map(\.width) ?? 0)
     }
 
+    @Test(
+        "While libass is stuck in a call the track shows as text, and stays so for the media once the call returns",
+        .hostDependent)
+    @MainActor
+    func engineShowsTextWhileLibassIsStuck() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.libassStallTimeout = .milliseconds(100)
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
+        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.currentTime = 1.0
+        engine.updateActiveSubtitles(at: 1.0)
+        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+
+        // A call that doesn't come back, as a font request `fontd` never answers.
+        let stuck = DispatchSemaphore(value: 0)
+        // Released however the test ends: a held queue would hold every later libass test.
+        defer { stuck.signal() }
+        Task.detached { await AssSubtitleRenderer.perform { stuck.wait() } }
+        for _ in 0..<100 where AssSubtitleRenderer.currentCallDuration == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        engine.redrawAuthoredSubtitles()
+        for _ in 0..<100 where engine.isDrawingAuthoredSubtitles { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.isDrawingAuthoredSubtitles)
+        #expect(engine.currentSubtitleImages.isEmpty)
+        engine.updateActiveSubtitles(at: 1.0)
+        #expect(engine.currentSubtitleCues.map(\.text) == ["Hello"], "The text shows instead")
+
+        // One way: a call that returned after all doesn't bring libass back for this media.
+        stuck.signal()
+        try await Task.sleep(for: .milliseconds(300))
+        engine.redrawAuthoredSubtitles()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!engine.isDrawingAuthoredSubtitles)
+        #expect(engine.currentSubtitleImages.isEmpty)
+
+        // The next media tries libass again, and with the queue free it draws.
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.currentTime = 1.0
+        engine.updateActiveSubtitles(at: 1.0)
+        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.isLibassStalled)
+        #expect(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+    }
+
+    @Test(
+        "Another's long libass call, with none of the engine's own under way, leaves the track drawn by libass",
+        .hostDependent)
+    @MainActor
+    func engineIgnoresOthersLongLibassCall() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        // Long enough for the watch armed by the render below to outlive it and see the other call.
+        engine.libassStallTimeout = .seconds(1)
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
+        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.currentTime = 1.0
+        engine.updateActiveSubtitles(at: 1.0)
+        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+
+        // A watch armed earlier (making the renderer, the first frame) ends first, so the render below arms a fresh one.
+        for _ in 0..<300 where engine.libassWatch != nil { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(engine.libassWatch == nil)
+        // A render arms the watch, comes back at once, and then another's call holds the queue past the timeout.
+        engine.redrawAuthoredSubtitles()
+        // Paused, so no time tick renders; then quiet: no render of the engine's running, asked for, or about to be.
+        engine.pause()
+        func isQuiet() -> Bool {
+            engine.libassCallsInFlight == 0 && !engine.isAuthoredRenderRunning
+                && engine.pendingAuthoredRenderTime == nil && engine.subtitleRefresh == nil
+        }
+        for _ in 0..<200 where !isQuiet() { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(200))
+        try #require(isQuiet(), "calls \(engine.libassCallsInFlight), running \(engine.isAuthoredRenderRunning)")
+        // The watch armed by the render is still waiting: the scenario, not a watch long gone.
+        try #require(engine.libassWatch != nil)
+        let held = DispatchSemaphore(value: 0)
+        defer { held.signal() }
+        Task.detached { await AssSubtitleRenderer.perform { held.wait() } }
+        // Past two timeouts: a watch that judged the other call would have flagged it by now.
+        try await Task.sleep(for: .milliseconds(2500))
+        #expect(!engine.isLibassStalled, "Nothing of the engine's waits for that call: \(engine.libassCallsInFlight)")
+        #expect(engine.isDrawingAuthoredSubtitles)
+    }
+
     @Test("A fade is drawn at the video's frame rate during playback, not at the 20 Hz time tick", .realtimePlayback)
     @MainActor
     func engineDrawsFadeAtFrameRate() async throws {
@@ -562,8 +684,8 @@ struct AssSubtitleTrackTests {
         let script = AssScript(header: Data(AssSubtitleTests.script.utf8), isCompleteFile: true)
         let engine = PlayerEngine.makeForTesting()
         engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        let replaced = try #require(AssSubtitleRenderer(script: script))
-        let current = try #require(AssSubtitleRenderer(script: script))
+        let replaced = try #require(await LibassRenderer(script: script)).renderer
+        let current = try #require(await LibassRenderer(script: script)).renderer
         engine.authoredRenderer = replaced
         engine.renderAuthoredSubtitles(at: 1.0)
         // Paused: no time tick follows, so only the pending request can draw the new renderer's first frame.

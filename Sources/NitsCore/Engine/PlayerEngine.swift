@@ -493,6 +493,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Counts renderer starts and drops, so a renderer made in the background for a track since left is thrown away.
     @ObservationIgnored var authoredGeneration = 0
     @ObservationIgnored var isAuthoredRenderRunning = false
+    /// How long a libass call may run before it counts as stuck (`watchLibass`): a frame takes milliseconds, a new
+    /// script's first fonts a fraction of a second.
+    @ObservationIgnored var libassStallTimeout: Duration = .seconds(5)
+    /// A libass call has run past `libassStallTimeout`: the media's ASS tracks show their text cues.
+    @ObservationIgnored var isLibassStalled = false
+    /// This engine's libass calls not yet back, run or waiting for the queue (`watchLibass`).
+    @ObservationIgnored var libassCallsInFlight = 0
+    /// The check for a stuck libass call (`watchLibass`), while one is under way.
+    @ObservationIgnored var libassWatch: Task<Void, Never>?
     @ObservationIgnored var pendingAuthoredRenderTime: Double?
     /// A render a video frame on is due (`scheduleAuthoredAnimationFrame`).
     @ObservationIgnored var isAuthoredAnimationFrameScheduled = false

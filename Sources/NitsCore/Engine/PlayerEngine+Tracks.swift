@@ -344,6 +344,8 @@ extension PlayerEngine {
         subtitleStashMerge = nil
         subtitleIndexLoad?.cancel()
         subtitleIndexLoad = nil
+        // The next media tries libass again; if its queue is still stuck, the watch finds it so again.
+        isLibassStalled = false
         selectedSubtitleTrackId = nil
         activeSubtitleDocument = nil
         currentSubtitleCues.removeAll()
@@ -591,34 +593,44 @@ extension PlayerEngine {
     }
 
     /// Creates the renderer in the background. The text cues stay hidden meanwhile, so a track doesn't flash as plain
-    /// text before it appears styled; if libass can't read the script, the text is shown after all.
+    /// text before it appears styled; if libass can't read the script, or is stuck (`watchLibass`), the text is shown
+    /// after all.
     private func startAuthoredRenderer(for script: AssScript, trackId: Int) {
         authoredGeneration += 1
         let generation = authoredGeneration
         authoredRenderer = nil
         authoredRendererTrackId = trackId
         pendingAuthoredRenderTime = nil
+        // It would wait behind the stuck call.
+        guard !isLibassStalled else {
+            isDrawingAuthoredSubtitles = false
+            return
+        }
         isDrawingAuthoredSubtitles = true
         AppLog.info(.subtitles, "Drawing subtitle track \(trackId) with libass")
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let renderer = AssSubtitleRenderer(script: script)
-            await MainActor.run {
-                guard let self, self.authoredGeneration == generation else { return }
-                guard let renderer else {
-                    AppLog.warning(.subtitles, "libass can't read the script of subtitle track \(trackId)")
-                    self.isDrawingAuthoredSubtitles = false
-                    return
-                }
-                self.authoredRenderer = renderer
-                self.renderAuthoredSubtitles(at: self.currentTime - self.subtitleDelay)
+        libassCallsInFlight += 1
+        watchLibass()
+        Task { [weak self] in
+            let renderer = await AssSubtitleRenderer.perform { AssSubtitleRenderer(script: script) }
+            guard let self else { return }
+            self.libassCallsInFlight -= 1
+            // Made after libass was found stuck: the text stays for this media.
+            guard self.authoredGeneration == generation, !self.isLibassStalled else { return }
+            guard let renderer else {
+                AppLog.warning(.subtitles, "libass can't read the script of subtitle track \(trackId)")
+                self.isDrawingAuthoredSubtitles = false
+                return
             }
+            self.authoredRenderer = renderer
+            self.renderAuthoredSubtitles(at: self.currentTime - self.subtitleDelay)
         }
     }
 
-    /// Renders off the main thread, at most one at a time; a time asked for meanwhile is rendered next. The events
-    /// read since the last render go to libass in the same task, as it may be busy with a frame.
+    /// Renders on libass' queue (`AssSubtitleRenderer.perform`), at most one at a time; a time asked for meanwhile is
+    /// rendered next. The events read since the last render go to libass in the same call, as it may be busy with a
+    /// frame. None once libass was found stuck.
     func renderAuthoredSubtitles(at seconds: Double) {
-        guard let renderer = authoredRenderer else { return }
+        guard let renderer = authoredRenderer, !isLibassStalled else { return }
         guard !isAuthoredRenderRunning else {
             pendingAuthoredRenderTime = seconds
             return
@@ -640,27 +652,74 @@ extension PlayerEngine {
             textColorHex: subtitleTextColorHex, backgroundColorHex: subtitleBgColorHex,
             backgroundOpacity: subtitleBgOpacity)
         let placement = (scale: effectiveSubtitleScale, raise: subtitleRaise)
-        Task.detached(priority: .userInitiated) { [weak self] in
-            renderer.addEvents(events)
-            renderer.configure(
-                frameWidth: Int(size.width.rounded()), frameHeight: Int(size.height.rounded()), videoWidth: video.width,
-                videoHeight: video.height, pixelAspect: pixelAspect)
-            renderer.setStyleOverride(style)
-            renderer.setPlacement(scale: placement.scale, raise: placement.raise)
-            let output = renderer.render(at: seconds)
-            await MainActor.run {
-                guard let self else { return }
-                self.isAuthoredRenderRunning = false
-                // A frame of a renderer since replaced is dropped, but a time asked for meanwhile is still rendered
-                // (by the current renderer): paused, nothing else would draw it.
-                if renderer === self.authoredRenderer, case .frame(let cue) = output {
-                    self.currentSubtitleImages = cue.map { [$0] } ?? []
-                    self.scheduleAuthoredAnimationFrame()
+        libassCallsInFlight += 1
+        watchLibass()
+        Task { [weak self] in
+            let output = await AssSubtitleRenderer.perform {
+                renderer.addEvents(events)
+                renderer.configure(
+                    frameWidth: Int(size.width.rounded()), frameHeight: Int(size.height.rounded()),
+                    videoWidth: video.width, videoHeight: video.height, pixelAspect: pixelAspect)
+                renderer.setStyleOverride(style)
+                renderer.setPlacement(scale: placement.scale, raise: placement.raise)
+                return renderer.render(at: seconds)
+            }
+            guard let self else { return }
+            self.isAuthoredRenderRunning = false
+            self.libassCallsInFlight -= 1
+            // A frame of a stuck call that returned after all: the text stays for this media.
+            guard !self.isLibassStalled else { return }
+            // A frame of a renderer since replaced is dropped, but a time asked for meanwhile is still rendered (by
+            // the current renderer): paused, nothing else would draw it.
+            if renderer === self.authoredRenderer, case .frame(let cue) = output {
+                self.currentSubtitleImages = cue.map { [$0] } ?? []
+                self.scheduleAuthoredAnimationFrame()
+            }
+            if let next = self.pendingAuthoredRenderTime {
+                self.pendingAuthoredRenderTime = nil
+                self.renderAuthoredSubtitles(at: next)
+            }
+        }
+    }
+
+    /// Checks, while this engine's libass calls are under way, that the one running comes back within
+    /// `libassStallTimeout`. One that doesn't is stuck (a font request to `fontd` that never returns, see
+    /// `AssSubtitleRenderer.queue`): the media's ASS tracks show their text cues from then on, as everything later put
+    /// on the queue would wait behind it (`resetSubtitles` tries libass again with the next media). One check at a time.
+    private func watchLibass() {
+        guard libassWatch == nil, !isLibassStalled else { return }
+        let timeout = libassStallTimeout
+        // How often to look while a call of ours waits for the queue rather than runs on it.
+        let poll = min(timeout, .milliseconds(500))
+        libassWatch = Task { [weak self] in
+            var wait = timeout
+            while true {
+                try? await Task.sleep(for: wait)
+                guard let self, !Task.isCancelled else { return }
+                // None of ours left: another's long call (another window, a renderer released) is nothing to wait
+                // for.
+                guard self.libassCallsInFlight > 0 else {
+                    self.libassWatch = nil
+                    return
                 }
-                if let next = self.pendingAuthoredRenderTime {
-                    self.pendingAuthoredRenderTime = nil
-                    self.renderAuthoredSubtitles(at: next)
+                guard let running = AssSubtitleRenderer.currentCallDuration else {
+                    wait = poll
+                    continue
                 }
+                guard running >= timeout else {
+                    wait = timeout - running
+                    continue
+                }
+                self.libassWatch = nil
+                AppLog.error(
+                    .subtitles,
+                    "libass has been stuck in a call for \(running) (a font request to fontd?); showing the text "
+                        + "of ASS tracks for this media")
+                self.isLibassStalled = true
+                self.pendingAuthoredRenderTime = nil
+                self.isDrawingAuthoredSubtitles = false
+                if !self.currentSubtitleImages.isEmpty { self.currentSubtitleImages = [] }
+                return
             }
         }
     }

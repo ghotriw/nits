@@ -19,6 +19,22 @@ process suspension by `sample` disturbing the XPC exchange, or a VideoToolbox bu
 and the playing / seeking / stepping state. The decoder is replaced within 3 s, so run
 `sample VTDecoderXPCService` as soon as video freezes.
 
+## `fontd` not answering libass' font requests
+
+**Observed three times** (October 2026, macOS 27) in full test runs, never in the app: every libass thread of the
+test process waited in `match_fonts → CopyMatchingFontDescriptors → XTCopyPropertiesForFontsMatchingRequest →
+xpc_connection_send_message_with_reply_sync`, `fontd` at 0 % CPU; once 12 threads at once, the whole cooperative
+pool, so the run hung. Killing the test process (or `fontd`) cleared it. A probe of 12 threads in 4 processes asking
+Core Text for 20 000 unknown families didn't reproduce it. Hypothesis, unchecked: requests that reach `fontd` just
+as launchd starts it (in the first hang its PID followed the test process's).
+
+Since then libass calls run one at a time on their own queue, the engine shows the text cues for the rest of the
+media once one is stuck (see "libass" in `docs/ARCHITECTURE.md`), and tests reach libass through `LibassRenderer`,
+which fails a test after 20 s instead of holding a thread of the run.
+
+**If it recurs:** the `libass has been stuck in a call for …` log line; `sample` the process and check whether `fontd`
+was started at about the same time (`ps -o lstart -p $(pgrep fontd)`).
+
 ## Buffering needs a real-world check
 
 `PlayerEngine+Buffering` (holding the clock while media runs out) is covered only by tests that stop the
