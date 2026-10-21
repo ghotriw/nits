@@ -331,8 +331,16 @@ flowchart TD
     the regions their stream marks forced (`AV_SUBTITLE_FLAG_FORCED`, PGS composition objects and DVD forced
     commands), as Blu-ray discs keep forced sets inside the full track. A track flagged forced as a whole shows in
     full; text tracks mark no events and are left as they are.
-  - [ ] Forced subtitles chosen by themselves when the audio is in the user's language (mpv's
-    `subs-fallback-forced`); embedded tracks get no automatic selection yet.
+  - [x] Automatic track choice on load (`TrackAutoSelection`, after mpv's `select_default_track`), when neither a
+    request nor the file's history names a track. Settings → Languages: ordered audio and subtitle languages
+    (`alang` / `slang`), forced subtitles in the audio language / never / forced only (`subs-fallback-forced`), and
+    what to show when the audio is in a subtitle language: forced only (default), all or none
+    (`subs-with-matching-audio`; files next to the media are exempt). Audio: the first listed language, else the track
+    flagged default, else the first; choosing the current track keeps it for the file.
+    Subtitles: a forced track in the audio language, a track in a listed language, a file next to the media or a
+    track flagged default; with no subtitle languages the system's only rank them, so a full track in the user's
+    language shows only when flagged default (as in mpv). An automatic choice isn't saved to the history, so later
+    settings apply to files already played.
   - [x] Position and scale (mpv's `sub-pos` / `sub-scale`; Quick Settings → Placement, remembered): `subtitlePosition`
     raises bottom subtitles of every kind, `subtitleScale` sizes ASS dialogue (libass' font scale and line position,
     dialogue only) and picture subtitles (each half of the frame as a block, from the edge it is near); plain text
@@ -359,8 +367,7 @@ flowchart TD
 - [x] **4.6.3. Sidecar Subtitle Discovery:**
   - `movie.srt`, `movie.en.srt`, `movie.en.forced.vtt` next to a local `movie.mkv` are added as tracks on load
     (`SidecarSubtitles`); language, forced and SDH tags come from the file name.
-  - Selected automatically only when the media has no subtitle streams and nothing was chosen before: a full track
-    in a preferred system language first.
+  - Chosen on load before the media's own tracks, as in mpv (`TrackAutoSelection`): a full file before a forced one.
 
 ---
 

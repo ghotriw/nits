@@ -81,6 +81,8 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
     public let externalURL: URL?
     public let isForced: Bool
     public let isSDH: Bool
+    /// Flagged to show by default (`AV_DISPOSITION_DEFAULT`): chosen on load without a language preference for it.
+    public let isDefault: Bool
     public let format: SubtitleFormat
     /// For CEA-608 closed captions, the field they are read from: 0 for CC1, 1 for CC3. Captions in the pictures of a
     /// video stream (`streamIndex` is that stream's) or an MP4 caption track (`c608`); `nil` for other tracks.
@@ -99,6 +101,7 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
         externalURL: URL? = nil,
         isForced: Bool = false,
         isSDH: Bool = false,
+        isDefault: Bool = false,
         format: SubtitleFormat = .text,
         closedCaptionField: Int? = nil,
         captionsInVideo: Bool = false
@@ -113,5 +116,6 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
         self.externalURL = externalURL
         self.isForced = isForced
         self.isSDH = isSDH
+        self.isDefault = isDefault
     }
 }

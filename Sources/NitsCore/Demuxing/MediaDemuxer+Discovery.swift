@@ -172,7 +172,8 @@ extension MediaDemuxer {
             language: lang,
             codecName: codecNameStr,
             channels: Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels),
-            sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate)
+            sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate),
+            isDefault: stream.pointee.disposition & AV_DISPOSITION_DEFAULT != 0
         )
         self.audioTracks.append(track)
 
@@ -232,6 +233,7 @@ extension MediaDemuxer {
             language: lang,
             isForced: isForced,
             isSDH: isSDH || isCaptions,
+            isDefault: stream.pointee.disposition & AV_DISPOSITION_DEFAULT != 0,
             format: isBitmapSub ? .bitmap : (codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA ? .ass : .text),
             closedCaptionField: isCaptions ? 0 : nil
         )

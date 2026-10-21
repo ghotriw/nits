@@ -40,6 +40,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let codecName: String
         public let channels: Int
         public let sampleRate: Int
+        /// Flagged to play by default (`AV_DISPOSITION_DEFAULT`).
+        public let isDefault: Bool
     }
 
     public internal(set) var audioTracks: [AudioTrack] = []

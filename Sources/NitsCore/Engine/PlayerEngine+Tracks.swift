@@ -11,6 +11,12 @@ extension PlayerEngine {
     /// new track up to a second ahead of the picture, further with every switch. An exact seek to the current frame
     /// re-reads both from there (as mpv does); the seek keeps playing or paused as it was.
     public func selectAudioTrack(id: Int) {
+        if id == selectedAudioTrackId, audioSelectionIsAutomatic {
+            // Choosing the track picked on load keeps it for the file, whatever the language settings become.
+            audioSelectionIsAutomatic = false
+            saveCurrentPlaybackProgress()
+            return
+        }
         guard let demuxer = self.demuxer, id != selectedAudioTrackId, audioTracks.contains(where: { $0.id == id })
         else { return }
         AppLog.info(.audio, "Switching to audio track: \(id)")
@@ -18,6 +24,7 @@ extension PlayerEngine {
         stopFeedingAudio()
         demuxer.selectAudioTrack(trackId: id)
         self.selectedAudioTrackId = id
+        audioSelectionIsAutomatic = false
         saveCurrentPlaybackProgress()
         if let params = demuxer.getAudioCodecParameters() {
             let decoder = FFAudioDecoder(codecParameters: params, timebase: demuxer.audioTimebase)
@@ -35,6 +42,7 @@ extension PlayerEngine {
     }
 
     public func selectSubtitleTrack(id: Int?) {
+        subtitleSelectionIsAutomatic = false
         selectSubtitleTrack(id: id, persistHistory: true)
     }
 
@@ -326,29 +334,14 @@ extension PlayerEngine {
         return trackId
     }
 
-    /// Adds the subtitle files next to a local media file as tracks (see `SidecarSubtitles`) and returns their ids.
-    func addSidecarSubtitles(for path: String) -> [Int] {
-        guard !MediaURL.isNetworkURL(path) else { return [] }
+    /// Adds the subtitle files next to a local media file as tracks (see `SidecarSubtitles`).
+    func addSidecarSubtitles(for path: String) {
+        guard !MediaURL.isNetworkURL(path) else { return }
         let mediaURL = URL(string: path).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: path)
         let ids = SidecarSubtitles.urls(for: mediaURL).flatMap { addExternalSubtitles(url: $0) }
         if !ids.isEmpty {
             AppLog.info(.subtitles, "Found \(ids.count) subtitle file(s) next to the media")
         }
-        return ids
-    }
-
-    /// The subtitle track to select when the media has none of its own: the first full (not forced) track in one of
-    /// the user's preferred languages, else the first full track, else the first.
-    func defaultExternalSubtitleTrackId(among ids: [Int]) -> Int? {
-        let tracks = ids.compactMap { id in subtitleTracks.first { $0.id == id } }
-        let fullTracks = tracks.filter { !$0.isForced }
-        for preferred in Locale.preferredLanguages {
-            guard let code = Locale.Language(identifier: preferred).languageCode else { continue }
-            if let match = fullTracks.first(where: { Locale.Language(identifier: $0.language).languageCode == code }) {
-                return match.id
-            }
-        }
-        return (fullTracks.first ?? tracks.first)?.id
     }
 
     /// Shifts subtitles by `seconds` (clamped to `subtitleDelayRange`, rounded to milliseconds) and saves the delay

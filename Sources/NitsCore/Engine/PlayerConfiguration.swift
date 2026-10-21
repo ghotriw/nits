@@ -177,6 +177,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Press an action button by itself once `actionButtonDisplayDuration` runs out, unless the button opts out
     /// (default false).
     public var actionButtonAutoPress: Bool
+    /// Languages that choose the audio and subtitle tracks a media starts with, when neither a request nor its saved
+    /// history names them.
+    public var trackLanguages: TrackLanguagePreferences
 
     public init(
         enableToneMapping: Bool = true,
@@ -220,7 +223,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         pausesOnPictureInPicture: Bool = false,
         entersPictureInPictureOnMinimize: Bool = false,
         actionButtonDisplayDuration: Double = 8.0,
-        actionButtonAutoPress: Bool = false
+        actionButtonAutoPress: Bool = false,
+        trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences()
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -267,6 +271,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
         self.actionButtonDisplayDuration = Self.clampActionButtonDisplayDuration(actionButtonDisplayDuration)
         self.actionButtonAutoPress = actionButtonAutoPress
+        self.trackLanguages = trackLanguages
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -305,6 +310,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
     public static let keyActionButtonDisplayDuration = "Nits.actionButtonDisplayDuration"
     public static let keyActionButtonAutoPress = "Nits.actionButtonAutoPress"
+    public static let keyAudioLanguages = "Nits.audioLanguages"
+    public static let keySubtitleLanguages = "Nits.subtitleLanguages"
+    public static let keyForcedSubtitleSelection = "Nits.forcedSubtitleSelection"
+    public static let keySubtitlesWithKnownAudio = "Nits.subtitlesWithKnownAudio"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -429,6 +438,22 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyActionButtonAutoPress) != nil {
             config.actionButtonAutoPress = userDefaults.bool(forKey: keyActionButtonAutoPress)
         }
+        if let languages = userDefaults.string(forKey: keyAudioLanguages) {
+            config.trackLanguages.audioLanguages = TrackLanguagePreferences.languages(fromStored: languages)
+        }
+        if let languages = userDefaults.string(forKey: keySubtitleLanguages) {
+            config.trackLanguages.subtitleLanguages = TrackLanguagePreferences.languages(fromStored: languages)
+        }
+        if let forced = userDefaults.string(forKey: keyForcedSubtitleSelection).flatMap(
+            ForcedSubtitleSelection.init(rawValue:))
+        {
+            config.trackLanguages.forcedSubtitles = forced
+        }
+        if let known = userDefaults.string(forKey: keySubtitlesWithKnownAudio).flatMap(
+            SubtitlesWithKnownAudio.init(rawValue:))
+        {
+            config.trackLanguages.subtitlesWithKnownAudio = known
+        }
         return config
     }
 
@@ -470,6 +495,13 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
         userDefaults.set(actionButtonDisplayDuration, forKey: Self.keyActionButtonDisplayDuration)
         userDefaults.set(actionButtonAutoPress, forKey: Self.keyActionButtonAutoPress)
+        userDefaults.set(
+            TrackLanguagePreferences.storedValue(of: trackLanguages.audioLanguages), forKey: Self.keyAudioLanguages)
+        userDefaults.set(
+            TrackLanguagePreferences.storedValue(of: trackLanguages.subtitleLanguages),
+            forKey: Self.keySubtitleLanguages)
+        userDefaults.set(trackLanguages.forcedSubtitles.rawValue, forKey: Self.keyForcedSubtitleSelection)
+        userDefaults.set(trackLanguages.subtitlesWithKnownAudio.rawValue, forKey: Self.keySubtitlesWithKnownAudio)
     }
 
     /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).

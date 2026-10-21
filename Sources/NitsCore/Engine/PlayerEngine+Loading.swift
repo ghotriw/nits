@@ -420,16 +420,18 @@ extension PlayerEngine {
 
     /// Track selection, delays and the picture's aspect override and crop to persist. Subtitles are `subtitlesOff`
     /// when disabled, and an external file is saved by its path; one that isn't a local file can't be restored and
-    /// keeps the saved selection.
+    /// keeps the saved selection. A selection made on load by `TrackAutoSelection` isn't saved.
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
-            audioTrackId: selectedAudioTrackId >= 0 ? selectedAudioTrackId : nil,
+            audioTrackId: selectedAudioTrackId >= 0 && !audioSelectionIsAutomatic ? selectedAudioTrackId : nil,
             subtitleDelay: subtitleDelay,
             audioDelay: audioDelay,
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
-        if let id = selectedSubtitleTrackId {
+        if subtitleSelectionIsAutomatic {
+            // Left as saved: nothing, or a track this file no longer has.
+        } else if let id = selectedSubtitleTrackId {
             let track = subtitleTracks.first { $0.id == id }
             if let url = track?.externalURL {
                 if url.isFileURL {
@@ -444,6 +446,35 @@ extension PlayerEngine {
             preferences.subtitleTrackId = PlaybackRecord.subtitlesOff
         }
         return preferences
+    }
+
+    /// Selects the subtitles saved for the file, or none when they were turned off. Returns whether there was a
+    /// selection to restore: a saved file that moved or a track the media no longer has leaves the choice to
+    /// `TrackAutoSelection`.
+    private func restoreSubtitleSelection(from saved: PlaybackPreferences?, among tracks: [SubtitleTrack]) -> Bool {
+        guard let id = saved?.subtitleTrackId else { return false }
+        if id == PlaybackRecord.subtitlesOff {
+            selectSubtitleTrack(id: nil, persistHistory: false)
+            return true
+        }
+        if id == PlaybackRecord.externalSubtitle {
+            guard let path = saved?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
+                let trackId = externalSubtitleTrack(
+                    among: addExternalSubtitles(url: URL(fileURLWithPath: path)),
+                    streamIndex: saved?.externalSubtitleStreamIndex)
+            else {
+                AppLog.warning(
+                    .subtitles, "Saved external subtitle file is missing: \(saved?.externalSubtitlePath ?? "no path")")
+                return false
+            }
+            selectSubtitleTrack(id: trackId, persistHistory: false)
+            AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")
+            return true
+        }
+        guard tracks.contains(where: { $0.id == id }) else { return false }
+        selectSubtitleTrack(id: id, persistHistory: false)
+        AppLog.info(.subtitles, "Restored subtitle track from saved history: \(id)")
+        return true
     }
 
     /// Extracts an explicit stream index from strings formatted as `stream:N` or `s:N`.
@@ -614,8 +645,10 @@ extension PlayerEngine {
         // Track selection priority chain (per kind):
         // 1. Explicit request (CLI, host app, deep link)
         // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
-        // 3. Demuxer default
+        // 3. `TrackAutoSelection` by the language settings and the tracks' flags
         let savedTracks = historyStore.savedPreferences(for: path)
+        audioSelectionIsAutomatic = false
+        subtitleSelectionIsAutomatic = false
 
         if let spec = requestedAudioTrack,
             let id = Self.resolveAudioTrackId(spec, in: demuxer.audioTracks)
@@ -627,6 +660,14 @@ extension PlayerEngine {
         {
             demuxer.selectAudioTrack(trackId: saved)
             AppLog.info(.audio, "Restored audio track from saved history: \(saved)")
+        } else if let id = TrackAutoSelection.audioTrackId(
+            in: demuxer.audioTracks, languages: configuration.trackLanguages.audioLanguages)
+        {
+            audioSelectionIsAutomatic = true
+            if id != demuxer.selectedAudioTrackIndex {
+                demuxer.selectAudioTrack(trackId: id)
+                AppLog.info(.audio, "Selected audio track \(id) by language and default flag")
+            }
         }
 
         // The new tracks and the selection below are reported once, when the load is applied, even when they equal
@@ -658,10 +699,10 @@ extension PlayerEngine {
         restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
         // Before the saved selection: a saved external file that is one of them maps to the same track.
-        let sidecarTrackIds = addSidecarSubtitles(for: path)
+        addSidecarSubtitles(for: path)
 
-        // Subtitles: explicit request, then the saved selection, then a subtitle file next to the media if it has no
-        // subtitle streams; otherwise none.
+        // Subtitles: explicit request, then the saved selection, then `TrackAutoSelection` (none when nothing fits).
+        let subtitlesChosen: Bool
         if let spec = requestedSubtitleTrack,
             let preference = Self.resolveSubtitleSelection(spec, in: demuxer.subtitleTracks)
         {
@@ -673,31 +714,20 @@ extension PlayerEngine {
                 selectSubtitleTrack(id: trackId, persistHistory: false)
                 AppLog.info(.subtitles, "Using explicit subtitle track: \(trackId)")
             }
-        } else if let saved = savedTracks?.subtitleTrackId {
-            if saved == PlaybackRecord.subtitlesOff {
-                selectSubtitleTrack(id: nil, persistHistory: false)
-            } else if saved == PlaybackRecord.externalSubtitle {
-                // A moved or deleted file falls back to the demuxer default.
-                if let path = savedTracks?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
-                    let trackId = externalSubtitleTrack(
-                        among: addExternalSubtitles(url: URL(fileURLWithPath: path)),
-                        streamIndex: savedTracks?.externalSubtitleStreamIndex)
-                {
-                    selectSubtitleTrack(id: trackId, persistHistory: false)
-                    AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")
-                } else {
-                    AppLog.warning(
-                        .subtitles,
-                        "Saved external subtitle file is missing: \(savedTracks?.externalSubtitlePath ?? "no path")"
-                    )
-                }
-            } else if demuxer.subtitleTracks.contains(where: { $0.id == saved }) {
-                selectSubtitleTrack(id: saved, persistHistory: false)
-                AppLog.info(.subtitles, "Restored subtitle track from saved history: \(saved)")
+            subtitlesChosen = true
+        } else {
+            subtitlesChosen = restoreSubtitleSelection(from: savedTracks, among: demuxer.subtitleTracks)
+        }
+        if !subtitlesChosen {
+            subtitleSelectionIsAutomatic = true
+            let audioLanguage = audioTracks.first { $0.id == selectedAudioTrackId }?.language
+            if let trackId = TrackAutoSelection.subtitleTrackId(
+                in: subtitleTracks, audioLanguage: audioLanguage, preferences: configuration.trackLanguages,
+                systemLanguages: Locale.preferredLanguages)
+            {
+                selectSubtitleTrack(id: trackId, persistHistory: false)
+                AppLog.info(.subtitles, "Selected subtitle track \(trackId) by language and flags")
             }
-        } else if demuxer.subtitleTracks.isEmpty, let trackId = defaultExternalSubtitleTrackId(among: sidecarTrackIds) {
-            selectSubtitleTrack(id: trackId, persistHistory: false)
-            AppLog.info(.subtitles, "Selected the subtitle file next to the media: track \(trackId)")
         }
 
         if demuxer.hasVideo {

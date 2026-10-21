@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import CoreMedia
 import Foundation
+import NitsTestSupport
 import Testing
 import os
 
@@ -206,7 +207,7 @@ struct PlayerEngineTests {
         engine.stop()
     }
 
-    @Test("Subtitle files next to the media become tracks, selected only when the media has no subtitles")
+    @Test("Subtitle files next to the media become tracks and are chosen before the media's own")
     @MainActor
     func testSidecarSubtitlesOnLoad() throws {
         guard let plainPath = SyntheticTestMediaFactory.ensureMedia(preset: .h263pMKV),
@@ -235,13 +236,57 @@ struct PlayerEngineTests {
         #expect(selected?.externalURL?.lastPathComponent == "plain.srt")
         #expect(engine.subtitleTracks.contains { $0.isExternal && $0.isForced && $0.language == "en" })
 
-        // Subtitle streams of its own: the sidecar is listed, nothing is selected.
+        // Subtitle streams of its own: the sidecar still comes first, as in mpv.
         engine.load(path: subtitledCopy.path)
         try #require(engine.isLoaded)
         #expect(engine.subtitleTracks.count == 6)
         #expect(engine.subtitleTracks.last?.externalURL?.lastPathComponent == "subtitled.srt")
-        #expect(engine.selectedSubtitleTrackId == nil)
+        #expect(engine.selectedSubtitleTrackId == engine.subtitleTracks.last?.id)
         engine.stop()
+    }
+
+    @Test("Audio follows the language settings on load; only a track the user chose is remembered for the file")
+    @MainActor
+    func testAudioLanguageOnLoad() throws {
+        // English 5.1 flagged default, then Ukrainian stereo.
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let defaults = InMemoryUserDefaults()
+        var ukrainian = PlayerConfiguration()
+        ukrainian.trackLanguages.audioLanguages = ["uk"]
+
+        let engine = PlayerEngine.makeForTesting(configuration: ukrainian, userDefaults: defaults)
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        #expect(engine.audioTracks.first { $0.id == engine.selectedAudioTrackId }?.language == "ukr")
+        engine.stop()
+
+        // The automatic choice wasn't saved: without the setting the default-flagged track plays.
+        let plain = PlayerEngine.makeForTesting(userDefaults: defaults)
+        plain.load(path: path)
+        try #require(plain.isLoaded)
+        #expect(plain.audioTracks.first { $0.id == plain.selectedAudioTrackId }?.language == "eng")
+        let ukrainianTrack = try #require(plain.audioTracks.first { $0.language == "ukr" })
+        plain.selectAudioTrack(id: ukrainianTrack.id)
+        plain.stop()
+
+        let restored = PlayerEngine.makeForTesting(userDefaults: defaults)
+        restored.load(path: path)
+        try #require(restored.isLoaded)
+        #expect(restored.selectedAudioTrackId == ukrainianTrack.id)
+        restored.stop()
+
+        // Choosing the track picked on load keeps it, though nothing switches.
+        let pinnedDefaults = InMemoryUserDefaults()
+        let pinned = PlayerEngine.makeForTesting(configuration: ukrainian, userDefaults: pinnedDefaults)
+        pinned.load(path: path)
+        try #require(pinned.isLoaded)
+        pinned.selectAudioTrack(id: pinned.selectedAudioTrackId)
+        pinned.stop()
+        let reopened = PlayerEngine.makeForTesting(userDefaults: pinnedDefaults)
+        reopened.load(path: path)
+        try #require(reopened.isLoaded)
+        #expect(reopened.selectedAudioTrackId == ukrainianTrack.id)
+        reopened.stop()
     }
 
     @Test("Engine handles unavailable network URL gracefully with loadError and not loading")
@@ -465,7 +510,8 @@ struct PlayerEngineTests {
                 language: "jpn",
                 codecName: "aac",
                 channels: 2,
-                sampleRate: 48000
+                sampleRate: 48000,
+                isDefault: false
             ),
             MediaDemuxer.AudioTrack(
                 id: 1,
@@ -474,7 +520,8 @@ struct PlayerEngineTests {
                 language: "eng",
                 codecName: "aac",
                 channels: 6,
-                sampleRate: 48000
+                sampleRate: 48000,
+                isDefault: false
             ),
             MediaDemuxer.AudioTrack(
                 id: 2,
@@ -483,7 +530,8 @@ struct PlayerEngineTests {
                 language: "ukr",
                 codecName: "aac",
                 channels: 2,
-                sampleRate: 48000
+                sampleRate: 48000,
+                isDefault: false
             ),
         ]
 

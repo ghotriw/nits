@@ -728,6 +728,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let audioRouteMonitor = AudioDeviceRouteMonitor()
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
+    /// Whether the audio track was chosen on load by `TrackAutoSelection` and the user hasn't changed it since: it
+    /// isn't saved to the history, so later language settings apply to the file.
+    @ObservationIgnored
+    var audioSelectionIsAutomatic = false
+    /// As `audioSelectionIsAutomatic`, for subtitles (including none).
+    @ObservationIgnored
+    var subtitleSelectionIsAutomatic = false
     var configuration: PlayerConfiguration
     /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
     public internal(set) var currentPath: String?

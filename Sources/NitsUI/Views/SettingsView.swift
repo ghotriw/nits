@@ -81,6 +81,7 @@ public struct SettingsView: View {
     public enum SettingsTab: String, CaseIterable, Identifiable {
         case general = "General"
         case video = "Video & HDR"
+        case languages = "Languages"
         case controls = "Controls"
 
         public var id: String { rawValue }
@@ -89,6 +90,8 @@ public struct SettingsView: View {
             switch self {
             case .general:
                 return "gearshape"
+            case .languages:
+                return "globe"
             case .video:
                 return "tv"
             case .controls:
@@ -114,6 +117,12 @@ public struct SettingsView: View {
                     Label(SettingsTab.video.rawValue, systemImage: SettingsTab.video.iconName)
                 }
                 .tag(SettingsTab.video)
+
+            LanguagesSettingsPane(onChange: notifyChange)
+                .tabItem {
+                    Label(SettingsTab.languages.rawValue, systemImage: SettingsTab.languages.iconName)
+                }
+                .tag(SettingsTab.languages)
 
             controlsTab
                 .tabItem {
@@ -501,7 +510,8 @@ public struct SettingsView: View {
             pausesOnPictureInPicture: pausesOnPictureInPicture,
             entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize,
             actionButtonDisplayDuration: actionButtonDisplayDuration,
-            actionButtonAutoPress: actionButtonAutoPress
+            actionButtonAutoPress: actionButtonAutoPress,
+            trackLanguages: savedConfig.trackLanguages
         )
         onConfigurationChanged?(current)
     }
