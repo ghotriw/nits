@@ -691,6 +691,26 @@ extension PlaybackStressTests {
         engine.stop()
     }
 
+    @Test("Audio before the first picture starts the clock without waiting for the preroll timeout")
+    @MainActor
+    func testVideoStartingAfterAudioPrerollsWithoutTimeout() async {
+        // The video starts 8 s after the audio: no frame lies at the 0 s anchor to present.
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hevcInBandParameterSetsMKV) else { return }
+
+        let engine = Self.makeEngine()
+        let start = ContinuousClock.now
+        engine.load(path: path)
+        #expect(await engine.waitUntil { engine.synchronizer.rate > 0 }, "Clock did not start")
+        let clockStartedAfter = ContinuousClock.now - start
+
+        #expect(
+            clockStartedAfter < PlayerEngine.prerollTimeout,
+            "Clock started after \(clockStartedAfter): the preroll waited for its timeout")
+        #expect(engine.synchronizer.currentTime().seconds < 1, "Clock skipped the audio before the video")
+
+        engine.stop()
+    }
+
     @Test("A busy main thread does not drop or delay video frames")
     @MainActor
     func testBusyMainThreadDoesNotDropFrames() async {

@@ -299,15 +299,31 @@ extension MediaDemuxer {
             hasExtradataParams = (sps != nil && pps != nil)
         }
 
-        // Step 2: Fallback to scanning packets if extradata is missing or for SEI mastering info
-        var packetsScanned = 0
-        let maxPacketsToScan = hasExtradataParams ? 30 : 120
+        // Step 2: Fallback to scanning packets if extradata is missing or for SEI mastering info.
+        // Only video packets count: a file cut between keyframes can start its video up to a GOP (10 s and more)
+        // after its audio and subtitles, and thousands of their packets come first (TrueHD alone has 1200 a second).
+        // Those are skipped up to a span of time, and a byte budget covers packets without timestamps.
+        var videoPacketsScanned = 0
+        let maxVideoPacketsToScan = 120
+        // With parameter sets from extradata the scan only looks for HDR SEI and captions, which the first pictures
+        // carry: a few packets do, and a remote source fetches no more than it needs to start.
+        let videoPacketsAfterParameters = hasExtradataParams ? 10 : 20
+        let maxSkippedSpan = 30.0
+        let maxSkippedBytes = 64 << 20
+        var firstSkippedTime: Double?
+        // The stream's `start_time` misses a start past what FFmpeg probes: the first keyframe gives it. Not the lowest
+        // timestamp: a cut starting at an HEVC CRA has RASL pictures before it in output order, never decoded there.
+        var firstKeyframePTS: Int64?
+        var skippedBytes = 0
         var pkt = AVPacket()
         let nalLengthSize = codecParameters.map { ClosedCaptions.nalLengthSize(of: $0, codec: codec) } ?? 4
 
-        while packetsScanned < maxPacketsToScan && readPacket(ctx, &pkt) >= 0 {
-            packetsScanned += 1
+        while videoPacketsScanned < maxVideoPacketsToScan && readPacket(ctx, &pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
+                videoPacketsScanned += 1
+                if firstKeyframePTS == nil, pkt.flags & AV_PKT_FLAG_KEY != 0, pkt.pts != Int64.min {
+                    firstKeyframePTS = pkt.pts
+                }
                 if let bytes = pkt.data {
                     let packet = UnsafeRawBufferPointer(start: bytes, count: Int(pkt.size))
                     closedCaptionFields.formUnion(
@@ -316,7 +332,7 @@ extension MediaDemuxer {
                 }
                 let data = Data(bytes: pkt.data, count: Int(pkt.size))
                 // If extradata was missing or empty, detect whether the stream is Annex B from the first video packet
-                if !hasExtradataParams && packetsScanned == 1 && data.count >= 3 {
+                if !hasExtradataParams && videoPacketsScanned == 1 && data.count >= 3 {
                     if data[0] == 0 && data[1] == 0
                         && (data[2] == 1 || (data.count > 3 && data[2] == 0 && data[3] == 1))
                     {
@@ -359,11 +375,21 @@ extension MediaDemuxer {
                     hasParameters = true
                 }
 
-                if hasParameters && (masteringDisplay != nil || packetsScanned > 20) {
+                if hasParameters && (masteringDisplay != nil || videoPacketsScanned > videoPacketsAfterParameters) {
                     break
                 }
             } else {
+                skippedBytes += Int(pkt.size)
+                let timestamp = pkt.pts != Int64.min ? pkt.pts : pkt.dts
+                let timebase = ctx.pointee.streams[Int(pkt.stream_index)]!.pointee.time_base
                 av_packet_unref(&pkt)
+                if timestamp != Int64.min, timebase.den > 0 {
+                    let seconds = Double(timestamp) * Double(timebase.num) / Double(timebase.den)
+                    let first = firstSkippedTime ?? seconds
+                    firstSkippedTime = first
+                    if seconds - first > maxSkippedSpan { break }
+                }
+                if skippedBytes > maxSkippedBytes { break }
             }
         }
 
@@ -373,11 +399,13 @@ extension MediaDemuxer {
         if Self.isUnindexedStream(ctx) {
             avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
         } else {
-            av_seek_frame(
-                ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
+            seekTimeline(ctx, to: Self.timelineOffset(timelineOrigin, in: timebase), flags: AVSEEK_FLAG_BACKWARD)
         }
         readAheadState.withLock { $0 = -.infinity }
         subtitleTracker.resetStash()
+        if let firstKeyframePTS {
+            self.videoStartTime = max(Double(firstKeyframePTS) * Double(timebase.num) / Double(timebase.den), 0)
+        }
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel

@@ -24,6 +24,10 @@ public final class MediaDemuxer: @unchecked Sendable {
     public internal(set) var codec: VideoCodec = .hevc
     public internal(set) var hasVideo: Bool = false
     public internal(set) var nominalFrameDuration: Double = 1.0 / 24.0
+    /// Presentation time of the first picture, in seconds on the playback timeline. A file cut between keyframes
+    /// starts its video up to a GOP after its audio and subtitles. Read from the first keyframe when the file opens;
+    /// 0 when the opening scan doesn't reach it.
+    public internal(set) var videoStartTime: Double = 0
     /// The stream is interlaced: it signals a field order (`field_order` TT / BB / TB / BT), or it is standard
     /// definition DV, interlaced by format but without a field order. Frames may still be flagged interlaced
     /// individually when this is `false`.

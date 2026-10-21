@@ -31,6 +31,44 @@ struct MediaDemuxerColorTests {
         #expect(demuxer.isHDR == true)
     }
 
+    /// Without a format description VideoToolbox decodes nothing and the whole file plays black.
+    @Test("Parameter sets missing from hvcC are found in-band past the audio packets that precede the video")
+    func inBandParameterSetsAfterLeadingAudio() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hevcInBandParameterSetsMKV) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let codecParameters = try #require(demuxer.getVideoCodecParameters())
+        let extradata = try #require(codecParameters.pointee.extradata)
+        let parsed = VideoFormatDescriptionBuilder.parameterSets(
+            fromExtradata: Data(bytes: extradata, count: Int(codecParameters.pointee.extradata_size)), codec: .hevc)
+        #expect(parsed?.sets.sps == nil)
+
+        let formatDescription = try #require(demuxer.formatDescription)
+        #expect(CMFormatDescriptionGetMediaSubType(formatDescription) == kCMVideoCodecType_HEVC)
+        let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
+        #expect(dimensions.width == 320 && dimensions.height == 240)
+    }
+
+    /// The video's index starts at its first keyframe, 8 s in: a seek by it skips the audio before.
+    @Test("Opening and seeking before the first video keyframe keep the audio that precedes it")
+    func audioBeforeFirstVideoKeyframe() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hevcInBandParameterSetsMKV) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        func seconds(_ packet: MediaDemuxer.DemuxedAudioPacket?) throws -> Double {
+            let packet = try #require(packet)
+            return Double(packet.pts) * Double(demuxer.audioTimebase.num) / Double(demuxer.audioTimebase.den)
+        }
+
+        #expect(try seconds(demuxer.nextAudioPacket()) < 0.01)
+
+        demuxer.seek(to: 3, exact: true)
+        #expect(try abs(seconds(demuxer.nextAudioPacket()) - 3) < 0.01)
+
+        demuxer.seek(to: 0, exact: false)
+        #expect(try seconds(demuxer.nextAudioPacket()) < 0.01)
+        let firstPicture = try #require(demuxer.nextVideoSample())
+        #expect(abs(CMSampleBufferGetPresentationTimeStamp(firstPicture).seconds - 8) < 0.01)
+    }
+
     @Test("Demuxer parses Annex B NAL units and converts to HVCC")
     func testAnnexBNALConversion() {
         // Construct synthetic Annex B packet containing VPS (type 32), SPS (type 33), PPS (type 34)

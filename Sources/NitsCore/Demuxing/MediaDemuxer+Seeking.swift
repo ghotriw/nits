@@ -37,11 +37,11 @@ extension MediaDemuxer {
         let rawTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
         var ret: Int32 = -1
         if useForward {
-            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, 0)
+            ret = seekTimeline(ctx, to: rawTarget, flags: 0)
         }
         if ret < 0 {
             // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
-            ret = av_seek_frame(ctx, Int32(streamIdx), rawTarget, AVSEEK_FLAG_BACKWARD)
+            ret = seekTimeline(ctx, to: rawTarget, flags: AVSEEK_FLAG_BACKWARD)
         }
         AppLog.debug(
             .demuxer,
@@ -52,6 +52,31 @@ extension MediaDemuxer {
         } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
             readAudioAhead(ctx, audioStartSeconds: exact ? seconds - audioDelay : nil, audioDelay: audioDelay)
         }
+    }
+
+    /// Seeks to the keyframe at or before (`AVSEEK_FLAG_BACKWARD`) or after `rawTarget`, in the seek stream's time
+    /// base with the timeline offset applied.
+    ///
+    /// The Matroska and MP4 seeks clamp a target to the first entry of the searched stream's index. A video cut
+    /// between keyframes starts up to a GOP after its audio and subtitles, so a target before its first keyframe
+    /// would land there and skip what plays before it. Such a target is searched in the audio stream instead:
+    /// Matroska indexes every audio block it reads (the opening scan reads the start of the file), MP4 every sample,
+    /// and the MP4 seek then moves the video to its first sample.
+    @discardableResult
+    func seekTimeline(_ ctx: UnsafeMutablePointer<AVFormatContext>, to rawTarget: Int64, flags: Int32) -> Int32 {
+        let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
+        guard videoStreamIndex >= 0, audioStreamIndex >= 0, Self.describesStreams(ctx),
+            let videoStream = ctx.pointee.streams[videoStreamIndex],
+            let audioStream = ctx.pointee.streams[audioStreamIndex],
+            let firstVideo = avformat_index_get_entry(videoStream, 0)?.pointee.timestamp,
+            let firstAudio = avformat_index_get_entry(audioStream, 0)?.pointee.timestamp,
+            rawTarget < firstVideo,
+            av_rescale_q(firstAudio, audioStream.pointee.time_base, videoStream.pointee.time_base) < firstVideo
+        else {
+            return av_seek_frame(ctx, Int32(streamIdx), rawTarget, flags)
+        }
+        let audioTarget = av_rescale_q(rawTarget, videoStream.pointee.time_base, audioStream.pointee.time_base)
+        return av_seek_frame(ctx, Int32(audioStreamIndex), audioTarget, flags)
     }
 
     /// Reads the audio that plays with the landed keyframe when audio is delayed against the picture.
@@ -90,7 +115,7 @@ extension MediaDemuxer {
         let rawStart =
             Int64(audioStart * Double(timebase.den) / Double(timebase.num))
             + Self.timelineOffset(timelineOrigin, in: timebase)
-        guard av_seek_frame(ctx, Int32(videoStreamIndex), rawStart, AVSEEK_FLAG_BACKWARD) >= 0 else {
+        guard seekTimeline(ctx, to: rawStart, flags: AVSEEK_FLAG_BACKWARD) >= 0 else {
             restoreAfterAudioAhead(ctx, keyTime: keyTime)
             return
         }

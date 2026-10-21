@@ -237,18 +237,41 @@ extension PlayerEngine {
     /// lead window in which `popFrame` takes it for a clock that is not moving. The anchor frame would never be
     /// presented and the preroll would wait for its timeout. Starting a fraction of a frame later costs nothing
     /// audible; a larger gap is left alone rather than skipping media.
+    ///
+    /// An anchor before the video's first picture (a file cut between keyframes, its audio starting up to a GOP
+    /// earlier) has no frame to show: once that picture heads the queue, the clock starts at the anchor and the
+    /// audio before the picture plays.
     nonisolated func alignPendingClockStartWithFirstFrame() {
         guard frameQueue.getLastRenderedPTS() < 0, let head = frameQueue.headFramePTS, head.isNumeric else { return }
-        let maxGap = CMTime(
-            seconds: nominalFrameDurationLock.withLock { $0 } * 2, preferredTimescale: 1_000_000)
-        let moved = pendingClockStartLock.withLock { pending -> Bool in
-            guard let target = pending?.targetTime, target.isNumeric, head > target, head - target <= maxGap
-            else { return false }
-            pending?.targetTime = head
-            return true
+        let frameDuration = nominalFrameDurationLock.withLock { $0 }
+        let maxGap = CMTime(seconds: frameDuration * 2, preferredTimescale: 1_000_000)
+        let videoStart = videoStartTimeLock.withLock { $0 }
+        let headIsFirstPicture = abs(head.seconds - videoStart) < frameDuration / 2
+        enum Action {
+            case none, move
+            case start(PendingClockStart)
         }
-        if moved {
+        let action = pendingClockStartLock.withLock { pending -> Action in
+            guard let current = pending, current.targetTime.isNumeric, head > current.targetTime else { return .none }
+            if head - current.targetTime <= maxGap {
+                pending?.targetTime = head
+                return .move
+            }
+            guard headIsFirstPicture else { return .none }
+            pending = nil
+            return .start(current)
+        }
+        switch action {
+        case .none:
+            break
+        case .move:
             synchronizer.setRate(0, time: head)
+        case .start(let pending):
+            startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
+            AppLog.debug(
+                .engine,
+                "Preroll: video starts at \(String(format: "%.3f", head.seconds))s; starting clock at \(String(format: "%.3f", pending.targetTime.seconds))s"
+            )
         }
     }
 

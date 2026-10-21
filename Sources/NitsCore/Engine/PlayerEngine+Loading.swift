@@ -351,6 +351,7 @@ extension PlayerEngine {
         videoHeight = 0
         nominalFrameDuration = 1.0 / 24.0
         nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
+        videoStartTimeLock.withLock { $0 = 0 }
         // Display timing of the previous media must not leak into the new one's cadence reports or phase lock.
         frameCadenceLock.withLock { $0 = FrameCadenceStats() }
         displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
@@ -596,6 +597,7 @@ extension PlayerEngine {
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }
+        self.videoStartTimeLock.withLock { $0 = demuxer.videoStartTime }
         updateDisplayLinkFrameRate()
         self.sampleAspectRatio = demuxer.sampleAspectRatio
         self.isHDRContent = demuxer.isHDR

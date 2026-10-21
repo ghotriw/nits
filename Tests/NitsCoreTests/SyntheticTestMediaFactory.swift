@@ -78,6 +78,10 @@ public enum SyntheticTestMediaFactory {
         case anamorphicH264
         /// HEVC 10-bit HLG video (3s) with BT.2020 primaries in MP4
         case hevc10BitHLG
+        /// HEVC MKV (3s, 320x240, 25 fps) as a cut that ignores keyframes leaves it: an `hvcC` without parameter sets
+        /// (they come in-band with every keyframe) and video that starts 8 s after its PCM audio, whose ~6000
+        /// packets come first
+        case hevcInBandParameterSetsMKV
         /// H.264 + AAC MKV (20s, keyframe every second) with the chapters in `chapterMetadata`
         case chaptersMKV
         /// Same as `chaptersMKV` in MP4 (QuickTime chapter track + Nero `chpl`)
@@ -175,6 +179,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_anamorphic_h264.mp4"
             case .hevc10BitHLG:
                 return "synth_hevc_10bit_hlg.mp4"
+            case .hevcInBandParameterSetsMKV:
+                return "synth_hevc_inband_parameter_sets.mkv"
             case .chaptersMKV:
                 return "synth_chapters_h264.mkv"
             case .chaptersMP4:
@@ -369,6 +375,15 @@ public enum SyntheticTestMediaFactory {
             ]
             guard runFFmpeg(ffmpeg, arguments: remuxArguments, preset: preset) else { return nil }
             readyPath = remuxedPath
+        }
+        if preset == .hevcInBandParameterSetsMKV {
+            guard let file = FileManager.default.contents(atPath: readyPath),
+                let patched = emptyingHVCCParameterSets(in: file),
+                FileManager.default.createFile(atPath: readyPath, contents: patched)
+            else {
+                print("[SyntheticTestMediaFactory] Failed to empty the hvcC of \(preset.rawValue)")
+                return nil
+            }
         }
 
         // rename(2) atomically replaces any copy another test published meanwhile.
@@ -844,7 +859,42 @@ public enum SyntheticTestMediaFactory {
                 "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error",
                 outputPath,
             ]
+
+        case .hevcInBandParameterSetsMKV:
+            // 64-sample PCM frames: one packet each, 750 a second (TrueHD has 1200).
+            return [
+                "-y",
+                "-itsoffset", "8", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=3",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:samples_per_frame=64:duration=11",
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "libx265", "-pix_fmt", "yuv420p", "-x265-params", "repeat-headers=1:log-level=error",
+                "-c:a", "pcm_s16le",
+                outputPath,
+            ]
         }
+    }
+
+    /// The Matroska file with the parameter-set count of its `hvcC` CodecPrivate set to zero. The arrays stay as
+    /// unread bytes, so no element size changes.
+    static func emptyingHVCCParameterSets(in file: Data) -> Data? {
+        var bytes = [UInt8](file)
+        var index = 0
+        // CodecPrivate (0x63A2) with a one- or two-byte size, then an hvcC (configurationVersion 1, 23+ bytes).
+        while index + 4 < bytes.count {
+            if bytes[index] == 0x63, bytes[index + 1] == 0xA2, bytes[index + 2] & 0xC0 != 0 {
+                let isShortSize = bytes[index + 2] & 0x80 != 0
+                let size =
+                    isShortSize
+                    ? Int(bytes[index + 2] & 0x7F) : Int(bytes[index + 2] & 0x3F) << 8 | Int(bytes[index + 3])
+                let start = index + (isShortSize ? 3 : 4)
+                if size >= 23, start + size <= bytes.count, bytes[start] == 1 {
+                    bytes[start + 22] = 0
+                    return Data(bytes)
+                }
+            }
+            index += 1
+        }
+        return nil
     }
 
     // MARK: - Audio codec matrix

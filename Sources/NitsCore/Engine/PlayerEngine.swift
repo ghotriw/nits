@@ -102,6 +102,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var nominalFrameDuration: Double = 1.0 / 24.0
     @ObservationIgnored
     let nominalFrameDurationLock = OSAllocatedUnfairLock(initialState: 1.0 / 24.0)
+    /// `MediaDemuxer.videoStartTime`, for the display-link preroll.
+    @ObservationIgnored
+    let videoStartTimeLock = OSAllocatedUnfairLock(initialState: 0.0)
     public var sampleAspectRatio: RationalAspectRatio = .square
     public var displayAspectRatio: Double {
         RationalAspectRatio.computeDisplayAspectRatio(width: videoWidth, height: videoHeight, sar: sampleAspectRatio)
