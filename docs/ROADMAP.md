@@ -249,15 +249,30 @@ flowchart TD
     must recognize one of these formats by its content, not just the extension (`isReadable`, `format(of:path:)`; SAMI
     their probe misses for its case is told by its tags): binary files (VobSub data without its index) and other text
     make no track, and neither does a file whose demuxer finds no line in it. The rest is read in the background when
-    the track is selected: the whole file decoded in its encoding (`SubtitleTextEncoding`) and handed to FFmpeg as a
+    the track is selected: the whole file decoded in its encoding (`TextFileEncoding`) and handed to FFmpeg as a
     UTF-8 copy, as most of these demuxers look for ASCII and the decoders drop lines that aren't UTF-8; by the subtitle
     demuxers only (`format_whitelist`, `file` protocol), so a file found next to the media can't open as a playlist. A
     MicroDVD file that doesn't give its frame rate counts frames at the video's. Cues last at least half a second, as
     embedded tracks' do, but no longer than until the next one, so lines a few frames long don't overlap. Matroska's
     plain `S_TEXT/ASCII` (`text`) streams are listed as text tracks.
-  - [ ] Text subtitle files without a byte order mark that aren't UTF-8 are taken for Windows-1251 (Cyrillic): other
-    code pages (Windows-1250, CP949, Shift JIS) come out garbled. Needs a charset detector (uchardet, as mpv) or a
-    setting.
+  - [x] Encoding of text subtitle files and playlists (`TextFileEncoding`), in mpv's order: byte order mark, valid
+    UTF-8, the encoding chosen in Settings → Languages, Foundation's detector (`NSString.stringEncoding(for:…)`, no
+    lossy guesses, on the first 64 KB), then Windows-1251 / 1252 / Latin-1. The detector knows letters by their lower
+    case: Cyrillic in capitals (forced subtitles) or a single line of it it takes for ISO Latin 2, Thai, Hebrew, GB
+    18030 or Latin-1. So its CJK guesses are taken unless the text reads as Windows-1251 with no odd word, no capital
+    after a small letter and no sign Cyrillic doesn't use (`readsAsCyrillic`: `北京` is `±±ѕ©`), and Shift JIS not when
+    it reads as half-width katakana (`£` in 1252); the Hebrew, Arabic and Thai code pages only with the language in
+    the file's name (`film.he.srt`), and a cased
+    script's code page (an ISO Latin guess as the Windows one reading it the same: ISO Latin 7 is 1257) competes with
+    Windows-1251 and 1252: the reading with fewer odd words wins (`oddWords`: a sign inside a word, Latin mixed with
+    Cyrillic or Greek, a Latin word with no ASCII letter; Vietnamese tones, combining marks in 1258, count as letters).
+    The file's name is the detector's only language hint: a wrong one misleads it (Windows-1251 Ukrainian said to be
+    English comes out Latin-1). NaturalLanguage's recognizer can't judge the readings (it takes garbled Cyrillic for
+    Russian or Greek), and uchardet, measured on the same samples, is worse at short and capital Cyrillic, short Polish
+    and Czech and CJK, better only at Hebrew, Arabic and Thai without a language in the name. Left wrong: Polish and
+    Greek in capitals, those three without the language, a lone `£5` (reads as `Ј5`), KOI8-R (taken for ISO 8859-5;
+    the setting reads it), a file whose only letters outside ASCII are `Ні` in Windows-1251 (valid UTF-8: `ͳ`), and a
+    single short CJK line that reads as Cyrillic letters alone (`병원` is `єґїш`).
   - [x] CEA-608 closed captions: ATSC `cc_data` in H.264 / HEVC SEI and MPEG-2 user data (US broadcast, HLS) read from
     the video packets (`ClosedCaptions`), listed as CC1 / CC3 tracks when the first pictures carry them, and MP4 `c608`
     tracks; decoded by FFmpeg's `cc_dec` in real-time mode into screens drawn as text in the user's style, put back

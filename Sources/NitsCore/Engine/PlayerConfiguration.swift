@@ -180,6 +180,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Languages that choose the audio and subtitle tracks a media starts with, when neither a request nor its saved
     /// history names them.
     public var trackLanguages: TrackLanguagePreferences
+    /// Encoding of subtitle files that have no byte order mark and aren't UTF-8; `nil` lets `TextFileEncoding` detect
+    /// it (default).
+    public var subtitleEncoding: String.Encoding?
 
     public init(
         enableToneMapping: Bool = true,
@@ -224,7 +227,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         entersPictureInPictureOnMinimize: Bool = false,
         actionButtonDisplayDuration: Double = 8.0,
         actionButtonAutoPress: Bool = false,
-        trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences()
+        trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences(),
+        subtitleEncoding: String.Encoding? = nil
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -272,6 +276,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.actionButtonDisplayDuration = Self.clampActionButtonDisplayDuration(actionButtonDisplayDuration)
         self.actionButtonAutoPress = actionButtonAutoPress
         self.trackLanguages = trackLanguages
+        self.subtitleEncoding = subtitleEncoding
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -314,6 +319,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleLanguages = "Nits.subtitleLanguages"
     public static let keyForcedSubtitleSelection = "Nits.forcedSubtitleSelection"
     public static let keySubtitlesWithKnownAudio = "Nits.subtitlesWithKnownAudio"
+    /// The IANA name of `subtitleEncoding`; empty for detection.
+    public static let keySubtitleEncoding = "Nits.subtitleEncoding"
 
     /// Loads configuration from UserDefaults, falling back to defaults if not set.
     public static func loadFromUserDefaults(userDefaults: UserDefaults = .standard) -> PlayerConfiguration {
@@ -454,6 +461,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         {
             config.trackLanguages.subtitlesWithKnownAudio = known
         }
+        config.subtitleEncoding = userDefaults.string(forKey: keySubtitleEncoding).flatMap(
+            TextFileEncoding.encoding(named:))
         return config
     }
 
@@ -502,6 +511,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
             forKey: Self.keySubtitleLanguages)
         userDefaults.set(trackLanguages.forcedSubtitles.rawValue, forKey: Self.keyForcedSubtitleSelection)
         userDefaults.set(trackLanguages.subtitlesWithKnownAudio.rawValue, forKey: Self.keySubtitlesWithKnownAudio)
+        userDefaults.set(
+            subtitleEncoding.flatMap(TextFileEncoding.name(of:)) ?? "", forKey: Self.keySubtitleEncoding)
     }
 
     /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).

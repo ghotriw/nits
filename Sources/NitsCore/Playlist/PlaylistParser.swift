@@ -31,12 +31,7 @@ public enum PlaylistParser {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
 
         let content =
-            String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .windowsCP1251)
-            ?? String(data: data, encoding: .windowsCP1252)
-            ?? String(data: data, encoding: .isoLatin1)
-            ?? String(data: data, encoding: .ascii)
-            ?? ""
+            TextFileEncoding.decode(data)?.text ?? ""
 
         guard !content.isEmpty else { return [] }
 
@@ -57,12 +52,7 @@ public enum PlaylistParser {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let content =
-                String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .windowsCP1251)
-                ?? String(data: data, encoding: .windowsCP1252)
-                ?? String(data: data, encoding: .isoLatin1)
-                ?? String(data: data, encoding: .ascii)
-                ?? ""
+                TextFileEncoding.decode(data)?.text ?? ""
             guard !content.isEmpty else { return [] }
             let ext = url.pathExtension.lowercased()
             return parse(content: content, format: ext, baseURL: url)

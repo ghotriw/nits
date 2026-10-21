@@ -132,11 +132,11 @@ struct FFmpegTextSubtitleTests {
     @Test("Encodings: a byte order mark decides, a UTF-8 prefix cut inside a character is still UTF-8")
     func detectsEncodings() throws {
         let utf8 = try #require("Привіт".data(using: .utf8))
-        #expect(SubtitleTextEncoding.detect(utf8.dropLast(1), isPrefix: true) == .utf8)
-        #expect(SubtitleTextEncoding.detect(utf8.dropLast(1)) == .windowsCP1251, "A whole file must decode")
-        #expect(SubtitleTextEncoding.detect(Data([0xFF, 0xFE, 0x41, 0x00])) == .utf16)
-        #expect(!SubtitleTextEncoding.looksBinary(Data([0xFF, 0xFE, 0x41, 0x00])), "UTF-16 has zero bytes")
-        #expect(SubtitleTextEncoding.looksBinary(Data([0x00, 0x00, 0x01, 0xBA])), "MPEG program stream")
+        #expect(TextFileEncoding.detect(utf8.dropLast(1), isPrefix: true) == .utf8)
+        #expect(TextFileEncoding.detect(utf8.dropLast(1)).map { $0 != .utf8 } == true, "A whole file must decode")
+        #expect(TextFileEncoding.detect(Data([0xFF, 0xFE, 0x41, 0x00])) == .utf16)
+        #expect(!TextFileEncoding.looksBinary(Data([0xFF, 0xFE, 0x41, 0x00])), "UTF-16 has zero bytes")
+        #expect(TextFileEncoding.looksBinary(Data([0x00, 0x00, 0x01, 0xBA])), "MPEG program stream")
     }
 
     @Test("A subtitle file only opens as a subtitle format: a playlist named .sub reads as nothing")
@@ -200,8 +200,8 @@ struct FFmpegTextSubtitleTests {
 
     @Test("A beginning too short to hold a whole UTF-8 character isn't taken for UTF-8")
     func shortPrefixIsNotUTF8() {
-        #expect(SubtitleTextEncoding.detect(Data([0xD0]), isPrefix: true) == .windowsCP1251)
-        #expect(SubtitleTextEncoding.detect(Data(), isPrefix: true) == .utf8)
+        #expect(TextFileEncoding.detect(Data([0xD0]), isPrefix: true).map { $0 != .utf8 } == true)
+        #expect(TextFileEncoding.detect(Data(), isPrefix: true) == .utf8)
     }
 
     @Test("A MicroDVD file in UTF-16 reads: FFmpeg gets it in UTF-8")

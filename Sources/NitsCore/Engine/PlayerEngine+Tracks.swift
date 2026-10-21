@@ -97,10 +97,12 @@ extension PlayerEngine {
                 } else {
                     // A format FFmpeg reads. MicroDVD counts frames: without a rate of its own, the video's is the one.
                     let frameRate = demuxer.flatMap { $0.hasVideo ? 1 / $0.nominalFrameDuration : nil }
+                    let hints = textEncodingHints(for: url)
                     loadSubtitleDocument(
                         trackId: id,
                         read: { interrupt in
-                            FFmpegTextSubtitles.read(url: url, frameRate: frameRate, interrupt: interrupt)
+                            FFmpegTextSubtitles.read(
+                                url: url, frameRate: frameRate, hints: hints, interrupt: interrupt)
                         }, isCurrent: isCurrent)
                 }
             }
@@ -286,6 +288,12 @@ extension PlayerEngine {
         return ids.first { id in subtitleTracks.first { $0.id == id }?.streamIndex == streamIndex } ?? ids.first
     }
 
+    /// What tells the encoding of a subtitle file besides its bytes: the user's choice and the language in its name.
+    func textEncodingHints(for url: URL) -> TextFileEncoding.Hints {
+        TextFileEncoding.Hints(
+            encoding: configuration.subtitleEncoding, language: SidecarSubtitles.tags(of: url).language)
+    }
+
     /// Adds a text subtitle file as a track, or finds the track already made from it; `nil` if the file can't be read.
     /// SRT, WebVTT and ASS files are parsed here; the formats FFmpeg reads (`FFmpegTextSubtitles`) only have their
     /// beginning looked at, and are read in the background when the track is selected.
@@ -299,13 +307,15 @@ extension PlayerEngine {
         let isASS = fileExtension == "ass" || fileExtension == "ssa"
         var document: SubtitleDocument?
         if FFmpegTextSubtitles.extensions.contains(fileExtension) {
-            guard FFmpegTextSubtitles.isReadable(url) else {
+            guard FFmpegTextSubtitles.isReadable(url, hints: textEncodingHints(for: url)) else {
                 AppLog.warning(
                     .subtitles, "No subtitles in a format FFmpeg reads (MicroDVD, SubViewer, SAMI) in \(url.path)")
                 return nil
             }
         } else {
-            guard let data = try? Data(contentsOf: url), let content = SubtitleTextEncoding.decode(data) else {
+            guard let data = try? Data(contentsOf: url),
+                let content = TextFileEncoding.decode(data, hints: textEncodingHints(for: url))
+            else {
                 AppLog.error(.subtitles, "Unable to decode subtitle file with supported encodings: \(url)")
                 return nil
             }

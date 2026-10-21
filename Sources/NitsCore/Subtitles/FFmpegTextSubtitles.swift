@@ -19,11 +19,12 @@ enum FFmpegTextSubtitles {
     /// Whether the file holds subtitles in one of `formats` (`format(of:path:)` on its beginning, in UTF-8 as `read`
     /// hands FFmpeg the file). Binary files (a VobSub `.sub` without its index is MPEG program stream, possibly
     /// hundreds of megabytes) and text in other formats are left out, so no track is made that would read as nothing.
-    static func isReadable(_ url: URL) -> Bool {
+    static func isReadable(_ url: URL, hints: TextFileEncoding.Hints = .init()) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: sniffLength), !prefix.isEmpty,
-            !SubtitleTextEncoding.looksBinary(prefix), let text = SubtitleTextEncoding.utf8(prefix, isPrefix: true)
+            !TextFileEncoding.looksBinary(prefix),
+            let text = TextFileEncoding.utf8(prefix, isPrefix: true, hints: hints)
         else { return false }
         return format(of: text, path: url.path) != nil
     }
@@ -52,14 +53,19 @@ enum FFmpegTextSubtitles {
     }
 
     /// The file's cues, or `nil` when it is in none of `formats` or holds no line. The whole file is decoded in its
-    /// encoding (`SubtitleTextEncoding`) and FFmpeg reads a UTF-8 copy: most of its subtitle demuxers look for ASCII
-    /// in the bytes, and its decoders drop any line that isn't UTF-8. Blocks while it reads: call it off the main thread.
+    /// encoding (`TextFileEncoding`, with `hints`) and FFmpeg reads a UTF-8 copy: most of its subtitle demuxers look
+    /// for ASCII in the bytes, and its decoders drop any line that isn't UTF-8. Blocks while it reads: call it off the
+    /// main thread.
     /// - Parameters:
     ///   - frameRate: The video's, for MicroDVD files that count frames without saying at what rate; FFmpeg assumes
     ///     23.976 fps otherwise.
     ///   - interrupt: Aborts the read (a track no longer selected).
-    static func read(url: URL, frameRate: Double?, interrupt: FFmpegInterrupt? = nil) -> SubtitleDocument? {
-        guard let data = try? Data(contentsOf: url), let text = SubtitleTextEncoding.utf8(data) else { return nil }
+    static func read(
+        url: URL, frameRate: Double?, hints: TextFileEncoding.Hints = .init(), interrupt: FFmpegInterrupt? = nil
+    ) -> SubtitleDocument? {
+        guard let data = try? Data(contentsOf: url), let text = TextFileEncoding.utf8(data, hints: hints) else {
+            return nil
+        }
         guard let name = format(of: text, path: url.path), let inputFormat = av_find_input_format(name) else {
             return nil
         }

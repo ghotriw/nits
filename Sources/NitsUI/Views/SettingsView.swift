@@ -511,7 +511,8 @@ public struct SettingsView: View {
             entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize,
             actionButtonDisplayDuration: actionButtonDisplayDuration,
             actionButtonAutoPress: actionButtonAutoPress,
-            trackLanguages: savedConfig.trackLanguages
+            trackLanguages: savedConfig.trackLanguages,
+            subtitleEncoding: savedConfig.subtitleEncoding
         )
         onConfigurationChanged?(current)
     }

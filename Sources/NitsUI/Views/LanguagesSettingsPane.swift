@@ -15,6 +15,9 @@ struct LanguagesSettingsPane: View {
     @AppStorage(PlayerConfiguration.keySubtitlesWithKnownAudio)
     private var subtitlesWithKnownAudio: SubtitlesWithKnownAudio = .forcedOnly
 
+    @AppStorage(PlayerConfiguration.keySubtitleEncoding)
+    private var subtitleEncoding: String = ""
+
     let onChange: () -> Void
 
     var body: some View {
@@ -58,6 +61,23 @@ struct LanguagesSettingsPane: View {
             } footer: {
                 Text(
                     "Forced subtitles translate only signs and lines in other languages. A subtitle file next to the video shows whatever the audio language. A track chosen by hand, or turned off, is remembered for the file and wins over these settings."
+                )
+            }
+
+            Section {
+                Picker("Encoding", selection: $subtitleEncoding) {
+                    Text("Automatic").tag("")
+                    Divider()
+                    ForEach(EncodingCatalog.all, id: \.name) { encoding in
+                        Text(encoding.title).tag(encoding.name)
+                    }
+                }
+                .onChange(of: subtitleEncoding) { _, _ in onChange() }
+            } header: {
+                Text("Subtitle Files")
+            } footer: {
+                Text(
+                    "For subtitle files that aren't in Unicode. Automatic guesses from the text, helped by a language in the file's name (film.he.srt). Applies to files opened after the change."
                 )
             }
         }
@@ -123,6 +143,14 @@ private struct LanguageListEditor: View {
         }
         .fixedSize()
     }
+}
+
+/// The encodings a subtitle file can be read in, by the IANA names settings store, named in the user's language. By
+/// name, which puts the script first ("Cyrillic (KOI8-R)"), so a script's encodings come together.
+private enum EncodingCatalog {
+    static let all: [(name: String, title: String)] = TextFileEncoding.selectable
+        .compactMap { encoding in TextFileEncoding.name(of: encoding).map { ($0, String.localizedName(of: encoding)) } }
+        .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
 }
 
 /// The ISO 639-1 languages, named in the user's language.
