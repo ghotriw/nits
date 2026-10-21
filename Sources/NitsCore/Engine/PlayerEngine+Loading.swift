@@ -489,16 +489,16 @@ extension PlayerEngine {
         if ["off", "none", "no", "disabled"].contains(key) { return .disable }
 
         // Explicit "stream:N" or "s:N" prefix (matching container stream index, e.g. from host app / FFmpeg)
-        if let streamIdx = parseStreamIndex(from: key),
-            let match = tracks.first(where: { $0.streamIndex == streamIdx })
-        {
+        // Closed captions in the video's pictures have no stream of their own: its index names the video.
+        let byStream = { (index: Int) in tracks.first { $0.streamIndex == index && !$0.captionsInVideo } }
+        if let streamIdx = parseStreamIndex(from: key), let match = byStream(streamIdx) {
             return .select(trackId: match.id)
         }
 
         // Direct numeric match: prioritize track.id, then fallback to container streamIndex
         if let id = Int(key) {
             if let byId = tracks.first(where: { $0.id == id }) { return .select(trackId: byId.id) }
-            if let byStream = tracks.first(where: { $0.streamIndex == id }) { return .select(trackId: byStream.id) }
+            if let match = byStream(id) { return .select(trackId: match.id) }
         }
 
         if let byLang = tracks.first(where: { matchesLanguage($0.language, key) }) {

@@ -33,6 +33,8 @@ enum EmbeddedSubtitleReader {
         /// Bitmap sets in read order; applied in that order, they end the sets they replace.
         var bitmapOutputs: [BitmapSubtitleDecoder.Output] = []
         var assEvents: [AssScript.Event] = []
+        /// Closed-caption screens in presentation order (`ClosedCaptionDecoder`).
+        var captionScreens: [ClosedCaptionDecoder.Screen] = []
     }
 
     /// Turns the packets of one subtitle stream into `Packets`.
@@ -41,19 +43,27 @@ enum EmbeddedSubtitleReader {
         let codecId: AVCodecID
         let timebase: AVRational
         let bitmapDecoder: BitmapSubtitleDecoder?
+        let captionDecoder: ClosedCaptionDecoder?
         var packets = Packets()
 
-        /// `nil` for a bitmap stream FFmpeg has no decoder for.
-        init?(stream: UnsafeMutablePointer<AVStream>, index: Int) {
+        /// `nil` for a bitmap stream FFmpeg has no decoder for, or closed captions (`captionField`) the stream can't
+        /// carry.
+        init?(stream: UnsafeMutablePointer<AVStream>, index: Int, captionField: Int? = nil) {
             streamIndex = index
             codecId = stream.pointee.codecpar.pointee.codec_id
             timebase = stream.pointee.time_base
             bitmapDecoder = BitmapSubtitleDecoder.isBitmapCodec(codecId) ? BitmapSubtitleDecoder(stream: stream) : nil
             if BitmapSubtitleDecoder.isBitmapCodec(codecId), bitmapDecoder == nil { return nil }
+            captionDecoder = captionField.flatMap { ClosedCaptionDecoder(field: $0, stream: stream) }
+            if captionField != nil, captionDecoder == nil { return nil }
         }
 
         mutating func add(_ pkt: inout AVPacket) {
             guard pkt.stream_index == streamIndex else { return }
+            if let captionDecoder {
+                packets.captionScreens += captionDecoder.decode(&pkt)
+                return
+            }
             if let bitmapDecoder {
                 packets.bitmapOutputs.append(bitmapDecoder.decode(&pkt))
                 return
@@ -68,6 +78,12 @@ enum EmbeddedSubtitleReader {
             {
                 packets.cues.append(cue)
             }
+        }
+
+        /// The read has ended, at the end of the file (`atEnd`) or of its range: captions held back for pictures shown
+        /// before them are complete, or provisional (`ClosedCaptionDecoder.Screen.isProvisional`).
+        mutating func finish(atEnd: Bool) {
+            if let captionDecoder { packets.captionScreens += captionDecoder.finish(provisional: !atEnd) }
         }
     }
 
@@ -158,16 +174,19 @@ enum EmbeddedSubtitleReader {
     /// fills in what it can't (`MediaDemuxer.subtitleWindow`): the cue on screen when a track is chosen or a seek
     /// lands, as mpv's refresh seek and subtitle preroll do, and what playback read before the track was chosen. A
     /// picture or sound stream tells the time, so the read stops at the range's end. `nil` when the file can't be read
-    /// there, or the read was cancelled.
+    /// there, or the read was cancelled. Closed captions (`captionField`) are read from the pictures of the video
+    /// stream `streamIndex` names, or from an MP4 caption track.
     static func readSubtitles(
-        url: String, headers: [String: String], streamIndex: Int, in range: ClosedRange<Double>,
+        url: String, headers: [String: String], streamIndex: Int, captionField: Int? = nil,
+        in range: ClosedRange<Double>,
         interrupt: FFmpegInterrupt? = nil
     ) -> Packets? {
         guard let ctx = openInput(url: url, headers: headers, interrupt: interrupt) else { return nil }
         var closable: UnsafeMutablePointer<AVFormatContext>? = ctx
         defer { avformat_close_input(&closable) }
         guard streamIndex < Int(ctx.pointee.nb_streams), let stream = ctx.pointee.streams[streamIndex],
-            stream.pointee.time_base.den > 0, var collector = PacketCollector(stream: stream, index: streamIndex)
+            stream.pointee.time_base.den > 0,
+            var collector = PacketCollector(stream: stream, index: streamIndex, captionField: captionField)
         else { return nil }
 
         // A file with no picture or sound is a subtitle file: small, read to its end.
@@ -184,10 +203,16 @@ enum EmbeddedSubtitleReader {
 
         let referenceTimebase = reference.flatMap { ctx.pointee.streams[$0]?.pointee.time_base }
         var pkt = AVPacket()
-        while !isCancelled(interrupt) && av_read_frame(ctx, &pkt) >= 0 {
+        // What the last read gave: the end of the file, an error, or a packet past the range (the read stops there).
+        var result: Int32 = 0
+        while !isCancelled(interrupt) {
+            result = av_read_frame(ctx, &pkt)
+            guard result >= 0 else { break }
             MediaDemuxer.rebase(&pkt, origin: origin, in: ctx)
             defer { av_packet_unref(&pkt) }
             if let reference, Int(pkt.stream_index) == reference {
+                // Captions ride in the pictures followed.
+                if reference == streamIndex { collector.add(&pkt) }
                 // Decode order: presentation times jump back and forth with B-frames, decode times don't. A subtitle
                 // packet is muxed by its own time, so one due just before the end may come after a later picture.
                 guard let timebase = referenceTimebase, timebase.den > 0 else { continue }
@@ -198,7 +223,10 @@ enum EmbeddedSubtitleReader {
             }
             collector.add(&pkt)
         }
-        return isCancelled(interrupt) ? nil : collector.packets
+        if isCancelled(interrupt) { return nil }
+        // A read error isn't the end: what follows is just unread.
+        collector.finish(atEnd: result == MediaDemuxer.averrorEOF)
+        return collector.packets
     }
 
     /// How far past a window's end its read goes, by the decode time of the picture or sound followed: packets due

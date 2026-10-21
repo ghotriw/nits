@@ -201,14 +201,16 @@ extension MediaDemuxer {
     }
 
     /// Lists a text (SRT, WebVTT, mov_text, plain text, ASS, SSA) or bitmap (PGS, VobSub, DVB) subtitle stream as a
-    /// track. Plain text is Matroska's `S_TEXT/ASCII`: the packet is the line.
+    /// track. Plain text is Matroska's `S_TEXT/ASCII`: the packet is the line. An MP4 caption track (`c608`) is CEA-608
+    /// closed captions, read from field 1.
     func registerSubtitleTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
         let codecId = stream.pointee.codecpar.pointee.codec_id
+        let isCaptions = codecId == AV_CODEC_ID_EIA_608
         let isTextSub =
             (codecId == AV_CODEC_ID_SUBRIP || codecId == AV_CODEC_ID_WEBVTT || codecId == AV_CODEC_ID_MOV_TEXT
                 || codecId == AV_CODEC_ID_TEXT || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
         let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
-        guard isTextSub || isBitmapSub else { return }
+        guard isTextSub || isBitmapSub || isCaptions else { return }
         var title = ""
         var lang = ""
         if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
@@ -220,7 +222,8 @@ extension MediaDemuxer {
         let (isForced, isSDH) = Self.subtitleFlags(title: title, disposition: stream.pointee.disposition)
         let displayTitle =
             title.isEmpty
-            ? (lang.isEmpty ? "Subtitle \(self.subtitleTracks.count + 1)" : lang.uppercased()) : title
+            ? (lang.isEmpty ? (isCaptions ? "CC1" : "Subtitle \(self.subtitleTracks.count + 1)") : lang.uppercased())
+            : title
 
         let subTrack = SubtitleTrack(
             id: self.subtitleTracks.count,
@@ -228,10 +231,22 @@ extension MediaDemuxer {
             title: displayTitle,
             language: lang,
             isForced: isForced,
-            isSDH: isSDH,
-            format: isBitmapSub ? .bitmap : (codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA ? .ass : .text)
+            isSDH: isSDH || isCaptions,
+            format: isBitmapSub ? .bitmap : (codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA ? .ass : .text),
+            closedCaptionField: isCaptions ? 0 : nil
         )
         self.subtitleTracks.append(subTrack)
+    }
+
+    /// Lists the CEA-608 closed captions found in the first pictures (`closedCaptionFields`) as tracks of the video
+    /// stream: CC1 for field 1, CC3 for field 2. They are for the hard of hearing by nature.
+    func registerClosedCaptionTracks() {
+        for field in closedCaptionFields.sorted() {
+            subtitleTracks.append(
+                SubtitleTrack(
+                    id: subtitleTracks.count, streamIndex: videoStreamIndex, title: field == 0 ? "CC1" : "CC3",
+                    language: "", isSDH: true, format: .text, closedCaptionField: field, captionsInVideo: true))
+        }
     }
 
     /// Container chapters as FFmpeg exports them (MKV default edition, flattened; MP4 chapter track or
@@ -286,10 +301,17 @@ extension MediaDemuxer {
         var packetsScanned = 0
         let maxPacketsToScan = hasExtradataParams ? 30 : 120
         var pkt = AVPacket()
+        let nalLengthSize = codecParameters.map { ClosedCaptions.nalLengthSize(of: $0, codec: codec) } ?? 4
 
         while packetsScanned < maxPacketsToScan && readPacket(ctx, &pkt) >= 0 {
             packetsScanned += 1
             if pkt.stream_index == videoStreamIndex {
+                if let bytes = pkt.data {
+                    let packet = UnsafeRawBufferPointer(start: bytes, count: Int(pkt.size))
+                    closedCaptionFields.formUnion(
+                        ClosedCaptions.fields(
+                            of: ClosedCaptions.cea608Triplets(in: packet, codec: codec, lengthSize: nalLengthSize)))
+                }
                 let data = Data(bytes: pkt.data, count: Int(pkt.size))
                 // If extradata was missing or empty, detect whether the stream is Annex B from the first video packet
                 if !hasExtradataParams && packetsScanned == 1 && data.count >= 3 {

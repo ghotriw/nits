@@ -93,6 +93,16 @@ public enum SyntheticTestMediaFactory {
         /// about 1.48 s (rebased to 0), the bar at 0 s cleared at about 5.13 s (the conversion drops the set at 2.5 s),
         /// and no index
         case dvbSubtitlesTS
+        /// H.264 MPEG-TS (6s, 320x240, 30 fps, no B-frames) with `captionScript` as CEA-608 CC1 in SEI messages
+        /// (`captionSEI`), field 2 null padding and a CEA-708 triplet beside it in every picture
+        case captionsH264TS
+        /// `captionsH264TS` remuxed into Matroska: length-prefixed units, no decode timestamps
+        case captionsH264MKV
+        /// H.264 MOV (6s, 320x240) with `captionScript` in a `c608` caption track, made from `captionSCC`
+        case captionsC608MOV
+
+        /// Presets whose picture stream carries closed captions put in by `captionedStream`.
+        var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
 
         public var filename: String {
             switch self {
@@ -174,6 +184,12 @@ public enum SyntheticTestMediaFactory {
                 return "synth_ass_fade_subtitles.mkv"
             case .dvbSubtitlesTS:
                 return "synth_dvb_subtitles.ts"
+            case .captionsH264TS:
+                return "synth_captions_h264.ts"
+            case .captionsH264MKV:
+                return "synth_captions_h264.mkv"
+            case .captionsC608MOV:
+                return "synth_captions_c608.mov"
             }
         }
     }
@@ -293,8 +309,40 @@ public enum SyntheticTestMediaFactory {
             }
         }
 
+        if preset == .captionsC608MOV {
+            guard FileManager.default.createFile(atPath: metadataPath, contents: Data(captionSCC.utf8)) else {
+                print("[SyntheticTestMediaFactory] Failed to write the SCC captions for \(preset.rawValue)")
+                return nil
+            }
+        }
+
         let encodedPath = partialPath()
         defer { try? FileManager.default.removeItem(atPath: encodedPath) }
+        if preset.hasCaptionSEI {
+            // A raw H.264 stream, its pictures given caption SEI here, then muxed.
+            let streamPath = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString).h264").path
+            defer { try? FileManager.default.removeItem(atPath: streamPath) }
+            let encode = [
+                "-y", "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=30:duration=6",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bf", "0", "-g", "30", "-x264-params", "aud=1",
+                "-f", "h264", streamPath,
+            ]
+            guard runFFmpeg(ffmpeg, arguments: encode, preset: preset),
+                let stream = FileManager.default.contents(atPath: streamPath),
+                FileManager.default.createFile(atPath: streamPath, contents: captionedStream(stream)),
+                runFFmpeg(
+                    ffmpeg,
+                    arguments: [
+                        "-y", "-f", "h264", "-framerate", "30", "-i", streamPath, "-c", "copy",
+                        "-f", preset == .captionsH264TS ? "mpegts" : "matroska", encodedPath,
+                    ], preset: preset)
+            else { return nil }
+            guard rename(encodedPath, targetPath) == 0 else {
+                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
+                return nil
+            }
+            return targetPath
+        }
         let encodeArguments = arguments(for: preset, outputPath: encodedPath, metadataPath: metadataPath)
         guard runFFmpeg(ffmpeg, arguments: encodeArguments, preset: preset) else {
             return nil
@@ -357,6 +405,18 @@ public enum SyntheticTestMediaFactory {
 
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
+        case .captionsH264TS, .captionsH264MKV:
+            return []  // Made in steps by `generateMedia`.
+        case .captionsC608MOV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=30:duration=6",
+                "-f", "scc", "-i", metadataPath,
+                "-map", "0:v", "-map", "1:s",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
+                "-f", "mov",
+                outputPath,
+            ]
         case .assSubtitlesMKV:
             return [
                 "-y",
@@ -903,5 +963,117 @@ extension SyntheticTestMediaFactory {
         return Data(
             displaySet(at: 0, composition: 0, showing: true) + displaySet(at: 1.5, composition: 1, showing: false)
                 + displaySet(at: 2.5, composition: 2, showing: true))
+    }
+}
+
+extension SyntheticTestMediaFactory {
+    /// The CEA-608 captions of the caption presets, in CC1 and popped on: when each is shown and cleared, its row (1
+    /// or 15) and text. 608 carries Latin text only.
+    static let captionScript: [(shown: Double, cleared: Double, row: Int, text: String)] = [
+        (1.0, 2.5, 15, "HELLO WORLD"),
+        (3.0, 4.5, 1, "TOP LINE"),
+    ]
+
+    /// A 608 byte with its odd parity bit.
+    static func cea608Byte(_ value: UInt8) -> UInt8 {
+        value.nonzeroBitCount % 2 == 0 ? value | 0x80 : value
+    }
+
+    /// The pairs (parity added) that load a caption off screen at `row` and show it, control codes doubled as
+    /// encoders send them: resume caption loading, preamble for the row, the text, end of caption (shown here).
+    static func popOnPairs(row: Int, text: String) -> [(UInt8, UInt8)] {
+        let preamble: (UInt8, UInt8) = row == 15 ? (0x14, 0x60) : (0x11, 0x40)
+        let characters = Array(text.utf8)
+        let textPairs = stride(from: 0, to: characters.count, by: 2).map {
+            (characters[$0], $0 + 1 < characters.count ? characters[$0 + 1] : 0)
+        }
+        let pairs = [(0x14, 0x20), (0x14, 0x20), preamble, preamble] + textPairs + [(0x14, 0x2F), (0x14, 0x2F)]
+        return pairs.map { (cea608Byte($0.0), cea608Byte($0.1)) }
+    }
+
+    /// Erase displayed memory, doubled.
+    static let clearPairs = [(cea608Byte(0x14), cea608Byte(0x2C)), (cea608Byte(0x14), cea608Byte(0x2C))]
+
+    /// The field 1 pair of each picture at 30 fps: a caption's end of caption falls on the picture it is shown at.
+    static var captionPairsPerPicture: [(UInt8, UInt8)] {
+        var pictures = Array(repeating: (cea608Byte(0), cea608Byte(0)), count: 180)
+        for caption in captionScript {
+            let pairs = popOnPairs(row: caption.row, text: caption.text)
+            let shown = Int((caption.shown * 30).rounded())
+            for (offset, pair) in pairs.enumerated() { pictures[shown - (pairs.count - 2) + offset] = pair }
+            let cleared = Int((caption.cleared * 30).rounded())
+            for (offset, pair) in clearPairs.enumerated() { pictures[cleared + offset] = pair }
+        }
+        return pictures
+    }
+
+    /// An H.264 SEI unit with ATSC `cc_data` holding `pair` for field 1, null padding for field 2 and a CEA-708
+    /// triplet, as broadcast encoders write it; emulation prevention applied.
+    static func captionSEI(pair: (UInt8, UInt8)) -> [UInt8] {
+        let triplets: [UInt8] = [0xFC, pair.0, pair.1, 0xFD, 0x80, 0x80, 0xFF, 0x02, 0x21]
+        let payload: [UInt8] = [0xB5, 0x00, 0x31, 0x47, 0x41, 0x39, 0x34, 0x03, 0x40 | 3, 0xFF] + triplets + [0xFF]
+        return [0x06] + emulationPrevented([0x04, UInt8(payload.count)] + payload + [0x80])
+    }
+
+    /// Inserts `03` after two zero bytes followed by a byte up to 3, as a NAL unit's payload must have it.
+    static func emulationPrevented(_ bytes: [UInt8]) -> [UInt8] {
+        var result: [UInt8] = []
+        var zeros = 0
+        for byte in bytes {
+            if zeros >= 2, byte <= 3 {
+                result.append(3)
+                zeros = 0
+            }
+            zeros = byte == 0 ? zeros + 1 : 0
+            result.append(byte)
+        }
+        return result
+    }
+
+    /// An Annex B H.264 stream with an access unit delimiter per picture, given `captionSEI` after each delimiter.
+    static func captionedStream(_ stream: Data) -> Data {
+        let bytes = [UInt8](stream)
+        var starts: [Int] = []
+        var index = 0
+        while index + 2 < bytes.count {
+            if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
+                starts.append(index + 3)
+                index += 3
+            } else {
+                index += 1
+            }
+        }
+        let pairs = captionPairsPerPicture
+        var picture = 0
+        var result: [UInt8] = []
+        for (position, start) in starts.enumerated() {
+            var end = position + 1 < starts.count ? starts[position + 1] - 3 : bytes.count
+            while end > start, bytes[end - 1] == 0 { end -= 1 }
+            result += [0, 0, 0, 1] + bytes[start..<end]
+            if bytes[start] & 0x1F == 9 {
+                result += [0, 0, 0, 1] + captionSEI(pair: picture < pairs.count ? pairs[picture] : (0x80, 0x80))
+                picture += 1
+            }
+        }
+        return Data(result)
+    }
+
+    /// `captionScript` as a Scenarist SCC file: each caption's pairs at the time it is shown, its clear at the time
+    /// it is cleared. FFmpeg drops the last line when muxing it into MOV, so one more clear ends the file.
+    static var captionSCC: String {
+        func timecode(_ seconds: Double) -> String {
+            let frames = Int((seconds * 30).rounded())
+            return String(format: "00:00:%02d:%02d", frames / 30, frames % 30)
+        }
+        func words(_ pairs: [(UInt8, UInt8)]) -> String {
+            pairs.map { String(format: "%02x%02x", $0.0, $0.1) }.joined(separator: " ")
+        }
+        var lines = ["Scenarist_SCC V1.0", ""]
+        for caption in captionScript {
+            lines += [timecode(caption.shown) + "\t" + words(popOnPairs(row: caption.row, text: caption.text)), ""]
+            lines += [timecode(caption.cleared) + "\t" + words(clearPairs), ""]
+        }
+        lines += [timecode(5.5) + "\t" + words(clearPairs), ""]
+        return lines.joined(separator: "\n")
     }
 }

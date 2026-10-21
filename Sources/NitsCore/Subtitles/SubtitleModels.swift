@@ -82,6 +82,12 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
     public let isForced: Bool
     public let isSDH: Bool
     public let format: SubtitleFormat
+    /// For CEA-608 closed captions, the field they are read from: 0 for CC1, 1 for CC3. Captions in the pictures of a
+    /// video stream (`streamIndex` is that stream's) or an MP4 caption track (`c608`); `nil` for other tracks.
+    public let closedCaptionField: Int?
+    /// Closed captions in the pictures of the video stream `streamIndex` names: no stream of their own, so the index
+    /// doesn't name the track (CC1 and CC3 share it).
+    public let captionsInVideo: Bool
 
     public var isExternal: Bool { externalURL != nil }
 
@@ -93,9 +99,13 @@ public struct SubtitleTrack: Sendable, Identifiable, Equatable {
         externalURL: URL? = nil,
         isForced: Bool = false,
         isSDH: Bool = false,
-        format: SubtitleFormat = .text
+        format: SubtitleFormat = .text,
+        closedCaptionField: Int? = nil,
+        captionsInVideo: Bool = false
     ) {
         self.format = format
+        self.closedCaptionField = closedCaptionField
+        self.captionsInVideo = captionsInVideo
         self.id = id
         self.streamIndex = streamIndex
         self.title = title

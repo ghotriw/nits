@@ -36,8 +36,14 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         var version: Int = 0
         /// Counts track selections, so a read made for a track since left isn't merged (`mergeLiveSubtitles`).
         var selection = 0
-        /// Stream of the selected track, `-1` for none.
+        /// Stream of the selected track, `-1` for none: the video stream for closed captions in its pictures.
         var streamIndex = -1
+        /// The CEA-608 field of a selected closed-caption track.
+        var captionField: Int?
+        /// The closed-caption screens in the lists (`ClosedCaptionDecoder.Screen`), cleared ones too, by time and one
+        /// a step (`Screen.step`): a screen ends the one before it. `cue` indexes `cues`; `nil` for a clear.
+        /// `provisional`: `Screen.isProvisional`.
+        var captionScreens: [(time: Double, cue: Int?, provisional: Bool)] = []
         /// Timeline ranges whose packets of the selected stream are in the lists: spans read before the last seek and
         /// windows merged, sorted and apart. The span being read now runs from `spanStart` to `readAheadSeconds`, and on
         /// as playback reads: `nil` while a seek is under way, `infinity` when the reads were at the end already.
@@ -61,12 +67,15 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         }
     }
 
-    /// Stream index of the selected subtitle track, or -1 if none.
+    /// Stream index of the selected subtitle track, whose packets go to `processPacket`, or -1 if none (also for
+    /// closed captions in the video stream's pictures, which `processVideoPacket` reads).
     /// Modified under `MediaDemuxer.lock`; can be read under `MediaDemuxer.lock` without locking `liveSubtitleState`.
     private(set) var selectedStreamIndex: Int = -1
 
     /// Decodes the selected track when it is a bitmap one; used under the demuxer's main lock, like `processPacket`.
     private var liveBitmapDecoder: BitmapSubtitleDecoder?
+    /// Decodes the selected track when it is closed captions; used under the demuxer's main lock, like the above.
+    private var liveCaptionDecoder: ClosedCaptionDecoder?
 
     /// Live in-band subtitle state is guarded by its own lightweight lock, NOT the demuxer's I/O lock.
     /// Lock order: demuxer lock -> liveSubtitleState (never the reverse).
@@ -79,9 +88,9 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     }
 
     /// Identifies the current track selection and reading stretch for `mergeLiveSubtitles`, with the stream to read
-    /// for it (`-1` for none). Never touches the I/O lock.
-    var liveSubtitleSelection: (id: Int, streamIndex: Int, span: Int) {
-        liveSubtitleState.withLock { ($0.selection, $0.streamIndex, $0.readSpan) }
+    /// for it (`-1` for none) and, for closed captions, their field. Never touches the I/O lock.
+    var liveSubtitleSelection: (id: Int, streamIndex: Int, captionField: Int?, span: Int) {
+        liveSubtitleState.withLock { ($0.selection, $0.streamIndex, $0.captionField, $0.readSpan) }
     }
 
     func selectTrack(
@@ -90,11 +99,24 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         in formatCtx: UnsafeMutablePointer<AVFormatContext>?,
         readAhead: Double
     ) {
-        let streamIndex = trackId.flatMap { id in tracks.first { $0.id == id }?.streamIndex } ?? -1
-        self.selectedStreamIndex = streamIndex
+        let track = trackId.flatMap { id in tracks.first { $0.id == id } }
+        let streamIndex = track?.streamIndex ?? -1
+        liveBitmapDecoder = nil
+        liveCaptionDecoder = nil
+        if let field = track?.closedCaptionField, let formatCtx, streamIndex >= 0,
+            streamIndex < Int(formatCtx.pointee.nb_streams), let stream = formatCtx.pointee.streams[streamIndex]
+        {
+            liveCaptionDecoder = ClosedCaptionDecoder(field: field, stream: stream)
+        }
+        // Captions in the video's pictures come through `processVideoPacket`: the video's packets must not go to the
+        // subtitle path, and a caption stream FFmpeg can't decode isn't read as text.
+        let readsCaptionStream = track?.captionsInVideo == false && liveCaptionDecoder != nil
+        self.selectedStreamIndex = track?.closedCaptionField == nil || readsCaptionStream ? streamIndex : -1
 
         liveSubtitleState.withLock { state in
             state.streamIndex = streamIndex
+            state.captionField = track?.closedCaptionField
+            state.captionScreens.removeAll()
             state.cues.removeAll()
             state.cueKeys.removeAll()
             state.imageCues.removeAll()
@@ -108,7 +130,6 @@ final class LiveSubtitleTracker: @unchecked Sendable {
             // Nothing read since opening (`-infinity`): reads start at the beginning. At the end, nothing more comes.
             state.spanStart = readAhead.isFinite ? readAhead : (readAhead < 0 ? 0 : .infinity)
         }
-        liveBitmapDecoder = nil
 
         if let trackId, let track = tracks.first(where: { $0.id == trackId }) {
             if track.format == .ass, let formatCtx,
@@ -140,6 +161,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// seek's own reads (which leave the read-ahead mark where it was) are done.
     func beginSeek(previousReadAhead: Double) {
         liveBitmapDecoder?.flush()
+        addCaptions(liveCaptionDecoder?.reset() ?? [])
         liveSubtitleState.withLock { state in
             if let start = state.spanStart, previousReadAhead >= start { state.cover(start...previousReadAhead) }
             state.spanStart = nil
@@ -161,7 +183,8 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// Never touches the I/O lock, so it is safe to call from the main thread during network reads/seeks.
     func getLiveSubtitleDocument() -> SubtitleDocument {
         let (cues, imageCues, script) = liveSubtitleState.withLock { ($0.cues, $0.imageCues, $0.assScript) }
-        return SubtitleDocument(cues: cues, imageCues: imageCues, assScript: script)
+        // A closed-caption cue a clear replaced has no text left (`addCaption`).
+        return SubtitleDocument(cues: cues.filter { !$0.text.isEmpty }, imageCues: imageCues, assScript: script)
     }
 
     /// The part of the timeline a window read (`EmbeddedSubtitleReader.readSubtitles`) must read so the selected track
@@ -207,6 +230,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             guard state.selection == selection, state.readSpan == span else { return false }
             for cue in packets.cues { Self.addLiveCue(cue, to: &state) }
+            for screen in packets.captionScreens { Self.addCaption(screen, to: &state) }
             // The window ends where playback reads from, or reads on ahead of it: it joins the stretch being read.
             state.imageCues.merge(
                 window: packets.bitmapOutputs, span: state.readSpan, replaying: state.bitmapTruncations)
@@ -228,6 +252,10 @@ final class LiveSubtitleTracker: @unchecked Sendable {
             let stream = formatCtx.pointee.streams[selectedStreamIndex]
         else { return }
 
+        if let liveCaptionDecoder {
+            addCaptions(liveCaptionDecoder.decode(pkt))
+            return
+        }
         if let liveBitmapDecoder {
             let output = liveBitmapDecoder.decode(pkt)
             liveSubtitleState.withLock { state in
@@ -261,6 +289,90 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             if Self.addLiveCue(newCue, to: &state) { state.version += 1 }
         }
+    }
+
+    /// The closed captions of the selected track in a video packet playback decodes: every picture that reaches the
+    /// decoder, and only those, as the captions' screens build on each other. Under `MediaDemuxer.lock`.
+    func processVideoPacket(_ pkt: UnsafePointer<AVPacket>) {
+        guard let liveCaptionDecoder, liveCaptionDecoder.readsVideo else { return }
+        addCaptions(liveCaptionDecoder.decode(pkt))
+    }
+
+    /// The closed captions of the last pictures, held back for those shown before them: the input has ended. Under
+    /// `MediaDemuxer.lock`.
+    func finishCaptions() {
+        guard let liveCaptionDecoder else { return }
+        addCaptions(liveCaptionDecoder.finish())
+    }
+
+    private func addCaptions(_ screens: [ClosedCaptionDecoder.Screen]) {
+        guard !screens.isEmpty else { return }
+        liveSubtitleState.withLock { state in
+            var changed = false
+            for screen in screens { changed = Self.addCaption(screen, to: &state) || changed }
+            if changed { state.version += 1 }
+        }
+    }
+
+    /// Adds a closed-caption screen: it ends the cue on screen when it comes, and its text (unless it clears the
+    /// screen) is a cue up to the next screen, `ClosedCaptionDecoder.holdLimit` at most.
+    ///
+    /// A step the lists have a screen for already keeps one read through it over a provisional one, else the fuller
+    /// one, by rows, then characters: read again (a seek back, a window read), the step gives the same screen, unless
+    /// the decoder started (on an empty screen) while the captions were up, and then its screens lack what came
+    /// before. A cue a clear replaces keeps its place in `cues` with no text.
+    @discardableResult
+    static func addCaption(_ screen: ClosedCaptionDecoder.Screen, to state: inout LiveSubtitleState) -> Bool {
+        let step = screen.step
+        var low = 0
+        var high = state.captionScreens.count
+        while low < high {
+            let middle = (low + high) / 2
+            if ClosedCaptionDecoder.step(of: state.captionScreens[middle].time) < step {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        let index = low
+        let cue = SubtitleCue(
+            id: state.cues.count + 1, startTime: screen.time, endTime: screen.time, text: screen.text,
+            alignment: screen.alignment)
+        if index < state.captionScreens.count, ClosedCaptionDecoder.step(of: state.captionScreens[index].time) == step {
+            let listed = state.captionScreens[index]
+            let weight = { (text: String) in (text.split(separator: "\n").count, text.count) }
+            let replaces =
+                listed.provisional != screen.isProvisional
+                ? listed.provisional : weight(screen.text) > weight(listed.cue.map { state.cues[$0].text } ?? "")
+            guard replaces else { return false }
+            var cueIndex = listed.cue
+            if let listedCue = listed.cue {
+                state.cues[listedCue] = SubtitleCue(
+                    id: state.cues[listedCue].id, startTime: cue.startTime, endTime: cue.endTime, text: cue.text,
+                    alignment: cue.alignment)
+            } else if !screen.text.isEmpty {
+                state.cues.append(cue)
+                cueIndex = state.cues.count - 1
+            }
+            state.captionScreens[index] = (screen.time, cueIndex, screen.isProvisional)
+        } else {
+            if !screen.text.isEmpty { state.cues.append(cue) }
+            state.captionScreens.insert(
+                (screen.time, screen.text.isEmpty ? nil : state.cues.count - 1, screen.isProvisional), at: index)
+        }
+        // The screen ends the one before it, and is ended by the next.
+        for position in max(index - 1, 0)...index {
+            guard let listed = state.captionScreens[position].cue else { continue }
+            let next =
+                state.captionScreens.indices.contains(position + 1)
+                ? state.captionScreens[position + 1].time : .infinity
+            let shown = state.cues[listed]
+            state.cues[listed] = SubtitleCue(
+                id: shown.id, startTime: shown.startTime,
+                endTime: min(shown.startTime + ClosedCaptionDecoder.holdLimit, next), text: shown.text,
+                alignment: shown.alignment)
+        }
+        return true
     }
 
     /// Adds a text cue unless the list has it (a seek back or a window read reads it again); ids follow the list.

@@ -122,8 +122,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     }
 
     /// Identifies the current track selection and reading stretch for `mergeLiveSubtitles`, with the stream to read
-    /// for it (`-1` for none). Never touches the I/O lock, like `getLiveSubtitleDocument()`.
-    var liveSubtitleSelection: (id: Int, streamIndex: Int, span: Int) {
+    /// for it (`-1` for none) and, for closed captions, their field. Never touches the I/O lock, like
+    /// `getLiveSubtitleDocument()`.
+    var liveSubtitleSelection: (id: Int, streamIndex: Int, captionField: Int?, span: Int) {
         subtitleTracker.liveSubtitleSelection
     }
 
@@ -216,6 +217,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     }
     var masteringDisplay: Data?
     var contentLightLevel: Data?
+    /// CEA-608 fields the first pictures carry captions in (`ClosedCaptions.fields(of:)`), found while opening.
+    var closedCaptionFields: Set<Int> = []
 
     /// Cancels this demuxer's blocking I/O; share one across demuxers to cancel a whole load.
     public typealias InterruptContext = FFmpegInterrupt
@@ -330,6 +333,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if videoStreamIndex >= 0 {
             self.hasVideo = true
             self.formatDescription = extractVideoFormatDescription()
+            registerClosedCaptionTracks()
         } else if audioStreamIndex >= 0 {
             self.hasVideo = false
             self.timebase = self.audioTimebase
@@ -395,6 +399,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             recordReadAhead(pkt, in: ctx)
         } else if ret == Self.averrorEOF {
             readAheadState.withLock { $0 = .infinity }
+            subtitleTracker.finishCaptions()
         }
         return ret
     }
@@ -439,6 +444,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         var pkt = AVPacket()
         while readPacket(ctx, &pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
+                subtitleTracker.processVideoPacket(&pkt)
                 let sample = createVideoSample(
                     bytes: pkt.data,
                     count: Int(pkt.size),
@@ -512,6 +518,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 return audioPacket
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
+                subtitleTracker.processVideoPacket(&pkt)
                 let videoPacket = DemuxedVideoPacket(pkt)
                 videoQueue.append(videoPacket)
                 av_packet_unref(&pkt)

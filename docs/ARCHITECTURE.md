@@ -372,6 +372,28 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   `.utility`, below playback's own reads of the same file, and a failed one is logged. Network sources get no window
   read: some serve a URL once. Skipping a window by the Matroska index isn't done: FFmpeg's index mixes the Cues with
   blocks read so far, so it can't tell a window with no subtitle packet.
+- **Closed captions** (CEA-608): ATSC `cc_data` in H.264 / HEVC prefix SEI or MPEG-2 picture user data
+  (`ClosedCaptions`) is no stream of the container, and as VideoToolbox decodes the pictures FFmpeg's decoder never
+  sees it: the bytes are read from the video packets, up to the first slice (unit lengths from `avcC` / `hvcC`). The
+  first pictures read while opening tell which fields carry captions; each becomes a `.text` track of the video stream
+  (CC1, CC3 for field 2 with more than null padding; `closedCaptionField`, `captionsInVideo`: a stream number never
+  selects them, and the video's packets don't go to the subtitle path). An MP4 `c608` track is a subtitle stream
+  FFmpeg lists, decoded the same way. FFmpeg's `cc_dec` decodes them in its real-time mode, as mpv does
+  (`ClosedCaptionDecoder`): every change of the screen is a snapshot shown until the next, timed by its picture's PTS,
+  its text drawn in the user's style, at the top when every row is in the upper half. Roll-up and paint-on change the
+  screen with every two characters; `cc_dec`'s throttle for them counts from the decoder's start, so it is off and
+  only the last change in each 200 ms step of the timeline is kept, the same for every decoder of the stream. An MP4
+  caption track has packets only where it has pairs, so a step's screen comes out once the packet's duration passes
+  the step, not with the next packet. Pictures come in decode order, so their captions wait until no picture decoded
+  later can be shown before them (a PTS below the next packet's DTS, or more pictures behind than the stream reorders;
+  Matroska has no DTS). Playback hands the decoder only the pictures it decodes (`processVideoPacket`): the screens
+  build on each other. A decoder (`cc_dec` starts in roll-up) shows nothing until a command sets the mode (resume
+  caption loading, roll-up, resume direct captioning, carriage return) and starts over then: one started while a
+  pop-on caption loads would write it onto the screen. A screen ends the cue before it. A step listed already keeps a
+  screen read through it over a provisional one (read up to a seek or a window's end, `isProvisional`), else the
+  fuller one (rows, then characters), as a decoder started after a seek or for a window read lacks the rows rolled up
+  before. Window reads read the video stream itself for them. CEA-708 has no FFmpeg decoder; its services are left out
+  (the 608 bytes broadcasters send beside them are read).
 - **External files**: `.srt` / `.vtt` / `.ass` / `.ssa` are parsed whole; `.sup` / `.idx` are read whole when the track
   is selected (`extractEmbeddedSubtitles`). Background reads (`subtitleLoads`, `subtitleRefresh`) are cancelled through
   their `FFmpegInterrupt`, blocking I/O included, once their track is no longer selected or the media stops. `stop()`

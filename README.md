@@ -28,8 +28,8 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 - [x] Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
 
 **Next**
-- [ ] Styled ASS/SSA subtitles
-- [ ] Bitmap subtitles (PGS / VOBSUB)
+- [x] Styled ASS/SSA subtitles
+- [x] Bitmap subtitles (PGS / VOBSUB)
 - [x] Audio sync delay adjustment
 - [x] Subtitle sync delay adjustment
 - [ ] Apple ProRes support

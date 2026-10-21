@@ -77,6 +77,7 @@ extension MediaDemuxer {
             } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
                 subtitleTracker.processPacket(&pkt, in: ctx)
             } else if pkt.stream_index == videoStreamIndex {
+                subtitleTracker.processVideoPacket(&pkt)
                 keyframe = DemuxedVideoPacket(pkt)
             }
         }
@@ -168,6 +169,7 @@ extension MediaDemuxer {
                 if requireAtOrBeforeTarget && keyPts > target && !isLastChance {
                     break
                 }
+                subtitleTracker.processVideoPacket(&pkt)
                 videoQueue.append(DemuxedVideoPacket(pkt))
                 landed = true
                 break

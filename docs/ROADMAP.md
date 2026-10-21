@@ -258,8 +258,15 @@ flowchart TD
   - [ ] Text subtitle files without a byte order mark that aren't UTF-8 are taken for Windows-1251 (Cyrillic): other
     code pages (Windows-1250, CP949, Shift JIS) come out garbled. Needs a charset detector (uchardet, as mpv) or a
     setting.
-  - [ ] Subtitle codecs not listed as tracks yet: CEA-608 / 708 captions in H.264 / HEVC SEI (US broadcast, HLS), DVB
-    Teletext, TTML / IMSC (MP4, DASH).
+  - [x] CEA-608 closed captions: ATSC `cc_data` in H.264 / HEVC SEI and MPEG-2 user data (US broadcast, HLS) read from
+    the video packets (`ClosedCaptions`), listed as CC1 / CC3 tracks when the first pictures carry them, and MP4 `c608`
+    tracks; decoded by FFmpeg's `cc_dec` in real-time mode into screens drawn as text in the user's style, put back
+    into presentation order first (`ClosedCaptionDecoder`). Within a field, CC2 / CC4 aren't told apart (`cc_dec`).
+  - [ ] CEA-708 caption services (windows, pens, several services): FFmpeg has no decoder; needs one of our own from
+    CTA-708. Most content also carries the 608 bytes, which are read.
+  - [ ] Captions that start after the first pictures read while opening get no track; tracks could also be added
+    when playback first meets them, as mpv does.
+  - [ ] Subtitle codecs not listed as tracks yet: DVB Teletext, TTML / IMSC (MP4, DASH).
 - [x] **4.3. Dynamic Positioning & ASS/SSA Tags:**
   - Parsing of ASS/SSA alignment tags (`{\an1}` – `{\an9}`).
   - Dynamic positioning in `SubtitleOverlayView`: top-aligned cues render at the top of the display surface without colliding with bottom subtitles.
@@ -607,7 +614,7 @@ flowchart TD
 | **Adaptive Streaming (HLS / DASH)** | `NitsCore` | Planned 📋 | Multi-rendition variant parsing and switching |
 | **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
 | **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Completed ✓ | Subtitle delay offset (`±30s`), file drag-and-drop, sidecar discovery |
-| **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | In Progress ⏳ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 pending |
+| **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | In Progress ⏳ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 captions |
 | **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
 | **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |

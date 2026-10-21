@@ -129,7 +129,8 @@ extension PlayerEngine {
             // twenty times a second; the next track switch, seek or delay change replaces it.
             guard
                 let packets = EmbeddedSubtitleReader.readSubtitles(
-                    url: path, headers: headers, streamIndex: selection.streamIndex, in: range, interrupt: interrupt)
+                    url: path, headers: headers, streamIndex: selection.streamIndex,
+                    captionField: selection.captionField, in: range, interrupt: interrupt)
             else {
                 if !interrupt.isCancelled {
                     AppLog.warning(
