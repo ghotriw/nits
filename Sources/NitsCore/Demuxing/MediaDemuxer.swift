@@ -154,6 +154,42 @@ public final class MediaDemuxer: @unchecked Sendable {
         subtitleTracker.mergeLiveSubtitles(packets, covering: range, selection: selection, span: span)
     }
 
+    /// The starts of each subtitle stream's packets by the file's own index (`EmbeddedSubtitleReader.readIndex`), once
+    /// read: `[:]` from opening for a file whose index doesn't come from the file.
+    private let subtitleIndexState = OSAllocatedUnfairLock<[Int: [Double]]?>(initialState: nil)
+
+    /// Whether the file's index of subtitle streams is still to read (`storeSubtitleIndex`).
+    var needsSubtitleIndex: Bool {
+        subtitleIndexState.withLock { $0 == nil }
+    }
+
+    /// Takes what `EmbeddedSubtitleReader.readIndex` read.
+    func storeSubtitleIndex(_ starts: [Int: [Double]]) {
+        subtitleIndexState.withLock { $0 = starts.mapValues { $0.sorted() } }
+    }
+
+    /// The starts of the packets of subtitle stream `streamIndex` within `range` by the file's own index (Matroska
+    /// Cues, an MP4 sample table), `nil` when it doesn't list them or isn't read yet: with none, a window read would
+    /// find nothing. Never touches the I/O lock.
+    func indexedSubtitleStarts(of streamIndex: Int, in range: ClosedRange<Double>) -> [Double]? {
+        subtitleIndexState.withLock { $0?[streamIndex]?.filter { range.contains($0) } }
+    }
+
+    /// What playback read of the selected track before it was chosen, once (`LiveSubtitleTracker.takeStashedSubtitles`).
+    /// Never touches the I/O lock.
+    func takeStashedSubtitles() -> (snapshot: SubtitlePacketStash.Snapshot, selection: Int, span: Int)? {
+        subtitleTracker.takeStashedSubtitles()
+    }
+
+    /// Adds what a stash snapshot decoded to (`LiveSubtitleTracker.mergeStashed`).
+    @discardableResult
+    func mergeStashed(
+        _ decoded: [EmbeddedSubtitleReader.Packets], of snapshot: SubtitlePacketStash.Snapshot, selection: Int,
+        span: Int
+    ) -> Bool {
+        subtitleTracker.mergeStashed(decoded, of: snapshot, selection: selection, span: span)
+    }
+
     var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
     var videoQueue = PacketFifoQueue<DemuxedVideoPacket>()
     private let maxAudioQueueCount = 500
@@ -303,6 +339,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         self.timelineOrigin = Self.timelineOrigin(of: formatCtx)
+        // FFmpeg indexes what its seeks read past `readPacket` elsewhere (the MPEG-TS timestamp search, the generic
+        // seek): only the index of Matroska and MP4 comes from the file.
+        if !Self.describesStreams(formatCtx) { storeSubtitleIndex([:]) }
         if timelineOrigin != 0 {
             AppLog.info(
                 .demuxer,
@@ -355,6 +394,14 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// MPEG-TS / MPEG-PS: no index, and timestamps that continue the source clock. Seeking there bisects on
     /// timestamps and lands on whichever packet is nearest, not on a keyframe.
+    /// Matroska and MP4: their header describes every stream (codec, parameters, time base) and their index comes from
+    /// the file (Cues, the sample table), with a timeline that starts at zero.
+    static func describesStreams(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        guard let iformat = ctx.pointee.iformat else { return false }
+        let name = String(cString: iformat.pointee.name)
+        return name.hasPrefix("matroska") || name.hasPrefix("mov")
+    }
+
     package static func isUnindexedStream(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
         guard let iformat = ctx.pointee.iformat else { return false }
         return (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0
@@ -393,12 +440,15 @@ public final class MediaDemuxer: @unchecked Sendable {
     static let averrorEOF: Int32 = -0x2046_4F45
 
     /// `av_read_frame` with timestamps on the zero-based timeline. Records how far audio and video have been read
-    /// (`readAheadSeconds`).
+    /// (`readAheadSeconds`), and hands subtitle packets to `subtitleTracker`, as playback takes embedded subtitles in
+    /// band: the main way for every source. A network source is opened again only to read its index and the windows
+    /// that index tells of; a server with a single connection fails the index read, and no window is read.
     func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
         let ret = av_read_frame(ctx, &pkt)
         if ret >= 0 {
             Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
             recordReadAhead(pkt, in: ctx)
+            subtitleTracker.readPacket(&pkt, in: ctx)
         } else if ret == Self.averrorEOF {
             readAheadState.withLock { $0 = .infinity }
             subtitleTracker.finishCaptions()
@@ -462,10 +512,6 @@ public final class MediaDemuxer: @unchecked Sendable {
                 // Buffer audio packet for Stage 2 audio pipeline
                 audioQueue.append(DemuxedAudioPacket(pkt))
                 av_packet_unref(&pkt)
-            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
-                // Intercept subtitle packets in-band (crucial for network streams and single-connection media servers)
-                subtitleTracker.processPacket(&pkt, in: ctx)
-                av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)
             }
@@ -523,10 +569,6 @@ public final class MediaDemuxer: @unchecked Sendable {
                 subtitleTracker.processVideoPacket(&pkt)
                 let videoPacket = DemuxedVideoPacket(pkt)
                 videoQueue.append(videoPacket)
-                av_packet_unref(&pkt)
-            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
-                // Intercept subtitle packets in-band
-                subtitleTracker.processPacket(&pkt, in: ctx)
                 av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)

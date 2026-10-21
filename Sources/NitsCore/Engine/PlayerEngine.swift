@@ -481,6 +481,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored var subtitleLoads: [Int: SubtitleLoad] = [:]
     /// The window read of the selected embedded track around the time shown (`refreshEmbeddedSubtitles`).
     @ObservationIgnored var subtitleRefresh: SubtitleLoad?
+    /// The merge of what playback read of the selected track before it was chosen (`refreshEmbeddedSubtitles`): never
+    /// cancelled, as nothing else brings it; window reads wait for it.
+    @ObservationIgnored var subtitleStashMerge: Task<Void, Never>?
+    /// The read of the file's own index of subtitle streams (`EmbeddedSubtitleReader.readIndex`), once per media:
+    /// cancelled only with it, so seeks in a row don't restart it; window reads wait for it.
+    @ObservationIgnored var subtitleIndexLoad: SubtitleLoad?
     @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
     @ObservationIgnored var authoredRendererTrackId: Int?
     @ObservationIgnored var authoredScript: AssScript?

@@ -100,6 +100,9 @@ public enum SyntheticTestMediaFactory {
         case captionsH264MKV
         /// H.264 MOV (6s, 320x240) with `captionScript` in a `c608` caption track, made from `captionSCC`
         case captionsC608MOV
+        /// `captionsC608MOV` in a fragment a second (`frag_keyframe+empty_moov`): its `moov` lists no sample, and FFmpeg
+        /// reads every fragment of a seekable file without a complete `sidx` at opening
+        case captionsC608FragmentedMOV
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
         var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
@@ -188,6 +191,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_captions_h264.ts"
             case .captionsH264MKV:
                 return "synth_captions_h264.mkv"
+            case .captionsC608FragmentedMOV:
+                return "synth_captions_c608_fragmented.mov"
             case .captionsC608MOV:
                 return "synth_captions_c608.mov"
             }
@@ -309,7 +314,7 @@ public enum SyntheticTestMediaFactory {
             }
         }
 
-        if preset == .captionsC608MOV {
+        if preset == .captionsC608MOV || preset == .captionsC608FragmentedMOV {
             guard FileManager.default.createFile(atPath: metadataPath, contents: Data(captionSCC.utf8)) else {
                 print("[SyntheticTestMediaFactory] Failed to write the SCC captions for \(preset.rawValue)")
                 return nil
@@ -407,7 +412,7 @@ public enum SyntheticTestMediaFactory {
         switch preset {
         case .captionsH264TS, .captionsH264MKV:
             return []  // Made in steps by `generateMedia`.
-        case .captionsC608MOV:
+        case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [
                 "-y",
                 "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=30:duration=6",
@@ -415,7 +420,8 @@ public enum SyntheticTestMediaFactory {
                 "-map", "0:v", "-map", "1:s",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "copy",
                 "-f", "mov",
-                outputPath,
+            ] + (preset == .captionsC608FragmentedMOV ? ["-g", "30", "-movflags", "frag_keyframe+empty_moov"] : []) + [
+                outputPath
             ]
         case .assSubtitlesMKV:
             return [

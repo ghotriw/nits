@@ -87,8 +87,9 @@ enum EmbeddedSubtitleReader {
         }
     }
 
-    /// A secondary demuxer of the file, probed. `interrupt` aborts its I/O, blocking reads included (a stalled network
-    /// volume); it must outlive the context.
+    /// A secondary demuxer of the file, probed unless its header describes every stream (Matroska, MP4): probing reads
+    /// the first clusters, and on a network source that's more requests. `interrupt` aborts its I/O, blocking reads
+    /// included (a stalled network volume); it must outlive the context.
     private static func openInput(url: String, headers: [String: String], interrupt: FFmpegInterrupt?)
         -> UnsafeMutablePointer<AVFormatContext>?
     {
@@ -106,7 +107,7 @@ enum EmbeddedSubtitleReader {
         guard let allocated = ctx else { return nil }
         interrupt?.install(on: allocated)
         guard avformat_open_input(&ctx, url, nil, &options) == 0, let opened = ctx else { return nil }
-        guard avformat_find_stream_info(opened, nil) >= 0 else {
+        guard MediaDemuxer.describesStreams(opened) || avformat_find_stream_info(opened, nil) >= 0 else {
             avformat_close_input(&ctx)
             return nil
         }
@@ -167,18 +168,23 @@ enum EmbeddedSubtitleReader {
     /// How far past the time a window read goes when the track is due ahead of everything playback has read (a negative
     /// subtitle delay): the next read is that much later, not one per time tick.
     static let windowLookahead = 10.0
+    /// How much a window read of a network source may read: from the first packet the file's index lists in the window,
+    /// a few seconds of a remux (32 MB is 3 s at 80 Mbit/s), so it doesn't take the bandwidth playback refills with
+    /// after a seek.
+    static let networkWindowByteLimit: Int64 = 32 << 20
 
     /// The packets of one subtitle stream within `range` of the timeline (`upperBound` may be `infinity`: to the end).
     ///
-    /// Playback collects a track as it reads (`LiveSubtitleTracker.processPacket`), from where it reads on; this
+    /// Playback collects a track as it reads (`LiveSubtitleTracker.readPacket`), from where it reads on; this
     /// fills in what it can't (`MediaDemuxer.subtitleWindow`): the cue on screen when a track is chosen or a seek
     /// lands, as mpv's refresh seek and subtitle preroll do, and what playback read before the track was chosen. A
     /// picture or sound stream tells the time, so the read stops at the range's end. `nil` when the file can't be read
-    /// there, or the read was cancelled. Closed captions (`captionField`) are read from the pictures of the video
-    /// stream `streamIndex` names, or from an MP4 caption track.
+    /// there, the read was cancelled, or it read more than `byteLimit` bytes, its header and index included (an MP4's
+    /// `moov` at the end, Matroska Cues parsed at the seek). Closed captions (`captionField`) are read from the pictures
+    /// of the video stream `streamIndex` names, or from an MP4 caption track.
     static func readSubtitles(
         url: String, headers: [String: String], streamIndex: Int, captionField: Int? = nil,
-        in range: ClosedRange<Double>,
+        in range: ClosedRange<Double>, byteLimit: Int64? = nil,
         interrupt: FFmpegInterrupt? = nil
     ) -> Packets? {
         guard let ctx = openInput(url: url, headers: headers, interrupt: interrupt) else { return nil }
@@ -202,12 +208,22 @@ enum EmbeddedSubtitleReader {
         }
 
         let referenceTimebase = reference.flatMap { ctx.pointee.streams[$0]?.pointee.time_base }
+        // Bytes read since opening, not the position: an MP4 seek only picks the sample, and its first read jumps to
+        // it. A demuxer that does its own I/O has no `pb`.
+        let bytesRead = { ctx.pointee.pb?.pointee.bytes_read ?? 0 }
         var pkt = AVPacket()
         // What the last read gave: the end of the file, an error, or a packet past the range (the read stops there).
         var result: Int32 = 0
         while !isCancelled(interrupt) {
             result = av_read_frame(ctx, &pkt)
             guard result >= 0 else { break }
+            if let byteLimit, bytesRead() > byteLimit {
+                av_packet_unref(&pkt)
+                AppLog.info(
+                    .subtitles,
+                    "Window read of stream \(streamIndex) from \(range.lowerBound) s stopped after \(byteLimit) bytes")
+                return nil
+            }
             MediaDemuxer.rebase(&pkt, origin: origin, in: ctx)
             defer { av_packet_unref(&pkt) }
             if let reference, Int(pkt.stream_index) == reference {
@@ -227,6 +243,83 @@ enum EmbeddedSubtitleReader {
         // A read error isn't the end: what follows is just unread.
         collector.finish(atEnd: result == MediaDemuxer.averrorEOF)
         return collector.packets
+    }
+
+    /// The starts of each subtitle stream's packets by the file's own index, on the zero-based timeline, from a
+    /// demuxer that reads no packet: Matroska Cues (parsed at a seek), an MP4 sample table (read with the header).
+    /// The playback demuxer's index won't do, as FFmpeg adds to it the blocks it reads, its probing's included.
+    ///
+    /// A Matroska stream the Cues list nothing of is left out: muxers list every subtitle block, or none. An MP4
+    /// stream is always there, empty if it has no sample. `nil` when the file can't be read, isn't Matroska or MP4, the
+    /// read was cancelled, or the index doesn't reach the end of the file: a fragmented MP4 lists only the fragments
+    /// read so far, none at opening.
+    static func readIndex(url: String, headers: [String: String], interrupt: FFmpegInterrupt? = nil)
+        -> [Int: [Double]]?
+    {
+        guard let ctx = openInput(url: url, headers: headers, interrupt: interrupt) else { return nil }
+        var closable: UnsafeMutablePointer<AVFormatContext>? = ctx
+        defer { avformat_close_input(&closable) }
+        guard MediaDemuxer.describesStreams(ctx) else { return nil }
+        discardStreams(of: ctx, except: [])
+        let isMatroska = String(cString: ctx.pointee.iformat.pointee.name).hasPrefix("matroska")
+        // The Cues may follow the clusters; a seek parses them. Its result doesn't matter: a file whose pictures the
+        // Cues don't list can't seek by them, and still has them parsed.
+        if isMatroska { _ = av_seek_frame(ctx, -1, 0, AVSEEK_FLAG_BACKWARD) }
+        if isCancelled(interrupt) { return nil }
+
+        func starts(of stream: UnsafeMutablePointer<AVStream>) -> [Double] {
+            let timebase = stream.pointee.time_base
+            guard timebase.num > 0, timebase.den > 0 else { return [] }
+            return (0..<avformat_index_get_entries_count(stream)).compactMap { entry in
+                avformat_index_get_entry(stream, entry).map {
+                    Double($0.pointee.timestamp) * Double(timebase.num) / Double(timebase.den)
+                }
+            }
+        }
+        // The picture or sound stream followed has an entry near its end in a whole index. Its own duration: the file's
+        // is only worked out by probing, which an MP4 isn't given here.
+        guard let reference = referenceStream(of: ctx), let referenceStream = ctx.pointee.streams[reference],
+            let last = starts(of: referenceStream).max()
+        else { return nil }
+        let timebase = referenceStream.pointee.time_base
+        let duration =
+            referenceStream.pointee.duration > 0 && timebase.den > 0
+            ? Double(referenceStream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
+            : Double(ctx.pointee.duration) / Double(AV_TIME_BASE)
+        guard duration > 0, last >= duration - indexEndMargin else { return nil }
+
+        var index: [Int: [Double]] = [:]
+        for position in 0..<Int(ctx.pointee.nb_streams) {
+            guard let stream = ctx.pointee.streams[position],
+                stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
+            else { continue }
+            let entries = starts(of: stream)
+            if !entries.isEmpty || !isMatroska { index[position] = entries }
+        }
+        return index
+    }
+
+    /// How far before the end of the file the last entry of the picture or sound stream may be in a whole index: past
+    /// the last keyframe of a long GOP.
+    static let indexEndMargin = 10.0
+
+    /// The packets playback read of a track chosen later (`SubtitlePacketStash`), decoded stretch by stretch, as a
+    /// seek between them flushed the decoders. Closed captions (`captionField`) come from an MP4 caption track.
+    static func decode(_ snapshot: SubtitlePacketStash.Snapshot, captionField: Int? = nil) -> [Packets] {
+        snapshot.stretches.map { stretch in
+            guard
+                var collector = PacketCollector(
+                    stream: snapshot.parameters.stream, index: 0, captionField: captionField)
+            else { return Packets() }
+            for stashed in stretch.packets {
+                // A shallow copy, never unreferenced: the stash owns the packet.
+                var pkt = stashed.packet.pointee
+                pkt.stream_index = 0
+                collector.add(&pkt)
+            }
+            collector.finish(atEnd: stretch.range.upperBound == .infinity)
+            return collector.packets
+        }
     }
 
     /// How far past a window's end its read goes, by the decode time of the picture or sound followed: packets due

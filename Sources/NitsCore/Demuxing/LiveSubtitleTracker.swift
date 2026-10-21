@@ -10,9 +10,9 @@ import os
 /// - State is protected by its own lightweight lock `liveSubtitleState`, decoupled from the demuxer's I/O `lock`.
 ///   UI readers (`getLiveSubtitleDocument()`, `subtitleWindow(around:readAhead:)`, `liveSubtitleSelection`) never
 ///   contend on the I/O lock.
-/// - Mutating methods that touch `selectedStreamIndex` or `liveBitmapDecoder` (`selectTrack`, `processPacket`,
+/// - Mutating methods that touch `selectedStreamIndex` or `liveBitmapDecoder` (`selectTrack`, `readPacket`,
 ///   `beginSeek`, `endSeek`) MUST be called exclusively under `MediaDemuxer.lock`.
-/// - Lock hierarchy: `MediaDemuxer.lock` -> `liveSubtitleState` (never the reverse).
+/// - Lock hierarchy: `MediaDemuxer.lock` -> `liveSubtitleState` or `stash` (never the reverse, never one inside the other).
 final class LiveSubtitleTracker: @unchecked Sendable {
     struct LiveSubtitleState {
         /// What makes a text cue the same one read again (a seek back, a window read).
@@ -54,6 +54,9 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         /// Times at which sets playback read in `readSpan` ended the set before them (`BitmapSubtitleDecoder.Output`),
         /// applied again after a window merge: the set they end may only arrive with it.
         var bitmapTruncations: [Double] = []
+        /// What playback read of the selected track before it was chosen, until a window read takes it
+        /// (`takeStashedSubtitles`).
+        var stashed: SubtitlePacketStash.Snapshot?
 
         mutating func cover(_ range: ClosedRange<Double>) {
             var merged = range
@@ -80,6 +83,11 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// Live in-band subtitle state is guarded by its own lightweight lock, NOT the demuxer's I/O lock.
     /// Lock order: demuxer lock -> liveSubtitleState (never the reverse).
     private let liveSubtitleState = OSAllocatedUnfairLock(initialState: LiveSubtitleState())
+    /// The packets of every subtitle stream playback reads, for a track chosen later. Changed under
+    /// `MediaDemuxer.lock`, but its own lock lets `noteSubtitleReadsStart` reach it without that one.
+    private let stash = OSAllocatedUnfairLock(initialState: SubtitlePacketStash())
+    /// Which streams of the file carry subtitles, by index (`readPacket`). Under `MediaDemuxer.lock`.
+    private var subtitleStreams: [Bool] = []
 
     init() {}
 
@@ -113,7 +121,14 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         let readsCaptionStream = track?.captionsInVideo == false && liveCaptionDecoder != nil
         self.selectedStreamIndex = track?.closedCaptionField == nil || readsCaptionStream ? streamIndex : -1
 
+        // Closed captions in the video's pictures aren't kept: a window read gets them.
+        let stashed =
+            track?.captionsInVideo == false
+            ? formatCtx.flatMap { ctx in
+                stash.withLockUnchecked { $0.snapshot(of: streamIndex, in: ctx, readAhead: readAhead) }
+            } : nil
         liveSubtitleState.withLock { state in
+            state.stashed = stashed
             state.streamIndex = streamIndex
             state.captionField = track?.closedCaptionField
             state.captionScreens.removeAll()
@@ -169,6 +184,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
             state.readSpan += 1
             state.bitmapTruncations.removeAll()
         }
+        stash.withLock { $0.endStretch(at: previousReadAhead) }
     }
 
     /// Phase 2 of seek: restore spanStart to the landed position after seek's own reads are complete.
@@ -177,6 +193,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             state.spanStart = seconds
         }
+        stash.withLock { $0.startStretch(at: seconds) }
     }
 
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
@@ -195,7 +212,8 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// read before the track was chosen, or skipped by a seek. When `time` is past everything playback has read (a
     /// negative subtitle delay shows the track ahead of the picture by more than playback reads ahead), it ends
     /// `windowLookahead` past `time` instead, so such a track is read ahead in steps. While a seek is under way there is
-    /// none: its landing asks again.
+    /// none: its landing asks again. It starts past what the lists hold already, and ends before what they hold up to
+    /// its end.
     func subtitleWindow(around time: Double, readAhead: Double) -> ClosedRange<Double>? {
         let start = max(0, time - EmbeddedSubtitleReader.windowPreroll)
         let window: ClosedRange<Double>? = liveSubtitleState.withLock { state in
@@ -212,7 +230,13 @@ final class LiveSubtitleTracker: @unchecked Sendable {
             }
             // Read ahead again only once half of the last lookahead is used: a read per step, not per time tick.
             if isAhead, lower > time + EmbeddedSubtitleReader.windowLookahead / 2 { return nil }
-            return lower < end ? lower...end : nil
+            // Nor what they hold up to the end (stretches playback read before the track was chosen, `mergeStashed`);
+            // a range held inside the window is read again, not left as a gap before the time.
+            var upper = end
+            while let range = covered.first(where: { $0.contains(upper) && $0.lowerBound < upper }) {
+                upper = range.lowerBound
+            }
+            return lower < upper ? lower...upper : nil
         }
         return window
     }
@@ -221,6 +245,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             if let start = state.spanStart, seconds > start { state.spanStart = seconds }
         }
+        stash.withLock { $0.noteReadsStart(at: seconds) }
     }
 
     @discardableResult
@@ -229,22 +254,86 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     ) -> Bool {
         liveSubtitleState.withLock { state in
             guard state.selection == selection, state.readSpan == span else { return false }
-            for cue in packets.cues { Self.addLiveCue(cue, to: &state) }
-            for screen in packets.captionScreens { Self.addCaption(screen, to: &state) }
             // The window ends where playback reads from, or reads on ahead of it: it joins the stretch being read.
-            state.imageCues.merge(
-                window: packets.bitmapOutputs, span: state.readSpan, replaying: state.bitmapTruncations)
-            for event in packets.assEvents where state.assScript != nil {
-                guard state.assPayloads.insert(event.payload).inserted else { continue }
-                state.assScript?.events.append(event)
-            }
+            Self.add(packets, span: state.readSpan, replaying: state.bitmapTruncations, to: &state)
             state.cover(range)
             state.version += 1
             return true
         }
     }
 
-    func processPacket(
+    /// The packets playback read of the track before it was chosen (`SubtitlePacketStash`), taken once by the window
+    /// reads that follow a selection, with the selection and reading stretch they are for (`mergeStashed`).
+    func takeStashedSubtitles() -> (snapshot: SubtitlePacketStash.Snapshot, selection: Int, span: Int)? {
+        liveSubtitleState.withLock { state in
+            defer { state.stashed = nil }
+            return state.stashed.map { ($0, state.selection, state.readSpan) }
+        }
+    }
+
+    /// Adds what the stretches of a stash snapshot decoded to (`EmbeddedSubtitleReader.decode`), one `Packets` a
+    /// stretch, for the selection `selection`. The current stretch joins the one being read, unless a seek (`span`)
+    /// has ended it since; a set from an earlier one is never ended by a later stretch's. Dropped (returning `false`)
+    /// if another track was chosen meanwhile.
+    @discardableResult
+    func mergeStashed(
+        _ decoded: [EmbeddedSubtitleReader.Packets], of snapshot: SubtitlePacketStash.Snapshot, selection: Int,
+        span: Int
+    ) -> Bool {
+        liveSubtitleState.withLock { state in
+            guard state.selection == selection else { return false }
+            for (position, (stretch, packets)) in zip(snapshot.stretches, decoded).enumerated() {
+                if stretch.isCurrent, state.readSpan == span {
+                    Self.add(packets, span: state.readSpan, replaying: state.bitmapTruncations, to: &state)
+                    // As read by playback: a window merged later may bring the set one of these ends.
+                    state.bitmapTruncations += packets.bitmapOutputs.compactMap(\.truncatePreviousAt)
+                } else {
+                    // Below every stretch of reading counted (`readSpan`), one apart each.
+                    Self.add(packets, span: -1 - position, replaying: [], to: &state)
+                }
+                state.cover(stretch.range)
+            }
+            state.version += 1
+            return true
+        }
+    }
+
+    private static func add(
+        _ packets: EmbeddedSubtitleReader.Packets, span: Int, replaying truncations: [Double],
+        to state: inout LiveSubtitleState
+    ) {
+        for cue in packets.cues { addLiveCue(cue, to: &state) }
+        for screen in packets.captionScreens { addCaption(screen, to: &state) }
+        state.imageCues.merge(window: packets.bitmapOutputs, span: span, replaying: truncations)
+        for event in packets.assEvents where state.assScript != nil {
+            guard state.assPayloads.insert(event.payload).inserted else { continue }
+            state.assScript?.events.append(event)
+        }
+    }
+
+    /// Forgets the packets read so far: the demuxer read the start of the file to describe it, and reads it again from
+    /// the beginning. Under `MediaDemuxer.lock`.
+    func resetStash() {
+        stash.withLock { $0 = SubtitlePacketStash() }
+    }
+
+    /// A packet playback read: kept for a track chosen later, and taken by the selected one. Under
+    /// `MediaDemuxer.lock`.
+    func readPacket(_ pkt: UnsafeMutablePointer<AVPacket>, in formatCtx: UnsafeMutablePointer<AVFormatContext>) {
+        let index = Int(pkt.pointee.stream_index)
+        // Picture and sound packets, nearly all of them, skip the stash's lock. MPEG-TS can add streams as it reads.
+        if subtitleStreams.count != Int(formatCtx.pointee.nb_streams) {
+            subtitleStreams = (0..<Int(formatCtx.pointee.nb_streams)).map { position in
+                formatCtx.pointee.streams[position]?.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
+            }
+        }
+        if subtitleStreams.indices.contains(index), subtitleStreams[index] {
+            stash.withLockUnchecked { $0.add(pkt, in: formatCtx) }
+        }
+        if index == selectedStreamIndex { processPacket(pkt, in: formatCtx) }
+    }
+
+    private func processPacket(
         _ pkt: UnsafeMutablePointer<AVPacket>, in formatCtx: UnsafeMutablePointer<AVFormatContext>?
     ) {
         guard let formatCtx, selectedStreamIndex >= 0,

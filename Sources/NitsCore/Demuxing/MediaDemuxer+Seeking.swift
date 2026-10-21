@@ -74,8 +74,6 @@ extension MediaDemuxer {
             defer { av_packet_unref(&pkt) }
             if pkt.stream_index == audioStreamIndex {
                 audioQueue.append(DemuxedAudioPacket(pkt))
-            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
-                subtitleTracker.processPacket(&pkt, in: ctx)
             } else if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
                 keyframe = DemuxedVideoPacket(pkt)
@@ -103,8 +101,6 @@ extension MediaDemuxer {
             defer { av_packet_unref(&pkt) }
             if pkt.stream_index == audioStreamIndex {
                 audio.append(DemuxedAudioPacket(pkt))
-            } else if pkt.stream_index == subtitleTracker.selectedStreamIndex {
-                subtitleTracker.processPacket(&pkt, in: ctx)
             } else if pkt.stream_index == videoStreamIndex, (pkt.pts != Int64.min ? pkt.pts : pkt.dts) == keyTime {
                 // Back at the keyframe, already queued: the audio read on the way replaces the audio queued above.
                 audioQueue.removeAll()
@@ -157,10 +153,6 @@ extension MediaDemuxer {
                 defer { av_packet_unref(&pkt) }
                 if pkt.stream_index == audioStreamIndex {
                     audioBeforeKeyframe.append(DemuxedAudioPacket(pkt))
-                    continue
-                }
-                if pkt.stream_index == subtitleTracker.selectedStreamIndex {
-                    subtitleTracker.processPacket(&pkt, in: ctx)
                     continue
                 }
                 guard pkt.stream_index == videoStreamIndex, (pkt.flags & AV_PKT_FLAG_KEY) != 0 else { continue }

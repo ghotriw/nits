@@ -377,6 +377,7 @@ extension MediaDemuxer {
                 ctx, Int32(videoStreamIndex), Self.timelineOffset(timelineOrigin, in: timebase), AVSEEK_FLAG_BACKWARD)
         }
         readAheadState.withLock { $0 = -.infinity }
+        subtitleTracker.resetStash()
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel

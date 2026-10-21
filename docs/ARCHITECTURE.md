@@ -369,9 +369,18 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   its sets merge before the ends playback read in it are applied again (`merge(window:span:replaying:)`), so a clear
   read by playback before the window arrived still ends its set. A picture stream that isn't cover art (or else
   sound) tells how far the read has come, by decode time, 0.5 s past the window's end. Window reads run at
-  `.utility`, below playback's own reads of the same file, and a failed one is logged. Network sources get no window
-  read: some serve a URL once. Skipping a window by the Matroska index isn't done: FFmpeg's index mixes the Cues with
-  blocks read so far, so it can't tell a window with no subtitle packet.
+  `.utility`, below playback's own reads of the same file, and a failed one is logged. A network source gets a window
+  read only where the file's index lists the track's packets, up to `networkWindowByteLimit` from the first: a whole
+  window reads every stream for seconds, against playback refilling after a seek. A read past the limit gives nothing,
+  and the window stays unread.
+  The packets of every subtitle stream are kept as playback reads them (`SubtitlePacketStash`, by stretch of reading;
+  picture streams share 64 MB): a track chosen later decodes them in the background first (`mergeStashed`), network
+  sources included, and the window is what they leave out (`subtitleWindow` starts past what is covered, and ends
+  before what is covered up to its end). The file's own index (Matroska Cues, an MP4 sample table) tells where a
+  track's packets are: read once per media by a demuxer that discards every stream (`EmbeddedSubtitleReader.readIndex`),
+  as FFmpeg adds the blocks it reads, its probing's too, to the playback demuxer's. A window it lists none in is merged
+  empty, unread, and a read starts at the first it lists. MPEG-TS and the generic seek index what their seeks read, so
+  only Matroska and MP4 count. The merge of the stash is a task of its own, never cancelled, that window reads wait for.
 - **Closed captions** (CEA-608): ATSC `cc_data` in H.264 / HEVC prefix SEI or MPEG-2 picture user data
   (`ClosedCaptions`) is no stream of the container, and as VideoToolbox decodes the pictures FFmpeg's decoder never
   sees it: the bytes are read from the video packets, up to the first slice (unit lengths from `avcC` / `hvcC`). The

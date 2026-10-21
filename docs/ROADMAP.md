@@ -326,14 +326,36 @@ flowchart TD
     what the lists hold already. Window reads run below playback's own (`.utility`). Background reads are cancelled, blocking I/O included (`FFmpegInterrupt`), once their
     track is no longer selected or the media stops. A PGS set is only ended by a set read in the same stretch of
     reading (between seeks), as a seek may have skipped the one that really ended it.
+  - [x] A track chosen later has at once what playback read of it, network sources included, as mpv's demuxer cache
+    serves its refresh seek: the packets of every subtitle stream are kept as they pass (`SubtitlePacketStash`), by
+    stretch of reading (a seek starts another), and decoded in the background when the track is chosen; a window read
+    covers only what they don't. Picture streams share 64 MB, the oldest packets dropped first; closed captions in the
+    video's pictures aren't kept.
   - [ ] One secondary demuxer opened and probed per window read; keeping one per media, and following sound rather
     than pictures in MPEG-TS (cheaper to parse), wait for a measurement of seeks on a network volume.
-  - [ ] Skipping a window the Matroska Cues show to hold no subtitle packet, as mpv's subtitle preroll does: FFmpeg's
-    index of a subtitle stream mixes the Cues (parsed at the first seek) with blocks read so far, and doesn't expose
-    `CueDuration`, which tells Cues that list every subtitle block; with Cues for none, no packets in the index
-    doesn't mean none in the file.
-  - [ ] Network sources get no window read (some serve a URL once): after a seek, a cue that started before the
-    landing keyframe shows from the next one.
+  - [x] A window the file's own index shows to hold no packet of the track isn't read, and a read starts at the first
+    packet it lists, as mpv's subtitle preroll does with Matroska Cues. The index is read once per media
+    (`EmbeddedSubtitleReader.readIndex`) by a demuxer that discards every stream from the header on, so it holds only
+    the Cues (parsed at a seek) or the MP4 sample table: the playback demuxer's mixes in the blocks it reads, its
+    probing's too, and FFmpeg doesn't expose `CueDuration`, which mpv tells complete Cues by. A Matroska stream the
+    Cues list nothing of counts as unindexed (muxers list every subtitle block, or none). Only Matroska and MP4:
+    elsewhere FFmpeg indexes what its own seeks read (the MPEG-TS timestamp search). A Matroska file whose pictures
+    have a single Cues entry makes the seek that parses the Cues read on to the end (`matroska_read_seek`). An index
+    whose picture (or sound) entries stop more than 10 s before the end is none (`indexEndMargin`): FFmpeg lists a
+    fragmented MP4 with a complete `sidx`, or one it can't seek in, only as it reads the fragments. Not checked on such
+    a file.
+  - [x] The secondary demuxer of a window read doesn't probe Matroska and MP4 (`avformat_find_stream_info` reads the
+    first clusters; their header describes every stream), and seeks by the picture stream to the first packet the
+    index lists: a seek by the subtitle stream to its last Cues entry would make FFmpeg parse clusters to the end of
+    the file, looking for a later one (`matroska_read_seek`).
+  - [x] Network sources get a window read only where the file's index tells where the track's packets are (Matroska
+    Cues, an MP4 sample table), read once per media, from the first packet it lists, up to 32 MB with the header and
+    index (`networkWindowByteLimit`, 3 s of an 80 Mbit/s remux): a whole window reads every stream for seconds, against
+    playback refilling after a seek. A window the index lists nothing in costs no request. Elsewhere (MPEG-TS, files
+    without subtitle Cues), after a seek, a cue that started before the landing keyframe shows from the next one, as
+    in mpv; a track chosen later still has what playback read of it. The index read and the window reads open the URL
+    again: a server with a single connection fails the index read, and the media gets no window read; one that drops
+    playback's connection for the second would show it as a stall. Not yet checked against a real HTTP server.
   - [x] VobSub checked on a real file (2026-10-20): 27 VobSub tracks of a 2160p MKV on an SMB volume show at once
     after a track switch and after seeks.
   - [x] Bitmap subtitles over HDR video stay at most SDR white (8-bit sRGB pictures, `.allowedDynamicRange(.standard)`).

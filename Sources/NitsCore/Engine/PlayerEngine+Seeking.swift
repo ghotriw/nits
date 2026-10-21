@@ -159,6 +159,9 @@ extension PlayerEngine {
                     isCurrent: { !isSuperseded() }
                 )
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
+                // Playback reads on from where the seek landed, past the target after a forward keyframe seek: what it
+                // jumped over wasn't read, even if a newer seek supersedes this one before it completes.
+                if let preview = previewFrame { demuxer.noteSubtitleReadsStart(at: preview.pts) }
                 // Audio heard with the picture at `t` is the media's audio at `t - audioDelay`.
                 if !isExact, let preview = previewFrame {
                     demuxer.setTargetAudioPts(seconds: preview.pts - audioDelay)
@@ -249,9 +252,8 @@ extension PlayerEngine {
         // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
         self.currentTime = completedSeconds
         updateActiveSubtitles(at: completedSeconds)
-        // Playback reads on from where the seek landed, past the target after a forward keyframe seek; a cue that
-        // started before is read in a window. Once per settled seek, not per scrub step, on its own demuxer.
-        demuxer?.noteSubtitleReadsStart(at: completedSeconds)
+        // A cue that started before where the seek landed (`noteSubtitleReadsStart`, on the seek queue) is read in a
+        // window. Once per settled seek, not per scrub step, on its own demuxer.
         refreshEmbeddedSubtitles(around: completedSeconds)
         onTimeUpdate?(completedSeconds, duration)
 
