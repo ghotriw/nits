@@ -22,8 +22,14 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private var originalClose: Close?
     private var open: Set<UnsafeMutablePointer<AVIOContext>> = []
     private var closedBytes: Int64 = 0
-    /// When the latest input was opened, and `total` then: a read that opened a segment transferred from there on.
-    private(set) var lastOpen: (time: ContinuousClock.Instant, total: Int64)?
+    /// The latest input opened, with `total` and `openSeconds` when it was asked for: a read that opened a segment
+    /// transferred from `opened` on. What came before `asked`, but for the openings it took (playlist reloads), was a
+    /// wait of the read's own (a live stream's edge); what follows, the request's latency.
+    private(set) var lastOpen:
+        (asked: ContinuousClock.Instant, opened: ContinuousClock.Instant, total: Int64, openSeconds: Double)?
+    /// Seconds spent opening inputs: an HTTP input is open once its response's headers are in, so this is the
+    /// requests' latency (connection, TLS, the server's answer), no transfer.
+    private(set) var openSeconds = 0.0
 
     /// Bytes read so far by every input the context opened.
     var total: Int64 {
@@ -42,8 +48,12 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
                 let counter = s?.pointee.opaque.map({ Unmanaged<FFmpegIOByteCounter>.fromOpaque($0) })?
                     .takeUnretainedValue(), let open = counter.originalOpen
             else { return -1 }
-            counter.lastOpen = (.now, counter.total)
+            let begin = ContinuousClock.now
+            let openedBefore = counter.openSeconds
             let ret = open(s, pb, url, flags, options)
+            let end = ContinuousClock.now
+            counter.openSeconds += (end - begin) / .seconds(1)
+            counter.lastOpen = (begin, end, counter.total, openedBefore)
             if ret >= 0, let opened = pb?.pointee { counter.open.insert(opened) }
             return ret
         }

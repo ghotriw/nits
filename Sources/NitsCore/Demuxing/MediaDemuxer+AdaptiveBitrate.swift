@@ -48,38 +48,75 @@ extension MediaDemuxer {
         seconds >= liveEdgeWait.seconds && Double(bytes) * 8 / seconds < liveEdgeWait.bitsPerSecond
     }
 
-    /// A read of the read-ahead thread started at `start`, with `ioBytes.total` at `bytesBefore`. Behind `lock`.
+    /// Where a read of the read-ahead thread starts: `ioBytes`' totals, and how far reading had got.
+    struct ReadMark {
+        let time = ContinuousClock.now
+        let bytes: Int64
+        let openSeconds: Double
+        let readAhead: Double
+        let isSwitchingVariant: Bool
+    }
+
+    /// Behind `lock` and `queueLock`.
+    var readMark: ReadMark {
+        ReadMark(
+            bytes: ioBytes.total, openSeconds: ioBytes.openSeconds, readAhead: readAheadState.withLock { $0 },
+            isSwitchingVariant: variantSwitch != nil)
+    }
+
+    /// A read of the read-ahead thread from `mark` on. Behind `lock` and `queueLock`.
     ///
-    /// A live stream read up to its edge waits for the next segment, which is no transfer: counted, it would bring the
-    /// estimate down to nothing. The wait comes before the read opens that segment (the playlist reloads it took are a
-    /// few hundred bytes), and the segment's transfer after, in the same read: only what follows the opening counts.
-    /// The wait counts as a full read-ahead instead (`adaptBitrateIfDue`), which a live stream never reaches otherwise:
-    /// the edge is a few segments ahead of playback. Of a stream with a duration, a long read without data is the
-    /// network failing, and counts.
-    func noteRead(from start: ContinuousClock.Instant, bytesBefore: Int64) {
+    /// The time it spent opening inputs is the requests' latency (connection, TLS, the server's answer, which a CDN
+    /// fetching from its origin takes most of a second for), not the link's rate: counted as transfer it capped the
+    /// estimate at a segment's size over it, so the low variants' small segments measured a fraction of the network,
+    /// and a start on a cold cache next to nothing. It is measured apart instead, per second of media read
+    /// (`AdaptiveBitrateLogic.latencyShare`), which holds for every variant: a server slower to answer than the
+    /// segments last still brings the variant down. Not while a variant switch catches the new variant up, from the
+    /// start of a segment to the splice: a cost of the switch, read without media, not of the variant.
+    ///
+    /// A live stream read up to its edge waits for the next segment, which is neither: counted, it would bring the
+    /// estimate down to nothing. The wait comes before the read asks for that segment, but for the playlist reloads
+    /// it took (a few hundred bytes, after a request's latency of their own); the segment's request and transfer
+    /// after, in the same read. The wait counts as a full read-ahead instead (`adaptBitrateIfDue`), which a live
+    /// stream never reaches otherwise: the edge is a few segments ahead of playback. Of a stream with a duration, a
+    /// long read without data is the network failing, and counts.
+    func noteRead(from mark: ReadMark) {
         let end = ContinuousClock.now
         let bytesAfter = ioBytes.total
-        if durationSeconds <= 0, let opened = ioBytes.lastOpen, opened.time > start,
-            Self.isLiveEdgeWait(bytes: Int(opened.total - bytesBefore), seconds: (opened.time - start) / .seconds(1))
+        let media = max(readAheadState.withLock { $0 } - mark.readAhead, 0)
+        let countsLatency = !mark.isSwitchingVariant && variantSwitch == nil
+        if durationSeconds <= 0, let opened = ioBytes.lastOpen, opened.asked > mark.time,
+            Self.isLiveEdgeWait(
+                bytes: Int(opened.total - mark.bytes),
+                seconds: (opened.asked - mark.time) / .seconds(1) - (opened.openSeconds - mark.openSeconds))
         {
             liveEdgeReachedAt = adaptiveTime
             transferWindow.isNetworkBound = false
-            noteTransfer(bytes: Int(bytesAfter - opened.total), seconds: (end - opened.time) / .seconds(1))
+            // The reloads while waiting are no cost of reading: only the segment's request counts.
+            noteTransfer(
+                bytes: Int(bytesAfter - opened.total), seconds: (end - opened.opened) / .seconds(1),
+                latency: countsLatency ? ioBytes.openSeconds - opened.openSeconds : 0, media: media)
             return
         }
-        noteTransfer(bytes: Int(bytesAfter - bytesBefore), seconds: (end - start) / .seconds(1))
+        let opening = ioBytes.openSeconds - mark.openSeconds
+        noteTransfer(
+            bytes: Int(bytesAfter - mark.bytes), seconds: max((end - mark.time) / .seconds(1) - opening, 0),
+            latency: countsLatency ? opening : 0, media: media)
     }
 
-    /// `bytes` came in `seconds` of a read.
-    private func noteTransfer(bytes: Int, seconds: Double) {
+    /// `bytes` came in `seconds` of a read's transfer, past its requests' `latency`, and `media` seconds were read. The
+    /// latency counts for every read: reads served from what the socket buffered read media too, whose requests waited
+    /// before. Only the transfer tells a wait on the network: a request answered, the media read may still come from
+    /// what the socket buffered (a playlist reloaded, then the segment read on).
+    private func noteTransfer(bytes: Int, seconds: Double, latency: Double, media: Double) {
+        adaptiveBitrate.addLatency(latency, media: media.isFinite ? media : 0)
         if seconds >= Self.networkWait { transferWindow.isNetworkBound = true }
         guard transferWindow.isNetworkBound else { return }
         transferWindow.bytes += bytes
         transferWindow.seconds += seconds
         if transferWindow.seconds >= Self.sampleSeconds {
             adaptiveBitrate.addSample(bytes: transferWindow.bytes, seconds: transferWindow.seconds, at: adaptiveTime)
-            transferWindow.bytes = 0
-            transferWindow.seconds = 0
+            transferWindow = TransferWindow(isNetworkBound: true)
         }
     }
 
@@ -99,16 +136,25 @@ extension MediaDemuxer {
         guard selection.isAutomatic, selection.requested == nil, let current = selection.selected else { return }
         var readAhead = readAheadState.withLock { $0 } - consumedSeconds
         guard readAhead.isFinite else { return }
-        if let edge = liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory {
-            readAhead = max(readAhead, adaptiveBitrate.config.highBuffer)
+        var atLiveEdge = false
+        if let edge = liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory,
+            readAhead < adaptiveBitrate.config.highBuffer
+        {
+            readAhead = adaptiveBitrate.config.highBuffer
+            atLiveEdge = true
         }
         let ladder = variants.filter(\.isSwitchable).map {
             AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth)
         }
-        guard let chosen = adaptiveBitrate.choose(current: current, among: ladder, readAhead: readAhead, at: now)
+        guard
+            let chosen = adaptiveBitrate.choose(
+                current: current, among: ladder, readAhead: readAhead, atLiveEdge: atLiveEdge, at: now)
         else { return }
         let estimate = adaptiveBitrate.estimate.map { "\(Int($0 / 1000)) kbit/s" } ?? "none"
-        AppLog.info(.demuxer, "ABR: read-ahead \(String(format: "%.1f", readAhead)) s, throughput \(estimate)")
+        let latency = adaptiveBitrate.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"
+        AppLog.info(
+            .demuxer,
+            "ABR: read-ahead \(String(format: "%.1f", readAhead)) s, throughput \(estimate), latency \(latency)")
         variantSelection.withLock { $0.requested = chosen }
     }
 }

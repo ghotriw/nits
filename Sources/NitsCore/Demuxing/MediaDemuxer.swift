@@ -506,10 +506,12 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
 
-        // A live HLS stream opens every playlist reload and segment through `io_open`, so the read-ahead thread tells
-        // the wait for the next segment from its transfer (`noteRead`). Kept alive, FFmpeg sends the requests over
-        // the open connection without a call; a new one per segment costs nothing there, as reads wait at the edge.
-        if durationSeconds <= 0, let iformat = formatCtx.pointee.iformat,
+        // HLS opens every segment and playlist reload through `io_open`, so the read-ahead thread tells the requests'
+        // latency from their transfer, and a live stream's wait for its next segment (`noteRead`). Kept alive, FFmpeg
+        // sends the requests over the open connection without a call. A connection per segment costs a handshake
+        // (TCP, TLS) and TCP's slow start: the handshake counts in the latency share, and brings the variant down
+        // as the server's answers do. Set once open, so probing still reads every playlist over one connection.
+        if let iformat = formatCtx.pointee.iformat,
             String(cString: iformat.pointee.name) == "hls",
             let options = formatCtx.pointee.priv_data
         {

@@ -108,10 +108,9 @@ extension MediaDemuxer {
             return true
         }
         var pkt = AVPacket()
-        let bytesBefore = ioBytes.total
-        let start = ContinuousClock.now
+        let mark = readMark
         let ret = readPacket(ctx, &pkt, releasingQueueLock: true)
-        noteRead(from: start, bytesBefore: bytesBefore)
+        noteRead(from: mark)
         guard ret >= 0 else {
             if ret != Self.averrorEOF {
                 AppLog.warning(.demuxer, "Read-ahead stopped: \(Self.ffmpegErrorDescription(ret))")

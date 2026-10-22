@@ -177,10 +177,34 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     served from what the socket buffered while the thread idled at its limit don't count until one waits again. HLS
     downloads one segment at a time (`http_multiple` off): FFmpeg's prefetch of the next would share the link with
     the one read and halve what is measured.
+  - *Latency* is measured apart. An HTTP input opens once its response's headers are in, so the time inside
+    `io_open` (connection, TLS, the server's answer) is left out of the throughput: counted, it capped the estimate
+    at a segment's size over it. On Apple's AV1 example (2026-10-22) the 480p variant's 121 KB segments measured
+    3.4 Mbit/s of a 170 Mbit/s link, and a start on a cold CDN cache (answers after 0.5–1 s) 225 kbit/s. It counts
+    instead as seconds per second of media read (`latencyShare`), the same for every variant: a variant fits when a
+    second of it reads, transfer and latency, within `safety` of a second (dash.js weighs latency so too; FFmpeg reads
+    the playlists one request after another, so the latency adds up). A server slower to answer than its segments
+    last brings the variant down however fast the link, to the lowest when the latency alone takes `safety` of the
+    media, with no estimate yet too. A request counts once answered, ahead of its media: the share counts from 6 s of
+    media read on, which the few requests answered ahead (a segment per playlist read, an init section) overstate
+    by their latency over the media read, less and less. Nothing ties an opening to its playlist: FFmpeg's URLs
+    don't say which (variants and renditions often share a directory, signed URLs carry `/` in the query). Openings
+    while a variant switch catches the new variant up count neither: a cost of the switch, not of the variant, read
+    without media.
+  - Kept alive, FFmpeg sends the requests over the open connection without `io_open`, so HLS opens a connection per
+    segment (`http_persistent` off once open; opening keeps it for probing every playlist). The handshakes count in
+    the latency: on Apple's example TCP and TLS took 0.07 s a request, about 23 ms per second of media of the 250–330
+    a cold cache's answers made (0.6–0.8 s each, video and audio). Keeping connections would gain little there; TCP's
+    slow start still makes small segments measure low (a few round trips for 100 KB), and the first bytes of a body,
+    in with the headers, count at no time and offset some of it. VLC and GStreamer keep connections and count the
+    latency in (`.ref`); VLC leans on the buffer level instead.
   - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) that doesn't carry
     the current variant brings it down while the read-ahead is under two thirds of its limit; a full read-ahead
-    steps up to what a recent estimate carries, or probes one step up without one (at its limit the thread measures
-    nothing, however fast the network). A probe that comes down soon doubles the wait before the next.
+    steps up to what a recent estimate carries, or probes one step up when it carries nothing higher or there is
+    none (at its limit the thread measures nothing, however fast the network; and the averages follow seconds of
+    transfer, which a low variant takes few of, so an estimate measured low would hold it there for minutes). Not at a
+    live stream's edge, whose read-ahead counts as full for its waits but holds a few segments: there a recent
+    estimate stands. A probe that comes down soon doubles the wait before the next.
   - FFmpeg hands out the packet a discarded variant held when it is enabled again, from back then: a splice comes
     only at a keyframe at or after the old variant's latest decode time.
 - **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their

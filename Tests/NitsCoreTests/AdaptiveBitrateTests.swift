@@ -118,6 +118,83 @@ struct AdaptiveBitrateTests {
         #expect(demuxer.isAdaptiveBitrateEnabled)
     }
 
+    @Test("A low variant's small segments, slow to be answered, don't hold it there: the latency isn't transfer")
+    func latencyIsNoTransfer() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+        let low = try #require(demuxer.variants.last)
+        demuxer.selectVariant(id: low.id)
+        demuxer.setAdaptiveBitrate(true)
+
+        // A CDN fetching from its origin: 0.6 s before each segment's answer, then 8 Mbit/s. Counted as transfer, the
+        // 320 variant's 75 KB segments measured under 1 Mbit/s, and nothing above it fit. The 2.66 Mbit/s variant
+        // reads a second in 0.33 s of transfer and 0.3 s of latency, within `safety`.
+        server.setLinkRate(8_000_000 / 8)
+        server.setBehavior(.init(delay: .milliseconds(600)), forPaths: { $0.hasSuffix(".ts") })
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+
+        // The first pictures are of the variant opened, before the splice to the low one.
+        try #require(await Self.waitUntil(timeout: .seconds(10)) { consumer.playedWidth == 320 })
+        #expect(
+            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 640 },
+            "Playing \(String(describing: consumer.playedWidth))")
+        let estimate = try #require(demuxer.readingDescription { $0.adaptiveBitrate.estimate })
+        #expect(estimate > 6_000_000, "Measured \(Int(estimate / 1000)) kbit/s of 8000")
+    }
+
+    @Test("The latency share counts from the first segment read, and doesn't leap at the start")
+    func latencyShareFromTheStart() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+        demuxer.setAdaptiveBitrate(false)
+
+        // Half a second before each answer, 2-second segments: a quarter of a second per second of media. Reading
+        // starts by opening the first segment, with no media read yet, and reads it whole: probing's input closed
+        // with the rewind after it.
+        server.setBehavior(.init(delay: .milliseconds(500)), forPaths: { $0.hasSuffix(".ts") })
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        defer { demuxer.cancel() }
+        var shares: [Double] = []
+        let deadline = ContinuousClock.now + .seconds(6)
+        while ContinuousClock.now < deadline {
+            if let share = demuxer.readingDescription({ $0.adaptiveBitrate.latencyShare }) { shares.append(share) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let highest = try #require(shares.max())
+        let last = try #require(shares.last)
+        #expect(highest < 0.5, "The share reached \(highest)")
+        #expect(last > 0.2 && last < 0.4, "The share is \(last)")
+    }
+
+    @Test("A server slower to answer than its segments last brings the variant down, however fast the link")
+    func slowAnswersComeDown() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+
+        // 1.5 s before each answer of a 2-second segment: the 2.66 Mbit/s variant's take 2.2 s at 8 Mbit/s, the
+        // lowest's 1.6 s.
+        server.setLinkRate(8_000_000 / 8)
+        server.setBehavior(.init(delay: .milliseconds(1500)), forPaths: { $0.hasSuffix(".ts") })
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+
+        #expect(
+            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 320 },
+            "Playing \(String(describing: consumer.playedWidth))")
+    }
+
     /// The ladder's media playlists as a live stream: a segment more every two seconds, a window of four.
     private static func serveLive(_ server: TestHTTPServer, segments: Int = 20) {
         let start = ContinuousClock.now
@@ -176,6 +253,49 @@ struct AdaptiveBitrateTests {
             await Self.waitUntil(timeout: .seconds(12)) { consumer.playedWidth == 480 },
             "Playing \(String(describing: consumer.playedWidth))")
         #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the link carries")
+    }
+
+    @Test("A live stream's server slow to answer isn't taken for waiting at its edge")
+    func liveSlowAnswersComeDown() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        Self.serveLive(server)
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+
+        // Behind the edge on a slow link, with 0.7 s before each segment's answer: a read that asks for a segment
+        // waits that long without data, which isn't the edge's wait for a new one.
+        server.setLinkRate(1_500_000 / 8)
+        server.setBehavior(.init(delay: .milliseconds(700)), forPaths: { $0.hasSuffix(".ts") })
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+        #expect(
+            await Self.waitUntil(timeout: .seconds(15)) { (consumer.playedWidth ?? 640) < 640 },
+            "Playing \(String(describing: consumer.playedWidth))")
+    }
+
+    @Test("A live stream's playlist slow to answer isn't taken for waiting at its edge")
+    func liveSlowPlaylistIsNoEdge() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        Self.serveLive(server)
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+        demuxer.setAdaptiveBitrate(false)
+
+        // The top variant on a slow link stays behind the edge, with 0.7 s before each media playlist's answer: the
+        // reload FFmpeg makes before a segment, once a segment's length passed, is a long wait for a few hundred
+        // bytes, as at the edge.
+        server.setLinkRate(1_500_000 / 8)
+        server.setBehavior(
+            .init(delay: .milliseconds(700)), forPaths: { $0.hasSuffix(".m3u8") && !$0.hasSuffix("master.m3u8") })
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        defer { demuxer.cancel() }
+        try await Task.sleep(for: .seconds(10))
+        #expect(demuxer.readingDescription { $0.liveEdgeReachedAt } == nil)
     }
 
     @Test("Only a long read of a live stream without data is a wait at its edge")
