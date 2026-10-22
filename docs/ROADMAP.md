@@ -245,10 +245,31 @@ flowchart TD
     `av_read_frame`, which waited on the feeders).
   - [x] Adaptive bitrate ("Auto" in Quality, the default for network sources with variants): throughput measured
     by the read-ahead thread from the bytes that came over the network (`FFmpegIOByteCounter`, through FFmpeg's own
-    `io_open`), the lower of two exponential averages, combined with the read-ahead level; HLS segment prefetch off.
-    See "Network read-ahead" in `docs/ARCHITECTURE.md`. Tested against `TestHTTPServer` with a throttled link.
+    `io_open`), the lower of two exponential averages weighed by the media read, combined with the read-ahead level;
+    a new connection's latency measured apart, as its share of the media; HLS segment prefetch off, connections kept
+    open but for live. See "Network read-ahead" in `docs/ARCHITECTURE.md`. Tested against `TestHTTPServer` with a
+    throttled link.
   - [ ] Check adaptive bitrate by hand on real networks (Network Link Conditioner, a real HLS ladder, Emby), VOD
-    and live; and the Quality picker in the app bundle (UI is judged from the bundle only).
+    and live; and the Quality picker in the app bundle (UI is judged from the bundle only). Streams that worked on
+    2026-10-22: 3cat Canal 324, live, 0.85–4 Mbit/s
+    (`https://directes-tv-int.3catdirectes.cat/live-origin/canal324-hls/master.m3u8`); Mux, VOD, 0.25–6 Mbit/s
+    (`https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`); Apple's examples under
+    `https://devstreaming-cdn.apple.com/videos/streaming/examples/` (`av1-sample/av1-sample.m3u8`,
+    `adv_dv_atmos/main.m3u8`, `bipbop_adv_example_hevc/master.m3u8`), big ladders, slow to open (below).
+  - [ ] Live streams keep connections too: a connection per segment takes a handshake and TCP's slow start a
+    request, which at 180 ms of round trip took half a second per second of media for VOD (`docs/ARCHITECTURE.md`).
+    Live opens one per segment for the read-ahead thread to tell the wait at the edge by `io_open`; it needs another
+    sign of that wait.
+  - [ ] The audio rendition played by default is the first FFmpeg lists (Apple's AV1 example: audio description,
+    DVS), not the `DEFAULT=YES` one, when the language settings don't decide.
+  - [ ] A variant's own subtitle stream (not a rendition) is lost on a switch: subtitles aren't moved to the new
+    variant's stream at the same position, as audio is.
+  - [ ] A splice rewrites the stream description on the reading thread, fields `canSwitch` keeps equal (`codec`,
+    colour) too, while `replaceStalledDecoder` reads `demuxer.codec` without a lock: the same value, still a race.
+  - [ ] Full `swift test` runs fail one real-time test each now and then, a different one every time (the libass
+    watch, deinterlaced frame steps, an exact VP9 seek: a `waitUntil { engine.isPlaying }` timing out), all passing
+    alone. Seen since the network suites (`AdaptiveBitrateTests`, `HLSOverHTTPTests`, `HLSRenditionTests`) came in:
+    find what loads the host, or keep those suites apart from real-time ones.
   - [x] Audio and subtitle renditions (`EXT-X-MEDIA`): only the selected ones are read (`applyStreamSelection`),
     applied by the reading thread at its next read or seek; FFmpeg discarded every subtitle rendition itself, so HLS
     subtitles never showed before. Selecting one on a network source seeks to the current frame. Variants must

@@ -181,9 +181,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     transfer, and taken per half a second of it, a fast link's samples came dozens of segments apart and weighed
     little for their media: a low variant's small segments left the estimate unset for minutes, and one measured low
     (a slow start) held long after the network got faster.
-  - *Latency* is measured apart. An HTTP input opens once its response's headers are in, so the time inside
-    `io_open` (connection, TLS, the server's answer) is left out of the throughput: counted, it capped the estimate
-    at a segment's size over it. On Apple's AV1 example (2026-10-22) the 480p variant's 121 KB segments measured
+  - *Latency* of a request on a new connection is measured apart. An HTTP input opens once its response's headers
+    are in, so the time inside `io_open` (connection, TLS, the server's answer) is left out of the throughput:
+    counted, it capped the estimate at a segment's size over it. On Apple's AV1 example (2026-10-22, every segment
+    on a connection of its own) the 480p variant's 121 KB segments measured
     3.4 Mbit/s of a 170 Mbit/s link, and a start on a cold CDN cache (answers after 0.5–1 s) 225 kbit/s. It counts
     instead as seconds per second of media read (`latencyShare`), the same for every variant: a variant fits when a
     second of it reads, transfer and latency, within `safety` of a second (dash.js weighs latency so too; FFmpeg reads
@@ -195,13 +196,22 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     don't say which (variants and renditions often share a directory, signed URLs carry `/` in the query). Openings
     while a variant switch catches the new variant up count neither: a cost of the switch, not of the variant, read
     without media.
-  - Kept alive, FFmpeg sends the requests over the open connection without `io_open`, so HLS opens a connection per
-    segment (`http_persistent` off once open; opening keeps it for probing every playlist). The handshakes count in
-    the latency: on Apple's example TCP and TLS took 0.07 s a request, about 23 ms per second of media of the 250–330
-    a cold cache's answers made (0.6–0.8 s each, video and audio). Keeping connections would gain little there; TCP's
-    slow start still makes small segments measure low (a few round trips for 100 KB), and the first bytes of a body,
-    in with the headers, count at no time and offset some of it. VLC and GStreamer keep connections and count the
-    latency in (`.ref`); VLC leans on the buffer level instead.
+  - *Connections* are kept open (FFmpeg's `http_persistent`), but for live streams. Kept alive, FFmpeg sends the
+    requests over the open connection without `io_open`: their latency, a round trip and the server's answer, counts
+    in the transfer, as in VLC and GStreamer (`.ref`), and only a new connection's is measured apart. A connection
+    per segment costs every request, video's and audio's, a handshake (TCP, TLS: about three round trips) and TCP's
+    slow start. Measured on Apple's AV1 example (2026-10-22, Wi-Fi, three runs each):
+    - 34 ms round trip: kept, 20 s read ahead in 2.8–4.7 s, 3840 wide throughout, throughput 132–203 Mbit/s; a
+      connection per segment, 5.6–15.4 s, down to 1920 for 13 s in two runs of three on its 81–170 ms/s of latency.
+    - 184 ms (Network Link Conditioner): kept, 20 s ahead in 9.9–17.8 s, down to 864–1280 wide and back up to
+      1920–3840, no stall, 16–23 Mbit/s; a connection per segment, 459–552 ms/s of latency, never 20 s ahead, down
+      to 480–1280 for good, 4–8 s of stalls.
+
+    A live stream opens a connection per segment all the same (`http_persistent` off once open; opening keeps it
+    for probing every playlist): its read-ahead thread tells the wait at the edge for the next segment by
+    `io_open` (`noteRead`), which a kept connection hides. TCP's slow start makes small segments measure low (a few
+    round trips for 100 KB), and the first bytes of a body, in with the headers, count at no time and offset some
+    of it.
   - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) that doesn't carry
     the current variant brings it down while the read-ahead is under two thirds of its limit; a full read-ahead
     steps up to what a recent estimate carries, or probes one step up without one (at its limit the thread measures

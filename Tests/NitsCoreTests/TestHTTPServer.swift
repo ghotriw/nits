@@ -16,6 +16,8 @@ final class TestHTTPServer: Sendable {
         /// Before the response.
         var delay: Duration = .zero
         var failure: Failure?
+        /// The connection closes after the response (`Connection: close`), as with a server that keeps none open.
+        var closesConnection = false
     }
 
     enum Failure: Sendable {
@@ -218,11 +220,12 @@ final class TestHTTPServer: Sendable {
                 responseHeaders["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound)/\(contents.count)"
             }
             responseHeaders["Content-Length"] = String(body.count)
+            if behavior.closesConnection { responseHeaders["Connection"] = "close" }
             guard await send(response(status: status, headers: responseHeaders), on: connection) else { return }
 
             let dropAt = behavior.failure == nil ? Int.max : body.count / 2
             guard await sendBody(body, until: dropAt, path: path, on: connection, state: state) else { return }
-            if headers["connection"]?.lowercased() == "close" { return }
+            if behavior.closesConnection || headers["connection"]?.lowercased() == "close" { return }
         }
     }
 

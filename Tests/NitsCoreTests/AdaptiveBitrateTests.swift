@@ -118,7 +118,7 @@ struct AdaptiveBitrateTests {
         #expect(demuxer.isAdaptiveBitrateEnabled)
     }
 
-    @Test("A low variant's small segments, slow to be answered, don't hold it there: the latency isn't transfer")
+    @Test("A low variant's small segments, slow to be answered on new connections, don't hold it there")
     func latencyIsNoTransfer() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
@@ -129,11 +129,13 @@ struct AdaptiveBitrateTests {
         demuxer.selectVariant(id: low.id)
         demuxer.setAdaptiveBitrate(true)
 
-        // A CDN fetching from its origin: 0.6 s before each segment's answer, then 8 Mbit/s. Counted as transfer, the
-        // 320 variant's 75 KB segments measured under 1 Mbit/s, and nothing above it fit. The 2.66 Mbit/s variant
-        // reads a second in 0.33 s of transfer and 0.3 s of latency, within `safety`.
+        // A CDN fetching from its origin that keeps no connection: 0.6 s before each segment's answer, then 8 Mbit/s.
+        // Counted as transfer, the 320 variant's 75 KB segments measured under 1 Mbit/s, and nothing above it fit.
+        // The 2.66 Mbit/s variant reads a second in 0.33 s of transfer and 0.3 s of latency, within `safety`. (A
+        // connection kept open answers without `io_open`: there the latency counts as transfer.)
         server.setLinkRate(8_000_000 / 8)
-        server.setBehavior(.init(delay: .milliseconds(600)), forPaths: { $0.hasSuffix(".ts") })
+        server.setBehavior(
+            .init(delay: .milliseconds(600), closesConnection: true), forPaths: { $0.hasSuffix(".ts") })
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }
@@ -182,10 +184,11 @@ struct AdaptiveBitrateTests {
         demuxer.adaptiveBitrateConfig = Self.config()
         demuxer.setAdaptiveBitrate(false)
 
-        // Half a second before each answer, 2-second segments: a quarter of a second per second of media. Reading
-        // starts by opening the first segment, with no media read yet, and reads it whole: probing's input closed
-        // with the rewind after it.
-        server.setBehavior(.init(delay: .milliseconds(500)), forPaths: { $0.hasSuffix(".ts") })
+        // Half a second before each answer, on a connection of its own, 2-second segments: a quarter of a second per
+        // second of media. Reading starts by opening the first segment, with no media read yet, and reads it whole:
+        // probing's input closed with the rewind after it.
+        server.setBehavior(
+            .init(delay: .milliseconds(500), closesConnection: true), forPaths: { $0.hasSuffix(".ts") })
         demuxer.startReadAhead(limits: .init(seconds: 9))
         defer { demuxer.cancel() }
         var shares: [Double] = []
@@ -200,8 +203,10 @@ struct AdaptiveBitrateTests {
         #expect(last > 0.2 && last < 0.4, "The share is \(last)")
     }
 
-    @Test("A server slower to answer than its segments last brings the variant down, however fast the link")
-    func slowAnswersComeDown() async throws {
+    @Test(
+        "A server slower to answer than its segments last brings the variant down, however fast the link",
+        arguments: [false, true])
+    func slowAnswersComeDown(closesConnection: Bool) async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
         defer { server.stop() }
@@ -209,9 +214,10 @@ struct AdaptiveBitrateTests {
         demuxer.adaptiveBitrateConfig = Self.config()
 
         // 1.5 s before each answer of a 2-second segment: the 2.66 Mbit/s variant's take 2.2 s at 8 Mbit/s, the
-        // lowest's 1.6 s.
+        // lowest's 1.6 s. On a connection kept open the latency counts as transfer; on new ones, as its share.
         server.setLinkRate(8_000_000 / 8)
-        server.setBehavior(.init(delay: .milliseconds(1500)), forPaths: { $0.hasSuffix(".ts") })
+        server.setBehavior(
+            .init(delay: .milliseconds(1500), closesConnection: closesConnection), forPaths: { $0.hasSuffix(".ts") })
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }

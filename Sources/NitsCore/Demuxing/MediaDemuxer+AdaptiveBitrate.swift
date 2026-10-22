@@ -77,7 +77,8 @@ extension MediaDemuxer {
     /// and a start on a cold cache next to nothing. It is measured apart instead, per second of media read
     /// (`AdaptiveBitrateLogic.latencyShare`), which holds for every variant: a server slower to answer than the
     /// segments last still brings the variant down. Not while a variant switch catches the new variant up, from the
-    /// start of a segment to the splice: a cost of the switch, read without media, not of the variant.
+    /// start of a segment to the splice: a cost of the switch, read without media, not of the variant. A request over
+    /// a connection kept open (a stream with a duration) opens nothing: its latency counts in the transfer.
     ///
     /// A live stream read up to its edge waits for the next segment, which is neither: counted, it would bring the
     /// estimate down to nothing. The wait comes before the read asks for that segment, but for the playlist reloads
