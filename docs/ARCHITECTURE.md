@@ -176,7 +176,11 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     reads and drops (a variant switched to is caught up from the start of a segment) are a third and more. Reads
     served from what the socket buffered while the thread idled at its limit don't count until one waits again. HLS
     downloads one segment at a time (`http_multiple` off): FFmpeg's prefetch of the next would share the link with
-    the one read and halve what is measured.
+    the one read and halve what is measured. A sample ends after 0.5 s of transfer, or 2 s of media read in at least
+    0.1 s of it, and weighs the media it read, or its transfer's seconds when slower than real time. Weighed by the
+    transfer, and taken per half a second of it, a fast link's samples came dozens of segments apart and weighed
+    little for their media: a low variant's small segments left the estimate unset for minutes, and one measured low
+    (a slow start) held long after the network got faster.
   - *Latency* is measured apart. An HTTP input opens once its response's headers are in, so the time inside
     `io_open` (connection, TLS, the server's answer) is left out of the throughput: counted, it capped the estimate
     at a segment's size over it. On Apple's AV1 example (2026-10-22) the 480p variant's 121 KB segments measured
@@ -200,11 +204,8 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     latency in (`.ref`); VLC leans on the buffer level instead.
   - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) that doesn't carry
     the current variant brings it down while the read-ahead is under two thirds of its limit; a full read-ahead
-    steps up to what a recent estimate carries, or probes one step up when it carries nothing higher or there is
-    none (at its limit the thread measures nothing, however fast the network; and the averages follow seconds of
-    transfer, which a low variant takes few of, so an estimate measured low would hold it there for minutes). Not at a
-    live stream's edge, whose read-ahead counts as full for its waits but holds a few segments: there a recent
-    estimate stands. A probe that comes down soon doubles the wait before the next.
+    steps up to what a recent estimate carries, or probes one step up without one (at its limit the thread measures
+    nothing, however fast the network). A probe that comes down soon doubles the wait before the next.
   - FFmpeg hands out the packet a discarded variant held when it is enabled again, from back then: a splice comes
     only at a keyframe at or after the old variant's latest decode time.
 - **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their

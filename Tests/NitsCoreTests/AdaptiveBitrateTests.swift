@@ -147,6 +147,32 @@ struct AdaptiveBitrateTests {
         #expect(estimate > 6_000_000, "Measured \(Int(estimate / 1000)) kbit/s of 8000")
     }
 
+    @Test("A fast link measures from the low variant's small segments, and steps up to what it carries at once")
+    func fastLinkMeasuresSmallSegments() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+        let low = try #require(demuxer.variants.last)
+        demuxer.selectVariant(id: low.id)
+        demuxer.setAdaptiveBitrate(true)
+
+        // 50 Mbit/s: the 320 variant's 75 KB segments take 12 ms each. Samples of half a second of transfer took
+        // 40 of them, more than the file has; without an estimate the variant probes up one step at a time.
+        server.setLinkRate(50_000_000 / 8)
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+
+        try #require(await Self.waitUntil(timeout: .seconds(10)) { consumer.playedWidth == 320 })
+        #expect(
+            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 640 },
+            "Playing \(String(describing: consumer.playedWidth))")
+        #expect(!consumer.pictures.contains { $0.width == 480 }, "Stepped up through 480")
+        #expect(demuxer.readingDescription { $0.adaptiveBitrate.estimate } != nil)
+    }
+
     @Test("The latency share counts from the first segment read, and doesn't leap at the start")
     func latencyShareFromTheStart() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }

@@ -11,12 +11,12 @@ struct AdaptiveBitrateLogicTests {
         .init(id: 1, bandwidth: 1_500_000),
     ]
 
-    /// A second of transfer at `bitsPerSecond`.
+    /// A second of transfer at `bitsPerSecond`, reading a second of media.
     private static func measure(
         _ logic: inout AdaptiveBitrateLogic, bitsPerSecond: Double, seconds: Int, at start: Double
     ) {
         for second in 0..<seconds {
-            logic.addSample(bytes: Int(bitsPerSecond / 8), seconds: 1, at: start + Double(second))
+            logic.addSample(bytes: Int(bitsPerSecond / 8), seconds: 1, media: 1, at: start + Double(second))
         }
     }
 
@@ -56,7 +56,7 @@ struct AdaptiveBitrateLogicTests {
         // 10 Mbit/s, and half a second of waiting for answers per second of media read (a second per 2-second
         // segment): 5 Mbit/s would read a second in 0.5 s plus 0.5 s, over `safety`; 1.5 Mbit/s in 0.15 s plus 0.5 s.
         for second in 0..<10 {
-            logic.addSample(bytes: 10_000_000 / 8, seconds: 1, at: Double(second))
+            logic.addSample(bytes: 10_000_000 / 8, seconds: 1, media: 1, at: Double(second))
             logic.addLatency(1, media: 2)
         }
         #expect(abs(try #require(logic.latencyShare) - 0.5) < 0.001)
@@ -90,12 +90,26 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 30, at: 30) == nil)
     }
 
-    @Test("At a live stream's edge, a recent estimate that fits nothing higher doesn't probe")
-    func noProbeAtLiveEdge() {
+    @Test("A sample weighs the media it read: one read fast outweighs a slow start")
+    func fastReadsWeighTheirMedia() throws {
         var logic = AdaptiveBitrateLogic()
         Self.measure(&logic, bitsPerSecond: 600_000, seconds: 5, at: 0)
-        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 20, atLiveEdge: true, at: 10) == nil)
-        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 20, at: 10) == 1)
+        // The network got faster: 10 s of media at 10 Mbit/s, in 0.4 s. Weighed by those 0.4 s, the slow average
+        // kept 97 % of the start's 0.6 Mbit/s.
+        logic.addSample(bytes: 500_000, seconds: 0.4, media: 10, at: 6)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate > 7_000_000, "\(estimate)")
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 30, at: 10) == 2)
+    }
+
+    @Test("A read slower than in real time weighs its transfer's seconds")
+    func slowReadsWeighTheirTransfer() throws {
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 10_000_000, seconds: 10, at: 0)
+        // Half a second of media in 4 s: the network collapsed, and the estimate follows within the sample.
+        logic.addSample(bytes: 250_000, seconds: 4, media: 0.5, at: 14)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate < 3_000_000, "\(estimate)")
     }
 
     @Test("A probe that comes down soon doubles the wait before the next")
@@ -124,7 +138,7 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 21) == 2)
     }
 
-    @Test("Without a recent estimate, or with one that fits nothing higher, a full read-ahead steps up one at a time")
+    @Test("Without a recent estimate a full read-ahead steps up one variant at a time")
     func probesUp() {
         var logic = AdaptiveBitrateLogic()
         #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 30, at: 0) == 1)
@@ -132,12 +146,11 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 30, at: 11) == 2)
         #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 30, at: 30) == nil)
 
-        // A slow start measured low: the estimate, recent, fits only the lowest variant, and it would stay there for as
-        // long as its small segments take to outweigh it. A full read-ahead says more fits.
-        var measuredLow = AdaptiveBitrateLogic()
-        Self.measure(&measuredLow, bitsPerSecond: 600_000, seconds: 5, at: 0)
-        #expect(measuredLow.choose(current: 0, among: Self.ladder, readAhead: 15, at: 10) == nil)
-        #expect(measuredLow.choose(current: 0, among: Self.ladder, readAhead: 30, at: 10) == 1)
+        // A recent estimate that fits nothing higher stands; one older than `estimateLifetime` counts as none.
+        var stale = AdaptiveBitrateLogic()
+        Self.measure(&stale, bitsPerSecond: 600_000, seconds: 5, at: 0)
+        #expect(stale.choose(current: 0, among: Self.ladder, readAhead: 30, at: 10) == nil)
+        #expect(stale.choose(current: 0, among: Self.ladder, readAhead: 30, at: 40) == 1)
     }
 
     @Test("Probes that keep failing wait up to `maxProbeBackoff` times as long, until one holds")

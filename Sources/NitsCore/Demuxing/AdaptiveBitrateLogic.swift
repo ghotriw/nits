@@ -4,16 +4,18 @@ import Foundation
 /// the packets taken). Pure: the demuxer feeds it samples and times (`MediaDemuxer+AdaptiveBitrate.swift`).
 ///
 /// Throughput is an exponentially weighted average over two half-lives, the lower of the two counting (as dash.js and
-/// GStreamer do: quick to fall, slow to rise). It leaves out the requests' latency, which is measured apart, as seconds
-/// per second of media (`latencyShare`): a variant fits when reading a second of it, its transfer at the throughput
-/// and its share of latency, takes at most `safety` of a second.
+/// GStreamer do: quick to fall, slow to rise). A sample weighs the media it read, or its transfer's seconds when it
+/// read slower than in real time: weighed by the transfer alone, a sample read fast weighed little for its media, and
+/// an estimate measured low (a slow start) held for minutes after the network got faster. It leaves out the requests'
+/// latency, which is measured apart, as seconds per second of media (`latencyShare`): a variant fits when reading a
+/// second of it, its transfer at the throughput and its share of latency, takes at most `safety` of a second.
 /// - **Down**: when the current variant doesn't fit and the read-ahead is below `highBuffer`, to the highest variant
 ///   that fits. The read-ahead is low after every start and seek too, while it fills: that alone is no reason.
 /// - **Up**: only with a full read-ahead (`highBuffer`) and `upSwitchInterval` after the last switch: to the highest
-///   variant a recent estimate fits, or one step up when it fits none higher or there is none. With the read-ahead
-///   full the thread reads what the socket buffered while it idled and measures nothing, however fast the network, so
-///   it probes: a step too high drains the read-ahead and comes down long before that runs out. A probe that comes
-///   down within `failedProbeWindow` doubles the wait before the next (up to `maxProbeBackoff` times).
+///   variant a recent estimate fits, or one step up without one. With the read-ahead full the thread reads what the
+///   socket buffered while it idled and measures nothing, however fast the network, so it probes: a step too high
+///   drains the read-ahead and comes down long before that runs out. A probe that comes down within
+///   `failedProbeWindow` doubles the wait before the next (up to `maxProbeBackoff` times).
 struct AdaptiveBitrateLogic: Sendable {
     struct Config: Sendable {
         /// Read-ahead seconds from which the logic steps up, and below which it steps down.
@@ -26,12 +28,12 @@ struct AdaptiveBitrateLogic: Sendable {
         var downSwitchInterval = 2.0
         /// Seconds an estimate stays recent enough to step up to the variant it fits.
         var estimateLifetime = 20.0
-        /// Half-lives (seconds of measured transfer) of the two averages.
+        /// Half-lives (samples' weight: seconds of media, or of transfer when slower) of the two averages.
         var halfLives = (fast: 2.0, slow: 8.0)
         /// Seconds after a step up within which coming down makes it a failed probe.
         var failedProbeWindow = 60.0
         var maxProbeBackoff = 8.0
-        /// Seconds of measured transfer before the estimate counts: a first short read says little.
+        /// Samples' weight before the estimate counts: a first short read says little.
         var minimumMeasurement = 1.0
         /// Half-life (seconds of media read) of the latency share.
         var latencyHalfLife = 30.0
@@ -59,7 +61,7 @@ struct AdaptiveBitrateLogic: Sendable {
     /// Decayed sums of the requests' latency and of the media read meanwhile, seconds.
     private var latency = (waited: 0.0, media: 0.0)
     private var lastSampleTime: Double?
-    private var measuredSeconds = 0.0
+    private var measuredWeight = 0.0
     private var lastSwitchTime = -Double.infinity
     private var lastStepUpTime = -Double.infinity
     private var lastStepDownTime = -Double.infinity
@@ -71,7 +73,7 @@ struct AdaptiveBitrateLogic: Sendable {
 
     /// Bits a second, once `minimumMeasurement` was measured.
     var estimate: Double? {
-        guard averages[0].weight > 0, measuredSeconds >= config.minimumMeasurement else { return nil }
+        guard averages[0].weight > 0, measuredWeight >= config.minimumMeasurement else { return nil }
         // Weighted by the share of the averages that samples filled, so the first ones aren't pulled to zero.
         return averages.map { $0.value / $0.weight }.min()
     }
@@ -90,24 +92,22 @@ struct AdaptiveBitrateLogic: Sendable {
         latency = (keep * latency.waited + waited, keep * latency.media + media)
     }
 
-    /// `bytes` transferred in `seconds` while waiting on the network, at `time`.
-    mutating func addSample(bytes: Int, seconds: Double, at time: Double) {
+    /// `bytes` transferred in `seconds` while waiting on the network, reading `media` seconds, at `time`.
+    mutating func addSample(bytes: Int, seconds: Double, media: Double, at time: Double) {
         guard bytes > 0, seconds > 0 else { return }
         let sample = Double(bytes) * 8 / seconds
+        let weight = max(media, seconds)
         for (index, halfLife) in [config.halfLives.fast, config.halfLives.slow].enumerated() {
-            let keep = pow(0.5, seconds / halfLife)
+            let keep = pow(0.5, weight / halfLife)
             averages[index].value = keep * averages[index].value + (1 - keep) * sample
             averages[index].weight = keep * averages[index].weight + (1 - keep)
         }
         lastSampleTime = time
-        measuredSeconds += seconds
+        measuredWeight += weight
     }
 
     /// The variant to switch to, or nil to stay. `variants` are the switchable ones; `current` is read now.
-    /// `atLiveEdge`: the read-ahead counts as full for waiting at a live stream's edge, holding a few segments only.
-    mutating func choose(
-        current: Int, among variants: [Variant], readAhead: Double, atLiveEdge: Bool = false, at time: Double
-    ) -> Int? {
+    mutating func choose(current: Int, among variants: [Variant], readAhead: Double, at time: Double) -> Int? {
         let ladder = variants.sorted { $0.bandwidth < $1.bandwidth }
         guard ladder.count > 1, let position = ladder.firstIndex(where: { $0.id == current }) else { return nil }
         let sinceSwitch = time - lastSwitchTime
@@ -135,13 +135,9 @@ struct AdaptiveBitrateLogic: Sendable {
                 }
             }
         } else if readAhead >= config.highBuffer, sinceSwitch >= config.upSwitchInterval * probeBackoff {
-            if let fitting, isRecent, fitting > position {
-                target = fitting
-            } else if position + 1 < ladder.count, !(isRecent && atLiveEdge), !isLatencyBound {
-                // A recent estimate that fits nothing higher probes too: the averages follow seconds of transfer,
-                // which a low variant's small segments take few of, so one measured low (a slow start) stays for
-                // minutes. A full read-ahead says the network carries more than the variant read; at a live edge it
-                // says nothing of the kind, and a step too high would drain the few segments read.
+            if let fitting, isRecent {
+                target = max(fitting, position)
+            } else if position + 1 < ladder.count, !isLatencyBound {
                 target = position + 1
             }
             if target > position { lastStepUpTime = time }

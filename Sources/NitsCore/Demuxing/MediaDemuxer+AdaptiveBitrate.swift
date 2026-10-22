@@ -14,12 +14,17 @@ extension MediaDemuxer {
         var isNetworkBound = false
         var bytes = 0
         var seconds = 0.0
+        /// Seconds of media read.
+        var media = 0.0
     }
 
     /// A read taking this long waited on the network.
     static let networkWait = 0.002
-    /// Seconds of transfer per throughput sample.
-    static let sampleSeconds = 0.5
+    /// A throughput sample ends after `seconds` of transfer, or `media` seconds read in at least `minimumSeconds` of
+    /// it: on a slow network the first comes soon, on a fast one the second (whose segments take a few hundredths of
+    /// a second each: a sample per half a second of transfer took dozens). The floor keeps reads served from what the
+    /// socket buffered, which count no time, from making up a sample.
+    static let sample = (seconds: 0.5, media: 2.0, minimumSeconds: 0.1)
     /// Seconds between decisions.
     static let decisionInterval = 0.5
 
@@ -114,8 +119,13 @@ extension MediaDemuxer {
         guard transferWindow.isNetworkBound else { return }
         transferWindow.bytes += bytes
         transferWindow.seconds += seconds
-        if transferWindow.seconds >= Self.sampleSeconds {
-            adaptiveBitrate.addSample(bytes: transferWindow.bytes, seconds: transferWindow.seconds, at: adaptiveTime)
+        if media.isFinite { transferWindow.media += media }
+        if transferWindow.seconds >= Self.sample.seconds
+            || (transferWindow.media >= Self.sample.media && transferWindow.seconds >= Self.sample.minimumSeconds)
+        {
+            adaptiveBitrate.addSample(
+                bytes: transferWindow.bytes, seconds: transferWindow.seconds, media: transferWindow.media,
+                at: adaptiveTime)
             transferWindow = TransferWindow(isNetworkBound: true)
         }
     }
@@ -136,19 +146,13 @@ extension MediaDemuxer {
         guard selection.isAutomatic, selection.requested == nil, let current = selection.selected else { return }
         var readAhead = readAheadState.withLock { $0 } - consumedSeconds
         guard readAhead.isFinite else { return }
-        var atLiveEdge = false
-        if let edge = liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory,
-            readAhead < adaptiveBitrate.config.highBuffer
-        {
-            readAhead = adaptiveBitrate.config.highBuffer
-            atLiveEdge = true
+        if let edge = liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory {
+            readAhead = max(readAhead, adaptiveBitrate.config.highBuffer)
         }
         let ladder = variants.filter(\.isSwitchable).map {
             AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth)
         }
-        guard
-            let chosen = adaptiveBitrate.choose(
-                current: current, among: ladder, readAhead: readAhead, atLiveEdge: atLiveEdge, at: now)
+        guard let chosen = adaptiveBitrate.choose(current: current, among: ladder, readAhead: readAhead, at: now)
         else { return }
         let estimate = adaptiveBitrate.estimate.map { "\(Int($0 / 1000)) kbit/s" } ?? "none"
         let latency = adaptiveBitrate.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"
