@@ -426,6 +426,22 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         isNetworkSource = MediaURL.applySourceOptions(&avOptions, path: url, headers: headers)
 
+        // What an HLS master's opening reads, playlists and the starts of their segments, is downloaded side by side
+        // and read from memory (`HLSPlaylistPrefetcher`), through `io_open`: which a kept connection skips, so
+        // keep-alive comes back once open (below).
+        var prefetcher: HLSPlaylistPrefetcher?
+        if HLSPlaylistPrefetcher.applies(to: url), let masterURL = URL(string: url) {
+            let started = HLSPlaylistPrefetcher(masterURL: masterURL, headers: headers)
+            started.start()
+            prefetcher = started
+            ioBytes.prefetched = { [ctxContext] in started.take($0, offset: $1) { !ctxContext.shouldAbort } }
+            _ = av_dict_set(&avOptions, "http_persistent", "0", 0)
+        }
+        defer {
+            prefetcher?.cancel()
+            ioBytes.prefetched = nil
+        }
+
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
         guard ret >= 0, let formatCtx = ctx else {
             let errorMsg = Self.ffmpegErrorDescription(ret)
@@ -510,12 +526,12 @@ public final class MediaDemuxer: @unchecked Sendable {
         // the wait for the next segment from its transfer (`noteRead`). Kept alive, FFmpeg sends the requests over the
         // open connection without a call. A connection per segment costs a handshake (TCP, TLS) and TCP's slow start
         // a request, video's and audio's: at 180 ms of round trip they took half a second per second of media, and
-        // the read-ahead never filled (`docs/ARCHITECTURE.md`). A stream with a duration keeps its connections.
-        if durationSeconds <= 0, let iformat = formatCtx.pointee.iformat,
-            String(cString: iformat.pointee.name) == "hls",
+        // the read-ahead never filled (`docs/ARCHITECTURE.md`). A stream with a duration keeps its connections (off
+        // while opening for the playlists prefetched).
+        if let iformat = formatCtx.pointee.iformat, String(cString: iformat.pointee.name) == "hls",
             let options = formatCtx.pointee.priv_data
         {
-            av_opt_set_int(options, "http_persistent", 0, 0)
+            av_opt_set_int(options, "http_persistent", durationSeconds <= 0 ? 0 : 1, 0)
         }
     }
 

@@ -120,6 +120,9 @@ public enum SyntheticTestMediaFactory {
         case hlsVariantsFMP4
         /// `hlsVariants` in AV1 (SVT-AV1) and fragmented MP4: the configuration in each variant's `av1C`
         case hlsVariantsAV1
+        /// `hlsVariantsFMP4` with each variant in one file, read in byte ranges (`EXT-X-BYTERANGE`), as Apple's
+        /// examples are
+        case hlsVariantsSingleFile
         /// HLS master playlist (6s) with two H.264 variants (320x180, 640x360) and their audio and subtitles as
         /// renditions (`EXT-X-MEDIA`) both share: English and Ukrainian AAC, two WebVTT subtitle playlists in one group
         case hlsRenditions
@@ -129,7 +132,8 @@ public enum SyntheticTestMediaFactory {
 
         /// Presets made as a directory of playlists and segments, `filename` being the master playlist.
         var isHLS: Bool {
-            [.hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsRenditions, .hlsLadder].contains(self)
+            [.hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder]
+                .contains(self)
         }
 
         public var filename: String {
@@ -232,6 +236,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_renditions/master.m3u8"
             case .hlsVariantsFMP4:
                 return "synth_hls_variants_fmp4/master.m3u8"
+            case .hlsVariantsSingleFile:
+                return "synth_hls_variants_single_file/master.m3u8"
             case .hlsLadder:
                 return "synth_hls_ladder/master.m3u8"
             }
@@ -455,14 +461,17 @@ public enum SyntheticTestMediaFactory {
     /// FFmpeg arguments writing an HLS preset's master playlist, media playlists and segments into `directory`.
     private static func hlsArguments(for preset: Preset, in directory: URL, subtitlesPath: String) -> [String] {
         let file = { (name: String) in directory.appendingPathComponent(name).path }
-        let isFragmented = preset == .hlsVariantsFMP4 || preset == .hlsVariantsAV1
+        let isSingleFile = preset == .hlsVariantsSingleFile
+        let isFragmented = preset == .hlsVariantsFMP4 || preset == .hlsVariantsAV1 || isSingleFile
+        let segments = isSingleFile ? "v%v.mp4" : isFragmented ? "v%v_%03d.m4s" : "v%v_%03d.ts"
         let output =
             [
                 "-c:a", "aac", "-b:a", "64k",
                 "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", "-master_pl_name", "master.m3u8",
-                "-hls_segment_filename", file(isFragmented ? "v%v_%03d.m4s" : "v%v_%03d.ts"),
+                "-hls_segment_filename", file(segments),
             ]
             + (isFragmented ? ["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init_%v.mp4"] : [])
+            + (isSingleFile ? ["-hls_flags", "single_file"] : [])
         // Two variants of one picture, the lower listed first.
         let twoVariants = { (seconds: Int) in
             [
@@ -544,8 +553,8 @@ public enum SyntheticTestMediaFactory {
 
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
-        case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsRenditions,
-            .hlsLadder:
+        case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
+            .hlsRenditions, .hlsLadder:
             return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [

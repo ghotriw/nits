@@ -161,6 +161,28 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   manifest's segments with the I/O options of the manifest's own input, so that one is opened with the network
   options too, and with HTTP added to the protocol whitelist a file allows (file, crypto, data): by the demuxer and
   by the subtitle window reader alike (`MediaURL.applySourceOptions`).
+- **HLS opening.** FFmpeg's HLS demuxer, before it plays anything, reads every playlist a master lists and probes
+  every video and audio one (its init section and the segment it starts from), each a request after another, the
+  probes on connections of their own. Apple's AV1 example (2026-10-22, Wi-Fi, 34 ms round trip) lists 36 playlists
+  and probes 23: it opened in 54.5 s on a cold CDN cache (answers after 0.5–0.8 s; 20 s of playlists, 33 s of
+  probes) and in 12 s on a warm one. FFmpeg has no option to skip it, so `HLSPlaylistPrefetcher` downloads it all
+  side by side while FFmpeg opens: the master (again: FFmpeg reads its own), then every playlist it lists at once
+  (up to 16 connections: the CDN speaks HTTP/1.1 only), then of each video and audio playlist the first 128 KB of
+  its init section and of the segment the probe starts from (the first; the third from the end of a live one), as
+  ranges: from their offset for byte ranges (`EXT-X-BYTERANGE`, a variant in one file, placed as FFmpeg places
+  them). `FFmpegIOByteCounter`'s `io_open` serves FFmpeg those from memory (`PrefetchedInput`) when it asks for the
+  same offset, and past what was downloaded reads on through FFmpeg's own `io_open` with the `offset` moved on (its
+  `end_offset` kept: FFmpeg asks for a run of byte ranges at once). The same stream then opened in 3.9 s and 0.7 s,
+  with a single request of FFmpeg's (the master); Dolby Vision / Atmos, 100 programs, in 8.3 s and 1.2 s instead
+  of 142. Bipbop advanced (byte ranges, 54 programs) in 5–6 s instead of 47: FFmpeg reads 0.2–3 MB of each video
+  variant's first fragment (8 s each), and goes on to the network for 13 of them. At 184 ms of round trip
+  (Network Link Conditioner) the AV1 example opened in 7.2 s and 3.5 s instead of 51–80, Dolby Vision / Atmos in
+  12.7 s and 5.7 s. Keep-alive is off while opening:
+  FFmpeg would send the playlists over the master's connection without `io_open`. What isn't downloaded FFmpeg
+  opens as before: a playlist served from elsewhere (a redirect: its segments resolve against that place, which
+  FFmpeg reading from memory wouldn't know), a failed download, encrypted segments, a probe starting elsewhere
+  (`EXT-X-START`), a URI resolved otherwise than by FFmpeg. The downloads carry the source's headers; the user
+  agent is URLSession's when the source sets none, and cookies a master's answer sets stay apart from FFmpeg's.
 - **HLS variants.** A switch splices at the read position, up to the read-ahead limit ahead of playback, so a
   manual switch seeks to the current frame instead (as an audio track switch does). The engine shows a splice when
   playback reaches it (`variantWillPlay`); the changes reach the main thread in order (`DispatchQueue.main`, not a

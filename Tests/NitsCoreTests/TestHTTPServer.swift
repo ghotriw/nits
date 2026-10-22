@@ -18,6 +18,10 @@ final class TestHTTPServer: Sendable {
         var failure: Failure?
         /// The connection closes after the response (`Connection: close`), as with a server that keeps none open.
         var closesConnection = false
+        /// Bytes a range response holds at most, fewer than asked for: a server may send a range in parts.
+        var rangeLimit: Int?
+        /// Answered with a redirect (302) to this path, relative to the served directory.
+        var redirect: String?
     }
 
     enum Failure: Sendable {
@@ -32,6 +36,10 @@ final class TestHTTPServer: Sendable {
     struct Request: Sendable {
         let path: String
         let time: ContinuousClock.Instant
+        /// The `User-Agent` header: FFmpeg's starts with `Lavf`.
+        var userAgent: String?
+        /// The `Range` header.
+        var range: String?
     }
 
     private struct State {
@@ -182,10 +190,16 @@ final class TestHTTPServer: Sendable {
                 headers[line[..<colon].lowercased()] = line[line.index(after: colon)...]
                     .trimmingCharacters(in: .whitespaces)
             }
-            state.withLock { $0.requests.append(Request(path: path, time: .now)) }
+            let request = Request(path: path, time: .now, userAgent: headers["user-agent"], range: headers["range"])
+            state.withLock { $0.requests.append(request) }
 
             let behavior = behavior(for: path, in: state)
             if behavior.delay > .zero { try? await Task.sleep(for: behavior.delay) }
+            if let redirect = behavior.redirect {
+                let headers = ["Location": "/" + redirect, "Content-Length": "0"]
+                guard await send(response(status: 302, headers: headers), on: connection) else { return }
+                continue
+            }
             switch behavior.failure {
             case .hang:
                 // Until the client or the server closes the connection.
@@ -214,7 +228,10 @@ final class TestHTTPServer: Sendable {
             var body = contents[...]
             var status = 200
             var responseHeaders = ["Content-Type": contentType(of: path), "Accept-Ranges": "bytes"]
-            if let range = headers["range"].flatMap({ byteRange($0, size: contents.count) }) {
+            if var range = headers["range"].flatMap({ byteRange($0, size: contents.count) }) {
+                if let limit = behavior.rangeLimit {
+                    range = range.lowerBound...min(range.upperBound, range.lowerBound + limit - 1)
+                }
                 body = contents[range]
                 status = 206
                 responseHeaders["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound)/\(contents.count)"
@@ -289,7 +306,8 @@ final class TestHTTPServer: Sendable {
 
     private static func response(status: Int, headers: [String: String]) -> Data {
         let reason =
-            [200: "OK", 206: "Partial Content", 404: "Not Found", 405: "Method Not Allowed"][status] ?? "Error"
+            [200: "OK", 206: "Partial Content", 302: "Found", 404: "Not Found", 405: "Method Not Allowed"][status]
+            ?? "Error"
         let lines = ["HTTP/1.1 \(status) \(reason)"] + headers.sorted { $0.key < $1.key }.map { "\($0): \($1)" }
         return Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
     }

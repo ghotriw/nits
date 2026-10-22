@@ -62,7 +62,9 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go through cached
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
-(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: the demuxer holds it.
+(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: the demuxer holds it. An
+`AVIOContext` read from memory (`PrefetchedInput`, an HLS opening's prefetched playlists and segment starts) takes a
+retained one, released when FFmpeg closes the input through `io_close2`.
 
 ## Layer boundaries
 

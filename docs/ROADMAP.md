@@ -277,12 +277,18 @@ flowchart TD
   - [x] AV1 / VP9 variants switch: their description comes from the new variant's `av1C` / `vpcC` (the splice asked
     for H.264 parameter sets and gave every switch up).
   - [ ] Thumbnails and seek previews of HLS read the lowest variant only.
-  - [ ] **Faster start (urgent for big ladders).** Opening a master playlist (`avformat_find_stream_info`) downloads
-    the first segment of every playlist: Apple's examples, a program per tier and audio group (54–99 programs), took
-    47 s (bipbop advanced), 58 s (AV1) and 142 s (Dolby Vision / Atmos) to open on 2026-10-22; small ladders (3cat,
-    Mux) 1.5–3 s. FFmpeg has no option to skip it: serve FFmpeg a master playlist cut to the compatible ladder of the
-    variant chosen (our `io_open` already sees every input), or probe less. Playback also starts on the highest
-    variant; start lower, or by a first measurement.
+  - [x] **Faster opening of big ladders.** FFmpeg's HLS demuxer reads every playlist of a master and probes every
+    video and audio one (init section and first segment), a request after another: Apple's examples, a program per
+    tier and audio group (54–99 programs), took 47 s (bipbop advanced), 58 s (AV1) and 142 s (Dolby Vision / Atmos)
+    to open on 2026-10-22; small ladders (3cat, Mux) 1.5–3 s. `HLSPlaylistPrefetcher` downloads all of it side by
+    side and FFmpeg reads it from memory: the AV1 example opened in 3.9 s on a cold CDN cache instead of 54.5, and
+    in 0.7 s on a warm one instead of 12; Dolby Vision / Atmos in 8.3 s and 1.2 s instead of 142; bipbop advanced
+    in 5–6 s instead of 47 (see "HLS opening" in `docs/ARCHITECTURE.md`).
+  - [ ] Cut the ladder FFmpeg is given to the variants that can switch with the one chosen, and one audio group:
+    the AV1 example's 65 programs are 13 tiers × 5 audio groups, all probed and read. Playback also starts on the
+    highest variant; start lower, or by a first measurement. Opening still reads 0.2–3 MB of each video variant's
+    first fragment where fragments are whole 8 s segments (bipbop advanced, 5–6 s to open): find out which call
+    reads that far, and whether it can read less.
   - [ ] Adaptive bitrate at playback rates above 1x: a variant then needs its bandwidth times the rate.
   - [ ] Seeks and track switches on a live stream wait for the read-ahead thread, asleep in `av_read_frame` until
     the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the
