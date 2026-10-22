@@ -34,6 +34,22 @@ struct AV1PlaybackTests {
         }
     }
 
+    @Test("dav1d threads put out each frame for its packet, without frame threading's delay")
+    func dav1dOutputsWithoutDelay() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let parameters = try #require(demuxer.getVideoCodecParameters())
+        let decoder = try #require(FFmpegVideoDecoder(codecParameters: parameters, timebase: demuxer.timebase))
+        let decoded = LockIsolated(0)
+        decoder.setOutputHandler { _ in decoded.withValue { $0 += 1 } }
+
+        // Seek previews and frame steps decode a few packets past their target: the frames must come out with them.
+        decoder.decode(sampleBuffer: try #require(demuxer.nextVideoSample()))
+        #expect(decoded.value == 1)
+        for _ in 0..<23 { decoder.decode(sampleBuffer: try #require(demuxer.nextVideoSample())) }
+        #expect(decoded.value == 24)
+    }
+
     @Test("FFmpegVideoDecoder decodes AV1 video frames into valid CVPixelBuffers")
     func dav1dDecodesFrames() async throws {
         guard let av1Path = SyntheticTestMediaFactory.ensureMedia(preset: .av1SDR) else {

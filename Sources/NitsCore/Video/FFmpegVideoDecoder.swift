@@ -110,13 +110,21 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
         // Slice threading only. Frame threading delays output by one frame per thread, while seek previews
         // and frame steps decode only a few packets past the target, so the target frame would never come
-        // out. Decoders without slice threads (MPEG-4 Part 2, WMV, H.263) run on one thread; libdav1d
-        // manages its own.
+        // out. Decoders without slice threads (MPEG-4 Part 2, WMV, H.263) run on one thread.
         let caps = codec.pointee.capabilities
+        let threads = Int32(min(max(ProcessInfo.processInfo.activeProcessorCount, 2), 10))
         if (caps & AV_CODEC_CAP_SLICE_THREADS) != 0 {
-            let cpuCount = ProcessInfo.processInfo.activeProcessorCount
             ctx.pointee.thread_type = FF_THREAD_SLICE
-            ctx.pointee.thread_count = Int32(min(max(cpuCount, 2), 10))
+            ctx.pointee.thread_count = threads
+        } else if (caps & AV_CODEC_CAP_OTHER_THREADS) != 0 {
+            // libdav1d and libvpx thread on their own, with as many threads as `thread_count` says: 1 left them on
+            // one core (4K AV1 decoded and converted at 42 fps against 53, M2 Pro, release build: headroom for
+            // heavier content and higher rates). dav1d also decodes frames in parallel, which delays output as frame
+            // threading does; one frame in flight keeps its threads inside the frame (tiles, filters).
+            ctx.pointee.thread_count = threads
+            if let options = ctx.pointee.priv_data {
+                av_opt_set_int(options, "max_frame_delay", 1, 0)
+            }
         } else {
             ctx.pointee.thread_count = 1
         }

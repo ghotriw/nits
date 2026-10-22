@@ -106,7 +106,8 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   appended), and nils a slot as soon as it's popped — held `CVPixelBuffer`s starve the decoder's
   `IOSurface` pool.
 - **`FFmpegVideoDecoder`** uses slice threading only: frame threading delays output by a frame per
-  thread, past the few packets seek previews and frame steps decode. Frames that aren't planar 4:2:0
+  thread, past the few packets seek previews and frame steps decode. libdav1d and libvpx thread on their own
+  (`thread_count`); dav1d keeps one frame in flight (`max_frame_delay = 1`). Frames that aren't planar 4:2:0
   go through `FrameFormatNormalizer` (libswscale); RGB sources are tagged with the matrix used.
 - `CV*GetStringForIntegerCodePoint` returns placeholders (e.g. "YCbCrMatrix#5") for code points
   without a CoreVideo constant; `StreamColorimetry` accepts only real constants.
