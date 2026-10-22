@@ -106,7 +106,7 @@ struct HostTrackNavigationPlaybackTests {
         engine.load(MediaLoadRequest(path: path, trackNavigation: TrackNavigation(hasNext: true)))
         try #require(await engine.waitForPlayback())
 
-        engine.seek(to: engine.duration - 1.0)
+        engine.seek(to: engine.media.duration - 1.0)
         #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.playbackState == .completed })
         #expect(requests.value.isEmpty, "The end is reported through the state, not as a Next press")
     }

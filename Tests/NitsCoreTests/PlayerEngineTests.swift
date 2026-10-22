@@ -27,7 +27,7 @@ struct PlayerEngineTests {
         #expect(engine.isLoaded == false)
         #expect(engine.isPlaying == false)
         #expect(engine.currentTime == 0.0)
-        #expect(engine.duration == 0.0)
+        #expect(engine.media.duration == 0.0)
         #expect(engine.volume == 0.8)
         #expect(engine.isMuted == false)
         #expect(engine.metalTargetNits == 250.0)
@@ -46,7 +46,7 @@ struct PlayerEngineTests {
 
         // Default: isHDRDisplay = true, auto -> .system
         engine.isHDRDisplay = true
-        engine.isHDRContent = true
+        engine.media.video.isHDR = true
         engine.renderMode = .auto
         #expect(engine.activeRenderMode == .system)
         #expect(engine.isMetalLayerVisible == false)
@@ -57,10 +57,10 @@ struct PlayerEngineTests {
         #expect(engine.isMetalLayerVisible == true)
 
         // On SDR display with SDR content, auto -> .system
-        engine.isHDRContent = false
+        engine.media.video.isHDR = false
         #expect(engine.activeRenderMode == .system)
         #expect(engine.isMetalLayerVisible == false)
-        engine.isHDRContent = true
+        engine.media.video.isHDR = true
 
         // Explicit system mode
         engine.renderMode = .system
@@ -126,9 +126,9 @@ struct PlayerEngineTests {
         engine.load(path: referencePath)
 
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 0.0)
-        #expect(engine.videoWidth > 0)
-        #expect(engine.videoHeight > 0)
+        #expect(engine.media.duration > 0.0)
+        #expect(engine.media.video.width > 0)
+        #expect(engine.media.video.height > 0)
         #expect(engine.mediaTitle == URL(fileURLWithPath: referencePath).lastPathComponent)
         #expect(!engine.audioTracks.isEmpty)
 
@@ -448,10 +448,10 @@ struct PlayerEngineTests {
         engine.load(path: audioPath)
 
         #expect(engine.isLoaded == true)
-        #expect(engine.hasVideo == false)
-        #expect(engine.duration > 0.0)
-        #expect(engine.videoWidth == 0)
-        #expect(engine.videoHeight == 0)
+        #expect(engine.media.hasVideo == false)
+        #expect(engine.media.duration > 0.0)
+        #expect(engine.media.video.width == 0)
+        #expect(engine.media.video.height == 0)
         #expect(!engine.audioTracks.isEmpty)
 
         // Test playback control
@@ -486,15 +486,15 @@ struct PlayerEngineTests {
         // 1. Load video
         engine.load(path: referenceVideoPath)
         #expect(engine.isLoaded == true)
-        #expect(engine.hasVideo == true)
-        #expect(engine.videoWidth > 0)
+        #expect(engine.media.hasVideo == true)
+        #expect(engine.media.video.width > 0)
 
         // 2. Load audio directly (simulates Command + O open audio file after video)
         engine.load(path: audioPath)
         #expect(engine.isLoaded == true)
-        #expect(engine.hasVideo == false)
-        #expect(engine.videoWidth == 0)
-        #expect(engine.videoHeight == 0)
+        #expect(engine.media.hasVideo == false)
+        #expect(engine.media.video.width == 0)
+        #expect(engine.media.video.height == 0)
 
         engine.stop()
         #expect(engine.isLoaded == false)
@@ -729,7 +729,7 @@ struct PlayerEngineTests {
             var currentTime: Double = 0
             var pendingSeekTime: Double? = nil
             var isSeeking: Bool = false
-            var duration: Double = 0
+            var media = MediaInfo()
             var isPlaying: Bool = false
             var isLoaded: Bool = false
             var isLoading: Bool = false
@@ -737,20 +737,8 @@ struct PlayerEngineTests {
             var mediaTitle: String = ""
             var artworkData: Data? = nil
             var artworkURL: URL? = nil
-            var hasVideo: Bool = false
-            var videoWidth: Int = 1920
-            var videoHeight: Int = 1080
             var nominalFrameDuration: Double = 1.0 / 24.0
-            var sampleAspectRatio: RationalAspectRatio = RationalAspectRatio(numerator: 1, denominator: 1)
-            var displayAspectRatio: Double = 16.0 / 9.0
-            var videoCodecName: String = "hevc"
-            var videoBitDepth: Int = 10
-            var videoColorPrimaries: String = "bt2020"
-            var videoTransferFunction: String = "smpte2084"
-            var videoDolbyVisionProfile: String? = nil
-            var videoSourcePeakNits: Float = 1000.0
             var renderMode: RenderMode = .auto
-            var isInterlacedContent: Bool = false
             var deinterlaceMode: DeinterlaceMode = .auto
             var isHDRDisplay: Bool = false
             var isToneMappingPermitted: Bool = true
@@ -782,7 +770,6 @@ struct PlayerEngineTests {
             var canSelectAutomaticVariant = false
             let subtitles = SubtitleController()
             var onTracksChanged: (() -> Void)? = nil
-            var chapters: [MediaChapter] = []
             var currentChapterIndex: Int? = nil
             var playlist: PlaylistManager = PlaylistManager()
 
@@ -851,7 +838,7 @@ struct PlayerEngineTests {
             var currentTime: Double = 0
             var pendingSeekTime: Double? = nil
             var isSeeking: Bool = false
-            var duration: Double = 0
+            var media = MediaInfo()
             var isPlaying: Bool = false
             var isLoaded: Bool = false
             var isLoading: Bool = false

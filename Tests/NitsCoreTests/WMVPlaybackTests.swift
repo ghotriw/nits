@@ -110,8 +110,8 @@ struct WMVPlaybackTests {
         engine.load(path: wmvPath)
 
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 0)
-        #expect(engine.videoCodecName == "WMV2")
+        #expect(engine.media.duration > 0)
+        #expect(engine.media.video.codecName == "WMV2")
 
         // Start playback
         engine.play()

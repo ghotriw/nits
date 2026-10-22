@@ -11,7 +11,7 @@ struct ChapterListView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(engine.chapters) { chapter in
+                        ForEach(engine.media.chapters) { chapter in
                             ChapterRowView(
                                 chapter: chapter,
                                 thumbnail: engine.thumbnailManager.thumbnail(at: chapter.start),
@@ -46,7 +46,7 @@ struct ChapterListView: View {
 
     private var footerView: some View {
         HStack {
-            let count = engine.chapters.count
+            let count = engine.media.chapters.count
             Text(
                 engine.currentChapterIndex.map { "Chapter \($0 + 1) of \(count)" }
                     ?? "\(count) \(count == 1 ? "chapter" : "chapters")"
@@ -56,8 +56,8 @@ struct ChapterListView: View {
 
             Spacer()
 
-            if engine.duration > 0 {
-                Text(TimeParser.format(seconds: engine.duration))
+            if engine.media.duration > 0 {
+                Text(TimeParser.format(seconds: engine.media.duration))
                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.5))
             }

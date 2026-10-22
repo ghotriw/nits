@@ -15,7 +15,7 @@ struct EndOfMediaTests {
         engine.load(path: path)
         try #require(await engine.waitForPlayback())
 
-        engine.seek(to: engine.duration - 1.0)
+        engine.seek(to: engine.media.duration - 1.0)
         #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.playbackState == .completed })
     }
 
@@ -30,7 +30,7 @@ struct EndOfMediaTests {
         var states: [PlaybackState] = []
         engine.onPlaybackStateChanged = { states.append($0) }
 
-        engine.seek(to: engine.duration - 1.0)
+        engine.seek(to: engine.media.duration - 1.0)
         #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.isPlaying && engine.currentTime < 3.0 })
         #expect(!states.contains(.completed), "States: \(states)")
     }

@@ -1,8 +1,8 @@
 import Foundation
-import NitsCore
 import NitsTestSupport
 import Testing
 
+@testable import NitsCore
 @testable import NitsKit
 
 @Suite("Picture in Picture controller")
@@ -13,7 +13,7 @@ struct PictureInPictureControllerTests {
         let engine = PlayerEngine.makeForTesting()
         let pip = PictureInPictureController(engine: engine)
 
-        engine.duration = 100
+        engine.media.duration = 100
         engine.currentTime = 5
         engine.isPlaying = true
         #expect(await waitUntil { pip.playbackSnapshot.isPlaying && pip.playbackSnapshot.mediaTime == 5 })
@@ -33,7 +33,7 @@ struct PictureInPictureControllerTests {
     @Test("Created with media already loaded, it starts from the engine's state")
     func startsFromCurrentState() {
         let engine = PlayerEngine.makeForTesting()
-        engine.duration = 100
+        engine.media.duration = 100
         engine.currentTime = 30
 
         let pip = PictureInPictureController(engine: engine)

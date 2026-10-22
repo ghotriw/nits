@@ -95,7 +95,7 @@ extension PlayerEngine {
     /// to the field rate. With `refresh`, frames already decoded in the old mode are replaced by re-seeking to
     /// the current frame.
     func applyDeinterlaceMode(refresh: Bool) {
-        guard isInterlacedContent, let demuxer else { return }
+        guard media.video.isInterlaced, let demuxer else { return }
         decoder.setDeinterlaceMode(deinterlaceMode)
         let contentFrameDuration = demuxer.readingDescription(\.nominalFrameDuration)
         let frameDuration =
@@ -134,7 +134,7 @@ extension PlayerEngine {
         switch renderMode {
         case .auto:
             // Metal tone mapping is ONLY needed when video content is HDR and display is SDR
-            if isHDRContent && !isHDRDisplay && isToneMappingPermitted && !isPictureInPictureActive {
+            if media.video.isHDR && !isHDRDisplay && isToneMappingPermitted && !isPictureInPictureActive {
                 newMode = .metalToneMap
             } else {
                 newMode = .system

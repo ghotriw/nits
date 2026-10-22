@@ -581,7 +581,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
             self.forceUpdateNowPlayingInfo(
                 title: self.throttler.lastReportedTitle,
                 currentTime: targetSeconds,
-                duration: self.engine?.duration ?? 0,
+                duration: self.engine?.media.duration ?? 0,
                 isPlaying: self.engine?.isPlaying ?? false
             )
             return .success
@@ -600,7 +600,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
                 self.forceUpdateNowPlayingInfo(
                     title: self.throttler.lastReportedTitle,
                     currentTime: engine.currentTime,
-                    duration: engine.duration,
+                    duration: engine.media.duration,
                     isPlaying: engine.isPlaying
                 )
             }
@@ -620,7 +620,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
                 self.forceUpdateNowPlayingInfo(
                     title: self.throttler.lastReportedTitle,
                     currentTime: engine.currentTime,
-                    duration: engine.duration,
+                    duration: engine.media.duration,
                     isPlaying: engine.isPlaying
                 )
             }
@@ -792,7 +792,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
                 forceUpdateNowPlayingInfo(
                     title: throttler.lastReportedTitle,
                     currentTime: throttler.lastReportedTime,
-                    duration: engine?.duration ?? 0,
+                    duration: engine?.media.duration ?? 0,
                     isPlaying: throttler.lastReportedIsPlaying ?? false
                 )
             }
@@ -819,7 +819,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
                     self.forceUpdateNowPlayingInfo(
                         title: self.throttler.lastReportedTitle,
                         currentTime: self.throttler.lastReportedTime,
-                        duration: self.engine?.duration ?? 0,
+                        duration: self.engine?.media.duration ?? 0,
                         isPlaying: self.throttler.lastReportedIsPlaying ?? false
                     )
                 }

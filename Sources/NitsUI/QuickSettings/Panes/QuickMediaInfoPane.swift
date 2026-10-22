@@ -19,22 +19,22 @@ public struct QuickMediaInfoPane: View {
                     .foregroundStyle(.white.opacity(0.9))
 
                 infoRow(label: "Title", value: engine.mediaTitle.isEmpty ? "—" : engine.mediaTitle)
-                infoRow(label: "Duration", value: formatDuration(engine.duration))
+                infoRow(label: "Duration", value: formatDuration(engine.media.duration))
             }
 
             Divider()
                 .overlay(Color.white.opacity(0.12))
 
-            if engine.hasVideo {
+            if engine.media.hasVideo {
                 // Video Stream
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Video Stream", systemImage: "film")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.9))
 
-                    infoRow(label: "Resolution", value: "\(engine.videoWidth) × \(engine.videoHeight)")
-                    let sourceAspect = String(format: "%.2f:1", engine.displayAspectRatio)
-                    let sar = engine.sampleAspectRatio
+                    infoRow(label: "Resolution", value: "\(engine.media.video.width) × \(engine.media.video.height)")
+                    let sourceAspect = String(format: "%.2f:1", engine.media.video.displayAspectRatio)
+                    let sar = engine.media.video.sampleAspectRatio
                     infoRow(
                         label: "Aspect Ratio",
                         value: sar.isSquare ? sourceAspect : "\(sourceAspect) (SAR \(sar.numerator):\(sar.denominator))"
@@ -44,25 +44,29 @@ public struct QuickMediaInfoPane: View {
                     }
                     infoRow(
                         label: "Codec",
-                        value: engine.videoCodecName.isEmpty
-                            ? (metrics.codecName.isEmpty ? "—" : metrics.codecName) : engine.videoCodecName)
-                    infoRow(label: "Color Depth", value: "\(engine.videoBitDepth)-bit")
+                        value: engine.media.video.codecName.isEmpty
+                            ? (metrics.codecName.isEmpty ? "—" : metrics.codecName) : engine.media.video.codecName)
+                    infoRow(label: "Color Depth", value: "\(engine.media.video.bitDepth)-bit")
                     let primaries =
-                        engine.videoColorPrimaries.isEmpty ? metrics.colorPrimaries : engine.videoColorPrimaries
+                        engine.media.video.colorPrimaries.isEmpty
+                        ? metrics.colorPrimaries : engine.media.video.colorPrimaries
                     if !primaries.isEmpty {
                         infoRow(label: "Color Primaries", value: primaries)
                     }
                     let transfer =
-                        engine.videoTransferFunction.isEmpty ? metrics.transferFunction : engine.videoTransferFunction
+                        engine.media.video.transferFunction.isEmpty
+                        ? metrics.transferFunction : engine.media.video.transferFunction
                     if !transfer.isEmpty {
                         infoRow(label: "Transfer Function", value: transfer)
                     }
-                    if let dvProfile = engine.videoDolbyVisionProfile ?? metrics.dolbyVisionProfile {
+                    if let dvProfile = engine.media.video.dolbyVisionProfile ?? metrics.dolbyVisionProfile {
                         infoRow(
                             label: "Dolby Vision",
                             value: dvProfile.hasPrefix("Profile") ? dvProfile : "Profile \(dvProfile)")
                     }
-                    let peak = engine.videoSourcePeakNits > 0 ? engine.videoSourcePeakNits : metrics.sourcePeakNits
+                    let peak =
+                        engine.media.video.sourcePeakNits > 0
+                        ? engine.media.video.sourcePeakNits : metrics.sourcePeakNits
                     if peak > 0 {
                         infoRow(label: "Source Peak", value: "\(Int(peak)) nits")
                     }

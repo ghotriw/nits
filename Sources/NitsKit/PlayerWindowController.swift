@@ -200,7 +200,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 self.nowPlayingController.update(
                     title: self.engine.mediaTitle,
                     currentTime: self.engine.currentTime,
-                    duration: self.engine.duration,
+                    duration: self.engine.media.duration,
                     isPlaying: true,
                     artworkData: self.engine.artworkData,
                     artworkURL: self.engine.artworkURL
@@ -209,7 +209,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 self.nowPlayingController.update(
                     title: self.engine.mediaTitle,
                     currentTime: self.engine.currentTime,
-                    duration: self.engine.duration,
+                    duration: self.engine.media.duration,
                     isPlaying: false,
                     artworkData: self.engine.artworkData,
                     artworkURL: self.engine.artworkURL
@@ -230,7 +230,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
             guard let self, self.engine.enableOSD, self.uiState.osd.isVisible else { return }
             self.uiState.osd.show(
-                .seek(offsetSeconds: actualOffset, currentTime: completedTime, duration: self.engine.duration)
+                .seek(offsetSeconds: actualOffset, currentTime: completedTime, duration: self.engine.media.duration)
             )
         }
     }
@@ -381,7 +381,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     }
 
     public func windowDidMiniaturize(_ notification: Notification) {
-        guard entersPictureInPictureOnMinimize, engine.hasVideo, engine.isPlaying, !pictureInPicture.isActive
+        guard entersPictureInPictureOnMinimize, engine.media.hasVideo, engine.isPlaying, !pictureInPicture.isActive
         else { return }
         isPictureInPictureFromMinimize = true
         pictureInPicture.toggle()
@@ -406,7 +406,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
 
     public func windowWillClose(_ notification: Notification) {
         let finalTime = engine.currentTime
-        let finalDuration = engine.duration
+        let finalDuration = engine.media.duration
         AppLog.info(
             .ui,
             "Player window closing for: '\(engine.mediaTitle)' at \(String(format: "%.2f", finalTime))s / \(String(format: "%.2f", finalDuration))s"
@@ -484,7 +484,7 @@ extension PlayerWindowController: PlayerActions {
         let offset = seconds - engine.currentTime
         engine.seek(to: seconds)
         if engine.enableOSD {
-            uiState.osd.show(.seek(offsetSeconds: offset, currentTime: seconds, duration: engine.duration))
+            uiState.osd.show(.seek(offsetSeconds: offset, currentTime: seconds, duration: engine.media.duration))
         }
     }
 
@@ -507,7 +507,7 @@ extension PlayerWindowController: PlayerActions {
         if engine.enableOSD {
             let targetPos = engine.pendingSeekTime ?? engine.currentTime
             uiState.osd.show(
-                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.duration)
+                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.media.duration)
             )
         }
     }
@@ -569,7 +569,7 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var hasVideo: Bool {
-        engine.hasVideo
+        engine.media.hasVideo
     }
 
     public var videoGeometry: VideoGeometrySettings {
@@ -577,20 +577,20 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public func setVideoAspectRatio(_ ratio: RationalAspectRatio?) {
-        guard engine.hasVideo else { return }
+        guard engine.media.hasVideo else { return }
         engine.setVideoAspectRatio(ratio)
         showGeometryOSD(
             symbol: "aspectratio", "Aspect Ratio: \(engine.videoGeometry.aspectRatio?.displayName ?? "Default")")
     }
 
     public func setVideoCrop(_ ratio: RationalAspectRatio?) {
-        guard engine.hasVideo else { return }
+        guard engine.media.hasVideo else { return }
         engine.setVideoCrop(ratio)
         showGeometryOSD(symbol: "crop", "Crop: \(engine.videoGeometry.crop?.displayName ?? "None")")
     }
 
     public func setVideoScaling(_ scaling: VideoScaling) {
-        guard engine.hasVideo else { return }
+        guard engine.media.hasVideo else { return }
         engine.setVideoScaling(scaling)
         showGeometryOSD(symbol: "arrow.up.left.and.arrow.down.right", "Scaling: \(engine.videoGeometry.scaling.title)")
     }
@@ -604,13 +604,13 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public func stepVideoZoom(by steps: Int) {
-        guard engine.hasVideo else { return }
+        guard engine.media.hasVideo else { return }
         engine.stepVideoZoom(by: steps)
         showZoomOSD()
     }
 
     public func resetVideoZoom() {
-        guard engine.hasVideo else { return }
+        guard engine.media.hasVideo else { return }
         engine.resetVideoZoom()
         showZoomOSD()
     }
@@ -643,7 +643,7 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var canTogglePictureInPicture: Bool {
-        engine.hasVideo && (uiState.isPictureInPicturePossible || engine.isPictureInPictureActive)
+        engine.media.hasVideo && (uiState.isPictureInPicturePossible || engine.isPictureInPictureActive)
     }
 
     public func togglePictureInPicture() {
@@ -717,7 +717,7 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var canJumpToTime: Bool {
-        engine.isLoaded && engine.duration > 0
+        engine.isLoaded && engine.media.duration > 0
     }
 
     public var isJumpToPresented: Bool {
@@ -790,7 +790,7 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var hasChapters: Bool {
-        engine.isLoaded && !engine.chapters.isEmpty
+        engine.isLoaded && !engine.media.chapters.isEmpty
     }
 
     public var isChaptersPresented: Bool {
@@ -823,7 +823,7 @@ extension PlayerWindowController: PlayerActions {
             symbol: symbol,
             text: chapter.displayTitle,
             subtext:
-                "Chapter \(chapter.id + 1) of \(engine.chapters.count) · \(TimeParser.format(seconds: chapter.start))"
+                "Chapter \(chapter.id + 1) of \(engine.media.chapters.count) · \(TimeParser.format(seconds: chapter.start))"
         )
     }
 

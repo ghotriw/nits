@@ -77,7 +77,7 @@ struct HostEventTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(await engine.waitForPlayback())
-        try #require(!engine.audioTracks.isEmpty && engine.videoWidth > 0)
+        try #require(!engine.audioTracks.isEmpty && engine.media.video.width > 0)
         engine.setAudioDelay(0.2)
         engine.subtitles.setDelay(2.5)
         engine.setVideoAspectRatio(RationalAspectRatio(numerator: 4, denominator: 3))
@@ -93,8 +93,8 @@ struct HostEventTests {
         #expect(reports == 1)
         #expect(engine.audioTracks.isEmpty && engine.subtitles.tracks.isEmpty && engine.variants.isEmpty)
         #expect(engine.selectedAudioTrackId == -1 && engine.subtitles.selectedTrackId == nil)
-        #expect(engine.videoWidth == 0 && engine.videoHeight == 0 && engine.videoCodecName.isEmpty)
-        #expect(!engine.hasVideo && engine.duration == 0 && engine.chapters.isEmpty)
+        #expect(engine.media.video.width == 0 && engine.media.video.height == 0 && engine.media.video.codecName.isEmpty)
+        #expect(!engine.media.hasVideo && engine.media.duration == 0 && engine.media.chapters.isEmpty)
         #expect(engine.audioDelay == 0 && engine.subtitles.delay == 0)
         #expect(engine.videoGeometry.aspectRatio == nil)
     }
@@ -106,11 +106,11 @@ struct HostEventTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(await waitUntil { engine.isLoaded })
-        try #require(engine.isHDRContent)
+        try #require(engine.media.video.isHDR)
 
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mp4")
         engine.load(path: missing.path)
-        #expect(!engine.isHDRContent)
+        #expect(!engine.media.video.isHDR)
     }
 
     @Test("Stopping a load still running in the background reports the previous media's tracks gone once")
@@ -163,13 +163,13 @@ struct HostEventTests {
         defer { engine.stop() }
         engine.load(path: video)
         try #require(await engine.waitForPlayback())
-        try #require(!engine.videoCodecName.isEmpty)
+        try #require(!engine.media.video.codecName.isEmpty)
 
         engine.load(path: audio)
         try #require(await engine.waitForPlayback())
-        #expect(!engine.hasVideo)
-        #expect(engine.videoWidth == 0 && engine.videoHeight == 0)
-        #expect(engine.videoCodecName.isEmpty && engine.videoColorPrimaries.isEmpty)
+        #expect(!engine.media.hasVideo)
+        #expect(engine.media.video.width == 0 && engine.media.video.height == 0)
+        #expect(engine.media.video.codecName.isEmpty && engine.media.video.colorPrimaries.isEmpty)
     }
 
     @Test("Packet ends saturate on corrupt timestamps instead of overflowing")
@@ -273,12 +273,12 @@ struct HostEventTests {
         let buffered = engine.bufferedTime
         // Read ahead (`NITS_READ_AHEAD_LOCAL`), the whole 30-second file is read at once.
         #expect(
-            buffered > engine.currentTime && (buffered < engine.duration || PlayerEngine.readsAheadLocalFiles),
-            "Buffered to \(buffered)s at \(engine.currentTime)s of \(engine.duration)s")
+            buffered > engine.currentTime && (buffered < engine.media.duration || PlayerEngine.readsAheadLocalFiles),
+            "Buffered to \(buffered)s at \(engine.currentTime)s of \(engine.media.duration)s")
 
-        engine.seek(to: engine.duration - 2.0)
+        engine.seek(to: engine.media.duration - 2.0)
         #expect(
-            await engine.waitUntil(timeout: .seconds(5)) { engine.bufferedTime == engine.duration },
-            "Buffered to \(engine.bufferedTime)s of \(engine.duration)s")
+            await engine.waitUntil(timeout: .seconds(5)) { engine.bufferedTime == engine.media.duration },
+            "Buffered to \(engine.bufferedTime)s of \(engine.media.duration)s")
     }
 }

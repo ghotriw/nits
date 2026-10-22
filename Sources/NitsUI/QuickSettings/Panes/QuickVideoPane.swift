@@ -104,7 +104,8 @@ public struct QuickVideoPane: View {
                             set: { engine.setVideoAspectRatio($0) }
                         )
                     ) {
-                        Text("Default (\(formattedRatio(engine.displayAspectRatio)))").tag(RationalAspectRatio?.none)
+                        Text("Default (\(formattedRatio(engine.media.video.displayAspectRatio)))").tag(
+                            RationalAspectRatio?.none)
                         ForEach(RationalAspectRatio.displayPresets, id: \.self) { ratio in
                             Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
                         }
@@ -276,7 +277,7 @@ public struct QuickVideoPane: View {
             }
 
             // Picture geometry: aspect ratio, crop, scaling, zoom
-            if engine.hasVideo {
+            if engine.media.hasVideo {
                 Divider()
                     .overlay(Color.white.opacity(0.12))
 
@@ -284,7 +285,7 @@ public struct QuickVideoPane: View {
             }
 
             // Deinterlacing - only for interlaced video
-            if engine.isInterlacedContent {
+            if engine.media.video.isInterlaced {
                 Divider()
                     .overlay(Color.white.opacity(0.12))
 
@@ -389,7 +390,7 @@ public struct QuickVideoPane: View {
                         Slider(value: $engine.metalShadowLift, in: 0.0...0.1)
                     }
 
-                    if engine.videoDolbyVisionProfile != nil {
+                    if engine.media.video.dolbyVisionProfile != nil {
                         Toggle(isOn: $engine.applyDolbyVisionTrims) {
                             Text("Dolby Vision Trims (L2)")
                                 .font(.system(size: 12))

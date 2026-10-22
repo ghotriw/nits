@@ -43,7 +43,7 @@ extension PlayerEngine {
     }
 
     func seek(to seconds: Double, exact: Bool, forward: Bool) {
-        let target = max(0, duration > 0 ? min(seconds, duration) : seconds)
+        let target = max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
 
@@ -125,7 +125,7 @@ extension PlayerEngine {
         let audioDecoder = self.audioDecoder
         let audioSink = self.audioSink
         let audioDelay = self.audioDelay
-        let hasVideo = self.hasVideo
+        let hasVideo = self.media.hasVideo
         let seekIdLock = self.activeSeekId
         let frameQueue = self.frameQueue
         // Seed the step window only for paused exact seeks — when the user is scrubbing/stepping, not
@@ -245,14 +245,14 @@ extension PlayerEngine {
 
         // If a preview frame was already rendered directly via renderDirect, do NOT overwrite it
         // by popping from frameQueue.getLatestFrame (which may drop preroll frames tagged doNotDisplay).
-        if hasVideo && !didRenderPreview {
+        if media.hasVideo && !didRenderPreview {
             renderCurrentFrame(at: targetTime)
         }
 
         // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
         self.currentTime = completedSeconds
         subtitles.timeDidChange(to: completedSeconds, .seekLanded)
-        onTimeUpdate?(completedSeconds, duration)
+        onTimeUpdate?(completedSeconds, media.duration)
 
         if isRelativeSeekInFlight {
             isRelativeSeekInFlight = false
@@ -275,7 +275,7 @@ extension PlayerEngine {
             performanceMonitor.handlePlaybackStateChange(isPlaying: false)
             // Exact seeks leave the decoder warm and positioned just past the displayed frame (preview
             // over-reads a few frames into the queue). This enables incremental forward frame-stepping.
-            stepDecodeContiguous = hasVideo && chaseExactSeek
+            stepDecodeContiguous = media.hasVideo && chaseExactSeek
             AppLog.debug(.engine, "Chase seek settled at \(completedSeconds)s (paused)")
             return
         }
@@ -291,7 +291,7 @@ extension PlayerEngine {
             self.chaseTargetTime = nil
             self.startFeeding()
             self.startSynchronizerClockAfterPreroll(at: targetTime)
-            self.displayLink?.isPaused = !self.hasVideo
+            self.displayLink?.isPaused = !self.media.hasVideo
             self.isPlaying = true
             self.playbackState = .playing
             self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
@@ -513,7 +513,7 @@ extension PlayerEngine {
             relativeSeekSessionStartTime = baseTime
         }
 
-        let isExact = !hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
+        let isExact = !media.hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
         let isForward = seconds > 0 && !isExact
 
         // In burst mode (keyframe seek), always step from the latest targeted or settled frame
@@ -536,7 +536,7 @@ extension PlayerEngine {
     /// Whether a frame step can be served from the warm pipeline + step cache instead of a full keyframe
     /// re-seek: video is loaded, paused, not mid-seek, and the pipeline is positioned contiguously.
     var canFastStepFrame: Bool {
-        hasVideo && stepDecodeContiguous && !isSeeking && chaseTargetTime == nil && !isPlaying
+        media.hasVideo && stepDecodeContiguous && !isSeeking && chaseTargetTime == nil && !isPlaying
             && currentFramePTS >= 0
     }
 
@@ -680,7 +680,7 @@ extension PlayerEngine {
         synchronizer.setRate(0.0, time: entry.pts)
         currentTime = pts
         subtitles.timeDidChange(to: pts, .tick)
-        onTimeUpdate?(pts, duration)
+        onTimeUpdate?(pts, media.duration)
         // Pipeline remains positioned just past the furthest decoded frame — keep fast stepping enabled.
         // The step window lives until playback resumes or a seek repositions the pipeline.
         stepDecodeContiguous = true
@@ -691,11 +691,11 @@ extension PlayerEngine {
     func stepFrame(forward: Bool) {
         if isPlaying { pause() }
         // The engine's frame duration, not the demuxer's: field-rate deinterlacing steps a field at a time.
-        let stepDuration = demuxer != nil ? nominalFrameDuration : (hasVideo ? (1.0 / 24.0) : 1.0)
+        let stepDuration = demuxer != nil ? nominalFrameDuration : (media.hasVideo ? (1.0 / 24.0) : 1.0)
         resumePlaybackAfterChase = false
         let baseTime = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
         let targetTime = forward ? (baseTime + stepDuration) : (baseTime - stepDuration * 1.05)
-        let clampedTarget = max(0, duration > 0 ? min(targetTime, duration) : targetTime)
+        let clampedTarget = max(0, media.duration > 0 ? min(targetTime, media.duration) : targetTime)
         if forward {
             // Require the next settled frame to be at least baseTime + 0.001s
             minStepFramePTS = baseTime + 0.001

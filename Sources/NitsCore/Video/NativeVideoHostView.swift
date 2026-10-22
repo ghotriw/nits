@@ -130,9 +130,9 @@ public final class NativeVideoHostView: NSView {
         let settings = isPictureInPicture ? VideoGeometrySettings() : engine.videoGeometry
         let videoLayout = VideoGeometry.layout(
             viewSize: bounds.size,
-            videoWidth: engine.videoWidth,
-            videoHeight: engine.videoHeight,
-            sampleAspectRatio: engine.sampleAspectRatio,
+            videoWidth: engine.media.video.width,
+            videoHeight: engine.media.video.height,
+            sampleAspectRatio: engine.media.video.sampleAspectRatio,
             settings: settings,
             backingScale: scale
         )

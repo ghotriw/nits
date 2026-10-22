@@ -198,14 +198,14 @@ struct HLSVariantPlaybackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(await engine.waitForPlayback())
-        #expect(engine.videoWidth == 640)
+        #expect(engine.media.video.width == 640)
         let low = try #require(engine.variants.last)
         var seeks = 0
         engine.onSeekingChanged = { if $0 { seeks += 1 } }
 
         engine.selectVariant(id: low.id)
         #expect(engine.selectedVariantId == low.id)
-        #expect(await engine.waitUntil(timeout: .seconds(4)) { engine.videoWidth == 320 })
+        #expect(await engine.waitUntil(timeout: .seconds(4)) { engine.media.video.width == 320 })
         let switchedAt = engine.currentTime
         #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.currentTime > switchedAt + 1 })
         // Read ahead, the switch seeks to the current frame (`PlayerEngine.selectVariant(id:)`).

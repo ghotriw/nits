@@ -109,8 +109,8 @@ struct AV1PlaybackTests {
         engine.load(path: av1Path)
 
         #expect(engine.isLoaded == true)
-        #expect(engine.hasVideo == true)
-        #expect(engine.duration > 0)
+        #expect(engine.media.hasVideo == true)
+        #expect(engine.media.duration > 0)
 
         engine.play()
         #expect(engine.isPlaying == true)

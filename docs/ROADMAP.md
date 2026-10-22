@@ -675,7 +675,7 @@ flowchart TD
   - `onTracksChanged`: track lists or selection changed (once per load and on `stop()`, then on switches and added subtitle files).
   - `onBufferingChanged` / `isBuffering`: playback held for data; `playbackState` stays `.playing`.
   - `onSeekingChanged`: a seek (or a burst of them) started or settled; `isSeeking || pendingSeekTime != nil`.
-  - `bufferedTime`: how far media has been read ahead of `currentTime` (`duration` once read to the end).
+  - `bufferedTime`: how far media has been read ahead of `currentTime` (`media.duration` once read to the end).
   - Load errors: `playbackState == .failed(message)` / `loadError`.
   - Picture in Picture: public `PictureInPictureController` (NitsKit) that follows the engine by itself; the host
     toggles it and handles its window.

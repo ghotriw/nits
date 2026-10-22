@@ -61,8 +61,9 @@ extension PlayerEngine {
         let isStarved: Bool
         if hasAudioStream {
             isStarved =
-                ahead < Self.bufferingAudioLowWatermark * rate && (!hasVideo || queued < Self.bufferingVideoLowFrames)
-        } else if hasVideo {
+                ahead < Self.bufferingAudioLowWatermark * rate
+                && (!media.hasVideo || queued < Self.bufferingVideoLowFrames)
+        } else if media.hasVideo {
             // A frame or two behind with nothing queued: a decoder that keeps up hovers at an empty queue at times.
             let frameDuration = nominalFrameDurationLock.withLock { $0 }
             isStarved = queued == 0 && clock.seconds > frameQueue.getLastRenderedPTS() + 2 * frameDuration
@@ -116,10 +117,11 @@ extension PlayerEngine {
         guard let demuxer, !demuxer.isEOF else { return true }
         // The clock is held at rate 0; the amounts are for the rate it resumes at.
         let ahead = audioAhead(of: clock)
-        let isVideoReady = !hasVideo || frameQueue.count >= Self.bufferingResumeFrames
+        let isVideoReady = !media.hasVideo || frameQueue.count >= Self.bufferingResumeFrames
         let isAudioReady =
             !hasAudioStream || ahead >= Self.bufferingResumeAudio * playbackRate
-            || (audioSettled && (ahead > Self.bufferingAudioLowWatermark * playbackRate || (hasVideo && isVideoReady)))
+            || (audioSettled
+                && (ahead > Self.bufferingAudioLowWatermark * playbackRate || (media.hasVideo && isVideoReady)))
         return isAudioReady && isVideoReady
     }
 
@@ -141,9 +143,9 @@ extension PlayerEngine {
         guard let demuxer, isLoaded else { return currentTime }
         let readAhead = demuxer.readAheadSeconds
         if readAhead == .infinity {
-            return duration > 0 ? duration : currentTime
+            return media.duration > 0 ? media.duration : currentTime
         }
         let buffered = max(currentTime, readAhead)
-        return duration > 0 ? min(buffered, duration) : buffered
+        return media.duration > 0 ? min(buffered, media.duration) : buffered
     }
 }

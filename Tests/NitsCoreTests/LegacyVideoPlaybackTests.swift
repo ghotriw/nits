@@ -181,8 +181,8 @@ struct LegacyVideoPlaybackTests {
         engine.load(path: path)
 
         #expect(engine.isLoaded)
-        #expect(engine.duration > 0)
-        #expect(engine.videoCodecName == testCase.codec.displayName)
+        #expect(engine.media.duration > 0)
+        #expect(engine.media.video.codecName == testCase.codec.displayName)
 
         engine.play()
         #expect(await engine.waitUntil { engine.currentTime > 0 }, "Playback did not progress")

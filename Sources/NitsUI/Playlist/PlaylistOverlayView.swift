@@ -68,7 +68,7 @@ public struct PlaylistOverlayView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Media without chapters (once loaded) falls back to the playlist tab, or closes the panel without one.
-        .onChange(of: !engine.isLoading && engine.chapters.isEmpty, initial: true) { _, noChapters in
+        .onChange(of: !engine.isLoading && engine.media.chapters.isEmpty, initial: true) { _, noChapters in
             if noChapters && uiState.sidePanel == .chapters {
                 uiState.sidePanel = uiState.isPlaylistAvailable ? .playlist : nil
             }
@@ -122,7 +122,7 @@ public struct PlaylistOverlayView: View {
     /// Chapters tab is open and the media has chapters (or there's no playlist tab to show instead); otherwise the
     /// panel shows the playlist.
     private var isShowingChapters: Bool {
-        tab == .chapters && (!engine.chapters.isEmpty || !uiState.isPlaylistAvailable)
+        tab == .chapters && (!engine.media.chapters.isEmpty || !uiState.isPlaylistAvailable)
     }
 
     private var headerTabs: [SidePanelTab<PlayerSidePanel>] {
@@ -139,13 +139,13 @@ public struct PlaylistOverlayView: View {
                 )
             )
         }
-        if !engine.chapters.isEmpty {
+        if !engine.media.chapters.isEmpty {
             tabs.append(
                 SidePanelTab(
                     id: PlayerSidePanel.chapters,
                     title: "Chapters",
                     iconName: "list.and.film",
-                    badge: "\(engine.chapters.count)"
+                    badge: "\(engine.media.chapters.count)"
                 )
             )
         }

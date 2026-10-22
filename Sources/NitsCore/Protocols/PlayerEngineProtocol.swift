@@ -33,8 +33,14 @@ public enum PlaybackState: Sendable, Equatable {
 
 // MARK: - Granular Protocol Domains
 
+/// What describes the media loaded, which the playback, video and chapter domains read.
+public protocol PlayerMediaDescribing: AnyObject, Sendable {
+    /// Duration, chapters and the video stream of the media loaded; empty while none is.
+    @MainActor var media: MediaInfo { get }
+}
+
 /// Controls media transport, rate, volume, and playback lifecycle.
-public protocol PlayerPlaybackControlling: AnyObject, Sendable {
+public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
     @MainActor var playbackState: PlaybackState { get }
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
@@ -44,13 +50,12 @@ public protocol PlayerPlaybackControlling: AnyObject, Sendable {
     /// Called when a seek starts and when it settles (`isSeeking || pendingSeekTime != nil` changes).
     @MainActor var onSeekingChanged: ((_ isSeeking: Bool) -> Void)? { get set }
     @MainActor var currentTime: Double { get }
-    /// Timeline second up to which media has been read ahead of `currentTime`; `duration` once read to the end.
+    /// Timeline second up to which media has been read ahead of `currentTime`; `media.duration` once read to the end.
     @MainActor var bufferedTime: Double { get }
     /// Playback is held until media data arrives again; `playbackState` stays `.playing` meanwhile.
     @MainActor var isBuffering: Bool { get }
     @MainActor var pendingSeekTime: Double? { get }
     @MainActor var isSeeking: Bool { get }
-    @MainActor var duration: Double { get }
     @MainActor var isPlaying: Bool { get }
     @MainActor var isLoaded: Bool { get }
     @MainActor var isLoading: Bool { get }
@@ -84,28 +89,15 @@ public protocol PlayerPlaybackControlling: AnyObject, Sendable {
     @MainActor func resetPlaybackRate()
 }
 
-/// Metadata, format properties, display tracking, and Metal tone-mapping rendering controls.
-public protocol PlayerVideoControlling: AnyObject, Sendable {
-    @MainActor var hasVideo: Bool { get }
-    @MainActor var videoWidth: Int { get }
-    @MainActor var videoHeight: Int { get }
+/// Picture geometry, render mode, deinterlacing and Metal tone mapping; the video stream is `media.video`.
+public protocol PlayerVideoControlling: PlayerMediaDescribing {
     @MainActor var nominalFrameDuration: Double { get }
-    @MainActor var sampleAspectRatio: RationalAspectRatio { get }
-    @MainActor var displayAspectRatio: Double { get }
     /// Aspect ratio override, crop, scaling, zoom and pan of the picture; presentation only.
     @MainActor var videoGeometry: VideoGeometrySettings { get set }
-    /// `displayAspectRatio` with the aspect override and crop of `videoGeometry` applied.
+    /// `media.video.displayAspectRatio` with the aspect override and crop of `videoGeometry` applied.
     @MainActor var contentAspectRatio: Double { get }
-    @MainActor var videoCodecName: String { get }
-    @MainActor var videoBitDepth: Int { get }
-    @MainActor var videoColorPrimaries: String { get }
-    @MainActor var videoTransferFunction: String { get }
-    @MainActor var videoDolbyVisionProfile: String? { get }
-    @MainActor var videoSourcePeakNits: Float { get }
 
     @MainActor var renderMode: RenderMode { get set }
-    /// Whether the loaded video is interlaced (declares a field order, or is standard-definition DV).
-    @MainActor var isInterlacedContent: Bool { get }
     /// Applies to interlaced content; changing it re-seeks to the current frame.
     @MainActor var deinterlaceMode: DeinterlaceMode { get set }
     @MainActor var isHDRDisplay: Bool { get set }
@@ -156,8 +148,7 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
 }
 
 /// Container chapter markers and navigation.
-public protocol PlayerChapterControlling: AnyObject, Sendable {
-    @MainActor var chapters: [MediaChapter] { get }
+public protocol PlayerChapterControlling: PlayerMediaDescribing {
     @MainActor var currentChapterIndex: Int? { get }
     @MainActor func seekToChapter(_ chapter: MediaChapter)
     @MainActor @discardableResult func nextChapter() -> MediaChapter?
@@ -330,7 +321,7 @@ extension PlayerVideoControlling {
         get { VideoGeometrySettings() }
         set {}
     }
-    @MainActor public var contentAspectRatio: Double { displayAspectRatio }
+    @MainActor public var contentAspectRatio: Double { media.video.displayAspectRatio }
 }
 
 /// Display layer geometry while Picture in Picture uses it (see `PlayerEngine.pictureInPictureLayerGeometry`).

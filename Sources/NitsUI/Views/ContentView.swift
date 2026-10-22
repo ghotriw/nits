@@ -53,10 +53,10 @@ public struct ContentView: View {
                 onToggleFullscreen?()
             }
             .gesture(panGesture, including: canPanVideo ? .all : .subviews)
-            .simultaneousGesture(zoomGesture, including: engine.hasVideo ? .all : .subviews)
+            .simultaneousGesture(zoomGesture, including: engine.media.hasVideo ? .all : .subviews)
 
             // In audio-only mode, mask video layer with a solid black backdrop behind artwork
-            if engine.isLoaded && !engine.hasVideo {
+            if engine.isLoaded && !engine.media.hasVideo {
                 Color.black
                     .ignoresSafeArea()
 
@@ -142,9 +142,9 @@ public struct ContentView: View {
                 backgroundOpacity: engine.subtitles.style.backgroundOpacity,
                 fontName: engine.subtitles.style.fontName,
                 fontWeight: engine.subtitles.style.fontWeight,
-                videoWidth: engine.videoWidth,
-                videoHeight: engine.videoHeight,
-                sampleAspectRatio: engine.sampleAspectRatio,
+                videoWidth: engine.media.video.width,
+                videoHeight: engine.media.video.height,
+                sampleAspectRatio: engine.media.video.sampleAspectRatio,
                 geometry: engine.videoGeometry,
                 imageScale: engine.subtitles.effectiveScale,
                 raise: engine.subtitles.raise,
@@ -243,13 +243,15 @@ public struct ContentView: View {
 
                     JumpToTimeView(
                         currentTime: engine.currentTime,
-                        duration: engine.duration,
+                        duration: engine.media.duration,
                         onJump: { targetTime in
                             let offset = targetTime - engine.currentTime
                             engine.seek(to: targetTime)
                             if engine.enableOSD {
                                 uiState.osd.show(
-                                    .seek(offsetSeconds: offset, currentTime: targetTime, duration: engine.duration))
+                                    .seek(
+                                        offsetSeconds: offset, currentTime: targetTime, duration: engine.media.duration)
+                                )
                             }
                             let shouldResume = uiState.dismissJumpTo()
                             withAnimation(.easeInOut(duration: 0.2)) {
@@ -354,9 +356,9 @@ public struct ContentView: View {
     private var videoLayout: VideoLayout {
         VideoGeometry.layout(
             viewSize: videoAreaSize,
-            videoWidth: engine.videoWidth,
-            videoHeight: engine.videoHeight,
-            sampleAspectRatio: engine.sampleAspectRatio,
+            videoWidth: engine.media.video.width,
+            videoHeight: engine.media.video.height,
+            sampleAspectRatio: engine.media.video.sampleAspectRatio,
             settings: engine.videoGeometry,
             backingScale: displayScale
         )
@@ -364,7 +366,7 @@ public struct ContentView: View {
 
     /// The picture is larger than the view, so a drag moves it instead of the window.
     private var canPanVideo: Bool {
-        engine.hasVideo && !engine.isPictureInPictureActive && videoLayout.panLimit != .zero
+        engine.media.hasVideo && !engine.isPictureInPictureActive && videoLayout.panLimit != .zero
     }
 
     private var panGesture: some Gesture {

@@ -107,7 +107,10 @@ public final class PictureInPictureController: NSObject {
     /// position (20 updates a second) is followed only while PiP shows it; `toggle()` reads it when PiP starts.
     private func observeEngine() {
         withObservationTracking {
-            _ = (engine.isPlaying, engine.playbackRate, engine.duration, engine.playbackState, engine.hasVideo)
+            _ = (
+                engine.isPlaying, engine.playbackRate, engine.media.duration, engine.playbackState,
+                engine.media.hasVideo
+            )
             if engine.isPictureInPictureActive {
                 _ = engine.currentTime
             }
@@ -120,7 +123,7 @@ public final class PictureInPictureController: NSObject {
         observeEngine()
         // PiP is told to re-read only on a pause, resume, rate change or jump (`needsReport`).
         refreshSnapshot()
-        if engine.hasVideo, engine.playbackState == .playing || engine.playbackState == .paused {
+        if engine.media.hasVideo, engine.playbackState == .playing || engine.playbackState == .paused {
             prepare()
         }
     }
@@ -245,7 +248,7 @@ public final class PictureInPictureController: NSObject {
         let next = PictureInPicturePlaybackSnapshot(
             mediaTime: engine.currentTime,
             hostTime: now,
-            duration: engine.duration,
+            duration: engine.media.duration,
             isPlaying: engine.isPlaying,
             rate: engine.playbackRate
         )

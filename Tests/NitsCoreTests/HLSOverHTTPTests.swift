@@ -280,7 +280,7 @@ struct HLSOverHTTPPlaybackTests {
         let switchedAt = engine.currentTime
         let requestsBefore = server.requests.count
         engine.selectVariant(id: low.id)
-        #expect(await engine.waitUntil(timeout: .seconds(4)) { engine.videoWidth == 320 })
+        #expect(await engine.waitUntil(timeout: .seconds(4)) { engine.media.video.width == 320 })
         #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.currentTime > switchedAt + 1 })
         #expect(!engine.isBuffering)
         let fetched = server.requests.dropFirst(requestsBefore).map(\.path).filter { $0.hasPrefix("v0_") }
@@ -314,7 +314,7 @@ struct HLSOverHTTPPlaybackTests {
         engine.variantWillPlay(lowAt(1))
         #expect(engine.selectedVariantId == low.id)
         #expect(engine.pendingVariantChanges.isEmpty)
-        #expect(engine.videoWidth == 320 && engine.videoHeight == 180)
+        #expect(engine.media.video.width == 320 && engine.media.video.height == 180)
     }
 
     @Test("Selecting an HLS subtitle rendition reads it from the current frame, and its cues show")

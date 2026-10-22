@@ -125,7 +125,7 @@ struct ChapterTests {
         let engine = PlayerEngine.makeForTesting()
         engine.load(path: path)
         #expect(engine.isLoaded)
-        #expect(engine.chapters.count == SyntheticTestMediaFactory.chapterMarkers.count)
+        #expect(engine.media.chapters.count == SyntheticTestMediaFactory.chapterMarkers.count)
         #expect(engine.currentChapterIndex == 0)
 
         // Load autoplays; navigate paused so the position stays where a seek lands. Playing, a busy CI runner
@@ -147,13 +147,13 @@ struct ChapterTests {
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
         #expect(engine.currentChapterIndex == 1)
 
-        engine.seekToChapter(try #require(engine.chapters.last))
+        engine.seekToChapter(try #require(engine.media.chapters.last))
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil })
         #expect(engine.currentChapterIndex == 3)
         #expect(engine.nextChapter() == nil)
 
         engine.stop()
-        #expect(engine.chapters.isEmpty)
+        #expect(engine.media.chapters.isEmpty)
         #expect(engine.currentChapterIndex == nil)
     }
 }

@@ -258,7 +258,7 @@ struct DeinterlaceTests {
         defer { engine.stop() }
         engine.load(path: path)
         #expect(engine.isLoaded)
-        #expect(engine.isInterlacedContent)
+        #expect(engine.media.video.isInterlaced)
         for (mode, frameDuration) in [(DeinterlaceMode.frameRate, 0.040), (.off, 0.040), (.auto, 0.020)] {
             engine.deinterlaceMode = mode
             #expect(
@@ -268,7 +268,7 @@ struct DeinterlaceTests {
 
         guard let progressive = SyntheticTestMediaFactory.ensureMedia(preset: .mpeg1MPG) else { return }
         engine.load(path: progressive)
-        #expect(!engine.isInterlacedContent)
+        #expect(!engine.media.video.isInterlaced)
         let frameDuration = engine.nominalFrameDuration
         engine.deinterlaceMode = .frameRate
         #expect(engine.nominalFrameDuration == frameDuration)

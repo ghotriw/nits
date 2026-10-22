@@ -9,14 +9,14 @@ extension PlayerEngine {
         guard isLoaded else { return }
 
         // If video reached the end or is in completed state, restart from the beginning
-        if playbackState == .completed || (duration > 0 && currentTime >= (duration - 0.25)) {
+        if playbackState == .completed || (media.duration > 0 && currentTime >= (media.duration - 0.25)) {
             seek(to: 0.0)
         }
 
         // After frame-stepping the demuxer/decoder sit ahead of the cursor and audio before the seek
         // baseline was purged, so resuming feeding as-is would freeze video and drop/desync audio. Reseek
         // to currentTime first; the chase-settle machinery then resumes playback cleanly at the cursor.
-        if hasVideo, !isSeeking, chaseTargetTime == nil, didStepSincePause {
+        if media.hasVideo, !isSeeking, chaseTargetTime == nil, didStepSincePause {
             didStepSincePause = false
             seek(to: currentTime)
         }
@@ -38,7 +38,7 @@ extension PlayerEngine {
         let targetTime = resolvePlaybackStartTime(syncTime: synchronizer.currentTime())
         // Resuming from pause: the audio renderer still holds the paused media.
         startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: true)
-        displayLink?.isPaused = !hasVideo
+        displayLink?.isPaused = !media.hasVideo
         isPlaying = true
         playbackState = .playing
         performanceMonitor.handlePlaybackStateChange(isPlaying: true)
@@ -172,7 +172,7 @@ extension PlayerEngine {
         cancelPreroll()
         // Nothing presents video without a display link, so there is no anchor frame to protect.
         let isReady =
-            !hasVideo || displayLink == nil || (demuxer?.isEOF ?? true)
+            !media.hasVideo || displayLink == nil || (demuxer?.isEOF ?? true)
             || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
         if isReady {
             let startDelay =

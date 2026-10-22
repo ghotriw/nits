@@ -328,7 +328,7 @@ public struct ControlChaptersToggleButton: View {
     }
 
     public var body: some View {
-        if let uiState, !engine.chapters.isEmpty {
+        if let uiState, !engine.media.chapters.isEmpty {
             Button {
                 withAnimation(.spring(duration: 0.25)) {
                     uiState.toggleChapters()
@@ -358,7 +358,7 @@ public struct ControlPictureInPictureButton: View {
 
     public var body: some View {
         // Observed properties first: a body that bails out before reading them would never be re-evaluated.
-        if let uiState, engine.hasVideo, uiState.isPictureInPicturePossible || engine.isPictureInPictureActive,
+        if let uiState, engine.media.hasVideo, uiState.isPictureInPicturePossible || engine.isPictureInPictureActive,
             let toggle = uiState.togglePictureInPicture
         {
             Button {
@@ -502,7 +502,7 @@ public struct ControlTimelineSection: View {
                 .padding(.vertical, 7)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    guard engine.isLoaded && engine.duration > 0, let uiState else { return }
+                    guard engine.isLoaded && engine.media.duration > 0, let uiState else { return }
                     if uiState.isJumpToPresented {
                         let shouldResume = uiState.dismissJumpTo()
                         withAnimation(.spring(duration: 0.25)) {
@@ -525,7 +525,7 @@ public struct ControlTimelineSection: View {
 
             // Progress Bar with Keyframe Thumbnail Hover & Scrub Preview
             GeometryReader { geo in
-                let total = max(engine.duration, 1)
+                let total = max(engine.media.duration, 1)
                 let current = isDragging ? dragPosition : engine.currentTime
                 let progress = min(max(current / total, 0), 1)
 
@@ -538,8 +538,8 @@ public struct ControlTimelineSection: View {
                         .fill(.tint)
                         .frame(width: geo.size.width * progress, height: 6)
 
-                    if !engine.chapters.isEmpty {
-                        ChapterTickMarks(chapters: engine.chapters, duration: engine.duration)
+                    if !engine.media.chapters.isEmpty {
+                        ChapterTickMarks(chapters: engine.media.chapters, duration: engine.media.duration)
                             .frame(height: 6)
                     }
 
@@ -550,16 +550,17 @@ public struct ControlTimelineSection: View {
                 }
                 .frame(height: Self.trackHeight)
                 .overlay(alignment: .bottomLeading) {
-                    if (isTimelineHovered || isDragging) && engine.duration > 0 {
-                        let previewTime: Double = isDragging ? dragPosition : (timelineHoverRatio * engine.duration)
+                    if (isTimelineHovered || isDragging) && engine.media.duration > 0 {
+                        let previewTime: Double =
+                            isDragging ? dragPosition : (timelineHoverRatio * engine.media.duration)
                         let previewThumbnail = engine.thumbnailManager.thumbnail(at: previewTime)
-                        let chapterTitle = ChapterNavigator.index(at: previewTime, in: engine.chapters)
-                            .map { engine.chapters[$0].displayTitle }
+                        let chapterTitle = ChapterNavigator.index(at: previewTime, in: engine.media.chapters)
+                            .map { engine.media.chapters[$0].displayTitle }
                         let rawX: CGFloat = isDragging ? (progress * geo.size.width) : timelineHoverLocation.x
                         let clampedCursorX: CGFloat = min(max(rawX, 0), max(geo.size.width, 0))
                         let cardWidth = TimelineThumbnailPreviewView.size(
                             thumbnail: previewThumbnail,
-                            duration: engine.duration,
+                            duration: engine.media.duration,
                             hasChapterTitle: chapterTitle != nil,
                             geometry: engine.videoGeometry
                         ).width
@@ -577,7 +578,7 @@ public struct ControlTimelineSection: View {
                         TimelineThumbnailPreviewView(
                             thumbnail: previewThumbnail,
                             time: previewTime,
-                            duration: engine.duration,
+                            duration: engine.media.duration,
                             chapterTitle: chapterTitle,
                             geometry: engine.videoGeometry
                         )
@@ -606,13 +607,13 @@ public struct ControlTimelineSection: View {
                         .onChanged { value in
                             isDragging = true
                             let ratio = min(max(value.location.x / geo.size.width, 0), 1)
-                            dragPosition = ratio * engine.duration
+                            dragPosition = ratio * engine.media.duration
                             timelineHoverLocation = value.location
                             timelineHoverRatio = ratio
                         }
                         .onEnded { value in
                             let ratio = min(max(value.location.x / geo.size.width, 0), 1)
-                            let targetTime = ratio * engine.duration
+                            let targetTime = ratio * engine.media.duration
                             engine.seek(to: targetTime)
                             isDragging = false
                             if value.location.y >= 0 && value.location.y <= geo.size.height {
@@ -630,7 +631,7 @@ public struct ControlTimelineSection: View {
             .zIndex(10)
 
             // Total duration
-            Text(TimeParser.format(seconds: engine.duration))
+            Text(TimeParser.format(seconds: engine.media.duration))
                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.75))
                 .padding(.all, 7)

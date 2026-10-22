@@ -40,7 +40,8 @@ extension PlayerEngine {
     /// Where a seek that re-reads the media from the current frame goes (a track switch, a new decoder). A seek still
     /// in flight keeps its target: the re-read must not pull playback back to the frame before it.
     var rereadPosition: Double {
-        chaseTargetTime ?? (hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
+        chaseTargetTime
+            ?? (media.hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
     }
 
     /// Switches the HLS variant. Read on demand, without a seek: the demuxer splices at the new variant's first
@@ -96,11 +97,14 @@ extension PlayerEngine {
     /// display link is matched to the content).
     func variantDidChange(to change: MediaDemuxer.VariantChange) {
         selectedVariantId = change.variant.id
+        // In one write, so observers never see one variant's width with another's height.
+        var video = media.video
         if change.width > 0, change.height > 0 {
-            videoWidth = change.width
-            videoHeight = change.height
+            video.width = change.width
+            video.height = change.height
         }
-        sampleAspectRatio = change.sampleAspectRatio
+        video.sampleAspectRatio = change.sampleAspectRatio
+        media.video = video
         let frameDuration =
             decoder.outputsFieldRate
             ? FieldTiming.fieldDuration(ofFrameDuration: change.frameDuration) : change.frameDuration
@@ -193,7 +197,8 @@ extension PlayerEngine: SubtitleHost {
 
     var subtitleVideo: SubtitleVideo {
         SubtitleVideo(
-            width: videoWidth, height: videoHeight, sampleAspectRatio: sampleAspectRatio, geometry: videoGeometry,
+            width: media.video.width, height: media.video.height, sampleAspectRatio: media.video.sampleAspectRatio,
+            geometry: videoGeometry,
             frameDuration: nominalFrameDuration)
     }
 

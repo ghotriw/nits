@@ -28,9 +28,9 @@ struct PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 0.0)
+        #expect(engine.media.duration > 0.0)
 
-        let duration = engine.duration
+        let duration = engine.media.duration
         let maxSeek = min(duration - 2.0, 120.0)
         guard maxSeek > 5.0 else {
             engine.stop()
@@ -74,7 +74,7 @@ struct PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 20.0)
+        #expect(engine.media.duration > 20.0)
 
         engine.play()
         #expect(engine.isPlaying == true)
@@ -105,7 +105,7 @@ struct PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 20.0)
+        #expect(engine.media.duration > 20.0)
 
         // Seek forward to 18 seconds first so we have room to seek backward
         engine.seek(to: 18.0)
@@ -141,7 +141,7 @@ struct PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
-        #expect(engine.duration > 20.0)
+        #expect(engine.media.duration > 20.0)
 
         engine.play()
         #expect(engine.isPlaying == true)
@@ -344,7 +344,7 @@ extension PlaybackStressTests {
         let engine = Self.makeEngine()
         engine.load(path: path)
         #expect(engine.isLoaded == true)
-        #expect(engine.duration >= 50.0)
+        #expect(engine.media.duration >= 50.0)
 
         // Start playing from 45.0 seconds
         engine.seek(to: 45.0)

@@ -44,20 +44,25 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Called when `trackNavigation` changes (a load, the host, a press), so Next / Previous outside the views, such
     /// as the system's media controls, follow it without waiting for a time update; none come while paused.
     public var onTrackNavigationChanged: (() -> Void)?
-    /// Container chapters of the loaded media, sorted by start; empty when it has none.
-    public internal(set) var chapters: [MediaChapter] = [] {
+    /// What describes the media loaded (duration, chapters, the video stream); empty while none is.
+    public internal(set) var media = MediaInfo() {
         didSet {
-            currentChapterIndex = nil
-            updateCurrentChapterIndex()
+            if oldValue.hasVideo != media.hasVideo {
+                displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
+            }
+            if oldValue.video.isHDR != media.video.isHDR { updateEffectiveRenderMode() }
+            if oldValue.chapters != media.chapters {
+                currentChapterIndex = nil
+                updateCurrentChapterIndex()
+            }
         }
     }
-    /// Index into `chapters` of the chapter at `currentTime`; `nil` before the first one or without chapters.
+    /// Index into `media.chapters` of the chapter at `currentTime`; `nil` before the first one or without chapters.
     public internal(set) var currentChapterIndex: Int?
     public var pendingSeekTime: Double? { chaseTargetTime }
-    public var duration: Double = 0
     public var isPlaying: Bool = false {
         didSet {
-            displaySleepManager.update(isPlaying: isPlaying, hasVideo: hasVideo)
+            displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
         }
     }
     public var isLoaded: Bool = false {
@@ -88,27 +93,16 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var mediaTitle: String = ""
     public var artworkData: Data? = nil
     public var artworkURL: URL? = nil
-    public var hasVideo: Bool = false {
-        didSet {
-            displaySleepManager.update(isPlaying: isPlaying, hasVideo: hasVideo)
-        }
-    }
     public let displaySleepManager = DisplaySleepManager()
     public var isDisplaySleepDisabled: Bool {
         displaySleepManager.isSleepDisabled
     }
-    public var videoWidth: Int = 0
-    public var videoHeight: Int = 0
     public var nominalFrameDuration: Double = 1.0 / 24.0
     @ObservationIgnored
     let nominalFrameDurationLock = OSAllocatedUnfairLock(initialState: 1.0 / 24.0)
     /// `MediaDemuxer.videoStartTime`, for the display-link preroll.
     @ObservationIgnored
     let videoStartTimeLock = OSAllocatedUnfairLock(initialState: 0.0)
-    public var sampleAspectRatio: RationalAspectRatio = .square
-    public var displayAspectRatio: Double {
-        RationalAspectRatio.computeDisplayAspectRatio(width: videoWidth, height: videoHeight, sar: sampleAspectRatio)
-    }
     /// Aspect ratio override, crop, scaling, zoom and pan of the picture. Presentation only: the host view lays the
     /// video layers out from it, nothing else in the pipeline changes.
     public var videoGeometry = VideoGeometrySettings() {
@@ -124,28 +118,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// `videoGeometry` applied.
     public var contentAspectRatio: Double {
         VideoGeometry.contentAspectRatio(
-            videoWidth: videoWidth, videoHeight: videoHeight, sampleAspectRatio: sampleAspectRatio,
+            videoWidth: media.video.width, videoHeight: media.video.height,
+            sampleAspectRatio: media.video.sampleAspectRatio,
             settings: videoGeometry)
-    }
-    public var videoCodecName: String = ""
-    public var videoBitDepth: Int = 8
-    public var videoColorPrimaries: String = ""
-    public var videoTransferFunction: String = ""
-    public var videoDolbyVisionProfile: String? = nil
-    public var videoSourcePeakNits: Float = 0
-    public var isHDRContent: Bool = false {
-        didSet {
-            if oldValue != isHDRContent {
-                updateEffectiveRenderMode()
-            }
-        }
     }
     public var renderMode: RenderMode = .auto {
         didSet {
             updateEffectiveRenderMode()
         }
     }
-    public internal(set) var isInterlacedContent: Bool = false
     /// Kept across files for the session, like `renderMode`.
     public var deinterlaceMode: DeinterlaceMode = .auto {
         didSet {
@@ -821,7 +802,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 let seconds = CMTimeGetSeconds(self.synchronizer.currentTime())
                 if !seconds.isNaN && !seconds.isInfinite && seconds >= 0 {
                     self.currentTime = seconds
-                    self.onTimeUpdate?(seconds, self.duration)
+                    self.onTimeUpdate?(seconds, self.media.duration)
 
                     self.applyDueVariantChanges(at: seconds)
                     self.subtitles.timeDidChange(to: seconds, .tick)
@@ -829,7 +810,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     self.checkForAudioRendererLag()
 
                     // Check if playback reached the end
-                    if self.isPlaying && self.duration > 0 && seconds >= (self.duration - 0.25) {
+                    if self.isPlaying && self.media.duration > 0 && seconds >= (self.media.duration - 0.25) {
                         self.handleEndOfMedia()
                     }
                     // Throttled periodic progress auto-save every 15 seconds

@@ -210,9 +210,9 @@ struct VP9PlaybackTests {
         engine.load(path: vp9Path)
 
         #expect(engine.isLoaded == true)
-        #expect(engine.hasVideo == true)
-        #expect(engine.duration > 0)
-        #expect(engine.videoCodecName == "VP9")
+        #expect(engine.media.hasVideo == true)
+        #expect(engine.media.duration > 0)
+        #expect(engine.media.video.codecName == "VP9")
 
         engine.play()
         #expect(engine.isPlaying == true)

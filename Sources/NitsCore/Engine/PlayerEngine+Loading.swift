@@ -96,13 +96,8 @@ extension PlayerEngine {
         currentHeaders = [:]
         isLoaded = false
         currentTime = 0
-        duration = 0
-        chapters = []
+        media = MediaInfo()
         loadError = nil
-        hasVideo = false
-        isInterlacedContent = false
-        videoWidth = 0
-        videoHeight = 0
         nominalFrameDuration = 1.0 / 24.0
         nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
         videoStartTimeLock.withLock { $0 = 0 }
@@ -110,13 +105,6 @@ extension PlayerEngine {
         frameCadenceLock.withLock { $0 = FrameCadenceStats() }
         displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
         tickDiagnosticsLock.withLock { $0 = TickDiagnostics() }
-        sampleAspectRatio = .square
-        videoCodecName = ""
-        videoBitDepth = 8
-        videoColorPrimaries = ""
-        videoTransferFunction = ""
-        videoDolbyVisionProfile = nil
-        videoSourcePeakNits = 0
         currentMetrics = PlayerPerformanceMonitor.Metrics()
         dynamicToneMapLock.withLock {
             $0.basePeakNits = 1000.0
@@ -130,7 +118,6 @@ extension PlayerEngine {
             PlayerPerformanceMonitor.ToneMapParams(mode: .none, peakNits: 0, targetNits: 203)
         )
         thumbnailManager.reset()
-        isHDRContent = false
         audioDelay = 0
         audioSink.setDelay(.zero)
         // The file's aspect override and crop, zoom and pan; the scaling lasts the session.
@@ -409,20 +396,20 @@ extension PlayerEngine {
     }
 
     public func saveCurrentPlaybackProgress() {
-        guard isLoaded, !isLoading, let path = currentPath, duration > 0 else { return }
+        guard isLoaded, !isLoading, let path = currentPath, media.duration > 0 else { return }
         let progressTime = chaseTargetTime ?? currentTime
-        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(duration)s")
+        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(media.duration)s")
         if progressTime > 0 {
             historyStore.savePosition(
                 for: path,
                 position: progressTime,
-                duration: duration,
+                duration: media.duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
                 preferences: preferencesForHistory
             )
         } else {
-            historyStore.savePreferences(for: path, duration: duration, preferencesForHistory)
+            historyStore.savePreferences(for: path, duration: media.duration, preferencesForHistory)
         }
     }
 
@@ -570,18 +557,12 @@ extension PlayerEngine {
         isVariantAutomatic = canSelectAutomaticVariant && demuxer.isAdaptiveBitrateEnabled
         self.currentPath = path
         self.currentHeaders = headers
-        self.hasVideo = demuxer.hasVideo
-        self.duration = demuxer.durationSeconds
-        self.videoWidth = demuxer.width
-        self.videoHeight = demuxer.height
-        self.isInterlacedContent = demuxer.hasVideo && demuxer.isInterlaced
+        self.media = MediaInfo(demuxer: demuxer)
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }
         self.videoStartTimeLock.withLock { $0 = demuxer.videoStartTime }
         updateDisplayLinkFrameRate()
-        self.sampleAspectRatio = demuxer.sampleAspectRatio
-        self.isHDRContent = demuxer.isHDR
         if self.mediaTitle.isEmpty {
             self.mediaTitle = Self.resolveTitle(from: path)
         }
@@ -619,7 +600,6 @@ extension PlayerEngine {
         if self.artworkData == nil, let embedded = demuxer.embeddedArtworkData {
             self.artworkData = embedded
         }
-        self.chapters = demuxer.chapters
         if !demuxer.chapters.isEmpty {
             AppLog.info(.demuxer, "Loaded \(demuxer.chapters.count) chapter(s)")
         }
@@ -694,95 +674,36 @@ extension PlayerEngine {
                 $0.lastDoviMetadata = nil
             }
 
+            let primaries = ColorPrimariesClass(demuxer.colorPrimaries)
             self.metalRenderer?.updateUniforms { uniforms in
                 uniforms.sourcePeakNits = demuxer.maxPeakNits
                 uniforms.targetNits = effectiveTargetNits
                 if autoShadowLift > 0.0 {
                     uniforms.outputShadowLift = autoShadowLift
                 }
-                if demuxer.colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_709_2 {
-                    uniforms.colorPrimaries = 1
-                } else if demuxer.colorPrimaries == kCVImageBufferColorPrimaries_DCI_P3
-                    || demuxer.colorPrimaries == kCVImageBufferColorPrimaries_P3_D65
-                {
-                    uniforms.colorPrimaries = 2
-                } else {
-                    uniforms.colorPrimaries = 0  // BT.2020
-                }
-
-                if demuxer.transferFunction == kCVImageBufferTransferFunction_ITU_R_709_2
-                    || demuxer.transferFunction == kCVImageBufferTransferFunction_UseGamma
-                {
-                    uniforms.transferFunction = 2  // SDR
-                } else if demuxer.transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG {
-                    uniforms.transferFunction = 1  // HLG
-                } else {
-                    uniforms.transferFunction = 0  // PQ
-                }
-
+                uniforms.colorPrimaries = primaries.shaderIndex
+                uniforms.transferFunction = TransferFunctionClass(demuxer.transferFunction).shaderIndex
                 uniforms.bitDepth = UInt32(demuxer.bitDepth)
                 uniforms.isFullRange = demuxer.isFullRange ? 1 : 0
                 if demuxer.isDolbyVisionProfile5 {
                     uniforms.colorSpaceMode = 2  // Dolby Vision IPT / ICtCp
-                } else if demuxer.colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_709_2 {
+                } else if primaries == .bt709 {
                     uniforms.colorSpaceMode = 1  // BT.709
                 } else {
                     uniforms.colorSpaceMode = 0  // Standard BT.2020 YCbCr
                 }
             }
 
-            // Update telemetry metadata
-            let primariesStr: String = {
-                if demuxer.colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_709_2 { return "BT.709" }
-                if demuxer.colorPrimaries == kCVImageBufferColorPrimaries_DCI_P3
-                    || demuxer.colorPrimaries == kCVImageBufferColorPrimaries_P3_D65
-                {
-                    return "DCI-P3"
-                }
-                return "BT.2020"
-            }()
-            let transferStr: String = {
-                if demuxer.isDolbyVisionProfile5 { return "Dolby Vision (Profile 5 ICtCp)" }
-                if let dvStr = demuxer.dolbyVisionProfileString {
-                    return "Dolby Vision (Profile \(dvStr))"
-                }
-                if demuxer.transferFunction == kCVImageBufferTransferFunction_ITU_R_709_2
-                    || demuxer.transferFunction == kCVImageBufferTransferFunction_UseGamma
-                {
-                    return "BT.709 / SDR"
-                }
-                if demuxer.transferFunction == kCVImageBufferTransferFunction_ITU_R_2100_HLG { return "HLG" }
-                return "PQ (ST 2084)"
-            }()
-
-            let dvProfileStr: String? = {
-                if demuxer.isDolbyVisionProfile5 { return "Profile 5 (ICtCp)" }
-                if let dvStr = demuxer.dolbyVisionProfileString {
-                    if demuxer.dolbyVisionProfile == 8 {
-                        if demuxer.dolbyVisionCompatibilityId == 1 { return "Profile 8.1 (HDR10 Base)" }
-                        if demuxer.dolbyVisionCompatibilityId == 4 { return "Profile 8.4 (HLG Base)" }
-                    }
-                    return "Profile \(dvStr)"
-                }
-                return nil
-            }()
-
-            self.videoCodecName = demuxer.codec.displayName
-            self.videoBitDepth = demuxer.bitDepth
-            self.videoColorPrimaries = primariesStr
-            self.videoTransferFunction = transferStr
-            self.videoDolbyVisionProfile = dvProfileStr
-            self.videoSourcePeakNits = demuxer.maxPeakNits
-
+            let video = media.video
             self.performanceMonitor.updateStreamMetadata(
-                resolution: "\(demuxer.width)x\(demuxer.height)",
-                codecName: demuxer.codec.displayName,
-                bitDepth: demuxer.bitDepth,
-                colorPrimaries: primariesStr,
-                transferFunction: transferStr,
-                sourcePeakNits: demuxer.maxPeakNits,
+                resolution: "\(video.width)x\(video.height)",
+                codecName: video.codecName,
+                bitDepth: video.bitDepth,
+                colorPrimaries: video.colorPrimaries,
+                transferFunction: video.transferFunction,
+                sourcePeakNits: video.sourcePeakNits,
                 targetNits: effectiveTargetNits,
-                dolbyVisionProfile: dvProfileStr
+                dolbyVisionProfile: video.dolbyVisionProfile
             )
 
             let initialToneMode: PlayerPerformanceMonitor.ToneMapEngineMode
@@ -807,7 +728,7 @@ extension PlayerEngine {
 
         AppLog.info(
             .engine,
-            "Loaded successfully. Duration: \(self.duration)s, peakNits: \(demuxer.maxPeakNits), formatDesc: \(String(describing: demuxer.formatDescription))"
+            "Loaded successfully. Duration: \(self.media.duration)s, peakNits: \(demuxer.maxPeakNits), formatDesc: \(String(describing: demuxer.formatDescription))"
         )
 
         // Initialize video decoder if video stream is present
@@ -851,7 +772,7 @@ extension PlayerEngine {
         // 3. Fallback to 0.0
         let effectiveStartTime: Double
         if let explicit = requestedStartTime {
-            effectiveStartTime = min(max(0.0, explicit), max(0.0, self.duration - 1.0))
+            effectiveStartTime = min(max(0.0, explicit), max(0.0, self.media.duration - 1.0))
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")
         } else if configuration.resumePlayback,
             let saved = historyStore.savedPosition(
@@ -860,7 +781,7 @@ extension PlayerEngine {
                 endThresholdRatio: configuration.resumeEndThresholdRatio
             )
         {
-            effectiveStartTime = min(saved, max(0.0, self.duration - 1.0))
+            effectiveStartTime = min(saved, max(0.0, self.media.duration - 1.0))
             AppLog.info(.engine, "Resuming playback from saved history: \(effectiveStartTime)s")
         } else {
             effectiveStartTime = 0.0

@@ -78,8 +78,12 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   custom HTTP headers, not just `file://`.
 - A new engine feature with state of its own (a loop, filters, a second subtitle track, recording, …) is a type
   of its own that owns that state and resets it, which `PlayerEngine` holds and calls; not new `PlayerEngine`
-  properties and a new `PlayerEngine+X.swift`. State that does stay on `PlayerEngine` and describes the media is
-  cleared in `resetMediaState`, the one reset `stop()` and every load share.
+  properties and a new `PlayerEngine+X.swift`. What the demuxer tells about the loaded media, for the UI and
+  hosts, goes in `MediaInfo` (`engine.media`), which loads and resets replace whole. Not in it: timing the display
+  link reads off the main actor, behind a lock (`nominalFrameDuration`, which deinterlacing and variants also
+  change, and `videoStartTimeLock`), and what the request brings (`mediaTitle`, artwork; the container's artwork
+  only stands in for the request's). Per-media state that stays on `PlayerEngine` is cleared in
+  `resetMediaState`, the one reset `stop()` and every load share.
 - Hot loops that must run optimized in Debug too (SIMD pixel conversion, DSP) go in `NitsKernels`, the only
   target built with `-O` in Debug; keep its functions non-`@inlinable`.
 
