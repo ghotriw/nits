@@ -17,16 +17,18 @@ extension PlayerEngine {
             saveCurrentPlaybackProgress()
             return
         }
-        guard let demuxer = self.demuxer, id != selectedAudioTrackId, audioTracks.contains(where: { $0.id == id })
-        else { return }
+        // Checked before feeding stops: a track that isn't there must leave the one playing heard.
+        guard let inputs, id != selectedAudioTrackId, inputs.audioTracks.contains(where: { $0.id == id }) else {
+            return
+        }
         AppLog.info(.audio, "Switching to audio track: \(id)")
 
         stopFeedingAudio()
-        demuxer.selectAudioTrack(trackId: id)
+        inputs.selectAudioTrack(id: id)
         self.selectedAudioTrackId = id
         audioSelectionIsAutomatic = false
         saveCurrentPlaybackProgress()
-        if let input = demuxer.audioDecoderInput() {
+        if let input = inputs.audioSource?.audioDecoderInput() {
             let decoder = FFAudioDecoder(codecParameters: input.parameters, timebase: input.timebase)
             self.audioDecoder = decoder
             self.audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
@@ -35,6 +37,17 @@ extension PlayerEngine {
         }
 
         seek(to: rereadPosition, exact: true)
+    }
+
+    /// Adds the audio tracks of a file to the media playing (`PlaybackInputs.openExternalAudio`), none selected.
+    /// Returns them: none when the file can't be read, or another media was loaded meanwhile.
+    @discardableResult
+    func attachExternalAudio(url: URL, headers: [String: String] = [:]) async -> [MediaDemuxer.AudioTrack] {
+        guard let inputs else { return [] }
+        let added = await inputs.openExternalAudio(url: url, headers: headers)
+        guard self.inputs === inputs, !added.isEmpty else { return [] }
+        audioTracks = inputs.audioTracks
+        return added
     }
 
     /// Where a seek that re-reads the media from the current frame goes (a track switch, a new decoder). A seek still

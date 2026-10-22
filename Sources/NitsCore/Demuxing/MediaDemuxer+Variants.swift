@@ -387,13 +387,6 @@ extension MediaDemuxer {
             audioStreamIndex = pending.audioStream
             audioTimebase = stream.pointee.time_base
             if !hasVideo { timebase = audioTimebase }
-            audioTracks = audioTracks.map { track in
-                guard let position = pending.previous.audio.firstIndex(of: track.streamIndex) else { return track }
-                return AudioTrack(
-                    id: track.id, streamIndex: pending.streams.audio[position], title: track.title,
-                    language: track.language, codecName: track.codecName, channels: track.channels,
-                    sampleRate: track.sampleRate, isDefault: track.isDefault, describesVideo: track.describesVideo)
-            }
             if releasingHeld, let spliceTime = pending.spliceTime {
                 let audioSpliceTime = av_rescale_q(spliceTime, timebase, audioTimebase)
                 for packet in pending.heldAudio where packet.pts >= audioSpliceTime {
@@ -427,6 +420,15 @@ extension MediaDemuxer {
 
     private func finishVariantSwitch(in ctx: UnsafeMutablePointer<AVFormatContext>) {
         guard let pending = variantSwitch else { return }
+        // Every track now points at the new variant's stream, the one heard or not: with no audio track of this
+        // input selected (an external file plays) the switch splices no audio, and selecting a track later must
+        // still find the stream read now, not the old variant's, discarded below.
+        audioTracks = audioTracks.map { track in
+            guard let position = pending.previous.audio.firstIndex(of: track.streamIndex),
+                pending.streams.audio.indices.contains(position)
+            else { return track }
+            return track.with(streamIndex: pending.streams.audio[position])
+        }
         for index in pending.previous.all where !pending.streams.all.contains(index) {
             ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_ALL
         }

@@ -134,6 +134,9 @@ extension MediaDemuxer {
     /// follows the video, so video that ends (or starts) more than the limit before (after) the audio would otherwise
     /// stop reading for good, with the audio queue run dry and no end of input.
     private var isReadAheadFull: Bool {
+        // Nothing to read for: an added audio file while another track plays. Its reads would never count towards
+        // the limit (`recordReadAhead` measures the streams read), and the whole input would be read for nothing.
+        if videoStreamIndex < 0 && audioStreamIndex < 0 { return true }
         if videoQueue.byteCount + audioQueue.byteCount >= readAheadLimits.bytes { return true }
         if (hasVideo && videoQueue.isEmpty) || (audioStreamIndex >= 0 && audioQueue.isEmpty) { return false }
         return readAheadState.withLock { $0 } - consumedSeconds >= readAheadLimits.seconds

@@ -104,6 +104,26 @@ struct HLSVariantTests {
         #expect(Double(audio.pts) / 90_000 > 2.5)
     }
 
+    @Test("A switch made while no audio track is selected points the tracks at the new variant's streams")
+    func switchWithoutAudioFollowsTracks() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let low = try #require(demuxer.variants.last)
+        let track = try #require(demuxer.audioTracks.first)
+        let highStream = track.streamIndex
+
+        demuxer.selectAudioTrack(trackId: nil)
+        _ = demuxer.nextVideoSample()
+        demuxer.selectVariant(id: low.id)
+        demuxer.seek(to: 3)
+        try #require(demuxer.selectedVariantId == low.id)
+        #expect(demuxer.audioTracks.first?.streamIndex != highStream, "The track still names the old variant's stream")
+
+        demuxer.selectAudioTrack(trackId: track.id)
+        let audio = try #require(demuxer.nextAudioPacket(), "The track's stream is the discarded one")
+        #expect(Double(audio.pts) / 90_000 > 2.5)
+    }
+
     /// Fragmented MP4 has a variant's parameter sets only in its `avcC`: the software decoder, made with the first
     /// variant's, takes the new ones from the samples' format description. AV1 has no parameter sets: the splice
     /// builds its description from the new variant's `av1C`, and dav1d reads the sequence header of each keyframe.

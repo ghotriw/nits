@@ -23,7 +23,7 @@ extension MediaDemuxer {
         videoQueue.removeAll()
         lastAudioPts = -1
         lastVideoReadTime = Int64.min
-        isEOFInternal = false
+        inputEndedOnDemand = false
         // The read-ahead thread reads on from where this seek leaves the input.
         readAheadEnded = false
         consumedSeconds = seconds
@@ -41,6 +41,9 @@ extension MediaDemuxer {
             self.targetAudioPts = -1
         }
         guard timebase.num > 0 else { return }
+        // Nothing selected to position: no picture, and the audio heard comes from another input. Seeking stream -1
+        // would take the target in `AV_TIME_BASE`, not this time base.
+        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return }
         let target = Int64(seconds * Double(timebase.den) / Double(timebase.num))
         // If not exact (keyframe seek), don't set targetPts threshold so that the keyframe sample is displayed immediately
         self.targetPts = exact ? target : -1

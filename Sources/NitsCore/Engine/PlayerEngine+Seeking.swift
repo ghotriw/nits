@@ -126,13 +126,15 @@ extension PlayerEngine {
         let audioSink = self.audioSink
         let audioDelay = self.audioDelay
         let hasVideo = self.media.hasVideo
+        // The audio file played, when the track is one: it is positioned on its own input.
+        let externalAudio = inputs?.selectedExternal
         let seekIdLock = self.activeSeekId
         let frameQueue = self.frameQueue
         // Seed the step window only for paused exact seeks — when the user is scrubbing/stepping, not
         // during seeks that will resume playback.
         let stepCache: StepFrameCache? = (!shouldResume && isExact) ? self.stepFrameCache : nil
 
-        seekQueue.async { [weak self, demuxer, decoder, frameQueue, stepCache] in
+        seekQueue.async { [weak self, demuxer, externalAudio, decoder, frameQueue, stepCache] in
             guard let self else { return }
 
             let isSuperseded: @Sendable () -> Bool = {
@@ -163,13 +165,22 @@ extension PlayerEngine {
                 // jumped over wasn't read, even if a newer seek supersedes this one before it completes.
                 if let preview = previewFrame { demuxer.noteSubtitleReadsStart(at: preview.pts) }
                 // Audio heard with the picture at `t` is the media's audio at `t - audioDelay`.
-                if !isExact, let preview = previewFrame {
-                    demuxer.setTargetAudioPts(seconds: preview.pts - audioDelay)
-                } else if audioDelay != 0 {
-                    demuxer.setTargetAudioPts(seconds: targetSeconds - audioDelay)
-                }
-                if !shouldResume {
-                    demuxer.purgeAudio(beforeSeconds: resolvedSeconds - audioDelay)
+                if let externalAudio {
+                    // Its own input goes straight there, now the picture's landing is known: a keyframe seek lands
+                    // seconds off the target, before which this input would have nothing left to read, or past it.
+                    if !isSuperseded() {
+                        let start = (isExact ? targetSeconds : resolvedSeconds) - audioDelay
+                        externalAudio.seek(to: max(0, start))
+                    }
+                } else {
+                    if !isExact, let preview = previewFrame {
+                        demuxer.setTargetAudioPts(seconds: preview.pts - audioDelay)
+                    } else if audioDelay != 0 {
+                        demuxer.setTargetAudioPts(seconds: targetSeconds - audioDelay)
+                    }
+                    if !shouldResume {
+                        demuxer.purgeAudio(beforeSeconds: resolvedSeconds - audioDelay)
+                    }
                 }
                 // Render the freshly previewed frame directly (avoiding queue miss & stale fallback)
                 if !isSuperseded(), let preview = previewFrame {
@@ -179,6 +190,8 @@ extension PlayerEngine {
                             pixelBuffer: preview.pixelBuffer, pts: preview.pts, doviMetadata: preview.doviMetadata)
                     }
                 }
+            } else if let externalAudio, !isSuperseded() {
+                externalAudio.seek(to: max(0, targetSeconds - audioDelay))
             }
 
             // Expensive audio reset only for the seek that is still current (final chase target).

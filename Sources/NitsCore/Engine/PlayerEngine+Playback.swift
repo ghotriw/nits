@@ -172,7 +172,7 @@ extension PlayerEngine {
         cancelPreroll()
         // Nothing presents video without a display link, so there is no anchor frame to protect.
         let isReady =
-            !media.hasVideo || displayLink == nil || (demuxer?.isEOF ?? true)
+            !media.hasVideo || displayLink == nil || (inputs?.isVideoEOF ?? true)
             || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
         if isReady {
             let startDelay =

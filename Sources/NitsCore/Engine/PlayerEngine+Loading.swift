@@ -85,8 +85,8 @@ extension PlayerEngine {
 
         currentInterruptContext?.cancel()
         currentInterruptContext = nil
-        demuxer?.cancel()
-        demuxer = nil
+        inputs?.cancel()
+        inputs = nil
         stopPlaybackPipeline()
         synchronizer.setRate(0.0, time: .zero)
         audioLagDetector = AudioLagDetector()
@@ -421,8 +421,10 @@ extension PlayerEngine {
     /// Track selection, delays and the picture's aspect override and crop to persist. A selection made on load by
     /// `TrackAutoSelection` isn't saved; the subtitles write theirs (`SubtitleController.writePreferences`).
     private var preferencesForHistory: PlaybackPreferences {
+        // An added file's track isn't saved by its id, which numbers the files added this time: the saved choice stays.
+        let savesAudioTrack = selectedAudioTrackId >= 0 && !audioSelectionIsAutomatic && inputs?.isAudioSeparate != true
         var preferences = PlaybackPreferences(
-            audioTrackId: selectedAudioTrackId >= 0 && !audioSelectionIsAutomatic ? selectedAudioTrackId : nil,
+            audioTrackId: savesAudioTrack ? selectedAudioTrackId : nil,
             audioDelay: audioDelay,
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
@@ -539,7 +541,8 @@ extension PlayerEngine {
         requestedAudioTrack: String?, requestedSubtitleTrack: String?
     ) {
         resetRelativeSeekBurst()
-        self.demuxer = demuxer
+        let inputs = PlaybackInputs(main: demuxer)
+        self.inputs = inputs
         // In order (the main queue is FIFO; tasks aren't, at the different priorities of the reading thread and
         // `seekQueue`): a seek's change handled after the splice read past it would drop that splice.
         demuxer.onVariantChanged = { [weak self, weak demuxer] change in
@@ -609,22 +612,23 @@ extension PlayerEngine {
         // 3. `TrackAutoSelection` by the language settings and the tracks' flags
         let savedTracks = historyStore.savedPreferences(for: path)
 
+        let availableAudio = inputs.audioTracks
         if let spec = requestedAudioTrack,
-            let id = Self.resolveAudioTrackId(spec, in: demuxer.audioTracks)
+            let id = Self.resolveAudioTrackId(spec, in: availableAudio)
         {
-            demuxer.selectAudioTrack(trackId: id)
+            inputs.selectAudioTrack(id: id)
             AppLog.info(.audio, "Using explicit audio track: \(id)")
         } else if let saved = savedTracks?.audioTrackId,
-            demuxer.audioTracks.contains(where: { $0.id == saved })
+            availableAudio.contains(where: { $0.id == saved })
         {
-            demuxer.selectAudioTrack(trackId: saved)
+            inputs.selectAudioTrack(id: saved)
             AppLog.info(.audio, "Restored audio track from saved history: \(saved)")
         } else if let id = TrackAutoSelection.audioTrackId(
-            in: demuxer.audioTracks, languages: configuration.trackLanguages.audioLanguages)
+            in: availableAudio, languages: configuration.trackLanguages.audioLanguages)
         {
             audioSelectionIsAutomatic = true
-            if id != demuxer.selectedAudioTrackIndex {
-                demuxer.selectAudioTrack(trackId: id)
+            if id != inputs.selectedAudioTrackId {
+                inputs.selectAudioTrack(id: id)
                 AppLog.info(.audio, "Selected audio track \(id) by language and default flag")
             }
         }
@@ -634,8 +638,8 @@ extension PlayerEngine {
         beginDeferringTracksChanged()
         defer { endDeferringTracksChanged() }
         hasDeferredTracksChange = true
-        self.audioTracks = demuxer.audioTracks
-        self.selectedAudioTrackId = demuxer.selectedAudioTrackIndex
+        self.audioTracks = inputs.audioTracks
+        self.selectedAudioTrackId = inputs.selectedAudioTrackId
         self.variants = demuxer.variants
         self.selectedVariantId = demuxer.selectedVariantId
         // Set directly: the pipeline is flushed below, so there is no queued audio to move.
@@ -745,13 +749,13 @@ extension PlayerEngine {
         }
 
         // Initialize audio decoder if audio stream is present
-        if demuxer.hasAudio, let audioParams = demuxer.getAudioCodecParameters() {
-            let decoder = FFAudioDecoder(codecParameters: audioParams, timebase: demuxer.audioTimebase)
+        if let input = inputs.audioSource?.audioDecoderInput() {
+            let decoder = FFAudioDecoder(codecParameters: input.parameters, timebase: input.timebase)
             self.audioDecoder = decoder
             self.audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
             AppLog.info(
                 .audio,
-                "Audio decoder initialized: \(String(describing: self.audioDecoder != nil)), channels: \(demuxer.audioChannels), rate: \(demuxer.audioSampleRate)"
+                "Audio decoder initialized: \(String(describing: self.audioDecoder != nil)), channels: \(input.parameters.pointee.ch_layout.nb_channels), rate: \(input.parameters.pointee.sample_rate)"
             )
         } else {
             self.audioDecoder = nil

@@ -49,10 +49,12 @@ public final class MediaDemuxer: @unchecked Sendable {
         /// An audio description of the picture, for viewers who can't see it (`AV_DISPOSITION_VISUAL_IMPAIRED`:
         /// HLS's `public.accessibility.describes-video`).
         public let describesVideo: Bool
+        /// The audio file the track is in, when it isn't in the media itself (`PlaybackInputs`).
+        public let externalURL: URL?
 
         init(
             id: Int, streamIndex: Int, title: String, language: String, codecName: String, channels: Int,
-            sampleRate: Int, isDefault: Bool, describesVideo: Bool = false
+            sampleRate: Int, isDefault: Bool, describesVideo: Bool = false, externalURL: URL? = nil
         ) {
             self.id = id
             self.streamIndex = streamIndex
@@ -63,6 +65,16 @@ public final class MediaDemuxer: @unchecked Sendable {
             self.sampleRate = sampleRate
             self.isDefault = isDefault
             self.describesVideo = describesVideo
+            self.externalURL = externalURL
+        }
+
+        /// This track with what is given replaced: another id (`PlaybackInputs` numbers an added file's tracks apart
+        /// from the media's) and file, or the stream of another HLS variant.
+        func with(id: Int? = nil, streamIndex: Int? = nil, externalURL: URL? = nil) -> AudioTrack {
+            AudioTrack(
+                id: id ?? self.id, streamIndex: streamIndex ?? self.streamIndex, title: title, language: language,
+                codecName: codecName, channels: channels, sampleRate: sampleRate, isDefault: isDefault,
+                describesVideo: describesVideo, externalURL: externalURL ?? self.externalURL)
         }
     }
 
@@ -187,9 +199,20 @@ public final class MediaDemuxer: @unchecked Sendable {
         return UnsafePointer(stream.pointee.codecpar)
     }
 
-    public func selectAudioTrack(trackId: Int) {
+    /// Selects the audio track `trackId`, or none (`nil`), when the audio heard comes from another input: this one's
+    /// audio packets are then dropped as read, and `isAudioEOF` holds.
+    public func selectAudioTrack(trackId: Int?) {
         queueLock.lock()
         defer { queueLock.unlock() }
+        guard let trackId else {
+            audioStreamIndex = -1
+            selectedAudioTrackIndex = -1
+            targetAudioPts = -1
+            lastAudioPts = -1
+            audioQueue.removeAll()
+            streamSelectionChanged = true
+            return
+        }
         guard let ctx = formatCtx, let track = audioTracks.first(where: { $0.id == trackId }) else { return }
         self.audioStreamIndex = track.streamIndex
         self.selectedAudioTrackIndex = track.id
@@ -376,11 +399,38 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// `isEOFInternal` and the read-ahead state). Held only briefly: while reading ahead, consumers take packets
     /// under it alone, and the read-ahead thread releases it during `av_read_frame`.
     let queueLock = OSAllocatedUnfairLock()
-    var isEOFInternal: Bool = false
+    /// Reading on demand (not ahead), the input has been read to its end (or an error), until a seek; reading ahead,
+    /// `readAheadEnded` tells it.
+    var inputEndedOnDemand: Bool = false
+    /// Behind `queueLock`.
+    private var inputEnded: Bool { readsAhead ? readAheadEnded : inputEndedOnDemand }
+    /// Every video packet of the input has been taken (or it has no video).
+    public var isVideoEOF: Bool {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        return videoStreamIndex < 0 || (inputEnded && videoQueue.isEmpty)
+    }
+    /// Every packet of the selected audio track has been taken (or none is selected).
+    public var isAudioEOF: Bool {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        return audioStreamIndex < 0 || (inputEnded && audioQueue.isEmpty)
+    }
+    /// Reading ahead, no video packet is queued and more are to come: the input is behind with the pictures (a slow
+    /// network), not the decoder. Never while reading on demand, which reads as the video feeder asks.
+    var isVideoReadAheadDry: Bool {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        return readsAhead && videoStreamIndex >= 0 && videoQueue.isEmpty && !readAheadEnded
+    }
+    /// Both `isVideoEOF` and `isAudioEOF`, read together: with nothing selected (no picture, the audio from another
+    /// input) there is nothing left to come.
     public var isEOF: Bool {
         queueLock.lock()
         defer { queueLock.unlock() }
-        return readsAhead ? readAheadEnded && videoQueue.isEmpty && audioQueue.isEmpty : isEOFInternal
+        let isVideoDone = videoStreamIndex < 0 || (inputEnded && videoQueue.isEmpty)
+        let isAudioDone = audioStreamIndex < 0 || (inputEnded && audioQueue.isEmpty)
+        return isVideoDone && isAudioDone
     }
 
     // Read-ahead (`MediaDemuxer+ReadAhead.swift`), behind `queueLock`.
@@ -418,10 +468,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
+    /// - Parameter audioOnly: Reads the input's audio streams only, every other one discarded (pictures, cover art,
+    ///   subtitles, closed captions): an audio track of other media, whose own picture nobody would take.
     public init?(
         url: String,
         headers: [String: String] = [:],
-        interruptContext: InterruptContext? = nil
+        interruptContext: InterruptContext? = nil,
+        audioOnly: Bool = false
     ) {
         let ctxContext = interruptContext ?? InterruptContext()
         self.interruptContext = ctxContext
@@ -490,14 +543,19 @@ public final class MediaDemuxer: @unchecked Sendable {
                 "Rebasing timestamps to a zero timeline (start_time \(Double(timelineOrigin) / Double(AV_TIME_BASE))s)")
         }
 
-        let streamsToRead = discoverVariants(in: formatCtx)
+        // An audio-only input plays no variants: their selection would enable a picture again.
+        let streamsToRead = audioOnly ? nil : discoverVariants(in: formatCtx)
         for i in 0..<Int(formatCtx.pointee.nb_streams) {
             let stream = formatCtx.pointee.streams[i]!
+            let codecType = stream.pointee.codecpar.pointee.codec_type
             if let streamsToRead, !streamsToRead.contains(i) {
                 stream.pointee.discard = AVDISCARD_ALL
                 continue
             }
-            let codecType = stream.pointee.codecpar.pointee.codec_type
+            if audioOnly, codecType != AVMEDIA_TYPE_AUDIO {
+                stream.pointee.discard = AVDISCARD_ALL
+                continue
+            }
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if codecType == AVMEDIA_TYPE_VIDEO && !isAttachedPic && self.videoStreamIndex < 0,
                 let detectedCodec = VideoCodec.from(codecId: stream.pointee.codecpar.pointee.codec_id)
@@ -702,9 +760,8 @@ public final class MediaDemuxer: @unchecked Sendable {
                 av_packet_unref(&pkt)
             }
         }
-        if videoQueue.isEmpty && audioQueue.isEmpty {
-            self.isEOFInternal = true
-        }
+        // The read loop ends at the end of the input (or an error); what is queued is still to be taken.
+        inputEndedOnDemand = true
         return nil
     }
 
@@ -763,9 +820,8 @@ public final class MediaDemuxer: @unchecked Sendable {
                 av_packet_unref(&pkt)
             }
         }
-        if videoQueue.isEmpty && audioQueue.isEmpty {
-            self.isEOFInternal = true
-        }
+        // The read loop ends at the end of the input (or an error); what is queued is still to be taken.
+        inputEndedOnDemand = true
         return nil
     }
 

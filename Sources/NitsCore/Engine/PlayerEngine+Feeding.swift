@@ -186,7 +186,9 @@ extension PlayerEngine {
             }
 
             guard let sample = demuxer.nextVideoSample(waitingForReadAhead: false) else {
-                if demuxer.isEOF {
+                // Its own end, not the input's: audio read on past the last picture (a longer track, an added file)
+                // mustn't keep the decoder's last frames from being drained.
+                if demuxer.isVideoEOF {
                     AppLog.debug(.engine, "Demuxer reached EOF for video. Draining decoder...")
                     await decoder.drainAsync()
                     break
@@ -220,7 +222,9 @@ extension PlayerEngine {
     /// - Parameter prepare: Runs once the previous run has unwound and before this one enqueues anything (also when
     ///   nothing is fed because playback is paused), so it can flush the renderer with no enqueue in flight.
     func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil) {
-        guard let demuxer = self.demuxer, let aDecoder = self.audioDecoder else { return }
+        guard let source = inputs?.audioSource, let aDecoder = self.audioDecoder,
+            let audioTimebase = source.audioDecoderInput()?.timebase
+        else { return }
         // The previous run may still be unwinding from its cancellation; the new one waits for it so the
         // output it stashes is delivered first and in order.
         let previousRun = audioFeedingTask
@@ -228,7 +232,6 @@ extension PlayerEngine {
 
         let feedingLock = self.isFeeding
         let sink = self.audioSink
-        let audioTimebase = demuxer.readingDescription(\.audioTimebase)
         let firstFedPTS = self.firstFedAudioPTS
         firstFedPTS.withLock { $0 = nil }
 
@@ -236,7 +239,7 @@ extension PlayerEngine {
             await previousRun?.value
             prepare?()
             await Self.runAudioFeeding(
-                demuxer: demuxer,
+                source: source,
                 audioDecoder: aDecoder,
                 sink: sink,
                 feedingLock: feedingLock,
@@ -252,7 +255,7 @@ extension PlayerEngine {
     /// decoded packet still undelivered. That remainder is stashed in the decoder and delivered first by the
     /// next run instead of being dropped, so pause/resume keeps the audio stream gapless.
     private nonisolated static func runAudioFeeding(
-        demuxer: MediaDemuxer,
+        source: any AudioPacketSource,
         audioDecoder: FFAudioDecoder,
         sink: any AudioRendererSink,
         feedingLock: OSAllocatedUnfairLock<Bool>,
@@ -266,8 +269,8 @@ extension PlayerEngine {
 
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
             guard let buf = pending.first else {
-                guard let packet = demuxer.nextAudioPacket() else {
-                    if demuxer.isEOF {
+                guard let packet = source.nextAudioPacket() else {
+                    if source.isAudioEOF {
                         break
                     }
                     try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms

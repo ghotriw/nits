@@ -494,7 +494,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var audioLagDetector = AudioLagDetector()
     var audioDecoder: FFAudioDecoder?
     let synchronizer = AVSampleBufferRenderSynchronizer()
-    var demuxer: MediaDemuxer?
+    /// The inputs the media plays from: its own and audio files added to it; audio is read through it.
+    var inputs: PlaybackInputs?
+    /// The media's own input (`inputs.main`): the picture, subtitles, variants.
+    var demuxer: MediaDemuxer? { inputs?.main }
     let feedQueue = DispatchQueue(label: "com.nativeplayer.feed", qos: .userInteractive)
     let audioFeedQueue = DispatchQueue(label: "com.nativeplayer.audiofeed", qos: .userInteractive)
     let seekQueue = DispatchQueue(label: "com.nativeplayer.seek", qos: .userInteractive)

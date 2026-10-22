@@ -150,8 +150,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   take packets under `queueLock` alone, and track selection on the main thread never wait for the network. The rest
   takes `lock` through `lockIO()`, and the thread steps aside between packets for it (the unfair lock would
   otherwise let it take the lock straight back and keep a seek waiting).
-- **Consumers.** The feeders take what is queued and get nil at once when nothing is (`isEOF` tells the end, after
-  the thread stopped at the end of the input); the synchronous pumps on `seekQueue` (seek previews, frame steps)
+- **Consumers.** The feeders take what is queued and get nil at once when nothing is (`isVideoEOF` / `isAudioEOF`
+  tell each stream's end, after the thread stopped at the end of the input, as reading on demand does; a stream
+  ends when its own queue is empty, so the video decoder is drained while longer audio still plays, and an input
+  with no audio track selected has ended its audio); the synchronous pumps on `seekQueue` (seek previews, frame steps)
   wait for the thread (`nextVideoSample(waitingForReadAhead:)`).
 - **Seeks** clear the queues as before, and the thread reads on from where the seek left the input.
 - **Limit.** The seconds ahead are counted from the video taken (the audio's, without video). A stream with nothing
@@ -567,3 +569,20 @@ A single `AVSampleBufferRenderSynchronizer` is the master clock; `AVSampleBuffer
 attached to it. `FFAudioDecoder` resamples via `swr_convert` using `extended_data` (`data` only has
 8 plane pointers) and re-creates its `SwrContext` whenever sample format, rate or channel layout
 changes mid-stream (e.g. 5.1 → stereo after a track switch).
+
+### Audio from another input
+
+An audio track can come from a file of its own (a dub next to the video, later a host's or yt-dlp's separate audio
+URL). `PlaybackInputs` holds the media's demuxer (`main`: picture, subtitles, variants) and a demuxer per added file,
+opened `audioOnly`, and lists the tracks of all of them (a file's from `firstExternalTrackId` on). The selected track's
+demuxer is the `audioSource` audio feeding reads; while a file's plays, the media's demuxer has none selected
+(`selectAudioTrack(trackId: nil)`) and drops its own audio as it reads. Each demuxer keeps its own locks and
+read-ahead thread and none is taken while another's is held, so a second input adds no lock order; a file starts
+reading ahead on its first selection and reads nothing while none of its tracks is selected.
+
+- **Seeks** position the file's input on `seekQueue` after the seek preview: where the picture landed (a keyframe seek
+  lands seconds off the target), minus the audio delay. Interleaved in one file, audio is read from the keyframe on and
+  trimmed (`setTargetAudioPts`); a separate input would have skipped what lies before the target.
+- **Ends** are each stream's own (`isVideoEOF`, `isAudioEOF`): a file shorter than the picture ends while it plays on.
+- **Buffering** triggers on either input running out (see "Stalls and buffering"), since one running dry no longer
+  drains the other.

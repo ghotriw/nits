@@ -156,6 +156,10 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   (MaxCLL/MaxFALL, mastering display) from the stream; never hardcode. Peak luminance feeds
   `sourcePeakNits`.
 - Convert timestamps as `pts * Int64(timebase.num) / Int64(timebase.den)`.
+- An audio track may come from an added file, a demuxer of its own (`PlaybackInputs`): read audio through
+  `inputs.audioSource`, never `demuxer` directly, and position the file's input after the seek preview (where the
+  picture landed). Never take one demuxer's lock while holding another's. Background: "Audio from another input"
+  in `docs/ARCHITECTURE.md`.
 - **Network sources are read ahead** by a demuxer thread (`MediaDemuxer+ReadAhead.swift`). The demuxer's packet
   queues, their state and the track selection are behind `queueLock`, the input behind `lock` taken through
   `lockIO()` (order: `lock` → `queueLock`). Blocking FFmpeg calls (`av_read_frame`, `av_seek_frame`) run with
