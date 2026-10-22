@@ -390,7 +390,7 @@ extension MediaDemuxer {
                 return AudioTrack(
                     id: track.id, streamIndex: pending.streams.audio[position], title: track.title,
                     language: track.language, codecName: track.codecName, channels: track.channels,
-                    sampleRate: track.sampleRate, isDefault: track.isDefault)
+                    sampleRate: track.sampleRate, isDefault: track.isDefault, describesVideo: track.describesVideo)
             }
             if releasingHeld, let spliceTime = pending.spliceTime {
                 let audioSpliceTime = av_rescale_q(spliceTime, timebase, audioTimebase)

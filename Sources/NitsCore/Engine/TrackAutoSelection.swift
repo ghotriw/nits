@@ -46,12 +46,15 @@ public enum SubtitlesWithKnownAudio: String, Sendable, Codable, CaseIterable, Id
 /// Picks the audio and subtitle tracks a media starts with when neither a request nor the saved history names them,
 /// after mpv's `select_default_track`.
 public enum TrackAutoSelection {
-    /// The audio track in the most preferred of `languages`, else the one the file flags default, else the first.
+    /// The audio track in the most preferred of `languages`, else the one the file flags default, else the first; in a
+    /// language, one that isn't an audio description. The default flag doesn't tell them apart: an HLS rendition's
+    /// stream is flagged by its fragmented MP4 too, and Apple's examples list the description first, `DEFAULT=NO`.
     public static func audioTrackId(in tracks: [MediaDemuxer.AudioTrack], languages: [String]) -> Int? {
         let ranked = tracks.enumerated().min { lhs, rhs in
             let (l, r) = (lhs.element, rhs.element)
             let (lRank, rRank) = (languageRank(l.language, in: languages), languageRank(r.language, in: languages))
             if lRank != rRank { return isBetter(lRank, than: rRank) }
+            if l.describesVideo != r.describesVideo { return !l.describesVideo }
             if l.isDefault != r.isDefault { return l.isDefault }
             return lhs.offset < rhs.offset
         }

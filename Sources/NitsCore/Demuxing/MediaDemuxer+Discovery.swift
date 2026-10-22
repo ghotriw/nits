@@ -146,15 +146,23 @@ extension MediaDemuxer {
         }
     }
 
+    /// A stream's title; for an HLS rendition its `NAME`, which FFmpeg puts in the comment.
+    private func streamTitle(_ stream: UnsafeMutablePointer<AVStream>) -> String {
+        if let title = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
+            return String(cString: title.pointee.value)
+        }
+        guard let iformat = formatCtx?.pointee.iformat, String(cString: iformat.pointee.name) == "hls",
+            let name = av_dict_get(stream.pointee.metadata, "comment", nil, 0)
+        else { return "" }
+        return String(cString: name.pointee.value)
+    }
+
     /// Lists an audio stream as a track; the first one becomes the active track.
     func registerAudioTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
         let codecId = stream.pointee.codecpar.pointee.codec_id
         // Read track metadata (title, language)
-        var title = ""
+        let title = streamTitle(stream)
         var lang = ""
-        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            title = String(cString: titleTag.pointee.value)
-        }
         if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
             lang = String(cString: langTag.pointee.value)
         }
@@ -173,7 +181,8 @@ extension MediaDemuxer {
             codecName: codecNameStr,
             channels: Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels),
             sampleRate: Int(stream.pointee.codecpar.pointee.sample_rate),
-            isDefault: stream.pointee.disposition & AV_DISPOSITION_DEFAULT != 0
+            isDefault: stream.pointee.disposition & AV_DISPOSITION_DEFAULT != 0,
+            describesVideo: stream.pointee.disposition & AV_DISPOSITION_VISUAL_IMPAIRED != 0
         )
         self.audioTracks.append(track)
 
@@ -212,11 +221,8 @@ extension MediaDemuxer {
                 || codecId == AV_CODEC_ID_TEXT || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
         let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
         guard isTextSub || isBitmapSub || isCaptions else { return }
-        var title = ""
+        let title = streamTitle(stream)
         var lang = ""
-        if let titleTag = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            title = String(cString: titleTag.pointee.value)
-        }
         if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
             lang = String(cString: langTag.pointee.value)
         }

@@ -18,10 +18,12 @@ struct TrackAutoSelectionTests {
             isForced: forced, isDefault: isDefault)
     }
 
-    private func audio(_ id: Int, _ language: String, isDefault: Bool = false) -> MediaDemuxer.AudioTrack {
+    private func audio(
+        _ id: Int, _ language: String, isDefault: Bool = false, describesVideo: Bool = false
+    ) -> MediaDemuxer.AudioTrack {
         MediaDemuxer.AudioTrack(
             id: id, streamIndex: id + 1, title: "", language: language, codecName: "aac", channels: 2,
-            sampleRate: 48_000, isDefault: isDefault)
+            sampleRate: 48_000, isDefault: isDefault, describesVideo: describesVideo)
     }
 
     private func pick(
@@ -99,6 +101,20 @@ struct TrackAutoSelectionTests {
         )
         #expect(TrackAutoSelection.audioTrackId(in: [audio(0, "eng"), audio(1, "ukr")], languages: []) == 0)
         #expect(TrackAutoSelection.audioTrackId(in: [], languages: ["uk"]) == nil)
+    }
+
+    @Test("Audio: in a language, a track that isn't an audio description, though both are flagged default")
+    func audioDescriptions() {
+        // Apple's HLS examples: the description first, both streams flagged default.
+        let apple = [
+            audio(0, "en-US", isDefault: true, describesVideo: true), audio(1, "en-US", isDefault: true),
+        ]
+        #expect(TrackAutoSelection.audioTrackId(in: apple, languages: []) == 1)
+        #expect(TrackAutoSelection.audioTrackId(in: apple, languages: ["en"]) == 1)
+        // The language comes first: a description in it before a plain track in another.
+        let other = [audio(0, "eng", describesVideo: true), audio(1, "ukr")]
+        #expect(TrackAutoSelection.audioTrackId(in: other, languages: ["en"]) == 0)
+        #expect(TrackAutoSelection.audioTrackId(in: [audio(0, "eng", describesVideo: true)], languages: []) == 0)
     }
 
     @Test("Language tags in ISO 639-1 and both 639-2 forms match; unknown ones don't")

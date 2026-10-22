@@ -129,6 +129,28 @@ struct HLSRenditionTests {
         server.requests.dropFirst(skipping).map(\.path)
     }
 
+    @Test("Renditions are named by their NAME, and an audio description isn't chosen on load")
+    func namesAndAudioDescriptions() throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        // English, listed first and `DEFAULT=YES`, as an audio description (Apple lists theirs so, `DEFAULT=NO`).
+        let text = try String(contentsOfFile: master, encoding: .utf8)
+        server.setResponder(forPath: "master.m3u8") {
+            Data(
+                text.replacingOccurrences(
+                    of: "NAME=\"audio_2\",",
+                    with: "NAME=\"audio_2\",CHARACTERISTICS=\"public.accessibility.describes-video\","
+                )
+                .utf8)
+        }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        #expect(demuxer.audioTracks.map(\.title) == ["audio_2", "audio_3"])
+        #expect(demuxer.audioTracks.map(\.describesVideo) == [true, false])
+        #expect(demuxer.subtitleTracks.map(\.title) == ["subtitle_0", "subtitle_1"])
+        #expect(TrackAutoSelection.audioTrackId(in: demuxer.audioTracks, languages: []) == 1)
+    }
+
     @Test("Only the selected audio rendition is downloaded, and no subtitles until one is selected")
     func downloadsSelectedRenditionOnly() throws {
         guard let (server, demuxer, opened) = try Self.open() else { return }

@@ -260,8 +260,10 @@ flowchart TD
     request, which at 180 ms of round trip took half a second per second of media for VOD (`docs/ARCHITECTURE.md`).
     Live opens one per segment for the read-ahead thread to tell the wait at the edge by `io_open`; it needs another
     sign of that wait.
-  - [ ] The audio rendition played by default is the first FFmpeg lists (Apple's AV1 example: audio description,
-    DVS), not the `DEFAULT=YES` one, when the language settings don't decide.
+  - [x] An audio description (`public.accessibility.describes-video`, `AV_DISPOSITION_VISUAL_IMPAIRED`) isn't
+    chosen on load before a plain track in its language: Apple's AV1 example lists it first, and FFmpeg flags both
+    streams default (the fragmented MP4's flag joins the rendition's). Renditions are named by their `NAME`, which
+    FFmpeg puts in the stream's comment ("English (DVS)", "Italiano (SDH)"; they showed no name).
   - [ ] A variant's own subtitle stream (not a rendition) is lost on a switch: subtitles aren't moved to the new
     variant's stream at the same position, as audio is.
   - [ ] A splice rewrites the stream description on the reading thread, fields `canSwitch` keeps equal (`codec`,

@@ -46,6 +46,24 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let sampleRate: Int
         /// Flagged to play by default (`AV_DISPOSITION_DEFAULT`).
         public let isDefault: Bool
+        /// An audio description of the picture, for viewers who can't see it (`AV_DISPOSITION_VISUAL_IMPAIRED`:
+        /// HLS's `public.accessibility.describes-video`).
+        public let describesVideo: Bool
+
+        init(
+            id: Int, streamIndex: Int, title: String, language: String, codecName: String, channels: Int,
+            sampleRate: Int, isDefault: Bool, describesVideo: Bool = false
+        ) {
+            self.id = id
+            self.streamIndex = streamIndex
+            self.title = title
+            self.language = language
+            self.codecName = codecName
+            self.channels = channels
+            self.sampleRate = sampleRate
+            self.isDefault = isDefault
+            self.describesVideo = describesVideo
+        }
     }
 
     /// A variant of an adaptive stream: an HLS `EXT-X-STREAM-INF`, which FFmpeg exposes as a program.
