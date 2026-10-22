@@ -123,8 +123,8 @@ struct TextFileEncodingTests {
         let url = try write(text, named: "film.he.srt", encoding: encoding(.windowsHebrew))
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let engine = PlayerEngine.makeForTesting()
-        let id = try #require(engine.addExternalSubtitles(url: url).first)
-        #expect(engine.loadedSubtitleDocuments[id]?.cues.first?.text.hasPrefix("שלום") == true)
+        let id = try #require(engine.subtitles.addExternalFile(url: url).first)
+        #expect(engine.subtitles.loadedDocuments[id]?.cues.first?.text.hasPrefix("שלום") == true)
     }
 
     @Test("The chosen encoding reads what the detector gets wrong, but not Unicode files")
@@ -141,8 +141,8 @@ struct TextFileEncodingTests {
         var configuration = PlayerConfiguration()
         configuration.subtitleEncoding = koi8
         let engine = PlayerEngine.makeForTesting(configuration: configuration)
-        let id = try #require(engine.addExternalSubtitles(url: url).first)
-        #expect(engine.loadedSubtitleDocuments[id]?.cues.first?.text == "Привет, как дела? Где ты был вчера вечером?")
+        let id = try #require(engine.subtitles.addExternalFile(url: url).first)
+        #expect(engine.subtitles.loadedDocuments[id]?.cues.first?.text == "Привет, как дела? Где ты был вчера вечером?")
     }
 
     @Test("A beginning cut inside a double-byte character is judged up to its last line")

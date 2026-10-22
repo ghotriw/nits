@@ -164,7 +164,7 @@ struct SubtitleTests {
 struct SubtitleDelayTests {
     private func makeEngine() -> PlayerEngine {
         let engine = PlayerEngine.makeForTesting()
-        engine.activeSubtitleDocument = SubtitleDocument(cues: [
+        engine.subtitles.activeDocument = SubtitleDocument(cues: [
             SubtitleCue(id: 1, startTime: 10.0, endTime: 12.0, text: "Line", alignment: .bottomCenter)
         ])
         return engine
@@ -174,35 +174,35 @@ struct SubtitleDelayTests {
     func testDelayShiftsCueLookup() {
         let engine = makeEngine()
         engine.currentTime = 12.5
-        engine.updateActiveSubtitles(at: engine.currentTime)
-        #expect(engine.currentSubtitleCues.isEmpty)
+        engine.subtitles.updateShown(at: engine.currentTime)
+        #expect(engine.subtitles.cues.isEmpty)
 
-        engine.setSubtitleDelay(1.0)  // cue now spans 11...13
-        #expect(engine.currentSubtitleText == "Line")
+        engine.subtitles.setDelay(1.0)  // cue now spans 11...13
+        #expect(engine.subtitles.cues.first?.text == "Line")
 
-        engine.setSubtitleDelay(-1.0)  // cue now spans 9...11
-        #expect(engine.currentSubtitleCues.isEmpty)
+        engine.subtitles.setDelay(-1.0)  // cue now spans 9...11
+        #expect(engine.subtitles.cues.isEmpty)
         engine.currentTime = 9.5
-        engine.updateActiveSubtitles(at: engine.currentTime)
-        #expect(engine.currentSubtitleText == "Line")
+        engine.subtitles.updateShown(at: engine.currentTime)
+        #expect(engine.subtitles.cues.first?.text == "Line")
 
-        engine.resetSubtitleDelay()
-        #expect(engine.subtitleDelay == 0)
-        #expect(engine.currentSubtitleCues.isEmpty)
+        engine.subtitles.resetDelay()
+        #expect(engine.subtitles.delay == 0)
+        #expect(engine.subtitles.cues.isEmpty)
     }
 
     @Test("Delay steps round to milliseconds and clamp to the allowed range")
     func testDelayRoundingAndClamping() {
         let engine = makeEngine()
-        for _ in 0..<3 { engine.stepSubtitleDelay(by: 0.1) }
-        #expect(engine.subtitleDelay == 0.3)
+        for _ in 0..<3 { engine.subtitles.stepDelay(by: 0.1) }
+        #expect(engine.subtitles.delay == 0.3)
 
-        engine.setSubtitleDelay(100)
-        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.upperBound)
-        engine.setSubtitleDelay(-100)
-        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.lowerBound)
-        engine.setSubtitleDelay(.nan)
-        #expect(engine.subtitleDelay == PlayerEngine.subtitleDelayRange.lowerBound)
+        engine.subtitles.setDelay(100)
+        #expect(engine.subtitles.delay == SubtitleController.delayRange.upperBound)
+        engine.subtitles.setDelay(-100)
+        #expect(engine.subtitles.delay == SubtitleController.delayRange.lowerBound)
+        engine.subtitles.setDelay(.nan)
+        #expect(engine.subtitles.delay == SubtitleController.delayRange.lowerBound)
     }
 }
 
@@ -280,7 +280,7 @@ struct SidecarSubtitleTests {
 struct SubtitleCueEventTests {
     private func makeEngine() -> PlayerEngine {
         let engine = PlayerEngine.makeForTesting()
-        engine.activeSubtitleDocument = SubtitleDocument(cues: [
+        engine.subtitles.activeDocument = SubtitleDocument(cues: [
             SubtitleCue(id: 1, startTime: 10.0, endTime: 12.0, text: "First"),
             SubtitleCue(
                 id: 2, startTime: 20.0, endTime: 22.0, text: "Second", rawPayload: "0,0,Default,,0,0,0,,Second"),
@@ -292,10 +292,10 @@ struct SubtitleCueEventTests {
     func reportsOnlyChanges() {
         let engine = makeEngine()
         var reports: [[String]] = []
-        engine.onSubtitleCuesChanged = { reports.append($0.map(\.text)) }
+        engine.subtitles.onCuesChanged = { reports.append($0.map(\.text)) }
 
         for time in [5.0, 9.9, 10.0, 10.5, 11.9, 12.1, 15.0] {
-            engine.updateActiveSubtitles(at: time)
+            engine.subtitles.updateShown(at: time)
         }
         #expect(reports == [["First"], []])
     }
@@ -304,18 +304,18 @@ struct SubtitleCueEventTests {
     func reportsDelaySeekAndSwitch() {
         let engine = makeEngine()
         engine.currentTime = 11.0
-        engine.updateActiveSubtitles(at: 11.0)
+        engine.subtitles.updateShown(at: 11.0)
         var reports: [[String]] = []
-        engine.onSubtitleCuesChanged = { reports.append($0.map(\.text)) }
+        engine.subtitles.onCuesChanged = { reports.append($0.map(\.text)) }
 
-        engine.setSubtitleDelay(2.0)  // "First" now spans 12...14
+        engine.subtitles.setDelay(2.0)  // "First" now spans 12...14
         #expect(reports == [[]])
-        engine.updateActiveSubtitles(at: 21.0)  // "Second" spans 22...24, so 21 shows nothing
-        engine.updateActiveSubtitles(at: 23.0)
+        engine.subtitles.updateShown(at: 21.0)  // "Second" spans 22...24, so 21 shows nothing
+        engine.subtitles.updateShown(at: 23.0)
         #expect(reports == [[], ["Second"]])
-        #expect(engine.currentSubtitleCues.first?.rawPayload == "0,0,Default,,0,0,0,,Second")
+        #expect(engine.subtitles.cues.first?.rawPayload == "0,0,Default,,0,0,0,,Second")
 
-        engine.selectSubtitleTrack(id: nil)
+        engine.subtitles.select(trackId: nil)
         #expect(reports.last == [])
     }
 }

@@ -17,15 +17,15 @@ struct FFmpegTextSubtitleTests {
     /// The document of the file's track, read in the background once the track is selected.
     private func load(_ url: URL) async throws -> SubtitleDocument {
         let engine = PlayerEngine.makeForTesting()
-        let id = try #require(engine.addExternalSubtitles(url: url).first, "No track for \(url.lastPathComponent)")
-        #expect(engine.subtitleTracks.first { $0.id == id }?.format == .text)
-        #expect(engine.loadedSubtitleDocuments[id] == nil, "Read when added, not when selected")
-        engine.selectSubtitleTrack(id: id)
-        for _ in 0..<100 where engine.loadedSubtitleDocuments[id] == nil {
+        let id = try #require(engine.subtitles.addExternalFile(url: url).first, "No track for \(url.lastPathComponent)")
+        #expect(engine.subtitles.tracks.first { $0.id == id }?.format == .text)
+        #expect(engine.subtitles.loadedDocuments[id] == nil, "Read when added, not when selected")
+        engine.subtitles.select(trackId: id)
+        for _ in 0..<100 where engine.subtitles.loadedDocuments[id] == nil {
             try await Task.sleep(for: .milliseconds(50))
         }
-        #expect(engine.activeSubtitleDocument != nil)
-        return try #require(engine.loadedSubtitleDocuments[id])
+        #expect(engine.subtitles.activeDocument != nil)
+        return try #require(engine.subtitles.loadedDocuments[id])
     }
 
     private func times(_ cue: SubtitleCue?) -> [Double] {
@@ -103,8 +103,8 @@ struct FFmpegTextSubtitleTests {
         let url = try write(String(repeating: "\u{0}\u{1}\u{2}", count: 100), named: "data.sub")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let engine = PlayerEngine.makeForTesting()
-        #expect(engine.addExternalSubtitles(url: url).isEmpty)
-        #expect(engine.subtitleTracks.isEmpty)
+        #expect(engine.subtitles.addExternalFile(url: url).isEmpty)
+        #expect(engine.subtitles.tracks.isEmpty)
     }
 
     @Test("A SAMI file in UTF-16 with its byte order mark reads as Unicode, not as a single-byte code page")
@@ -125,8 +125,8 @@ struct FFmpegTextSubtitleTests {
         let url = try write("1\n00:00:01,000 --> 00:00:02,000\nПривіт\n", named: "film.srt", encoding: .utf16)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let engine = PlayerEngine.makeForTesting()
-        let id = try #require(engine.addExternalSubtitles(url: url).first)
-        #expect(engine.loadedSubtitleDocuments[id]?.cues.map(\.text) == ["Привіт"])
+        let id = try #require(engine.subtitles.addExternalFile(url: url).first)
+        #expect(engine.subtitles.loadedDocuments[id]?.cues.map(\.text) == ["Привіт"])
     }
 
     @Test("Encodings: a byte order mark decides, a UTF-8 prefix cut inside a character is still UTF-8")
@@ -152,7 +152,7 @@ struct FFmpegTextSubtitleTests {
         let url = try write("Just some notes,\nnot subtitles.\nThird line.\n", named: "notes.sub")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let engine = PlayerEngine.makeForTesting()
-        #expect(engine.addExternalSubtitles(url: url).isEmpty)
+        #expect(engine.subtitles.addExternalFile(url: url).isEmpty)
     }
 
     @Test("Plain text or HTML named .smi isn't SAMI: the extension alone, which FFmpeg also scores, isn't enough")
@@ -163,7 +163,7 @@ struct FFmpegTextSubtitleTests {
         {
             let url = try write(text, named: "notes\(index).smi")
             defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-            #expect(engine.addExternalSubtitles(url: url).isEmpty, "\(text)")
+            #expect(engine.subtitles.addExternalFile(url: url).isEmpty, "\(text)")
             #expect(FFmpegTextSubtitles.read(url: url, frameRate: nil) == nil)
         }
     }

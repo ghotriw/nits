@@ -201,7 +201,7 @@ await engine.loadAsync(
 
 // Events for a host UI (e.g. forwarded to a web view by the host's own bridge):
 engine.onTracksChanged = {
-    // engine.audioTracks, engine.subtitleTracks, engine.selectedAudioTrackId, engine.selectedSubtitleTrackId
+    // engine.audioTracks, engine.selectedAudioTrackId, engine.subtitles.tracks, engine.subtitles.selectedTrackId
 }
 engine.onBufferingChanged = { isBuffering in
     // Playback is held for data; playbackState stays .playing

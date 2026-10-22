@@ -76,6 +76,12 @@ retained one, released when FFmpeg closes the input through `io_close2`.
 - Keep the engine embeddable: `NativeVideoHostView` stays a bare canvas with no built-in controls;
   commands and events go through `PlayerEngineProtocol`; the demuxer must handle remote URLs with
   custom HTTP headers, not just `file://`.
+- A new engine feature with state of its own (a loop, filters, a second subtitle track, recording, …) is a type
+  of its own that owns that state and resets it, which `PlayerEngine` holds and calls; not new `PlayerEngine`
+  properties and a new `PlayerEngine+X.swift`. State that does stay on `PlayerEngine` and describes the media is
+  cleared in `resetMediaState`, the one reset `stop()` and every load share.
+- Hot loops that must run optimized in Debug too (SIMD pixel conversion, DSP) go in `NitsKernels`, the only
+  target built with `-O` in Debug; keep its functions non-`@inlinable`.
 
 ## Video pipeline invariants
 

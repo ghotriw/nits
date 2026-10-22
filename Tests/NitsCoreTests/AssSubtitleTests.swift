@@ -493,27 +493,27 @@ struct AssSubtitleTrackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(engine.isLoaded)
-        let track = try #require(engine.subtitleTracks.first)
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        engine.selectSubtitleTrack(id: track.id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
-        try #require(engine.isDrawingAuthoredSubtitles)
+        let track = try #require(engine.subtitles.tracks.first)
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.select(trackId: track.id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try #require(engine.subtitles.isDrawingAuthored)
         engine.currentTime = 1.0
-        engine.updateActiveSubtitles(at: 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        let authored = try #require(engine.currentSubtitleImages.first)
+        engine.subtitles.updateShown(at: 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        let authored = try #require(engine.subtitles.images.first)
 
         func redrawn(after previous: SubtitleImageCue) async throws -> SubtitleImageCue {
-            for _ in 0..<100 where engine.currentSubtitleImages.first?.id == previous.id {
+            for _ in 0..<100 where engine.subtitles.images.first?.id == previous.id {
                 try await Task.sleep(for: .milliseconds(20))
             }
-            return try #require(engine.currentSubtitleImages.first, "Not redrawn")
+            return try #require(engine.subtitles.images.first, "Not redrawn")
         }
-        engine.subtitleFontName = "Menlo"
-        engine.assStyleOverride = .font
+        engine.subtitles.style.fontName = "Menlo"
+        engine.subtitles.assStyleOverride = .font
         let restyled = try await redrawn(after: authored)
         #expect(restyled.id != authored.id)
-        engine.subtitleFontSize = 40
+        engine.subtitles.style.fontSize = 40
         let larger = try await redrawn(after: restyled)
         #expect(larger.regions.first.map(\.width) ?? 0 > restyled.regions.first.map(\.width) ?? 0)
     }
@@ -526,16 +526,16 @@ struct AssSubtitleTrackTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
-        engine.libassStallTimeout = .milliseconds(100)
+        engine.subtitles.libassStallTimeout = .milliseconds(100)
         engine.load(path: path)
         try #require(engine.isLoaded)
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.select(trackId: try #require(engine.subtitles.tracks.first).id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
         engine.currentTime = 1.0
-        engine.updateActiveSubtitles(at: 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+        engine.subtitles.updateShown(at: 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(engine.subtitles.isDrawingAuthored && !engine.subtitles.images.isEmpty)
 
         // A call that doesn't come back, as a font request `fontd` never answers.
         let stuck = DispatchSemaphore(value: 0)
@@ -545,31 +545,31 @@ struct AssSubtitleTrackTests {
         for _ in 0..<100 where AssSubtitleRenderer.currentCallDuration == nil {
             try await Task.sleep(for: .milliseconds(10))
         }
-        engine.redrawAuthoredSubtitles()
-        for _ in 0..<100 where engine.isDrawingAuthoredSubtitles { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(!engine.isDrawingAuthoredSubtitles)
-        #expect(engine.currentSubtitleImages.isEmpty)
-        engine.updateActiveSubtitles(at: 1.0)
-        #expect(engine.currentSubtitleCues.map(\.text) == ["Hello"], "The text shows instead")
+        engine.subtitles.redrawAuthored()
+        for _ in 0..<100 where engine.subtitles.isDrawingAuthored { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.subtitles.isDrawingAuthored)
+        #expect(engine.subtitles.images.isEmpty)
+        engine.subtitles.updateShown(at: 1.0)
+        #expect(engine.subtitles.cues.map(\.text) == ["Hello"], "The text shows instead")
 
         // One way: a call that returned after all doesn't bring libass back for this media.
         stuck.signal()
         try await Task.sleep(for: .milliseconds(300))
-        engine.redrawAuthoredSubtitles()
+        engine.subtitles.redrawAuthored()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(!engine.isDrawingAuthoredSubtitles)
-        #expect(engine.currentSubtitleImages.isEmpty)
+        #expect(!engine.subtitles.isDrawingAuthored)
+        #expect(engine.subtitles.images.isEmpty)
 
         // The next media tries libass again, and with the queue free it draws.
         engine.load(path: path)
         try #require(engine.isLoaded)
-        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.subtitles.select(trackId: try #require(engine.subtitles.tracks.first).id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
         engine.currentTime = 1.0
-        engine.updateActiveSubtitles(at: 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(!engine.isLibassStalled)
-        #expect(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+        engine.subtitles.updateShown(at: 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.subtitles.isLibassStalled)
+        #expect(engine.subtitles.isDrawingAuthored && !engine.subtitles.images.isEmpty)
     }
 
     @Test(
@@ -581,40 +581,44 @@ struct AssSubtitleTrackTests {
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
         // Long enough for the watch armed by the render below to outlive it and see the other call.
-        engine.libassStallTimeout = .seconds(1)
+        engine.subtitles.libassStallTimeout = .seconds(1)
         engine.load(path: path)
         try #require(engine.isLoaded)
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.select(trackId: try #require(engine.subtitles.tracks.first).id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
         engine.currentTime = 1.0
-        engine.updateActiveSubtitles(at: 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(engine.isDrawingAuthoredSubtitles && !engine.currentSubtitleImages.isEmpty)
+        engine.subtitles.updateShown(at: 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(engine.subtitles.isDrawingAuthored && !engine.subtitles.images.isEmpty)
 
         // A watch armed earlier (making the renderer, the first frame) ends first, so the render below arms a fresh one.
-        for _ in 0..<300 where engine.libassWatch != nil { try await Task.sleep(for: .milliseconds(10)) }
-        try #require(engine.libassWatch == nil)
+        for _ in 0..<300 where engine.subtitles.libassWatch != nil { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(engine.subtitles.libassWatch == nil)
         // A render arms the watch, comes back at once, and then another's call holds the queue past the timeout.
-        engine.redrawAuthoredSubtitles()
+        engine.subtitles.redrawAuthored()
         // Paused, so no time tick renders; then quiet: no render of the engine's running, asked for, or about to be.
         engine.pause()
         func isQuiet() -> Bool {
-            engine.libassCallsInFlight == 0 && !engine.isAuthoredRenderRunning
-                && engine.pendingAuthoredRenderTime == nil && engine.subtitleRefresh == nil
+            engine.subtitles.libassCallsInFlight == 0 && !engine.subtitles.isAuthoredRenderRunning
+                && engine.subtitles.pendingAuthoredRenderTime == nil && engine.subtitles.windowRead == nil
         }
         for _ in 0..<200 where !isQuiet() { try await Task.sleep(for: .milliseconds(10)) }
         try await Task.sleep(for: .milliseconds(200))
-        try #require(isQuiet(), "calls \(engine.libassCallsInFlight), running \(engine.isAuthoredRenderRunning)")
+        try #require(
+            isQuiet(),
+            "calls \(engine.subtitles.libassCallsInFlight), running \(engine.subtitles.isAuthoredRenderRunning)")
         // The watch armed by the render is still waiting: the scenario, not a watch long gone.
-        try #require(engine.libassWatch != nil)
+        try #require(engine.subtitles.libassWatch != nil)
         let held = DispatchSemaphore(value: 0)
         defer { held.signal() }
         Task.detached { await AssSubtitleRenderer.perform { held.wait() } }
         // Past two timeouts: a watch that judged the other call would have flagged it by now.
         try await Task.sleep(for: .milliseconds(2500))
-        #expect(!engine.isLibassStalled, "Nothing of the engine's waits for that call: \(engine.libassCallsInFlight)")
-        #expect(engine.isDrawingAuthoredSubtitles)
+        #expect(
+            !engine.subtitles.isLibassStalled,
+            "Nothing of the engine's waits for that call: \(engine.subtitles.libassCallsInFlight)")
+        #expect(engine.subtitles.isDrawingAuthored)
     }
 
     @Test("A fade is drawn at the video's frame rate during playback, not at the 20 Hz time tick", .realtimePlayback)
@@ -625,11 +629,11 @@ struct AssSubtitleTrackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(engine.isLoaded)
-        let track = try #require(engine.subtitleTracks.first)
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        engine.selectSubtitleTrack(id: track.id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
-        try #require(engine.isDrawingAuthoredSubtitles)
+        let track = try #require(engine.subtitles.tracks.first)
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.select(trackId: track.id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try #require(engine.subtitles.isDrawingAuthored)
 
         engine.play()
         // Distinct pictures shown during a second of the fade (0.75-1.75 s): about 60 at the frame rate, 20 at the tick.
@@ -637,7 +641,7 @@ struct AssSubtitleTrackTests {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(5)
         while clock.now < deadline, engine.currentTime < 1.75 {
-            if engine.currentTime >= 0.75, let image = engine.currentSubtitleImages.first { frames.insert(image.id) }
+            if engine.currentTime >= 0.75, let image = engine.subtitles.images.first { frames.insert(image.id) }
             try await Task.sleep(for: .milliseconds(2))
         }
         #expect(frames.count >= 35, "Pictures in a second of the fade: \(frames.count)")
@@ -653,29 +657,29 @@ struct AssSubtitleTrackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(engine.isLoaded)
-        let track = try #require(engine.subtitleTracks.first)
+        let track = try #require(engine.subtitles.tracks.first)
 
-        engine.subtitleRenderSize = CGSize(width: 1280, height: 720)
-        engine.selectSubtitleTrack(id: track.id)
-        for _ in 0..<100 where engine.activeSubtitleDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
-        try #require(engine.isDrawingAuthoredSubtitles)
+        engine.subtitles.renderSize = CGSize(width: 1280, height: 720)
+        engine.subtitles.select(trackId: track.id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try #require(engine.subtitles.isDrawingAuthored)
 
-        engine.updateActiveSubtitles(at: 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
-        let image = try #require(engine.currentSubtitleImages.first)
+        engine.subtitles.updateShown(at: 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        let image = try #require(engine.subtitles.images.first)
         #expect((image.canvasWidth, image.canvasHeight) == (1280, 720))
-        #expect(engine.currentSubtitleCues.map(\.text) == ["Hello"], "Hosts still get the text")
-        #expect(engine.subtitleAssHeader?.contains("PlayResX: 640") == true, "Hosts get the script header")
-        #expect(engine.currentSubtitleCues.first?.rawPayload?.hasPrefix("Dialogue: 0,0:00:00.00") == true)
+        #expect(engine.subtitles.cues.map(\.text) == ["Hello"], "Hosts still get the text")
+        #expect(engine.subtitles.assHeader?.contains("PlayResX: 640") == true, "Hosts get the script header")
+        #expect(engine.subtitles.cues.first?.rawPayload?.hasPrefix("Dialogue: 0,0:00:00.00") == true)
 
-        engine.usesAuthoredSubtitleStyles = false
-        #expect(!engine.isDrawingAuthoredSubtitles && engine.currentSubtitleImages.isEmpty)
-        engine.usesAuthoredSubtitleStyles = true
-        #expect(engine.isDrawingAuthoredSubtitles)
+        engine.subtitles.usesAuthoredStyles = false
+        #expect(!engine.subtitles.isDrawingAuthored && engine.subtitles.images.isEmpty)
+        engine.subtitles.usesAuthoredStyles = true
+        #expect(engine.subtitles.isDrawingAuthored)
 
-        engine.selectSubtitleTrack(id: nil)
-        #expect(!engine.isDrawingAuthoredSubtitles && engine.currentSubtitleImages.isEmpty)
-        #expect(engine.subtitleAssHeader == nil)
+        engine.subtitles.select(trackId: nil)
+        #expect(!engine.subtitles.isDrawingAuthored && engine.subtitles.images.isEmpty)
+        #expect(engine.subtitles.assHeader == nil)
     }
 
     @Test("A time asked for while a replaced renderer was busy is still drawn, by the new one", .hostDependent)
@@ -683,17 +687,17 @@ struct AssSubtitleTrackTests {
     func pendingRenderSurvivesRendererSwitch() async throws {
         let script = AssScript(header: Data(AssSubtitleTests.script.utf8), isCompleteFile: true)
         let engine = PlayerEngine.makeForTesting()
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
         let replaced = try #require(await LibassRenderer(script: script)).renderer
         let current = try #require(await LibassRenderer(script: script)).renderer
-        engine.authoredRenderer = replaced
-        engine.renderAuthoredSubtitles(at: 1.0)
+        engine.subtitles.authoredRenderer = replaced
+        engine.subtitles.renderAuthored(at: 1.0)
         // Paused: no time tick follows, so only the pending request can draw the new renderer's first frame.
-        engine.authoredRenderer = current
-        engine.renderAuthoredSubtitles(at: 1.0)
-        try #require(engine.pendingAuthoredRenderTime == 1.0)
-        for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(!engine.currentSubtitleImages.isEmpty)
+        engine.subtitles.authoredRenderer = current
+        engine.subtitles.renderAuthored(at: 1.0)
+        try #require(engine.subtitles.pendingAuthoredRenderTime == 1.0)
+        for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!engine.subtitles.images.isEmpty)
     }
 
     @Test("Without a render size an ASS file shows as plain text, and with one it is drawn")
@@ -706,14 +710,14 @@ struct AssSubtitleTrackTests {
         try AssSubtitleTests.script.write(to: file, atomically: true, encoding: .utf8)
 
         let engine = PlayerEngine.makeForTesting()
-        let id = try #require(engine.addExternalSubtitles(url: file).first)
-        #expect(engine.subtitleTracks.first?.format == .ass)
-        engine.selectSubtitleTrack(id: id)
-        engine.updateActiveSubtitles(at: 1.0)
-        #expect(!engine.isDrawingAuthoredSubtitles)
-        #expect(engine.currentSubtitleCues.map(\.text) == ["Hello"])
+        let id = try #require(engine.subtitles.addExternalFile(url: file).first)
+        #expect(engine.subtitles.tracks.first?.format == .ass)
+        engine.subtitles.select(trackId: id)
+        engine.subtitles.updateShown(at: 1.0)
+        #expect(!engine.subtitles.isDrawingAuthored)
+        #expect(engine.subtitles.cues.map(\.text) == ["Hello"])
 
-        engine.subtitleRenderSize = CGSize(width: 640, height: 360)
-        #expect(engine.isDrawingAuthoredSubtitles, "A complete script file is drawn once the size is known")
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        #expect(engine.subtitles.isDrawingAuthored, "A complete script file is drawn once the size is known")
     }
 }

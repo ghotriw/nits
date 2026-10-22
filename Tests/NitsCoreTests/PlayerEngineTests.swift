@@ -133,19 +133,19 @@ struct PlayerEngineTests {
         #expect(!engine.audioTracks.isEmpty)
 
         // Subtitles verification: synthetic uhdHDRSubtitles media contains 5 subrip tracks
-        try #require(engine.subtitleTracks.count == 5)
-        #expect(engine.selectedSubtitleTrackId == nil)
+        try #require(engine.subtitles.tracks.count == 5)
+        #expect(engine.subtitles.selectedTrackId == nil)
 
         // Select first track and verify track selection
-        let firstSub = engine.subtitleTracks[0]
+        let firstSub = engine.subtitles.tracks[0]
         #expect(firstSub.isForced == true)
-        engine.selectSubtitleTrack(id: firstSub.id)
-        #expect(engine.selectedSubtitleTrackId == firstSub.id)
+        engine.subtitles.select(trackId: firstSub.id)
+        #expect(engine.subtitles.selectedTrackId == firstSub.id)
 
         // Turn subtitles off
-        engine.selectSubtitleTrack(id: nil)
-        #expect(engine.selectedSubtitleTrackId == nil)
-        #expect(engine.currentSubtitleText == nil)
+        engine.subtitles.select(trackId: nil)
+        #expect(engine.subtitles.selectedTrackId == nil)
+        #expect(engine.subtitles.cues.first?.text == nil)
 
         // Play and pause
         engine.play()
@@ -177,33 +177,33 @@ struct PlayerEngineTests {
         let engine = PlayerEngine.makeForTesting()
         engine.load(path: mediaPath)
         try #require(engine.isLoaded)
-        let embeddedCount = engine.subtitleTracks.count
+        let embeddedCount = engine.subtitles.tracks.count
 
-        engine.loadExternalSubtitle(url: subtitleURL)
-        engine.loadExternalSubtitle(url: subtitleURL)  // the same file again selects its track, adds none
-        #expect(engine.subtitleTracks.count == embeddedCount + 1)
+        engine.subtitles.addExternal(url: subtitleURL)
+        engine.subtitles.addExternal(url: subtitleURL)  // the same file again selects its track, adds none
+        #expect(engine.subtitles.tracks.count == embeddedCount + 1)
 
         // Several at once: the last readable one is selected, an unreadable one is skipped.
         let secondURL = directory.appendingPathComponent("second.srt")
         try "1\n00:00:00,000 --> 00:00:02,000\nSecond line\n".write(to: secondURL, atomically: true, encoding: .utf8)
-        engine.loadExternalSubtitles(urls: [secondURL, directory.appendingPathComponent("missing.srt")])
-        #expect(engine.subtitleTracks.count == embeddedCount + 2)
-        #expect(engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }?.externalURL == secondURL)
+        engine.subtitles.addExternal(urls: [secondURL, directory.appendingPathComponent("missing.srt")])
+        #expect(engine.subtitles.tracks.count == embeddedCount + 2)
+        #expect(engine.subtitles.tracks.first { $0.id == engine.subtitles.selectedTrackId }?.externalURL == secondURL)
 
-        engine.loadExternalSubtitle(url: subtitleURL)
-        engine.setSubtitleDelay(0.5)
+        engine.subtitles.addExternal(url: subtitleURL)
+        engine.subtitles.setDelay(0.5)
 
         engine.load(path: mediaPath)
         try #require(engine.isLoaded)
-        let selected = engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }
+        let selected = engine.subtitles.tracks.first { $0.id == engine.subtitles.selectedTrackId }
         #expect(selected?.externalURL == subtitleURL.standardizedFileURL)
-        #expect(engine.subtitleDelay == 0.5)
+        #expect(engine.subtitles.delay == 0.5)
 
         // A file that's gone falls back to the media's own tracks.
         try FileManager.default.removeItem(at: subtitleURL)
         engine.load(path: mediaPath)
         try #require(engine.isLoaded)
-        #expect(!engine.subtitleTracks.contains { $0.isExternal })
+        #expect(!engine.subtitles.tracks.contains { $0.isExternal })
         engine.stop()
     }
 
@@ -231,17 +231,17 @@ struct PlayerEngineTests {
         // No subtitle streams: a full (not forced) sidecar is selected.
         engine.load(path: plainCopy.path)
         try #require(engine.isLoaded)
-        #expect(engine.subtitleTracks.filter(\.isExternal).count == 2)
-        let selected = engine.subtitleTracks.first { $0.id == engine.selectedSubtitleTrackId }
+        #expect(engine.subtitles.tracks.filter(\.isExternal).count == 2)
+        let selected = engine.subtitles.tracks.first { $0.id == engine.subtitles.selectedTrackId }
         #expect(selected?.externalURL?.lastPathComponent == "plain.srt")
-        #expect(engine.subtitleTracks.contains { $0.isExternal && $0.isForced && $0.language == "en" })
+        #expect(engine.subtitles.tracks.contains { $0.isExternal && $0.isForced && $0.language == "en" })
 
         // Subtitle streams of its own: the sidecar still comes first, as in mpv.
         engine.load(path: subtitledCopy.path)
         try #require(engine.isLoaded)
-        #expect(engine.subtitleTracks.count == 6)
-        #expect(engine.subtitleTracks.last?.externalURL?.lastPathComponent == "subtitled.srt")
-        #expect(engine.selectedSubtitleTrackId == engine.subtitleTracks.last?.id)
+        #expect(engine.subtitles.tracks.count == 6)
+        #expect(engine.subtitles.tracks.last?.externalURL?.lastPathComponent == "subtitled.srt")
+        #expect(engine.subtitles.selectedTrackId == engine.subtitles.tracks.last?.id)
         engine.stop()
     }
 
@@ -780,46 +780,18 @@ struct PlayerEngineTests {
             var selectedVariantId: Int? = nil
             var isVariantAutomatic = false
             var canSelectAutomaticVariant = false
-            var subtitleTracks: [SubtitleTrack] = []
+            let subtitles = SubtitleController()
             var onTracksChanged: (() -> Void)? = nil
-            var selectedSubtitleTrackId: Int? = nil
             var chapters: [MediaChapter] = []
             var currentChapterIndex: Int? = nil
-            var currentSubtitleText: String? = nil
-            var currentSubtitleCue: SubtitleCue? = nil
-            var currentSubtitleCues: [SubtitleCue] = []
-            var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)? = nil
-            var currentSubtitleImages: [SubtitleImageCue] = []
-            var subtitleAssHeader: String? = nil
-            var subtitleAssFonts: [AssScript.Font] = []
-            var usesAuthoredSubtitleStyles: Bool = true
-            var showsOnlyForcedSubtitles: Bool = false
-            var assStyleOverride: AssStyleOverride = .none
-            var subtitleScale: Double = 1.0
-            var subtitlePosition: Double = 100
-            var subtitleRenderSize: CGSize = .zero
-            var isDrawingAuthoredSubtitles: Bool = false
-            var subtitleFontSize: Double = 16.0
-            var subtitleFontName: String = "Helvetica"
-            var subtitleFontWeight: String = "Regular"
-            var subtitleTextColorHex: String = "#FFFFFF"
-            var subtitleBgColorHex: String = "#000000"
-            var subtitleBgOpacity: Double = 0.5
             var playlist: PlaylistManager = PlaylistManager()
 
             init() {}
 
-            func selectSubtitleTrack(id: Int?) {}
-            var subtitleDelay: Double = 0
-            func setSubtitleDelay(_ seconds: Double) {}
-            func stepSubtitleDelay(by delta: Double) {}
-            func resetSubtitleDelay() {}
             var audioDelay: Double = 0
             func setAudioDelay(_ seconds: Double) {}
             func stepAudioDelay(by delta: Double) {}
             func resetAudioDelay() {}
-            func loadExternalSubtitle(url: URL) {}
-            func loadExternalSubtitles(urls: [URL]) {}
             func stop() {}
             func play() {}
             func pause() {}

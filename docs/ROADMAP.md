@@ -368,8 +368,8 @@ flowchart TD
   - [x] ASS / SSA drawn by libass (`AssSubtitleRenderer`): styles, positioning, animations, karaoke, vector drawings and
     the fonts a Matroska file attaches; fonts come from Core Text. Embedded tracks keep their header and events
     (`AssScript`) next to the plain-text cues, `.ass` / `.ssa` files load whole. libass draws at the pixel size of
-    the visible picture (`subtitleRenderSize`, reported by `SubtitleOverlayView`), off the main thread, one render at
-    a time. Until that size is known, and with "Original ASS Styling" off (`usesAuthoredSubtitleStyles`), the text
+    the visible picture (`SubtitleController.renderSize`, reported by `SubtitleOverlayView`), off the main thread, one render at
+    a time. Until that size is known, and with "Original ASS Styling" off (`usesAuthoredStyles`), the text
     cues are drawn in the user's subtitle style as before. Hosts get the plain text and `rawPayload` either way.
     A frame is a picture per group of images near each other (a sign at the top and the dialogue at the bottom make
     two), not one the size of the frame; pictures show and go without the text's fade.
@@ -438,7 +438,7 @@ flowchart TD
     whole decoded frame, and regions the crop leaves off screen (dialogue in removed bars) move inside the visible
     part, each half of the frame as a block. Before, the canvas was fitted into the cropped picture and shrank
     (about 1.3× for 2.35:1 on 16:9).
-  - [x] Forced-only display ("Forced Subtitles Only", `showsOnlyForcedSubtitles`, remembered): bitmap tracks show only
+  - [x] Forced-only display ("Forced Subtitles Only", `SubtitleController.showsOnlyForced`, remembered): bitmap tracks show only
     the regions their stream marks forced (`AV_SUBTITLE_FLAG_FORCED`, PGS composition objects and DVD forced
     commands), as Blu-ray discs keep forced sets inside the full track. A track flagged forced as a whole shows in
     full; text tracks mark no events and are left as they are.
@@ -452,8 +452,8 @@ flowchart TD
     track flagged default; with no subtitle languages the system's only rank them, so a full track in the user's
     language shows only when flagged default (as in mpv). An automatic choice isn't saved to the history, so later
     settings apply to files already played.
-  - [x] Position and scale (mpv's `sub-pos` / `sub-scale`; Quick Settings → Placement, remembered): `subtitlePosition`
-    raises bottom subtitles of every kind, `subtitleScale` sizes ASS dialogue (libass' font scale and line position,
+  - [x] Position and scale (mpv's `sub-pos` / `sub-scale`; Quick Settings → Placement, remembered): `SubtitleController.position`
+    raises bottom subtitles of every kind, `SubtitleController.scale` sizes ASS dialogue (libass' font scale and line position,
     dialogue only) and picture subtitles (each half of the frame as a block, from the edge it is near); plain text
     keeps its font size.
   - [ ] A second subtitle track shown at once.
@@ -465,7 +465,7 @@ flowchart TD
 > Compensate for out-of-sync subtitle releases and simplify subtitle loading.
 
 - [x] **4.6.1. Subtitle Timing Offset (Subtitle Delay):**
-  - Configurable timestamp shift (`PlayerEngine.subtitleDelay`, `-30.0 ... +30.0` s) applied to the cue lookup.
+  - Configurable timestamp shift (`SubtitleController.delay`, `-30.0 ... +30.0` s) applied to the cue lookup.
   - Hotkey adjustments (`Z` / `X`) stepping timing by ±100ms with real-time OSD indication.
   - Manual entry field in Quick Settings (`Subtitles` pane).
   - Remembered per file in `PlaybackHistoryStore`, like the track selection; a selected external subtitle file is
@@ -685,12 +685,12 @@ flowchart TD
     mode, and Picture in Picture still works.
   - Document the setup (view hierarchy, transparent web view background) with a minimal host example.
 - [x] **6.5. Subtitle Events for Hosts:**
-  - `onSubtitleCuesChanged`: the cues on screen (subtitle delay applied) changed; not called per time tick. `text` is plain,
+  - `SubtitleController.onCuesChanged`: the cues on screen (subtitle delay applied) changed; not called per time tick. `text` is plain,
     `rawPayload` carries the ASS event line. Bitmap subtitles are drawn by the player and reported as `[]`, and so is
     the end of the media (`stop()`).
   - [x] Hosts can draw ASS themselves: `rawPayload` is a `Dialogue:` line in one field order
     (`AssScript.eventFormat`) for embedded tracks and `.ass` / `.ssa` files alike, timed on the media timeline;
-    `subtitleAssHeader` is the script without events (ending in that `Format:`) and `subtitleAssFonts` the attached
+    `assHeader` is the script without events (ending in that `Format:`) and `assFonts` the attached
     fonts. Header plus lines draw in libass as in the player.
 
 ---

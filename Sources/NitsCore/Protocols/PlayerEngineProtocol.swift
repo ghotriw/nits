@@ -129,7 +129,7 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
     @MainActor func renderCurrentFrame()
 }
 
-/// Track selection and inspection for audio and subtitle streams.
+/// Track selection and inspection for audio streams and HLS variants; subtitles are `PlayerSubtitleControlling`.
 public protocol PlayerTrackControlling: AnyObject, Sendable {
     /// Called when the audio or subtitle tracks or HLS variants, or the selected ones, change (once per load and per
     /// `stop()`, and when a variant switch is asked for and when it plays).
@@ -153,19 +153,6 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor func setAudioDelay(_ seconds: Double)
     @MainActor func stepAudioDelay(by delta: Double)
     @MainActor func resetAudioDelay()
-
-    @MainActor var subtitleTracks: [SubtitleTrack] { get }
-    @MainActor var selectedSubtitleTrackId: Int? { get }
-    @MainActor func selectSubtitleTrack(id: Int?)
-    @MainActor func loadExternalSubtitle(url: URL)
-    /// Adds subtitle files as tracks and selects the last one that could be read.
-    @MainActor func loadExternalSubtitles(urls: [URL])
-
-    /// Seconds subtitles are shifted by: positive shows them later, negative earlier.
-    @MainActor var subtitleDelay: Double { get }
-    @MainActor func setSubtitleDelay(_ seconds: Double)
-    @MainActor func stepSubtitleDelay(by delta: Double)
-    @MainActor func resetSubtitleDelay()
 }
 
 /// Container chapter markers and navigation.
@@ -185,40 +172,9 @@ public protocol PlayerActionButtonControlling: AnyObject, Sendable {
     @MainActor func performActionButton(_ button: PlaybackActionButton)
 }
 
-/// Visual formatting, styling, and text state for subtitle rendering.
-public protocol PlayerSubtitleStyling: AnyObject, Sendable {
-    @MainActor var currentSubtitleText: String? { get }
-    @MainActor var currentSubtitleCue: SubtitleCue? { get }
-    @MainActor var currentSubtitleCues: [SubtitleCue] { get }
-    /// Called with the cues on screen whenever they change (not per time tick).
-    @MainActor var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)? { get set }
-    /// Bitmap subtitles on screen; the player draws them.
-    @MainActor var currentSubtitleImages: [SubtitleImageCue] { get }
-    /// The selected ASS track's script without events, ending in an `[Events]` section whose `Format:` the cues'
-    /// `rawPayload` lines follow; `nil` for other tracks. Available before the track's first cue is reported.
-    @MainActor var subtitleAssHeader: String? { get }
-    /// Fonts the media attaches for the selected ASS track.
-    @MainActor var subtitleAssFonts: [AssScript.Font] { get }
-    /// Draw ASS / SSA subtitles with libass as authored (default) instead of as plain text in the style below.
-    @MainActor var usesAuthoredSubtitleStyles: Bool { get set }
-    /// Show only the forced sets of bitmap tracks (PGS, VobSub); text tracks are left as they are.
-    @MainActor var showsOnlyForcedSubtitles: Bool { get set }
-    /// How much of the subtitle style replaces an ASS script's own on its dialogue (libass' selective override).
-    @MainActor var assStyleOverride: AssStyleOverride { get set }
-    /// Size of ASS dialogue and picture subtitles (0.5-2); plain text has `subtitleFontSize`.
-    @MainActor var subtitleScale: Double { get set }
-    /// Height of bottom subtitles in percent of the picture from its top; 100 leaves them in place.
-    @MainActor var subtitlePosition: Double { get set }
-    /// Size in pixels of the area subtitles are drawn on; libass draws ASS subtitles once it is set.
-    @MainActor var subtitleRenderSize: CGSize { get set }
-    /// Whether libass draws the selected track, so its text cues aren't to be drawn again.
-    @MainActor var isDrawingAuthoredSubtitles: Bool { get }
-    @MainActor var subtitleFontSize: Double { get set }
-    @MainActor var subtitleFontName: String { get set }
-    @MainActor var subtitleFontWeight: String { get set }
-    @MainActor var subtitleTextColorHex: String { get set }
-    @MainActor var subtitleBgColorHex: String { get set }
-    @MainActor var subtitleBgOpacity: Double { get set }
+/// Subtitle tracks and selection, their delay, what is on screen and how it is drawn.
+public protocol PlayerSubtitleControlling: AnyObject, Sendable {
+    @MainActor var subtitles: SubtitleController { get }
 }
 
 /// Playlist management, queues, and sequential navigation, through the playlist or a host's own queue.
@@ -250,7 +206,7 @@ public protocol PlayerEngineProtocol:
     PlayerTrackControlling,
     PlayerChapterControlling,
     PlayerActionButtonControlling,
-    PlayerSubtitleStyling,
+    PlayerSubtitleControlling,
     PlayerPlaylistControlling,
     PlayerUIOverlayControlling
 {}

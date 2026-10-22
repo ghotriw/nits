@@ -19,7 +19,7 @@ public struct SubtitleCue: Sendable, Equatable, Identifiable {
     public let text: String  // clean text
     public let alignment: SubtitleAlignment
     /// For ASS / SSA, the event as a `Dialogue:` line in `AssScript.eventFormat` (tags included), timed like the cue
-    /// on the media timeline, for hosts that draw it themselves after `subtitleAssHeader`; whatever field order the
+    /// on the media timeline, for hosts that draw it themselves after `SubtitleController.assHeader`; whatever field order the
     /// file or container used. `nil` for formats whose `text` already says it all.
     public let rawPayload: String?
 

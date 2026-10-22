@@ -117,7 +117,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             displayLinkHostView?.needsLayout = true
             // libass draws for the picture's pixel aspect, which a forced aspect ratio changes even when the
             // area drawn on keeps its size (Stretch).
-            if oldValue.aspectRatio != videoGeometry.aspectRatio { redrawAuthoredSubtitles() }
+            if oldValue.aspectRatio != videoGeometry.aspectRatio { subtitles.videoDidChange() }
         }
     }
     /// Display aspect ratio of the picture as shown: `displayAspectRatio` with the aspect override and crop of
@@ -288,17 +288,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.targetNitsScale = config.targetNitsScale
         self.metalSharpness = config.sharpness
         self.applyDolbyVisionTrims = config.applyDolbyVisionTrims
-        self.subtitleFontSize = config.subtitleFontSize
-        self.subtitleFontName = config.subtitleFontName
-        self.subtitleFontWeight = config.subtitleFontWeight
-        self.subtitleTextColorHex = config.subtitleTextColorHex
-        self.subtitleBgColorHex = config.subtitleBgColorHex
-        self.subtitleBgOpacity = config.subtitleBgOpacity
-        self.usesAuthoredSubtitleStyles = config.usesAuthoredSubtitleStyles
-        self.showsOnlyForcedSubtitles = config.showsOnlyForcedSubtitles
-        self.assStyleOverride = config.assStyleOverride
-        self.subtitleScale = config.subtitleScale
-        self.subtitlePosition = config.subtitlePosition
+        subtitles.apply(config)
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
@@ -393,16 +383,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     var pendingVariantChanges: [MediaDemuxer.VariantChange] = []
 
-    public var subtitleTracks: [SubtitleTrack] = [] {
-        didSet {
-            if oldValue != subtitleTracks { tracksDidChange() }
-        }
-    }
-    public var selectedSubtitleTrackId: Int? = nil {
-        didSet {
-            if oldValue != selectedSubtitleTrackId { tracksDidChange() }
-        }
-    }
     /// Called when the audio or subtitle tracks, or the selected ones, change: once by each load (when it is applied)
     /// and by a `stop()` that clears tracks, then by a track switch or an added subtitle file. Read the current tracks
     /// from the engine.
@@ -413,132 +393,17 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var tracksChangedDeferralDepth = 0
     @ObservationIgnored
     var hasDeferredTracksChange = false
-    public var currentSubtitleCue: SubtitleCue? {
-        currentSubtitleCues.first
-    }
-    public var currentSubtitleCues: [SubtitleCue] = [] {
-        didSet {
-            if oldValue != currentSubtitleCues { onSubtitleCuesChanged?(currentSubtitleCues) }
-        }
-    }
-    /// Called with the cues on screen (subtitle delay applied) whenever they change: a cue starts or ends, a seek or
-    /// a track switch lands on other ones, and with `[]` when subtitles are off or the media stops. Not called per
-    /// time tick. Cue `text` is plain; `rawPayload` carries an ASS event for hosts that draw it themselves.
-    public var onSubtitleCuesChanged: (([SubtitleCue]) -> Void)?
-    /// Bitmap subtitles (PGS, VobSub, DVB) on screen, subtitle delay applied. Drawn by the player; hosts get no
-    /// events for them (`onSubtitleCuesChanged` reports `[]` meanwhile).
-    public var currentSubtitleImages: [SubtitleImageCue] = []
-    /// The selected ASS track's script without its events (`AssScript.hostHeader`: styles, play resolution, embedded
-    /// fonts), for a host that draws ASS itself from the cues' `rawPayload` lines; `nil` for other tracks. There before
-    /// the track's first cue is reported.
-    public var subtitleAssHeader: String? { activeSubtitleDocument?.assScript?.hostHeader }
-    /// The fonts the media attaches for the selected ASS track (Matroska attachments), which its styles may name.
-    public var subtitleAssFonts: [AssScript.Font] { activeSubtitleDocument?.assScript?.fonts ?? [] }
-    public var currentSubtitleText: String? {
-        currentSubtitleCue?.text
-    }
-    // The style also applies to ASS dialogue with `assStyleOverride`: a change redraws it.
-    public var subtitleFontSize: Double = 24.0 { didSet { restyleAuthoredSubtitles() } }
-    public var subtitleFontName: String = SubtitleSystemFont.rounded.rawValue { didSet { restyleAuthoredSubtitles() } }
-    public var subtitleFontWeight: String = "Semibold"
-    public var subtitleTextColorHex: String = "#FFFFFF" { didSet { restyleAuthoredSubtitles() } }
-    public var subtitleBgColorHex: String = "#000000" { didSet { restyleAuthoredSubtitles() } }
-    public var subtitleBgOpacity: Double = 0.65 { didSet { restyleAuthoredSubtitles() } }
-    /// Seconds subtitles are shifted by: positive shows them later, negative earlier. Set with `setSubtitleDelay`.
-    public internal(set) var subtitleDelay: Double = 0
-    public static let subtitleDelayRange: ClosedRange<Double> = -30.0...30.0
+    /// A load cleared the previous media's tracks without reporting it (`resetMediaState`): the next report is owed,
+    /// by the new media's tracks or by whatever ends the load instead (a failure, a cancel, `stop()`).
+    @ObservationIgnored
+    var tracksClearedUnreported = false
+    /// The media's subtitle tracks, what of them is on screen and how it is drawn.
+    public let subtitles: SubtitleController
     /// Seconds audio is shifted against the picture: positive plays it later, negative earlier. Set with
     /// `setAudioDelay`.
     public internal(set) var audioDelay: Double = 0
     /// Audio played early is read that far ahead of the picture, within the demuxer's video packet queue.
     public static let audioDelayRange: ClosedRange<Double> = -1.0...1.0
-    /// Draw ASS / SSA subtitles with libass as authored; off draws their text in the subtitle style above.
-    public var usesAuthoredSubtitleStyles: Bool = true {
-        didSet {
-            if oldValue != usesAuthoredSubtitleStyles { syncAuthoredSubtitles() }
-        }
-    }
-    /// Show only the forced sets of bitmap tracks (PGS, VobSub): the signs and foreign-language lines a Blu-ray keeps
-    /// inside its full track. Text tracks don't mark them and show as usual; so does a track flagged forced as a whole.
-    public var showsOnlyForcedSubtitles: Bool = false {
-        didSet {
-            if oldValue != showsOnlyForcedSubtitles { updateActiveSubtitles(at: currentTime) }
-        }
-    }
-    /// How much of the subtitle style above replaces an ASS script's own on its dialogue, when libass draws it.
-    public var assStyleOverride: AssStyleOverride = .none {
-        didSet {
-            if oldValue != assStyleOverride { redrawAuthoredSubtitles() }
-        }
-    }
-    /// Size of ASS dialogue and picture subtitles against the script's or the disc's (`subtitleScaleRange`); plain text
-    /// has `subtitleFontSize`.
-    public var subtitleScale: Double = 1.0 {
-        didSet { if oldValue != subtitleScale { redrawAuthoredSubtitles() } }
-    }
-    public static let subtitleScaleRange: ClosedRange<Double> = 0.5...2.0
-    /// Height of bottom subtitles in percent of the picture from its top (0-100): 100 keeps them where they are, lower
-    /// raises them (mpv's `sub-pos`). Applies to every kind of subtitle.
-    public var subtitlePosition: Double = 100 {
-        didSet { if oldValue != subtitlePosition { redrawAuthoredSubtitles() } }
-    }
-    /// `subtitleScale` as applied: clamped to `subtitleScaleRange`, 1 when it isn't a number.
-    public var effectiveSubtitleScale: Double {
-        let range = Self.subtitleScaleRange
-        return subtitleScale.isFinite ? min(max(subtitleScale, range.lowerBound), range.upperBound) : 1
-    }
-    /// How far bottom subtitles are raised, as a fraction of the picture's height (`subtitlePosition`).
-    public var subtitleRaise: Double {
-        subtitlePosition.isFinite ? (100 - min(max(subtitlePosition, 0), 100)) / 100 : 0
-    }
-    /// Size in pixels of the area subtitles are drawn on (the visible picture), reported by the view that draws them.
-    /// Until it is set, ASS subtitles show as plain text, as for a host that draws its own.
-    public var subtitleRenderSize: CGSize = .zero {
-        didSet {
-            if oldValue != subtitleRenderSize { syncAuthoredSubtitles() }
-        }
-    }
-    /// Whether libass draws the selected track, so its text cues (`currentSubtitleCues`) aren't to be drawn again.
-    public internal(set) var isDrawingAuthoredSubtitles = false
-    /// The selected track's cues and script. Setting it updates the libass renderer's script without rendering
-    /// (`renderIfReady: false`), so callers that assign a document must follow with `updateActiveSubtitles(at:)` (or
-    /// `showSubtitles(of:at:)`) to draw at the target timestamp without queuing a duplicate render pass.
-    // Nothing observes it; the macro would compare whole documents (events, fonts) on every set.
-    @ObservationIgnored var activeSubtitleDocument: SubtitleDocument? = nil {
-        didSet { syncAuthoredSubtitles(renderIfReady: false) }
-    }
-    /// Subtitle tracks being read in the background, by track id: one read per track, cancelled once the track is no
-    /// longer selected or the media closes.
-    @ObservationIgnored var subtitleLoads: [Int: SubtitleLoad] = [:]
-    /// The window read of the selected embedded track around the time shown (`refreshEmbeddedSubtitles`).
-    @ObservationIgnored var subtitleRefresh: SubtitleLoad?
-    /// The merge of what playback read of the selected track before it was chosen (`refreshEmbeddedSubtitles`): never
-    /// cancelled, as nothing else brings it; window reads wait for it.
-    @ObservationIgnored var subtitleStashMerge: Task<Void, Never>?
-    /// The read of the file's own index of subtitle streams (`EmbeddedSubtitleReader.readIndex`), once per media:
-    /// cancelled only with it, so seeks in a row don't restart it; window reads wait for it.
-    @ObservationIgnored var subtitleIndexLoad: SubtitleLoad?
-    @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
-    @ObservationIgnored var authoredRendererTrackId: Int?
-    @ObservationIgnored var authoredScript: AssScript?
-    /// Counts renderer starts and drops, so a renderer made in the background for a track since left is thrown away.
-    @ObservationIgnored var authoredGeneration = 0
-    @ObservationIgnored var isAuthoredRenderRunning = false
-    /// How long a libass call may run before it counts as stuck (`watchLibass`): a frame takes milliseconds, a new
-    /// script's first fonts a fraction of a second.
-    @ObservationIgnored var libassStallTimeout: Duration = .seconds(5)
-    /// A libass call has run past `libassStallTimeout`: the media's ASS tracks show their text cues.
-    @ObservationIgnored var isLibassStalled = false
-    /// This engine's libass calls not yet back, run or waiting for the queue (`watchLibass`).
-    @ObservationIgnored var libassCallsInFlight = 0
-    /// The check for a stuck libass call (`watchLibass`), while one is under way.
-    @ObservationIgnored var libassWatch: Task<Void, Never>?
-    @ObservationIgnored var pendingAuthoredRenderTime: Double?
-    /// A render a video frame on is due (`scheduleAuthoredAnimationFrame`).
-    @ObservationIgnored var isAuthoredAnimationFrameScheduled = false
-    var lastObservedLiveSubtitleVersion: Int = -1
-
-    var loadedSubtitleDocuments: [Int: SubtitleDocument] = [:]
     var currentHeaders: [String: String] = [:]
 
     // MARK: - Decoupled video enqueue/flush via Objective-C selectors
@@ -778,9 +643,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// isn't saved to the history, so later language settings apply to the file.
     @ObservationIgnored
     var audioSelectionIsAutomatic = false
-    /// As `audioSelectionIsAutomatic`, for subtitles (including none).
-    @ObservationIgnored
-    var subtitleSelectionIsAutomatic = false
     var configuration: PlayerConfiguration
     /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
     public internal(set) var currentPath: String?
@@ -897,17 +759,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.applyDolbyVisionTrims = configuration.applyDolbyVisionTrims
         self.dynamicToneMapLock.withLock { $0.appliesTrims = configuration.applyDolbyVisionTrims }
         self.volume = configuration.initialVolume
-        self.subtitleFontSize = configuration.subtitleFontSize
-        self.subtitleFontName = configuration.subtitleFontName
-        self.subtitleFontWeight = configuration.subtitleFontWeight
-        self.subtitleTextColorHex = configuration.subtitleTextColorHex
-        self.subtitleBgColorHex = configuration.subtitleBgColorHex
-        self.subtitleBgOpacity = configuration.subtitleBgOpacity
-        self.usesAuthoredSubtitleStyles = configuration.usesAuthoredSubtitleStyles
-        self.showsOnlyForcedSubtitles = configuration.showsOnlyForcedSubtitles
-        self.assStyleOverride = configuration.assStyleOverride
-        self.subtitleScale = configuration.subtitleScale
-        self.subtitlePosition = configuration.subtitlePosition
+        let subtitles = SubtitleController()
+        subtitles.apply(configuration)
+        self.subtitles = subtitles
         self.enableOSD = configuration.enableOSD
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress
@@ -946,6 +800,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             }
         }
 
+        subtitles.host = self
         setupDisplayLink()
         setupAudioObservers()
         updateEffectiveRenderMode()
@@ -969,8 +824,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     self.onTimeUpdate?(seconds, self.duration)
 
                     self.applyDueVariantChanges(at: seconds)
-                    // Update active subtitle cues
-                    self.updateActiveSubtitles(at: seconds)
+                    self.subtitles.timeDidChange(to: seconds, .tick)
                     self.checkForStarvation()
                     self.checkForAudioRendererLag()
 

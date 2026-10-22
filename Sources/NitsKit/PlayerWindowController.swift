@@ -554,9 +554,9 @@ extension PlayerWindowController: PlayerActions {
 
     public func stepSubtitleDelay(by delta: Double) {
         guard engine.isLoaded else { return }
-        engine.stepSubtitleDelay(by: delta)
+        engine.subtitles.stepDelay(by: delta)
         if engine.enableOSD {
-            uiState.osd.show(.subtitleDelay(seconds: engine.subtitleDelay))
+            uiState.osd.show(.subtitleDelay(seconds: engine.subtitles.delay))
         }
     }
 

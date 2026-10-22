@@ -45,66 +45,122 @@ extension PlayerEngine {
     private func resetPlaybackTrackingState(
         for path: String, explicitTitle: String?, artworkData: Data?, artworkURL: URL?
     ) -> (loadID: UUID, interruptContext: MediaDemuxer.InterruptContext) {
+        resetMediaState(reportingTracks: false)
         self.mediaTitle = Self.resolveTitle(from: path, explicitTitle: explicitTitle)
         self.artworkData = artworkData
         self.artworkURL = artworkURL
-
-        // Save progress for previously active media if present
-        saveCurrentPlaybackProgress()
-
-        // Reset playback tracking state so stale values from previous media do not leak
-        self.currentPath = nil
-        self.currentTime = 0
-        self.duration = 0
-        self.chapters = []
-        self.isLoaded = false
         self.isLoading = true
         loadGeneration += 1
 
+        let loadID = UUID()
+        self.currentLoadID = loadID
+        let interruptContext = MediaDemuxer.InterruptContext()
+        self.currentInterruptContext = interruptContext
+        playbackState = .loading
+
+        return (loadID, interruptContext)
+    }
+
+    /// Forgets the media played until now: saves its progress, ends its seeks, steps and pipeline, closes its demuxer
+    /// and clears its tracks, stream properties, picture and display timing. `stop()` and every load go through here,
+    /// so nothing of one media outlives it on either path, a load that fails included: clear new per-media state here.
+    /// - Parameter reportingTracks: Whether to report the cleared tracks now. A load doesn't: it reports them once,
+    ///   with the new media's or when it fails.
+    private func resetMediaState(reportingTracks: Bool) {
+        // First: it saves the selected tracks and a seek's target, both cleared below.
+        saveCurrentPlaybackProgress()
+        resetRelativeSeekBurst()
         let seekId = currentSeekId + 1
         currentSeekId = seekId
         activeSeekId.withLock { $0 = seekId }
         isSeeking = false
         chaseTargetTime = nil
+        resumePlaybackAfterChase = false
         minStepFramePTS = nil
         decoderStallRecoveries = 0
         stepDecodeContiguous = false
         isStepPumping = false
         didStepSincePause = false
         stepFrameCache.clear()
-        chaseSettleTask?.cancel()
-        chaseSettleTask = nil
-        cancelPreroll()
-        resumePlaybackAfterChase = false
-
-        let loadID = UUID()
-        self.currentLoadID = loadID
 
         currentInterruptContext?.cancel()
         currentInterruptContext = nil
         demuxer?.cancel()
         demuxer = nil
-
-        let interruptContext = MediaDemuxer.InterruptContext()
-        self.currentInterruptContext = interruptContext
-
-        isFeeding.withLock { $0 = false }
-        stopFeedingVideo()
-        stopFeedingAudio()
-        clearVideoSurface()
-        displayLink?.isPaused = true
+        stopPlaybackPipeline()
         synchronizer.setRate(0.0, time: .zero)
-        clockSettlingGuardLock.withLock { $0 = nil }
         audioLagDetector = AudioLagDetector()
-        isPlaying = false
+        clearVideoSurface()
+
+        currentPath = nil
+        currentHeaders = [:]
+        isLoaded = false
+        currentTime = 0
+        duration = 0
+        chapters = []
         loadError = nil
         hasVideo = false
-        playbackState = .loading
+        isInterlacedContent = false
+        videoWidth = 0
+        videoHeight = 0
+        nominalFrameDuration = 1.0 / 24.0
+        nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
+        videoStartTimeLock.withLock { $0 = 0 }
+        // Display timing of the previous media must not leak into the new one's cadence reports or phase lock.
+        frameCadenceLock.withLock { $0 = FrameCadenceStats() }
+        displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
+        tickDiagnosticsLock.withLock { $0 = TickDiagnostics() }
+        sampleAspectRatio = .square
+        videoCodecName = ""
+        videoBitDepth = 8
+        videoColorPrimaries = ""
+        videoTransferFunction = ""
+        videoDolbyVisionProfile = nil
+        videoSourcePeakNits = 0
+        currentMetrics = PlayerPerformanceMonitor.Metrics()
+        dynamicToneMapLock.withLock {
+            $0.basePeakNits = 1000.0
+            $0.baseTargetNits = 203.0
+            $0.smoothedPeakNits = 1000.0
+            $0.smoothedTargetNits = 203.0
+            $0.lastRenderModeName = "Metal SDR"
+            $0.lastDoviMetadata = nil
+        }
+        performanceMonitor.updateToneMapParams(
+            PlayerPerformanceMonitor.ToneMapParams(mode: .none, peakNits: 0, targetNits: 203)
+        )
+        thumbnailManager.reset()
+        isHDRContent = false
+        audioDelay = 0
+        audioSink.setDelay(.zero)
+        // The file's aspect override and crop, zoom and pan; the scaling lasts the session.
+        restoreVideoGeometry(from: nil)
 
-        return (loadID, interruptContext)
+        // A report already held back by a deferral this runs in is the outer one's to make, either way.
+        let reportWasDeferred = hasDeferredTracksChange
+        beginDeferringTracksChanged()
+        audioTracks = []
+        selectedAudioTrackId = -1
+        audioSelectionIsAutomatic = false
+        variants = []
+        selectedVariantId = nil
+        isVariantAutomatic = false
+        canSelectAutomaticVariant = false
+        pendingVariantChanges = []
+        subtitles.reset()
+        if !reportingTracks {
+            if hasDeferredTracksChange, !reportWasDeferred { tracksClearedUnreported = true }
+            hasDeferredTracksChange = reportWasDeferred
+        } else if tracksClearedUnreported {
+            // A load before cleared them; stopping it ends that load.
+            hasDeferredTracksChange = true
+        }
+        endDeferringTracksChanged()
     }
 
     public func load(_ request: MediaLoadRequest) {
+        // Now, not in the reset: a load in the background sets `isLoading` first, and nothing is saved while loading.
+        saveCurrentPlaybackProgress()
         let normalizedPath = Self.normalizeMediaPath(request.path)
         let isNetwork = MediaURL.isNetworkURL(normalizedPath)
         let isRemoteOrMounted = MediaURL.isRemoteOrMountedVolume(normalizedPath)
@@ -201,6 +257,11 @@ extension PlayerEngine {
             artworkData: request.artworkData,
             artworkURL: request.artworkURL
         )
+        // However the load ends without new tracks (a failure, a cancel), the cleared ones are reported; unless
+        // another load replaced it, which reports its own.
+        defer {
+            if currentLoadID == loadID { reportClearedTracksIfOwed() }
+        }
 
         AppLog.info(
             .engine,
@@ -302,6 +363,8 @@ extension PlayerEngine {
             artworkData: request.artworkData,
             artworkURL: request.artworkURL
         )
+        // However the load ends without new tracks (it fails), the cleared ones are reported.
+        defer { reportClearedTracksIfOwed() }
 
         AppLog.info(
             .engine,
@@ -333,80 +396,16 @@ extension PlayerEngine {
     }
 
     public func stop() {
-        resetRelativeSeekBurst()
-        let seekId = currentSeekId + 1
-        currentSeekId = seekId
-        activeSeekId.withLock { $0 = seekId }
-        isSeeking = false
-        chaseTargetTime = nil
-        resumePlaybackAfterChase = false
-        stepDecodeContiguous = false
-        isStepPumping = false
-        didStepSincePause = false
-        stepFrameCache.clear()
-        saveCurrentPlaybackProgress()
         loadingTask?.cancel()
         loadingTask = nil
-        currentInterruptContext?.cancel()
-        currentInterruptContext = nil
-        demuxer?.cancel()
-        demuxer = nil
-        stopPlaybackPipeline()
-        clearVideoSurface()
-        hasVideo = false
-        isInterlacedContent = false
-        videoWidth = 0
-        videoHeight = 0
-        nominalFrameDuration = 1.0 / 24.0
-        nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
-        videoStartTimeLock.withLock { $0 = 0 }
-        // Display timing of the previous media must not leak into the new one's cadence reports or phase lock.
-        frameCadenceLock.withLock { $0 = FrameCadenceStats() }
-        displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
-        tickDiagnosticsLock.withLock { $0 = TickDiagnostics() }
-        sampleAspectRatio = .square
-        videoCodecName = ""
-        videoBitDepth = 8
-        videoColorPrimaries = ""
-        videoTransferFunction = ""
-        videoDolbyVisionProfile = nil
-        videoSourcePeakNits = 0
-        currentMetrics = PlayerPerformanceMonitor.Metrics()
-        dynamicToneMapLock.withLock {
-            $0.basePeakNits = 1000.0
-            $0.baseTargetNits = 203.0
-            $0.smoothedPeakNits = 1000.0
-            $0.smoothedTargetNits = 203.0
-            $0.lastRenderModeName = "Metal SDR"
-            $0.lastDoviMetadata = nil
-        }
-        performanceMonitor.updateToneMapParams(
-            PlayerPerformanceMonitor.ToneMapParams(mode: .none, peakNits: 0, targetNits: 203)
-        )
+        resetMediaState(reportingTracks: true)
         mediaTitle = ""
         artworkData = nil
         artworkURL = nil
-        isLoaded = false
-        currentPath = nil
-        currentTime = 0
-        duration = 0
-        chapters = []
-        beginDeferringTracksChanged()
-        audioTracks = []
-        selectedAudioTrackId = -1
-        variants = []
-        selectedVariantId = nil
-        isVariantAutomatic = false
-        canSelectAutomaticVariant = false
-        pendingVariantChanges = []
-        subtitleTracks = []
-        resetSubtitles()
-        endDeferringTracksChanged()
         actionButtons = []
         trackNavigation = TrackNavigation()
         isLoading = false
         playbackState = .idle
-        thumbnailManager.reset()
     }
 
     public func saveCurrentPlaybackProgress() {
@@ -432,63 +431,17 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Track selection, delays and the picture's aspect override and crop to persist. Subtitles are `subtitlesOff`
-    /// when disabled, and an external file is saved by its path; one that isn't a local file can't be restored and
-    /// keeps the saved selection. A selection made on load by `TrackAutoSelection` isn't saved.
+    /// Track selection, delays and the picture's aspect override and crop to persist. A selection made on load by
+    /// `TrackAutoSelection` isn't saved; the subtitles write theirs (`SubtitleController.writePreferences`).
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioTrackId: selectedAudioTrackId >= 0 && !audioSelectionIsAutomatic ? selectedAudioTrackId : nil,
-            subtitleDelay: subtitleDelay,
             audioDelay: audioDelay,
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
-        if subtitleSelectionIsAutomatic {
-            // Left as saved: nothing, or a track this file no longer has.
-        } else if let id = selectedSubtitleTrackId {
-            let track = subtitleTracks.first { $0.id == id }
-            if let url = track?.externalURL {
-                if url.isFileURL {
-                    preferences.subtitleTrackId = PlaybackRecord.externalSubtitle
-                    preferences.externalSubtitlePath = url.path
-                    preferences.externalSubtitleStreamIndex = track?.streamIndex
-                }
-            } else if track != nil {
-                preferences.subtitleTrackId = id
-            }
-        } else {
-            preferences.subtitleTrackId = PlaybackRecord.subtitlesOff
-        }
+        subtitles.writePreferences(into: &preferences)
         return preferences
-    }
-
-    /// Selects the subtitles saved for the file, or none when they were turned off. Returns whether there was a
-    /// selection to restore: a saved file that moved or a track the media no longer has leaves the choice to
-    /// `TrackAutoSelection`.
-    private func restoreSubtitleSelection(from saved: PlaybackPreferences?, among tracks: [SubtitleTrack]) -> Bool {
-        guard let id = saved?.subtitleTrackId else { return false }
-        if id == PlaybackRecord.subtitlesOff {
-            selectSubtitleTrack(id: nil, persistHistory: false)
-            return true
-        }
-        if id == PlaybackRecord.externalSubtitle {
-            guard let path = saved?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
-                let trackId = externalSubtitleTrack(
-                    among: addExternalSubtitles(url: URL(fileURLWithPath: path)),
-                    streamIndex: saved?.externalSubtitleStreamIndex)
-            else {
-                AppLog.warning(
-                    .subtitles, "Saved external subtitle file is missing: \(saved?.externalSubtitlePath ?? "no path")")
-                return false
-            }
-            selectSubtitleTrack(id: trackId, persistHistory: false)
-            AppLog.info(.subtitles, "Restored external subtitle file from saved history: \(path)")
-            return true
-        }
-        guard tracks.contains(where: { $0.id == id }) else { return false }
-        selectSubtitleTrack(id: id, persistHistory: false)
-        AppLog.info(.subtitles, "Restored subtitle track from saved history: \(id)")
-        return true
     }
 
     /// Extracts an explicit stream index from strings formatted as `stream:N` or `s:N`.
@@ -661,8 +614,6 @@ extension PlayerEngine {
                 headers: headers,
                 networkPolicy: configuration.networkThumbnailPolicy
             )
-        } else {
-            thumbnailManager.reset()
         }
         // Fall back to embedded container artwork if no explicit artwork data was provided
         if self.artworkData == nil, let embedded = demuxer.embeddedArtworkData {
@@ -677,8 +628,6 @@ extension PlayerEngine {
         // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
         // 3. `TrackAutoSelection` by the language settings and the tracks' flags
         let savedTracks = historyStore.savedPreferences(for: path)
-        audioSelectionIsAutomatic = false
-        subtitleSelectionIsAutomatic = false
 
         if let spec = requestedAudioTrack,
             let id = Self.resolveAudioTrackId(spec, in: demuxer.audioTracks)
@@ -709,17 +658,7 @@ extension PlayerEngine {
         self.selectedAudioTrackId = demuxer.selectedAudioTrackIndex
         self.variants = demuxer.variants
         self.selectedVariantId = demuxer.selectedVariantId
-        self.subtitleTracks = demuxer.subtitleTracks
-        resetSubtitles()
-        // Set directly, not via `setSubtitleDelay`: nothing to re-save, and the track below picks its cues with it.
-        let savedDelay = savedTracks?.subtitleDelay ?? 0
-        self.subtitleDelay =
-            savedDelay.isFinite
-            ? min(max(savedDelay, Self.subtitleDelayRange.lowerBound), Self.subtitleDelayRange.upperBound) : 0
-        if self.subtitleDelay != 0 {
-            AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(self.subtitleDelay)s")
-        }
-        // Set directly too: the pipeline is flushed below, so there is no queued audio to move.
+        // Set directly: the pipeline is flushed below, so there is no queued audio to move.
         let savedAudioDelay = savedTracks?.audioDelay ?? 0
         self.audioDelay =
             savedAudioDelay.isFinite
@@ -730,37 +669,9 @@ extension PlayerEngine {
         }
         restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
-        // Before the saved selection: a saved external file that is one of them maps to the same track.
-        addSidecarSubtitles(for: path)
-
-        // Subtitles: explicit request, then the saved selection, then `TrackAutoSelection` (none when nothing fits).
-        let subtitlesChosen: Bool
-        if let spec = requestedSubtitleTrack,
-            let preference = Self.resolveSubtitleSelection(spec, in: demuxer.subtitleTracks)
-        {
-            switch preference {
-            case .disable:
-                selectSubtitleTrack(id: nil, persistHistory: false)
-                AppLog.info(.subtitles, "Explicit subtitle selection: disabled")
-            case .select(let trackId):
-                selectSubtitleTrack(id: trackId, persistHistory: false)
-                AppLog.info(.subtitles, "Using explicit subtitle track: \(trackId)")
-            }
-            subtitlesChosen = true
-        } else {
-            subtitlesChosen = restoreSubtitleSelection(from: savedTracks, among: demuxer.subtitleTracks)
-        }
-        if !subtitlesChosen {
-            subtitleSelectionIsAutomatic = true
-            let audioLanguage = audioTracks.first { $0.id == selectedAudioTrackId }?.language
-            if let trackId = TrackAutoSelection.subtitleTrackId(
-                in: subtitleTracks, audioLanguage: audioLanguage, preferences: configuration.trackLanguages,
-                systemLanguages: Locale.preferredLanguages)
-            {
-                selectSubtitleTrack(id: trackId, persistHistory: false)
-                AppLog.info(.subtitles, "Selected subtitle track \(trackId) by language and flags")
-            }
-        }
+        subtitles.mediaDidLoad(
+            tracks: demuxer.subtitleTracks, path: path, saved: savedTracks, requestedTrack: requestedSubtitleTrack,
+            audioLanguage: audioTracks.first { $0.id == selectedAudioTrackId }?.language)
 
         if demuxer.hasVideo {
             let baseAdaptive = Self.computeAdaptiveTargetNits(
@@ -970,9 +881,8 @@ extension PlayerEngine {
         self.currentTime = effectiveStartTime
         self.isLoaded = true
         self.isLoading = false
-        // The track was chosen above, before the start time was applied: the cue on screen at a resume point is read
-        // in a window (a start at 0 needs none, playback reads from there).
-        refreshEmbeddedSubtitles(around: effectiveStartTime)
+        // The track was chosen above, before the start time was applied.
+        subtitles.timeDidChange(to: effectiveStartTime, .mediaStarted)
 
         // Synchronously re-anchor clock and reset FrameQueue so any subsequent play() or display tick
         // observes the clean timeline start and cannot drop initial frames with stale clock from previous media

@@ -436,13 +436,16 @@ can't drift apart.
 ### Subtitles
 
 Subtitles never touch the video pipeline: they are drawn by `SubtitleOverlayView` above the video, and a host that
-draws its own gets the same data from `onSubtitleCuesChanged`. For ASS, each cue's `rawPayload` is a `Dialogue:` line
-in one field order (`AssScript.eventFormat`) whether the track is a stream or a file, and `subtitleAssHeader` (the
+draws its own gets the same data from `onCuesChanged`. `SubtitleController` (`engine.subtitles`) owns all of it: the
+tracks and selection, the delay, the style, every read and the libass renderer. The engine calls it on load
+(`mediaDidLoad`), as time moves (`timeDidChange`: the time tick, a seek's preview and landing, a frame step) and when
+media goes (`reset`, from `resetMediaState`); the controller reads the engine through `SubtitleHost`. For ASS, each cue's `rawPayload` is a `Dialogue:` line
+in one field order (`AssScript.eventFormat`) whether the track is a stream or a file, and `assHeader` (the
 script without its events, ending in that `Format:`) plus those lines make a script libass in the host draws as the
-player does; `subtitleAssFonts` are the media's attached fonts.
+player does; `assFonts` are the media's attached fonts.
 
 - **Three kinds of track** (`SubtitleTrack.format`), all held in a `SubtitleDocument` that
-  `updateActiveSubtitles(at:)` looks up each time tick (20 Hz) with the subtitle delay applied:
+  `updateShown(at:)` looks up each time tick (20 Hz) with the subtitle delay applied:
   - `.text` (SRT, WebVTT, mov_text, plain text; MicroDVD, SubViewer and SAMI files through FFmpeg's decoders,
     `FFmpegTextSubtitles`): `SubtitleCue`s, drawn by SwiftUI in the user's subtitle style.
   - `.bitmap` (PGS, VobSub, DVB): `BitmapSubtitleDecoder` (`avcodec_decode_subtitle2`) makes `SubtitleImageCue`s that
@@ -455,12 +458,12 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   - `.ass`: the plain-text `cues` (hosts, VoiceOver, the "plain text" setting) plus an `AssScript` (stream header,
     events, attached fonts, or the whole file) for libass.
 - **libass** (`AssSubtitleRenderer`, ISC) draws at the pixel size of the visible picture, which the view reports as
-  `subtitleRenderSize`; the engine renders off the main thread, one render at a time, the latest requested time
+  `renderSize`; the controller renders off the main thread, one render at a time, the latest requested time
   last. Every libass call of every renderer runs on one serial queue (`AssSubtitleRenderer.queue`), and only there
   (`dispatchPrecondition`): callers await it through `perform`, never holding a thread of Swift's pool. Core Text asks
-  `fontd` for fonts with a synchronous XPC call that has no timeout. While the engine's calls are under way
+  `fontd` for fonts with a synchronous XPC call that has no timeout. While the controller's calls are under way
   (`libassCallsInFlight`), one running past `libassStallTimeout` (5 s) counts as stuck (`watchLibass`; another's long
-  call, with none of the engine's waiting, is not its business): the media's ASS tracks show their text cues from
+  call, with none of the controller's waiting, is not its business): the media's ASS tracks show their text cues from
   then on, as anything later put on the queue would wait behind it; the next media tries libass again. Fonts are set
   once per renderer: `ass_set_fonts` drops every font found so far, and libass takes fonts added later at the next
   render. A renderer is released on the queue asynchronously, so the main thread never waits for
@@ -468,7 +471,7 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   premultiplied BGRA picture per group of images near each other (a sign at the top and the
   dialogue at the bottom are two, not one the size of the frame), shown through the same image path as bitmap cues,
   without the fade the text gets. The
-  engine keeps `isDrawingAuthoredSubtitles` so the overlay doesn't draw the text cues again. Fonts come from Core
+  controller keeps `isDrawingAuthored` so the overlay doesn't draw the text cues again. Fonts come from Core
   Text (no Fontconfig), plus the attachments of the container. The pixel aspect passed is the one the video is shown
   with (its SAR, or what a forced aspect ratio makes of it; not a crop): script coordinates are in the video's own
   pixels, the frame in square ones. Renders follow the 20 Hz time tick, and while one changes the picture (an
@@ -476,7 +479,7 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   subtitle style over dialogue through libass' selective override (lines without positioning; signs keep theirs). Core
   Text doesn't list the system font's rounded, serif and monospaced designs, so their files are added to libass
   (`StyleOverride.libassFont`, from the one list of designs `SubtitleSystemFont`; SF Pro itself is found as
-  "System Font"). `subtitleScale` and `subtitlePosition` reach libass as its
+  "System Font"). `scale` and `position` reach libass as its
   font scale (dialogue only, `ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE`) and line position; the overlay applies them to
   text (position) and picture subtitles (both) itself. The frame is the visible part of the picture
   (after crop and zoom), so a script's whole play resolution is stretched over what is visible: dialogue stays on
@@ -536,9 +539,9 @@ player does; `subtitleAssFonts` are the media's attached fonts.
   before. Window reads read the video stream itself for them. CEA-708 has no FFmpeg decoder; its services are left out
   (the 608 bytes broadcasters send beside them are read).
 - **External files**: `.srt` / `.vtt` / `.ass` / `.ssa` are parsed whole; `.sup` / `.idx` are read whole when the track
-  is selected (`extractEmbeddedSubtitles`). Background reads (`subtitleLoads`, `subtitleRefresh`) are cancelled through
+  is selected (`extractEmbeddedSubtitles`). Background reads (`loads`, `windowRead`) are cancelled through
   their `FFmpegInterrupt`, blocking I/O included, once their track is no longer selected or the media stops. `stop()`
-  and every load reset the subtitle state (`resetSubtitles`), so hosts get `[]`.
+  and every load reset the subtitle state (`SubtitleController.reset`), so hosts get `[]`.
 - **Track flags**: forced and SDH come from the stream's disposition, or from its title; an external file's from its
   name. History saves an external file by path and stream, which tells apart the languages of a VobSub index.
 - **Dependencies**: libass, FreeType, HarfBuzz, FriBidi and libunibreak are built by `scripts/build_dependencies.sh`

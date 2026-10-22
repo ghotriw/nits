@@ -32,21 +32,25 @@ let package = Package(
                 .apt(["libass-dev"]),
             ]
         ),
+        // Hot loops that must run optimized in Debug too, kept apart so the rest of NitsCore builds -Onone.
+        .target(
+            name: "NitsKernels",
+            swiftSettings: defaultSwiftSettings + [
+                // Software YUV->NV12/P010 conversion (FFmpegVideoDecoder) is hand-SIMD that only
+                // vectorizes under -O. Debug (-Onone) makes 10-bit conversion ~40x slower, so 1080p+
+                // 10-bit AV1 playback lags and desyncs from audio. Release is unaffected.
+                .unsafeFlags(["-O"], .when(configuration: .debug))
+            ]
+        ),
         .target(
             name: "NitsCore",
-            dependencies: ["CFFmpeg", "CLibass"],
+            dependencies: ["CFFmpeg", "CLibass", "NitsKernels"],
             resources: [
                 .process("Video/HDRToneMapping.metal"),
                 .process("Video/BT2390ToneMapping.metal"),
                 .process("Video/Deinterlace.metal"),
             ],
-            swiftSettings: defaultSwiftSettings + [
-                // Software YUV->NV12/P010 conversion (FFmpegVideoDecoder) is hand-SIMD that only
-                // vectorizes under -O. Debug (-Onone) makes 10-bit conversion ~40x slower, so 1080p+
-                // 10-bit AV1 playback lags and desyncs from audio. Optimize NitsCore even in Debug so
-                // software playback stays usable while developing (release is unaffected).
-                .unsafeFlags(["-O"], .when(configuration: .debug))
-            ]
+            swiftSettings: defaultSwiftSettings
         ),
         .target(
             name: "NitsUI",
@@ -78,7 +82,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NitsCoreTests",
-            dependencies: ["NitsCore", "NitsTestSupport"],
+            dependencies: ["NitsCore", "NitsKernels", "NitsTestSupport"],
             swiftSettings: defaultSwiftSettings
         ),
         .testTarget(

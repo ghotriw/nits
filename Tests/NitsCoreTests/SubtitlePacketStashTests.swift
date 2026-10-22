@@ -11,7 +11,7 @@ struct SubtitlePacketStashTests {
         while demuxer.nextVideoSample() != nil {}
     }
 
-    /// Takes what the selected track read before it was chosen and merges it, as `refreshEmbeddedSubtitles` does.
+    /// Takes what the selected track read before it was chosen and merges it, as `SubtitleController.refreshEmbedded` does.
     @discardableResult
     private func mergeStash(of demuxer: MediaDemuxer) throws -> SubtitlePacketStash.Snapshot {
         let stashed = try #require(demuxer.takeStashedSubtitles())

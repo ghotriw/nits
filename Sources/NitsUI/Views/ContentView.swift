@@ -134,21 +134,21 @@ public struct ContentView: View {
 
             // Subtitles Overlay
             SubtitleOverlayView(
-                cues: engine.isDrawingAuthoredSubtitles ? [] : engine.currentSubtitleCues,
-                images: engine.currentSubtitleImages,
-                fontSize: engine.subtitleFontSize,
-                textColor: Color(hex: engine.subtitleTextColorHex) ?? .white,
-                backgroundColor: Color(hex: engine.subtitleBgColorHex) ?? .black,
-                backgroundOpacity: engine.subtitleBgOpacity,
-                fontName: engine.subtitleFontName,
-                fontWeight: engine.subtitleFontWeight,
+                cues: engine.subtitles.isDrawingAuthored ? [] : engine.subtitles.cues,
+                images: engine.subtitles.images,
+                fontSize: engine.subtitles.style.fontSize,
+                textColor: Color(hex: engine.subtitles.style.textColorHex) ?? .white,
+                backgroundColor: Color(hex: engine.subtitles.style.backgroundColorHex) ?? .black,
+                backgroundOpacity: engine.subtitles.style.backgroundOpacity,
+                fontName: engine.subtitles.style.fontName,
+                fontWeight: engine.subtitles.style.fontWeight,
                 videoWidth: engine.videoWidth,
                 videoHeight: engine.videoHeight,
                 sampleAspectRatio: engine.sampleAspectRatio,
                 geometry: engine.videoGeometry,
-                imageScale: engine.effectiveSubtitleScale,
-                raise: engine.subtitleRaise,
-                onRenderSizeChange: { engine.subtitleRenderSize = $0 }
+                imageScale: engine.subtitles.effectiveScale,
+                raise: engine.subtitles.raise,
+                onRenderSizeChange: { engine.subtitles.renderSize = $0 }
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)

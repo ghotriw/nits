@@ -26,10 +26,10 @@ enum SubtitleFileDrop {
             .filter { seen.insert($0.standardizedFileURL).inserted }
 
         AppLog.info(.subtitles, "Dropped \(files.count) subtitle file(s) onto the player")
-        engine.loadExternalSubtitles(urls: files)
+        engine.subtitles.addExternal(urls: files)
 
         let added = Set(files.map(\.standardizedFileURL))
-        if let selected = engine.subtitleTracks.first(where: { $0.id == engine.selectedSubtitleTrackId }),
+        if let selected = engine.subtitles.tracks.first(where: { $0.id == engine.subtitles.selectedTrackId }),
             let url = selected.externalURL, added.contains(url)
         {
             let title = TrackTitleFormatter.format(

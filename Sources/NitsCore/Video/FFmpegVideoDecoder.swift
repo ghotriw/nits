@@ -3,6 +3,7 @@ import CFFmpeg
 import CoreMedia
 import CoreVideo
 import Foundation
+import NitsKernels
 import os
 
 /// High-performance software video decoder powered by FFmpeg libavcodec (including VideoLAN's `libdav1d`).
@@ -778,78 +779,13 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         //     (and GPU/shader conversion like mpv/VLC is rejected: it would bypass the P010 ->
         //     AVSampleBufferDisplayLayer path that gives HDR/XDR passthrough + Dolby Vision).
         //   - A plain scalar loop: ~5x slower than this SIMD under -Onone (debug). So SIMD stays.
-        // DEBUG CAVEAT: under -Onone the 10-bit path is ~40x slower than release (SIMD isn't vectorized),
-        // so 10-bit (P010) playback at >=1080p can fall behind the audio clock in Debug builds. Release is
-        // unaffected (dav1d decode is an external optimized lib, identical in both). Build NitsCore with -O
-        // (see Package.swift) if you need smooth software playback while developing. 8-bit (NV12) is cheap
-        // (Y is a memcpy), so only the 10-bit branch below is debug-sensitive.
+        // The SIMD loops live in NitsKernels, built with -O in Debug too (see `BiPlanarConversion`).
         if is10Bit {
-            // 10-bit Y plane: convert 10-bit Little-Endian integers to VideoToolbox MSB-aligned (shift left by 6)
-            let srcY16 = OpaquePointer(ySrc)
-            let destY16 = OpaquePointer(yDest)
-            let srcYStride16 = srcYStride / 2
-            let destYStride16 = destYStride / 2
-
-            let simdStep16 = 8
-            for row in 0..<height {
-                let sRow = UnsafePointer<UInt16>(srcY16).advanced(by: row * srcYStride16)
-                let dRow = UnsafeMutablePointer<UInt16>(destY16).advanced(by: row * destYStride16)
-                var x = 0
-                while x + simdStep16 <= width {
-                    let vec = UnsafeRawPointer(sRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self)
-                    let shifted = vec &<< 6
-                    UnsafeMutableRawPointer(dRow.advanced(by: x)).storeBytes(of: shifted, as: SIMD8<UInt16>.self)
-                    x += simdStep16
-                }
-                while x < width {
-                    dRow[x] = sRow[x] &<< 6
-                    x += 1
-                }
-            }
-
-            // 10-bit UV plane: interleave U and V planar components into CbCr with << 6 shift
-            let srcU16 = OpaquePointer(uSrc)
-            let srcV16 = OpaquePointer(vSrc)
-            let destUV16 = OpaquePointer(uvDest)
-            let srcUStride16 = srcUStride / 2
-            let srcVStride16 = srcVStride / 2
-            let destUVStride16 = destUVStride / 2
-
-            let uvSimdStep = 8
-            for row in 0..<halfH {
-                let uRow = UnsafePointer<UInt16>(srcU16).advanced(by: row * srcUStride16)
-                let vRow = UnsafePointer<UInt16>(srcV16).advanced(by: row * srcVStride16)
-                let uvRow = UnsafeMutablePointer<UInt16>(destUV16).advanced(by: row * destUVStride16)
-                var x = 0
-                while x + uvSimdStep <= halfW {
-                    let uVec = UnsafeRawPointer(uRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
-                    let vVec = UnsafeRawPointer(vRow.advanced(by: x)).loadUnaligned(as: SIMD8<UInt16>.self) &<< 6
-
-                    let lowInterleaved = SIMD8<UInt16>(
-                        uVec[0], vVec[0], uVec[1], vVec[1],
-                        uVec[2], vVec[2], uVec[3], vVec[3]
-                    )
-                    let highInterleaved = SIMD8<UInt16>(
-                        uVec[4], vVec[4], uVec[5], vVec[5],
-                        uVec[6], vVec[6], uVec[7], vVec[7]
-                    )
-
-                    let destOffset = x * 2
-                    UnsafeMutableRawPointer(uvRow.advanced(by: destOffset))
-                        .storeBytes(of: lowInterleaved, as: SIMD8<UInt16>.self)
-                    UnsafeMutableRawPointer(uvRow.advanced(by: destOffset + 8))
-                        .storeBytes(of: highInterleaved, as: SIMD8<UInt16>.self)
-
-                    x += uvSimdStep
-                }
-                while x < halfW {
-                    let uVal = uRow[x] &<< 6
-                    let vVal = vRow[x] &<< 6
-                    uvRow[x * 2] = uVal
-                    uvRow[x * 2 + 1] = vVal
-                    x += 1
-                }
-            }
+            BiPlanarConversion.shift10BitPlane(
+                from: ySrc, stride: srcYStride, to: yDest, stride: destYStride, width: width, height: height)
+            BiPlanarConversion.interleave10BitChroma(
+                u: uSrc, uStride: srcUStride, v: vSrc, vStride: srcVStride,
+                to: uvDest, stride: destUVStride, width: halfW, height: halfH)
         } else {
             // 8-bit Y plane: direct row-by-row memory copy
             for row in 0..<height {
@@ -857,44 +793,9 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 let dstRow = yDest.advanced(by: row * destYStride)
                 memcpy(dstRow, srcRow, width)
             }
-
-            // 8-bit UV plane: interleave U and V planar channels into CbCr NV12 format using 128-bit SIMD16 registers
-            let uvSimdStep = 16
-            for row in 0..<halfH {
-                let uRow = UnsafeRawPointer(uSrc.advanced(by: row * srcUStride))
-                let vRow = UnsafeRawPointer(vSrc.advanced(by: row * srcVStride))
-                let uvRow = UnsafeMutableRawPointer(uvDest.advanced(by: row * destUVStride))
-                var x = 0
-                while x + uvSimdStep <= halfW {
-                    let uVec = uRow.advanced(by: x).loadUnaligned(as: SIMD16<UInt8>.self)
-                    let vVec = vRow.advanced(by: x).loadUnaligned(as: SIMD16<UInt8>.self)
-
-                    let lowInterleaved = SIMD16<UInt8>(
-                        uVec[0], vVec[0], uVec[1], vVec[1],
-                        uVec[2], vVec[2], uVec[3], vVec[3],
-                        uVec[4], vVec[4], uVec[5], vVec[5],
-                        uVec[6], vVec[6], uVec[7], vVec[7]
-                    )
-                    let highInterleaved = SIMD16<UInt8>(
-                        uVec[8], vVec[8], uVec[9], vVec[9],
-                        uVec[10], vVec[10], uVec[11], vVec[11],
-                        uVec[12], vVec[12], uVec[13], vVec[13],
-                        uVec[14], vVec[14], uVec[15], vVec[15]
-                    )
-
-                    let destOffset = x * 2
-                    uvRow.advanced(by: destOffset).storeBytes(of: lowInterleaved, as: SIMD16<UInt8>.self)
-                    uvRow.advanced(by: destOffset + 16).storeBytes(of: highInterleaved, as: SIMD16<UInt8>.self)
-
-                    x += uvSimdStep
-                }
-                while x < halfW {
-                    let uVal = uRow.advanced(by: x).loadUnaligned(as: UInt8.self)
-                    let vVal = vRow.advanced(by: x).loadUnaligned(as: UInt8.self)
-                    uvRow.advanced(by: x * 2).storeBytes(of: SIMD2<UInt8>(uVal, vVal), as: SIMD2<UInt8>.self)
-                    x += 1
-                }
-            }
+            BiPlanarConversion.interleave8BitChroma(
+                u: uSrc, uStride: srcUStride, v: vSrc, vStride: srcVStride,
+                to: uvDest, stride: destUVStride, width: halfW, height: halfH)
         }
 
         // Apply color metadata from cache (populated from sampleBuffer extensions / attachments)

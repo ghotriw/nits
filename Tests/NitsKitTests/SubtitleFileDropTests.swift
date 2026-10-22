@@ -24,7 +24,7 @@ struct SubtitleFileDropTests {
         let engine = PlayerEngine.makeForTesting()
         let osd = OSDManager()
         SubtitleFileDrop.attach([URL(fileURLWithPath: "/m/a.srt")], to: engine, osd: osd)
-        #expect(engine.subtitleTracks.isEmpty)
+        #expect(engine.subtitles.tracks.isEmpty)
         guard case .custom(_, let text, _, _) = osd.currentEvent else {
             Issue.record("Expected a custom OSD event, got \(String(describing: osd.currentEvent))")
             return

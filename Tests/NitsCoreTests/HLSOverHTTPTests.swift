@@ -329,11 +329,11 @@ struct HLSOverHTTPPlaybackTests {
         var seeks = 0
         engine.onSeekingChanged = { if $0 { seeks += 1 } }
 
-        engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
+        engine.subtitles.select(trackId: try #require(engine.subtitles.tracks.first).id)
         #expect(seeks == 1)
         #expect(
             await engine.waitUntil(timeout: .seconds(6)) {
-                engine.currentSubtitleCues.contains { $0.text.contains("Hello") || $0.text.contains("World") }
+                engine.subtitles.cues.contains { $0.text.contains("Hello") || $0.text.contains("World") }
             }, "No cue shown")
     }
 

@@ -69,7 +69,7 @@ extension PlayerEngine {
         chaseForwardSeek = forward
         if exact {
             currentTime = target
-            updateActiveSubtitles(at: target)
+            subtitles.timeDidChange(to: target, .tick)
         }
 
         // 3. Increment generation token
@@ -251,10 +251,7 @@ extension PlayerEngine {
 
         // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
         self.currentTime = completedSeconds
-        updateActiveSubtitles(at: completedSeconds)
-        // A cue that started before where the seek landed (`noteSubtitleReadsStart`, on the seek queue) is read in a
-        // window. Once per settled seek, not per scrub step, on its own demuxer.
-        refreshEmbeddedSubtitles(around: completedSeconds)
+        subtitles.timeDidChange(to: completedSeconds, .seekLanded)
         onTimeUpdate?(completedSeconds, duration)
 
         if isRelativeSeekInFlight {
@@ -682,7 +679,7 @@ extension PlayerEngine {
         renderDirect(pixelBuffer: entry.pixelBuffer, pts: pts, doviMetadata: entry.doviMetadata)
         synchronizer.setRate(0.0, time: entry.pts)
         currentTime = pts
-        updateActiveSubtitles(at: pts)
+        subtitles.timeDidChange(to: pts, .tick)
         onTimeUpdate?(pts, duration)
         // Pipeline remains positioned just past the furthest decoded frame — keep fast stepping enabled.
         // The step window lives until playback resumes or a seek repositions the pipeline.

@@ -188,13 +188,13 @@ public struct ControlSubtitleTrackButton: View {
             showSubtitleTrackMenu()
         } label: {
             Image(
-                systemName: engine.selectedSubtitleTrackId != nil
+                systemName: engine.subtitles.selectedTrackId != nil
                     ? "captions.bubble.fill"
                     : "captions.bubble"
             )
             .font(.system(size: 19))
             .foregroundStyle(
-                engine.selectedSubtitleTrackId != nil
+                engine.subtitles.selectedTrackId != nil
                     ? Color.accentColor
                     : Color.white.opacity(0.85)
             )
@@ -215,9 +215,9 @@ public struct ControlSubtitleTrackButton: View {
             action: #selector(ControlMenuHelper.executeAction(_:)),
             keyEquivalent: ""
         )
-        offItem.state = (engine.selectedSubtitleTrackId == nil) ? NSControl.StateValue.on : NSControl.StateValue.off
+        offItem.state = (engine.subtitles.selectedTrackId == nil) ? NSControl.StateValue.on : NSControl.StateValue.off
         let offTarget = ControlMenuHelper { [weak engine, weak uiState] in
-            engine?.selectSubtitleTrack(id: nil)
+            engine?.subtitles.select(trackId: nil)
             if engine?.enableOSD == true {
                 uiState?.osd.show(.subtitleTrack(title: "Subtitles Off"))
             }
@@ -226,18 +226,18 @@ public struct ControlSubtitleTrackButton: View {
         offItem.representedObject = offTarget
         menu.addItem(offItem)
 
-        if !engine.subtitleTracks.isEmpty {
+        if !engine.subtitles.tracks.isEmpty {
             menu.addItem(NSMenuItem.separator())
-            for track in engine.subtitleTracks {
+            for track in engine.subtitles.tracks {
                 let item = NSMenuItem(
                     title: track.title,
                     action: #selector(ControlMenuHelper.executeAction(_:)),
                     keyEquivalent: ""
                 )
                 item.state =
-                    (track.id == engine.selectedSubtitleTrackId) ? NSControl.StateValue.on : NSControl.StateValue.off
+                    (track.id == engine.subtitles.selectedTrackId) ? NSControl.StateValue.on : NSControl.StateValue.off
                 let target = ControlMenuHelper { [weak engine, weak uiState] in
-                    engine?.selectSubtitleTrack(id: track.id)
+                    engine?.subtitles.select(trackId: track.id)
                     if engine?.enableOSD == true {
                         uiState?.osd.show(.subtitleTrack(title: track.title))
                     }
@@ -266,7 +266,7 @@ public struct ControlSubtitleTrackButton: View {
 
             let handleSelection: (NSApplication.ModalResponse) -> Void = { response in
                 if response == .OK, let url = panel.url {
-                    engine?.loadExternalSubtitle(url: url)
+                    engine?.subtitles.addExternal(url: url)
                     if engine?.enableOSD == true {
                         uiState?.osd.show(.subtitleTrack(title: url.lastPathComponent))
                     }
