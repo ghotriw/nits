@@ -180,3 +180,6 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   to report, so run them locally before pushing.
 - Frame-freeze detection uses `PixelBufferAnalyzer`.
 - Media tests skip when `ffmpeg` is missing; CI installs it.
+- A test that opens or reads a network demuxer against `TestHTTPServer` does so off the cooperative pool
+  (`offPool` in `HLSPrefetchTests`): the server answers on the pool, and opening synchronously on its threads left
+  it without one in a full run (FFmpeg's requests timed out).

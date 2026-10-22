@@ -27,9 +27,15 @@ final class HLSPlaylistPrefetcher: Sendable {
         var length: Int64?
     }
 
+    /// What FFmpeg is served for an input: a download, or a refusal (a playlist outside the ladder played).
+    enum Answer: Sendable {
+        case download(Download)
+        case refused
+    }
+
     private enum Entry {
         case pending
-        case done(Download?)
+        case done(Answer?)
     }
 
     private struct State {
@@ -82,28 +88,31 @@ final class HLSPlaylistPrefetcher: Sendable {
                 finishMaster(registering: [])
                 return
             }
+            let resolve = { [masterURL] (uri: String) in URL(string: uri, relativeTo: masterURL)?.absoluteURL }
+            let outside = Set(Self.playlistsOutsideLadder(in: text).compactMap(resolve))
             let playlists = Self.mediaPlaylists(in: text).compactMap { playlist in
-                URL(string: playlist.uri, relativeTo: masterURL).map { (url: $0.absoluteURL, playlist.isSubtitles) }
+                resolve(playlist.uri).map { (url: $0, playlist.isSubtitles) }
             }
-            let registered = finishMaster(registering: playlists.map(\.url))
+            let registered = finishMaster(
+                registering: playlists.map(\.url).filter { !outside.contains($0) }, refusing: outside)
             for (url, isSubtitles) in playlists where registered.contains(url) {
                 fetchPlaylist(url, segments: !isSubtitles)
             }
         }
     }
 
-    /// What was downloaded for `url` from `offset`, once; waits for its download while `shouldWait` holds. Nil when
-    /// it isn't one fetched here, or its download failed: FFmpeg then opens it itself.
-    func take(_ url: String, offset: Int64, shouldWait: () -> Bool) -> Download? {
+    /// What was downloaded for `url` from `offset`, once, or a refusal; waits for its download while `shouldWait`
+    /// holds. Nil when it isn't one fetched here, or its download failed: FFmpeg then opens it itself.
+    func take(_ url: String, offset: Int64, shouldWait: () -> Bool) -> Answer? {
         // FFmpeg reads the master itself, alongside: waiting for this download would only put it after.
         guard url != masterURL.absoluteString else { return nil }
         let key = Self.key(url, offset)
         while true {
             let found = state.withLock { state -> Entry in
                 switch state.entries[key] {
-                case .done(let download):
+                case .done(let answer):
                     state.entries[key] = nil
-                    return .done(download)
+                    return .done(answer)
                 case .pending:
                     return .pending
                 case nil:
@@ -112,7 +121,7 @@ final class HLSPlaylistPrefetcher: Sendable {
                 }
             }
             switch found {
-            case .done(let download): return download
+            case .done(let answer): return answer
             case .pending:
                 guard shouldWait() else { return nil }
                 // Signalled as each download ends; the timeout checks `shouldWait` again (a cancelled load).
@@ -134,13 +143,18 @@ final class HLSPlaylistPrefetcher: Sendable {
         offset == 0 ? url : "\(url) @\(offset)"
     }
 
-    /// Registers the master's playlists as pending; the ones new, unless cancelled.
+    /// Registers the master's playlists as pending, and those `refusing` as refused; the ones new, unless cancelled.
+    ///
+    /// A refused playlist FFmpeg marks broken, makes no streams of, and never reads. Read empty instead, a rendition's
+    /// would be read all the same: a playlist without streams counts as needed (`playlist_needed`), and its demuxer was
+    /// never opened (it crashed).
     @discardableResult
-    private func finishMaster(registering urls: [URL]) -> Set<URL> {
+    private func finishMaster(registering urls: [URL], refusing: Set<URL> = []) -> Set<URL> {
         defer { changed.signal() }
         return state.withLock { state in
             state.isMasterRead = true
             guard !state.isCancelled else { return [] }
+            for url in refusing { state.entries[url.absoluteString] = .done(.refused) }
             let new = urls.filter { state.entries[$0.absoluteString] == nil }
             for url in new { state.entries[url.absoluteString] = .pending }
             return Set(new)
@@ -166,7 +180,7 @@ final class HLSPlaylistPrefetcher: Sendable {
                     URL(string: input.uri, relativeTo: url).map { (url: $0.absoluteURL, input: input) }
                 }.filter { state.entries[Self.key($0.url.absoluteString, $0.input.offset)] == nil }
                 for start in new { state.entries[Self.key(start.url.absoluteString, start.input.offset)] = .pending }
-                state.entries[url.absoluteString] = .done(playlist)
+                state.entries[url.absoluteString] = .done(playlist.map(Answer.download))
                 return new
             }
             changed.signal()
@@ -178,7 +192,8 @@ final class HLSPlaylistPrefetcher: Sendable {
                     }
                     state.withLock { state in
                         if !state.isCancelled {
-                            state.entries[Self.key(start.absoluteString, input.offset)] = .done(data)
+                            state.entries[Self.key(start.absoluteString, input.offset)] = .done(
+                                data.map(Answer.download))
                         }
                     }
                     changed.signal()
@@ -245,6 +260,66 @@ final class HLSPlaylistPrefetcher: Sendable {
         return playlists
     }
 
+    /// The media playlists of variants that can't switch with the one played on opening, the highest `BANDWIDTH`
+    /// (`MediaDemuxer.discoverVariants`), and of renditions none of the others refers to: FFmpeg is refused them,
+    /// unprobed. Apple's AV1 example, 13 tiers × 5 audio groups, probes 13 videos and 2 audio renditions instead of
+    /// 13 and 10; a ladder of two codecs, one. A variant switches by its video codec (`CODECS`, and Dolby Vision's
+    /// `SUPPLEMENTAL-CODECS`), `VIDEO-RANGE` and rendition groups (`AUDIO`, `VIDEO`, `SUBTITLES`), as
+    /// `MediaDemuxer.canSwitch` decides once probed, more finely. The first variant listed stays whole: FFmpeg takes
+    /// the stream's duration from its playlist. None when a variant doesn't tell its codecs.
+    static func playlistsOutsideLadder(in text: String) -> Set<String> {
+        var variants: [(attributes: String, uri: String)] = []
+        var renditions: [(type: String, group: String, uri: String)] = []
+        var pending: String?
+        for line in lines(of: text) {
+            if line.hasPrefix("#EXT-X-STREAM-INF:") {
+                pending = line
+            } else if line.hasPrefix("#EXT-X-MEDIA:"), let uri = attribute("URI", of: line),
+                let type = attribute("TYPE", of: line), let group = attribute("GROUP-ID", of: line)
+            {
+                renditions.append((type, group, uri))
+            } else if let attributes = pending, !line.isEmpty, !line.hasPrefix("#") {
+                variants.append((attributes, line))
+                pending = nil
+            }
+        }
+        let bandwidth = { (variant: (attributes: String, uri: String)) in
+            attribute("BANDWIDTH", of: variant.attributes).flatMap(Int.init) ?? 0
+        }
+        guard let first = variants.first, let played = variants.max(by: { bandwidth($0) < bandwidth($1) }),
+            variants.allSatisfy({ attribute("CODECS", of: $0.attributes).flatMap(videoCodec) != nil })
+        else { return [] }
+        let groups = ["AUDIO", "VIDEO", "SUBTITLES"]
+        let ladder = { (attributes: String) -> [String?] in
+            [
+                attribute("CODECS", of: attributes).flatMap(videoCodec),
+                attribute("SUPPLEMENTAL-CODECS", of: attributes).flatMap(videoCodec),
+                attribute("VIDEO-RANGE", of: attributes),
+            ] + groups.map { attribute($0, of: attributes) }
+        }
+        let kept = variants.filter { ladder($0.attributes) == ladder(played.attributes) }
+        let keptGroups = Set(
+            kept.flatMap { variant in
+                groups.compactMap { type in attribute(type, of: variant.attributes).map { "\(type) \($0)" } }
+            })
+        let keep =
+            Set(kept.map(\.uri) + [first.uri])
+            .union(renditions.filter { keptGroups.contains("\($0.type) \($0.group)") }.map(\.uri))
+        return Set(variants.map(\.uri) + renditions.map(\.uri)).subtracting(keep)
+    }
+
+    /// The video codec of a `CODECS` list, by family: the first entry that is a video codec's, its four-character
+    /// code with a profile's variants made one (`avc1` and `avc3`, `hvc1` and `hev1`, `dvh1` and `dvhe`).
+    private static func videoCodec(in codecs: String) -> String? {
+        let families = [
+            "avc1": "avc", "avc3": "avc", "hvc1": "hevc", "hev1": "hevc", "dvh1": "dvhevc", "dvhe": "dvhevc",
+            "dva1": "dvavc", "dvav": "dvavc", "av01": "av1", "dav1": "dvav1", "vp09": "vp9", "vp08": "vp8",
+        ]
+        return codecs.split(separator: ",").lazy.compactMap { entry in
+            families[String(entry.trimmingCharacters(in: .whitespaces).prefix { $0 != "." })]
+        }.first
+    }
+
     /// What FFmpeg's probe of a media playlist opens: its init section (`EXT-X-MAP`) and the segment it starts from,
     /// the first of a finished playlist, the third from the end of a live one (`live_start_index`). Byte ranges are
     /// placed as FFmpeg places them: a range without an offset follows the one before (`parse_playlist`). None when
@@ -300,9 +375,18 @@ final class HLSPlaylistPrefetcher: Sendable {
 
     /// The value of `name` in a tag's attribute list (`NAME=value` or `NAME="value"`).
     private static func attribute(_ name: String, of line: String) -> String? {
-        guard let range = line.range(of: name + "=") else { return nil }
-        let before = line[..<range.lowerBound].last
-        guard before == ":" || before == "," else { return nil }
+        // The name where an attribute starts: `CODECS=` is in `SUPPLEMENTAL-CODECS=` too.
+        var searched = line.startIndex..<line.endIndex
+        var found: Range<String.Index>?
+        while let range = line.range(of: name + "=", range: searched) {
+            let before = line[..<range.lowerBound].last
+            if before == ":" || before == "," {
+                found = range
+                break
+            }
+            searched = range.upperBound..<line.endIndex
+        }
+        guard let range = found else { return nil }
         let rest = line[range.upperBound...]
         if rest.first == "\"" {
             let value = rest.dropFirst()

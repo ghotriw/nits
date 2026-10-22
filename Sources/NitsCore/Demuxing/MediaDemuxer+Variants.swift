@@ -124,6 +124,8 @@ extension MediaDemuxer {
                 let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
             else { return nil }
             let all = (0..<Int(program.pointee.nb_stream_indexes)).map { Int(program.pointee.stream_index[$0]) }
+            // A variant outside the ladder played, refused (`HLSPlaylistPrefetcher.playlistsOutsideLadder`).
+            guard !all.isEmpty else { continue }
             let ofType = { (type: AVMediaType) in
                 all.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
             }

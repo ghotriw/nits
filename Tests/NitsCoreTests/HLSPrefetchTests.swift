@@ -80,6 +80,67 @@ struct HLSPrefetchTests {
         #expect(read.count == 30)
     }
 
+    @Test("Variants that can't switch with the one played, and renditions only they refer to, aren't read")
+    func ladderOnly() async throws {
+        guard let server = try Self.serve(.hlsVariants) else { return }
+        defer { server.stop() }
+        // A HEVC variant and a variant with an audio group of its own, both below the AVC variant played.
+        let master = String(
+            decoding: try await URLSession.shared.data(from: try #require(URL(string: server.url("master.m3u8")))).0,
+            as: UTF8.self)
+        server.setResponder(forPath: "master.m3u8") {
+            Data(
+                (master + """
+                    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Other",URI="other_audio.m3u8"
+                    #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="hvc1.1.6.L93.B0,mp4a.40.2"
+                    hevc.m3u8
+                    #EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.64000d,mp4a.40.2",AUDIO="other"
+                    v0.m3u8
+
+                    """).utf8)
+        }
+        let demuxer = try #require(await Self.open(server))
+        #expect(demuxer.variants.count == 3, "\(demuxer.variants.map(\.bandwidth))")
+        let paths = server.requests.map(\.path)
+        #expect(!paths.contains("hevc.m3u8") && !paths.contains("other_audio.m3u8"), "\(paths)")
+        #expect(await Self.offPool { demuxer.nextVideoSample(waitingForReadAhead: false) != nil })
+    }
+
+    @Test("A ladder is a video codec, a range and rendition groups; the first variant listed stays")
+    func ladder() {
+        let master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="English",URI="a/stereo.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="English (AD)",URI="a/stereo_ad.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="atmos",NAME="English",URI="a/atmos.m3u8"
+            #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",URI="s/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.640015,mp4a.40.2",VIDEO-RANGE=SDR,AUDIO="stereo"
+            avc/low.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="hvc1.2.4.L93,mp4a.40.2",VIDEO-RANGE=PQ,AUDIO="stereo"
+            hevc/low.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=9000000,CODECS="hev1.2.4.L150,mp4a.40.2",VIDEO-RANGE=PQ,AUDIO="stereo"
+            hevc/high.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=9500000,CODECS="hvc1.2.4.L150,ec-3",VIDEO-RANGE=PQ,AUDIO="atmos",\
+            SUBTITLES="subs"
+            hevc/high.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=12000000,CODECS="hvc1.2.4.L150,ec-3",SUPPLEMENTAL-CODECS="dvh1.08.07",\
+            VIDEO-RANGE=PQ,AUDIO="atmos",SUBTITLES="subs"
+            dv/high.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS="hvc1.2.4.L93,ec-3",SUPPLEMENTAL-CODECS="dvh1.08.07",\
+            VIDEO-RANGE=PQ,AUDIO="atmos",SUBTITLES="subs"
+            dv/low.m3u8
+            """
+        // Dolby Vision with Atmos plays (`hev1` and `hvc1` are one codec): the HDR10 ladder, Atmos included, and the
+        // stereo renditions are read empty, but for the first variant.
+        #expect(
+            HLSPlaylistPrefetcher.playlistsOutsideLadder(in: master) == [
+                "hevc/low.m3u8", "hevc/high.m3u8", "a/stereo.m3u8", "a/stereo_ad.m3u8",
+            ])
+        // Without codecs, nothing is left out.
+        #expect(
+            HLSPlaylistPrefetcher.playlistsOutsideLadder(in: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\na.m3u8").isEmpty)
+    }
+
     @Test("A playlist served from elsewhere FFmpeg reads itself: its segments resolve against that place")
     func redirectedPlaylist() async throws {
         guard let server = try Self.serve(.hlsVariants) else { return }

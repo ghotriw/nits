@@ -33,7 +33,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private(set) var openSeconds = 0.0
     /// What was downloaded for a URL from an offset, while the context opens (`HLSPlaylistPrefetcher`): FFmpeg reads
     /// it instead of asking the server. Nil for others, which FFmpeg opens itself.
-    var prefetched: ((String, Int64) -> HLSPlaylistPrefetcher.Download?)?
+    var prefetched: ((String, Int64) -> HLSPlaylistPrefetcher.Answer?)?
     /// The inputs read from a download, by their `AVIOContext`: closed here, not by FFmpeg.
     private var prefetchedInputs: [UnsafeMutablePointer<AVIOContext>: PrefetchedInput] = [:]
 
@@ -57,10 +57,15 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
             let begin = ContinuousClock.now
             let openedBefore = counter.openSeconds
             let ret: Int32
-            if let s, let pb, let url, let input = counter.prefetchedInput(s, url, flags, options) {
-                pb.pointee = input
+            let prefetched =
+                pb == nil ? nil : s.flatMap { s in url.flatMap { counter.prefetchedInput(s, $0, flags, options) } }
+            switch prefetched {
+            case .input(let input)?:
+                pb?.pointee = input
                 ret = 0
-            } else {
+            case .refused?:
+                ret = -ENOENT
+            case nil:
                 ret = open(s, pb, url, flags, options)
             }
             let end = ContinuousClock.now
@@ -90,22 +95,29 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
     }
 
+    private enum Prefetched {
+        case input(UnsafeMutablePointer<AVIOContext>)
+        /// Not to be opened (`HLSPlaylistPrefetcher.Answer.refused`).
+        case refused
+    }
+
     /// An input reading what was downloaded for `url` from where FFmpeg asks for it (a byte range's `offset`, to its
-    /// `end_offset`), if anything was. Past what was downloaded it reads on from the network, through FFmpeg's own
-    /// `io_open` with the same options.
+    /// `end_offset`), if anything was, or a refusal. Past what was downloaded it reads on from the network, through
+    /// FFmpeg's own `io_open` with the same options.
     private func prefetchedInput(
         _ s: UnsafeMutablePointer<AVFormatContext>, _ url: UnsafePointer<CChar>, _ flags: Int32,
         _ options: UnsafeMutablePointer<OpaquePointer?>?
-    ) -> UnsafeMutablePointer<AVIOContext>? {
+    ) -> Prefetched? {
         let option = { (name: String) in
             av_dict_get(options?.pointee, name, nil, 0).flatMap { $0.pointee.value }.flatMap {
                 Int64(String(cString: $0))
             }
         }
         let offset = option("offset") ?? 0
-        guard let prefetched, let download = prefetched(String(cString: url), offset), let open = originalOpen,
+        guard let prefetched, let answer = prefetched(String(cString: url), offset), let open = originalOpen,
             let close = originalClose
         else { return nil }
+        guard case .download(let download) = answer else { return .refused }
         var restOptions: OpaquePointer?
         av_dict_copy(&restOptions, options?.pointee, 0)
         let restURL = strdup(url)
@@ -139,7 +151,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
                 })
         else { return nil }
         prefetchedInputs[context] = input
-        return context
+        return .input(context)
     }
 }
 

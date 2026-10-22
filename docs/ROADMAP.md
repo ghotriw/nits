@@ -255,7 +255,9 @@ flowchart TD
     (`https://directes-tv-int.3catdirectes.cat/live-origin/canal324-hls/master.m3u8`); Mux, VOD, 0.25–6 Mbit/s
     (`https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`); Apple's examples under
     `https://devstreaming-cdn.apple.com/videos/streaming/examples/` (`av1-sample/av1-sample.m3u8`,
-    `adv_dv_atmos/main.m3u8`, `bipbop_adv_example_hevc/master.m3u8`), big ladders, slow to open (below).
+    `adv_dv_atmos/main.m3u8`, `bipbop_adv_example_hevc/master.m3u8`), big ladders, slow to open (below). On Emby,
+    check the opening's prefetch too (`HLSPlaylistPrefetcher`): it sends the source's headers through URLSession,
+    and cookies a master's answer sets stay its own; `TestHTTPServer` checks neither.
   - [ ] Live streams keep connections too: a connection per segment takes a handshake and TCP's slow start a
     request, which at 180 ms of round trip took half a second per second of media for VOD (`docs/ARCHITECTURE.md`).
     Live opens one per segment for the read-ahead thread to tell the wait at the edge by `io_open`; it needs another
@@ -286,11 +288,13 @@ flowchart TD
     side and FFmpeg reads it from memory: the AV1 example opened in 3.9 s on a cold CDN cache instead of 54.5, and
     in 0.7 s on a warm one instead of 12; Dolby Vision / Atmos in 8.3 s and 1.2 s instead of 142; bipbop advanced
     in 5–6 s instead of 47 (see "HLS opening" in `docs/ARCHITECTURE.md`).
-  - [ ] Cut the ladder FFmpeg is given to the variants that can switch with the one chosen, and one audio group:
-    the AV1 example's 65 programs are 13 tiers × 5 audio groups, all probed and read. Playback also starts on the
-    highest variant; start lower, or by a first measurement. Opening still reads 0.2–3 MB of each video variant's
-    first fragment where fragments are whole 8 s segments (bipbop advanced, 5–6 s to open): find out which call
-    reads that far, and whether it can read less.
+  - [x] The playlists of variants that can't switch with the one played, and of renditions only they refer to, are
+    refused to FFmpeg while it opens: Dolby Vision / Atmos opened in 2.7 s and 0.6 s, bipbop advanced in 3.5 s and
+    1.8 s (the ladder is the highest variant's, as before).
+  - [ ] Playback starts on the highest variant. Starting lower (the first listed, as Apple advises, or by a first
+    measurement) waits for an earlier splice of a step up: one comes at the read position, 20–30 s ahead, so a
+    start low on a fast link would play low for that long. Opening still reads 0.2–3 MB of each video variant's
+    first fragment where fragments are whole 8 s segments (bipbop advanced): find out which call reads that far.
   - [ ] Adaptive bitrate at playback rates above 1x: a variant then needs its bandwidth times the rate.
   - [ ] Seeks and track switches on a live stream wait for the read-ahead thread, asleep in `av_read_frame` until
     the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the

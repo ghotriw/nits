@@ -183,6 +183,13 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   FFmpeg reading from memory wouldn't know), a failed download, encrypted segments, a probe starting elsewhere
   (`EXT-X-START`), a URI resolved otherwise than by FFmpeg. The downloads carry the source's headers; the user
   agent is URLSession's when the source sets none, and cookies a master's answer sets stay apart from FFmpeg's.
+  The playlists of variants that can't switch with the one played on opening (the highest `BANDWIDTH`: its video
+  codec, `SUPPLEMENTAL-CODECS`, `VIDEO-RANGE` and rendition groups), and of renditions only they refer to, are
+  refused to FFmpeg (`playlistsOutsideLadder`): it marks them broken and never reads them, nor probes them. Not
+  read empty: FFmpeg counts a playlist without streams as needed and reads it, its demuxer never opened (a crash).
+  Not cut from a master served from memory either: FFmpeg takes the I/O options of every later request (headers,
+  user agent, cookies, timeout) from the master's input. The first variant listed stays: FFmpeg takes the duration
+  from its playlist. Dolby Vision / Atmos opened so in 2.7 s and 0.6 s, bipbop advanced in 3.5 s and 1.8 s.
 - **HLS variants.** A switch splices at the read position, up to the read-ahead limit ahead of playback, so a
   manual switch seeks to the current frame instead (as an audio track switch does). The engine shows a splice when
   playback reaches it (`variantWillPlay`); the changes reach the main thread in order (`DispatchQueue.main`, not a
