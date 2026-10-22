@@ -26,24 +26,103 @@ extension PlayerEngine {
         self.selectedAudioTrackId = id
         audioSelectionIsAutomatic = false
         saveCurrentPlaybackProgress()
-        if let params = demuxer.getAudioCodecParameters() {
-            let decoder = FFAudioDecoder(codecParameters: params, timebase: demuxer.audioTimebase)
+        if let input = demuxer.audioDecoderInput() {
+            let decoder = FFAudioDecoder(codecParameters: input.parameters, timebase: input.timebase)
             self.audioDecoder = decoder
             self.audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         } else {
             self.audioDecoder = nil
         }
 
-        // A seek still in flight keeps its target: the switch must not pull playback back to the frame before it.
-        let position =
-            chaseTargetTime
-            ?? (hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
-        seek(to: position, exact: true)
+        seek(to: rereadPosition, exact: true)
+    }
+
+    /// Where a seek that re-reads the media from the current frame goes (a track switch, a new decoder). A seek still
+    /// in flight keeps its target: the re-read must not pull playback back to the frame before it.
+    var rereadPosition: Double {
+        chaseTargetTime ?? (hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
+    }
+
+    /// Switches the HLS variant. Read on demand, without a seek: the demuxer splices at the new variant's first
+    /// keyframe, so the picture changes once what is already buffered has played (`variantDidChange(to:)`). Read
+    /// ahead (network sources), that splice would come only after the read-ahead has played, up to half a minute on:
+    /// the switch seeks to the current frame instead, as an audio track switch does.
+    ///
+    /// Choosing the variant playing keeps it: adaptive bitrate stops, and what it switched to further ahead is dropped.
+    public func selectVariant(id: Int) {
+        guard let demuxer, variants.contains(where: { $0.id == id && $0.isSwitchable }) else { return }
+        // Read ahead, other pictures may already be read past the ones playing.
+        let readsAnother = demuxer.selectedVariantId != id || !pendingVariantChanges.isEmpty
+        guard id != selectedVariantId || isVariantAutomatic || readsAnother else { return }
+        demuxer.selectVariant(id: id)
+        selectedVariantId = id
+        isVariantAutomatic = false
+        if demuxer.readsAhead, readsAnother {
+            seek(to: rereadPosition, exact: true)
+        }
+    }
+
+    /// Lets adaptive bitrate choose the variant again (read ahead only: it needs the read-ahead's measurements).
+    public func selectAutomaticVariant() {
+        guard let demuxer, canSelectAutomaticVariant, !isVariantAutomatic else { return }
+        demuxer.setAdaptiveBitrate(true)
+        isVariantAutomatic = true
+    }
+
+    /// The demuxer reads a variant's pictures for the timeline from `change.seconds` on. Read ahead, that is up to
+    /// the read-ahead limit past playback: the change waits for playback to get there (`applyDueVariantChanges`), and
+    /// replaces the changes after it that were read before a seek.
+    func variantWillPlay(_ change: MediaDemuxer.VariantChange) {
+        guard demuxer?.readsAhead == true else {
+            variantDidChange(to: change)
+            return
+        }
+        pendingVariantChanges.removeAll { $0.seconds >= change.seconds }
+        pendingVariantChanges.append(change)
+        // During a seek, what is due by its target: a seek reports the variant it reads from there, while a switch
+        // the read-ahead thread made further on still waits for playback.
+        applyDueVariantChanges(at: (chaseTargetTime ?? currentTime) + 0.1)
+    }
+
+    /// Applies the variant changes due by timeline second `seconds`.
+    func applyDueVariantChanges(at seconds: Double) {
+        while let first = pendingVariantChanges.first, first.seconds <= seconds {
+            pendingVariantChanges.removeFirst()
+            variantDidChange(to: first)
+        }
+    }
+
+    /// A variant's pictures play now: its size, pixel aspect and frame rate (a ladder can mix 30 and 60 fps, and the
+    /// display link is matched to the content).
+    func variantDidChange(to change: MediaDemuxer.VariantChange) {
+        selectedVariantId = change.variant.id
+        if change.width > 0, change.height > 0 {
+            videoWidth = change.width
+            videoHeight = change.height
+        }
+        sampleAspectRatio = change.sampleAspectRatio
+        let frameDuration =
+            decoder.outputsFieldRate
+            ? FieldTiming.fieldDuration(ofFrameDuration: change.frameDuration) : change.frameDuration
+        if frameDuration != nominalFrameDuration {
+            nominalFrameDuration = frameDuration
+            nominalFrameDurationLock.withLock { $0 = frameDuration }
+            updateDisplayLinkFrameRate()
+        }
     }
 
     public func selectSubtitleTrack(id: Int?) {
         subtitleSelectionIsAutomatic = false
         selectSubtitleTrack(id: id, persistHistory: true)
+        // An HLS subtitle rendition is a playlist of its own, read only while selected: read ahead, FFmpeg would start
+        // it at the read position, up to the read-ahead limit past playback. Read it from the current frame instead,
+        // as an audio track switch does. (Subtitles muxed with the video, and closed captions, come as they are read.)
+        if let demuxer, demuxer.readsAhead, !demuxer.variants.isEmpty, let id,
+            let track = subtitleTracks.first(where: { $0.id == id }), !track.isExternal,
+            track.closedCaptionField == nil
+        {
+            seek(to: rereadPosition, exact: true)
+        }
     }
 
     func selectSubtitleTrack(id: Int?, persistHistory: Bool) {
@@ -96,7 +175,9 @@ extension PlayerEngine {
                         }, isCurrent: isCurrent)
                 } else {
                     // A format FFmpeg reads. MicroDVD counts frames: without a rate of its own, the video's is the one.
-                    let frameRate = demuxer.flatMap { $0.hasVideo ? 1 / $0.nominalFrameDuration : nil }
+                    let frameRate = demuxer.flatMap {
+                        $0.hasVideo ? 1 / $0.readingDescription(\.nominalFrameDuration) : nil
+                    }
                     let hints = textEncodingHints(for: url)
                     loadSubtitleDocument(
                         trackId: id,
@@ -145,7 +226,7 @@ extension PlayerEngine {
             }
         }
         let time = max(0, seconds - subtitleDelay)
-        let isNetwork = MediaURL.isNetworkURL(path)
+        let isNetwork = demuxer.isNetworkSource
         // Before the stash is merged the window may be larger than it will be, never smaller.
         guard
             Self.subtitleWindow(of: demuxer, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)

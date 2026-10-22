@@ -46,8 +46,8 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   bridging to `window.webkit.messageHandlers`. The bridge itself belongs to the host: its message schema is the
   web client's, not Nits'. Nits keeps the protocol complete enough that a bridge needs no engine internals.
 - `bufferedTime` is the furthest timestamp the demuxer has read (`MediaDemuxer.readAheadSeconds`, behind its own
-  lock because the demuxer lock is held through blocking network reads), so it shows the few seconds of read-ahead,
-  not download progress.
+  lock because the demuxer lock is held through blocking network reads): for a network source, up to the
+  read-ahead limit (see "Network read-ahead"); for a local file, the few seconds the feeders asked for.
 - The demuxer accepts HTTP/HTTPS/HLS URLs with custom headers (`X-Emby-Token`, `Authorization`,
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
 
@@ -132,6 +132,65 @@ A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
   binary search, shifting only the few affected slots.
 - `lastRenderedBuffer` keeps the frame on screen so mode switches and scrubbing while paused can
   re-render it (`renderCurrentFrame()`).
+
+### Network read-ahead
+
+Read on demand, the demuxer reads only when a feeder asks, and the feeders stop asking about a second and a half
+ahead (a full `FrameQueue`, the audio renderer's second). Over a network that is all the margin playback has, and
+FFmpeg's HLS demuxer, which downloads segments inside `av_read_frame`, can't be measured for throughput while
+reads wait on the feeders. So a network source is read ahead, as mpv's demuxer cache does
+(`MediaDemuxer+ReadAhead.swift`): a thread of its own reads packets into the demuxer's queues up to
+`ReadAheadLimits` (30 s of media ahead of the packets taken, 192 MB) and waits there.
+
+- **Locks.** The input (`AVFormatContext`) stays behind `lock`, held through blocking reads; the queues and what
+  goes with them (`targetPts`, `targetAudioPts`, EOF), and the track selection, are behind `queueLock`, held
+  briefly. Whatever holds `queueLock` releases it for a blocking FFmpeg call: the read-ahead thread for
+  `av_read_frame`, a seek for its reads and `av_seek_frame` (the feeders are stopped then, and `lock` keeps the
+  thread out). What a read does with a packet comes after the call returns, under `queueLock`. So consumers, which
+  take packets under `queueLock` alone, and track selection on the main thread never wait for the network. The rest
+  takes `lock` through `lockIO()`, and the thread steps aside between packets for it (the unfair lock would
+  otherwise let it take the lock straight back and keep a seek waiting).
+- **Consumers.** The feeders take what is queued and get nil at once when nothing is (`isEOF` tells the end, after
+  the thread stopped at the end of the input); the synchronous pumps on `seekQueue` (seek previews, frame steps)
+  wait for the thread (`nextVideoSample(waitingForReadAhead:)`).
+- **Seeks** clear the queues as before, and the thread reads on from where the seek left the input.
+- **Limit.** The seconds ahead are counted from the video taken (the audio's, without video). A stream with nothing
+  queued is read for up to the byte limit, as in mpv: video that ends (or starts) further than the limit from its
+  audio would otherwise stop the thread for good, with no end of input.
+- **Sources.** A URL, and a saved HLS manifest of network media (`MediaURL.isNetworkSource`). FFmpeg opens a
+  manifest's segments with the I/O options of the manifest's own input, so that one is opened with the network
+  options too, and with HTTP added to the protocol whitelist a file allows (file, crypto, data): by the demuxer and
+  by the subtitle window reader alike (`MediaURL.applySourceOptions`).
+- **HLS variants.** A switch splices at the read position, up to the read-ahead limit ahead of playback, so a
+  manual switch seeks to the current frame instead (as an audio track switch does). The engine shows a splice when
+  playback reaches it (`variantWillPlay`); the changes reach the main thread in order (`DispatchQueue.main`, not a
+  task each). The splice rewrites the stream description (`timebase`, `formatDescription`, the audio track's streams,
+  …) on the reading thread, under `queueLock`: the engine reads it before starting the read-ahead at the end of a
+  load, and through `readingDescription` after that. An audio track selected during a switch is spliced to in place of
+  the one selected when it began.
+- **Adaptive bitrate** (`AdaptiveBitrateLogic`, `MediaDemuxer+AdaptiveBitrate.swift`) chooses the variant while
+  reading ahead, until one is chosen by hand.
+  - *Throughput* is measured by the read-ahead thread: a read waits on the network, so bytes over the time spent
+    reading is the link's rate. The bytes are what came over the network (`FFmpegIOByteCounter`: FFmpeg's own
+    `io_open` / `io_close2`, summing each input's `bytes_read`), not packet sizes: container overhead and what FFmpeg
+    reads and drops (a variant switched to is caught up from the start of a segment) are a third and more. Reads
+    served from what the socket buffered while the thread idled at its limit don't count until one waits again. HLS
+    downloads one segment at a time (`http_multiple` off): FFmpeg's prefetch of the next would share the link with
+    the one read and halve what is measured.
+  - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) that doesn't carry
+    the current variant brings it down while the read-ahead is under two thirds of its limit; a full read-ahead
+    steps up to what a recent estimate carries, or probes one step up without one (at its limit the thread measures
+    nothing, however fast the network). A probe that comes down soon doubles the wait before the next.
+  - FFmpeg hands out the packet a discarded variant held when it is enabled again, from back then: a splice comes
+    only at a keyframe at or after the old variant's latest decode time.
+- **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their
+  streams isn't discarded. Only the video, audio track and subtitle track selected are read (`applyStreamSelection`):
+  on opening, at a variant switch (the new variant's video and the rendition of the selected audio track, not all its
+  streams), and after a track selection, which the main thread only flags (`streamSelectionChanged`) for the reading
+  thread to apply under `lock` at its next read or seek, as FFmpeg reads the discard flags inside `av_read_frame`. An
+  audio track switch seeks anyway; a subtitle rendition selected on a network source seeks to the current frame too,
+  or FFmpeg would start it at the read position.
+- Tests play local files only: `NITS_READ_AHEAD_LOCAL=1` reads them ahead too, to run the suites that way.
 
 ### Backpressure
 

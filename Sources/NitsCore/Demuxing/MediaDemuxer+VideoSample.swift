@@ -3,14 +3,21 @@ import Foundation
 import VideoToolbox
 
 extension MediaDemuxer {
-    func createVideoSample(from rawData: Data, pts: Int64, dts: Int64, duration: Int64) -> CMSampleBuffer? {
-        rawData.withUnsafeBytes { raw in
+    /// The format packets are read as now (`DemuxedVideoPacket.format`).
+    var videoFormat: VideoPacketFormat {
+        VideoPacketFormat(description: formatDescription, isAnnexB: isAnnexBStream, timebase: timebase)
+    }
+
+    /// A queued packet keeps the format it was read with: a variant switch can change it while the packet waits.
+    func createVideoSample(from packet: DemuxedVideoPacket) -> CMSampleBuffer? {
+        packet.data.withUnsafeBytes { raw in
             createVideoSample(
                 bytes: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                count: rawData.count,
-                pts: pts,
-                dts: dts,
-                duration: duration
+                count: packet.data.count,
+                pts: packet.pts,
+                dts: packet.dts,
+                duration: packet.duration,
+                format: packet.format
             )
         }
     }
@@ -20,13 +27,15 @@ extension MediaDemuxer {
         count: Int,
         pts: Int64,
         dts: Int64,
-        duration: Int64
+        duration: Int64,
+        format: VideoPacketFormat? = nil
     ) -> CMSampleBuffer? {
-        guard let formatDesc = formatDescription, let bytes, count > 0 else { return nil }
+        let format = format ?? videoFormat
+        guard let formatDesc = format.description, let bytes, count > 0 else { return nil }
 
         var doviMetadata: DolbyVisionFrameMetadata?
         if codec == .hevc && dolbyVisionProfile != nil {
-            if let nalu = NALUnitParser.findNALUnit62(bytes: bytes, count: count, isAnnexB: self.isAnnexBStream) {
+            if let nalu = NALUnitParser.findNALUnit62(bytes: bytes, count: count, isAnnexB: format.isAnnexB) {
                 doviMetadata = DolbyVisionRPUParser.parse(naluData: nalu)
             }
         }
@@ -40,7 +49,7 @@ extension MediaDemuxer {
             mem = allocated
         } else {
             let isAnnexB: Bool
-            if isAnnexBStream {
+            if format.isAnnexB {
                 isAnnexB =
                     (bytes[0] == 0 && bytes[1] == 0 && (bytes[2] == 1 || (count > 3 && bytes[2] == 0 && bytes[3] == 1)))
             } else {
@@ -89,8 +98,8 @@ extension MediaDemuxer {
         let ptsVal = pts != noPtsValue ? pts : dts
         let dtsVal = dts != noPtsValue ? dts : ptsVal
 
-        let timebaseDen = timebase.den
-        let timebaseNum = Int64(timebase.num)
+        let timebaseDen = format.timebase.den
+        let timebaseNum = Int64(format.timebase.num)
         var timing = CMSampleTimingInfo(
             duration: duration > 0 ? CMTime(value: duration * timebaseNum, timescale: timebaseDen) : .invalid,
             presentationTimeStamp: CMTime(value: ptsVal * timebaseNum, timescale: timebaseDen),

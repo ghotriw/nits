@@ -52,6 +52,10 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
     // Cached color metadata dictionary to preserve attributes across drain() / EOF
     private var cachedColorAttachments: [CFString: CFTypeRef] = [:]
+    /// The format description the decoder last took parameter sets from, and its `avcC` / `hvcC` (behind
+    /// `codecLock`): an HLS variant switch brings another.
+    private var lastFormatDescription: CMFormatDescription?
+    private var configuration: Data?
 
     /// - Parameters:
     ///   - formatDescription: the samples' format description. H.264 / HEVC samples arrive length-prefixed (the
@@ -99,6 +103,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         if let configuration = Self.lengthPrefixedConfiguration(codecId: codecId, formatDescription: formatDescription)
         {
             Self.replaceExtradata(of: ctx, with: configuration)
+            self.configuration = configuration
+            self.lastFormatDescription = formatDescription
         }
         ctx.pointee.flags |= Int32(AV_CODEC_FLAG_COPY_OPAQUE)
 
@@ -152,6 +158,30 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                 as? [String: Any]
         else { return nil }
         return atoms[atomKey] as? Data
+    }
+
+    /// Gives the decoder the parameter sets of a sample whose format description changed (an HLS variant switch):
+    /// H.264 and HEVC take a new `avcC` / `hvcC` as `AV_PKT_DATA_NEW_EXTRADATA` side data mid-stream. Variants in
+    /// MPEG-TS repeat theirs in band, those in fragmented MP4 have them only there. Behind `codecLock`; the side data
+    /// goes with the packet's next unref. Returns what `recordConfiguration` takes once the packet is sent: one the
+    /// decoder refuses leaves the parameter sets for the next packet to carry.
+    private func attachNewConfiguration(
+        of sampleBuffer: CMSampleBuffer, to pkt: UnsafeMutablePointer<AVPacket>, codecId: AVCodecID
+    ) -> (description: CMFormatDescription, configuration: Data?)? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer), description !== lastFormatDescription
+        else { return nil }
+        guard let new = Self.lengthPrefixedConfiguration(codecId: codecId, formatDescription: description),
+            new != configuration, let side = av_packet_new_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, new.count)
+        else { return (description, nil) }
+        new.copyBytes(to: side, count: new.count)
+        return (description, new)
+    }
+
+    /// Behind `codecLock`.
+    private func recordConfiguration(_ attached: (description: CMFormatDescription, configuration: Data?)?) {
+        guard let attached else { return }
+        lastFormatDescription = attached.description
+        if let new = attached.configuration { configuration = new }
     }
 
     private static func replaceExtradata(of ctx: UnsafeMutablePointer<AVCodecContext>, with data: Data) {
@@ -274,6 +304,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
 
         av_packet_unref(pkt)
+        let attached = attachNewConfiguration(of: sampleBuffer, to: pkt, codecId: ctx.pointee.codec_id)
         // Note: pkt.pointee.data points to CMBlockBuffer memory, valid synchronously for avcodec_send_packet
         pkt.pointee.data = UnsafeMutablePointer<UInt8>(OpaquePointer(dataPtr))
         pkt.pointee.size = Int32(totalLength)
@@ -301,6 +332,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             AppLog.error(.video, "FFmpegVideoDecoder: avcodec_send_packet failed with code \(sendRet)")
             return
         }
+        recordConfiguration(attached)
 
         while true {
             let recvRet = avcodec_receive_frame(ctx, frame)

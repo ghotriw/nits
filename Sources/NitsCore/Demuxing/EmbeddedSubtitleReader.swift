@@ -90,14 +90,12 @@ enum EmbeddedSubtitleReader {
     /// A secondary demuxer of the file, probed unless its header describes every stream (Matroska, MP4): probing reads
     /// the first clusters, and on a network source that's more requests. `interrupt` aborts its I/O, blocking reads
     /// included (a stalled network volume); it must outlive the context.
-    private static func openInput(url: String, headers: [String: String], interrupt: FFmpegInterrupt?)
+    static func openInput(url: String, headers: [String: String], interrupt: FFmpegInterrupt?)
         -> UnsafeMutablePointer<AVFormatContext>?
     {
         var options: OpaquePointer? = nil
         defer { if options != nil { av_dict_free(&options) } }
-        if MediaURL.isNetworkURL(url) {
-            MediaURL.applyNetworkOptions(&options, headers: headers)
-        } else {
+        if !MediaURL.applySourceOptions(&options, path: url, headers: headers) {
             for (k, v) in headers {
                 av_dict_set(&options, k, v, 0)
             }

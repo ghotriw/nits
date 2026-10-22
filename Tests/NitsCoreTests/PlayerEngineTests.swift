@@ -776,6 +776,10 @@ struct PlayerEngineTests {
             var thumbnailManager: ThumbnailManager = ThumbnailManager()
             var audioTracks: [MediaDemuxer.AudioTrack] = []
             var selectedAudioTrackId: Int = 0
+            var variants: [MediaDemuxer.StreamVariant] = []
+            var selectedVariantId: Int? = nil
+            var isVariantAutomatic = false
+            var canSelectAutomaticVariant = false
             var subtitleTracks: [SubtitleTrack] = []
             var onTracksChanged: (() -> Void)? = nil
             var selectedSubtitleTrackId: Int? = nil
@@ -829,6 +833,8 @@ struct PlayerEngineTests {
             func toggleDebugHUD() {}
             func renderCurrentFrame() {}
             func selectAudioTrack(id: Int) {}
+            func selectVariant(id: Int) {}
+            func selectAutomaticVariant() {}
             func seekToChapter(_ chapter: MediaChapter) {}
             func nextChapter() -> MediaChapter? { nil }
             func previousChapter() -> MediaChapter? { nil }

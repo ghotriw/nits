@@ -168,8 +168,9 @@ struct HostEventTests {
         engine.load(path: path)
         try #require(await engine.waitForPlayback(advancingBy: 0.5))
         let buffered = engine.bufferedTime
+        // Read ahead (`NITS_READ_AHEAD_LOCAL`), the whole 30-second file is read at once.
         #expect(
-            buffered > engine.currentTime && buffered < engine.duration,
+            buffered > engine.currentTime && (buffered < engine.duration || PlayerEngine.readsAheadLocalFiles),
             "Buffered to \(buffered)s at \(engine.currentTime)s of \(engine.duration)s")
 
         engine.seek(to: engine.duration - 2.0)

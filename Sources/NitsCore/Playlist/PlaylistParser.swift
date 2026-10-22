@@ -61,6 +61,16 @@ public enum PlaylistParser {
         }
     }
 
+    /// Whether a local file is an HLS manifest (read off the caller's thread).
+    public static func isHLSManifest(fileAt url: URL) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url), let text = TextFileEncoding.decode(data)?.text else {
+                return false
+            }
+            return isHLSManifest(content: text)
+        }.value
+    }
+
     /// Checks if M3U/M3U8 text content represents an HLS stream manifest rather than a track playlist.
     public static func isHLSManifest(content: String) -> Bool {
         var isHLS = false

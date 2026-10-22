@@ -393,13 +393,13 @@ extension MediaDemuxer {
             }
         }
 
-        // Rewind to the beginning. A timestamp seek in MPEG-TS / MPEG-PS bisects and can land past the first
-        // packet, dropping the keyframe that starts the file (H.264 then can't decode its first GOP). Their data
-        // starts at the first byte, so rewind there.
+        // Rewind to the beginning.
         if Self.isUnindexedStream(ctx) {
-            avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
+            rewindUnindexedStream(ctx)
         } else {
-            seekTimeline(ctx, to: Self.timelineOffset(timelineOrigin, in: timebase), flags: AVSEEK_FLAG_BACKWARD)
+            seekTimeline(
+                ctx, to: Self.timelineOffset(timelineOrigin, in: timebase), flags: AVSEEK_FLAG_BACKWARD,
+                streams: (videoStreamIndex, audioStreamIndex))
         }
         readAheadState.withLock { $0 = -.infinity }
         subtitleTracker.resetStash()
@@ -409,7 +409,14 @@ extension MediaDemuxer {
 
         self.masteringDisplay = masteringDisplay
         self.contentLightLevel = contentLightLevel
+        return makeVideoFormatDescription(
+            parameterSets: .init(vps: vps, sps: sps, pps: pps), codecParameters: codecParameters)
+    }
 
+    /// The video stream's format description from its parameter sets and what discovery read of the stream.
+    func makeVideoFormatDescription(
+        parameterSets: VideoFormatDescriptionBuilder.ParameterSets, codecParameters: UnsafePointer<AVCodecParameters>?
+    ) -> CMVideoFormatDescription? {
         let builder = VideoFormatDescriptionBuilder(
             codec: codec,
             width: width,
@@ -422,7 +429,7 @@ extension MediaDemuxer {
             sampleAspectRatio: sampleAspectRatio,
             masteringDisplay: masteringDisplay,
             contentLightLevel: contentLightLevel,
-            parameterSets: .init(vps: vps, sps: sps, pps: pps),
+            parameterSets: parameterSets,
             dolbyVision: dolbyVisionProfile.flatMap { profile in
                 dolbyVisionConfigData.map { (profile: profile, configData: $0) }
             }

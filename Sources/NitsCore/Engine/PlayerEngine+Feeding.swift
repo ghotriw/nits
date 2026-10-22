@@ -104,8 +104,7 @@ extension PlayerEngine {
         logDecoderStall("a call from \(caller) has not returned for \(blockedFor)")
         stopFeedingVideo()
         guard replaceStalledDecoder() else { return }
-        let target = chaseTargetTime ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
-        seek(to: target, exact: true)
+        seek(to: rereadPosition, exact: true)
     }
 
     /// Installs a new decoder in place of a stalled one: a fresh session the first time, software decoding for
@@ -186,7 +185,7 @@ extension PlayerEngine {
                 if Task.isCancelled || !feedingLock.withLock({ $0 }) { break }
             }
 
-            guard let sample = demuxer.nextVideoSample() else {
+            guard let sample = demuxer.nextVideoSample(waitingForReadAhead: false) else {
                 if demuxer.isEOF {
                     AppLog.debug(.engine, "Demuxer reached EOF for video. Draining decoder...")
                     await decoder.drainAsync()
@@ -229,7 +228,7 @@ extension PlayerEngine {
 
         let feedingLock = self.isFeeding
         let sink = self.audioSink
-        let audioTimebase = demuxer.audioTimebase
+        let audioTimebase = demuxer.readingDescription(\.audioTimebase)
         let firstFedPTS = self.firstFedAudioPTS
         firstFedPTS.withLock { $0 = nil }
 

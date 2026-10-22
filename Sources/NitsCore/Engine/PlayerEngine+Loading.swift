@@ -108,6 +108,8 @@ extension PlayerEngine {
         let normalizedPath = Self.normalizeMediaPath(request.path)
         let isNetwork = MediaURL.isNetworkURL(normalizedPath)
         let isRemoteOrMounted = MediaURL.isRemoteOrMountedVolume(normalizedPath)
+        var normalizedRequest = request
+        normalizedRequest.path = normalizedPath
         applyHostState(of: request)
 
         // If the path represents a playlist file (.m3u, .m3u8, .pls, .xspf, .cue), parse and load it into the playlist
@@ -140,16 +142,16 @@ extension PlayerEngine {
                     }
                 } else if isNetwork {
                     // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
-                    await self.loadAsyncKeepingHostState(request)
+                    await self.loadAsyncKeepingHostState(normalizedRequest)
+                } else if await PlaylistParser.isHLSManifest(fileAt: playlistURL), !Task.isCancelled {
+                    // A saved HLS manifest lists no tracks either: the demuxer plays it. An empty playlist doesn't.
+                    await self.loadAsyncKeepingHostState(normalizedRequest)
                 } else {
                     self.isLoading = false
                 }
             }
             return
         }
-
-        var normalizedRequest = request
-        normalizedRequest.path = normalizedPath
 
         // Immediately update mediaTitle and artwork so UI reflects loaded track synchronously
         self.mediaTitle = Self.resolveTitle(from: normalizedPath, explicitTitle: request.title)
@@ -205,7 +207,13 @@ extension PlayerEngine {
             "Loading async: \(path) title: \(self.mediaTitle) with headers count: \(request.headers.count) startTime: \(String(describing: request.startTime))"
         )
 
-        let isNetwork = MediaURL.isNetworkURL(path)
+        // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
+        var isNetwork = MediaURL.isNetworkURL(path)
+        if !isNetwork {
+            isNetwork = await Task.detached(priority: .userInitiated) {
+                MediaURL.isHLSManifestWithRemoteMedia(atPath: path)
+            }.value
+        }
         let maxAttempts = isNetwork ? 5 : 1
         var newDemuxer: MediaDemuxer? = nil
 
@@ -386,6 +394,11 @@ extension PlayerEngine {
         beginDeferringTracksChanged()
         audioTracks = []
         selectedAudioTrackId = -1
+        variants = []
+        selectedVariantId = nil
+        isVariantAutomatic = false
+        canSelectAutomaticVariant = false
+        pendingVariantChanges = []
         subtitleTracks = []
         resetSubtitles()
         endDeferringTracksChanged()
@@ -587,6 +600,21 @@ extension PlayerEngine {
     ) {
         resetRelativeSeekBurst()
         self.demuxer = demuxer
+        // In order (the main queue is FIFO; tasks aren't, at the different priorities of the reading thread and
+        // `seekQueue`): a seek's change handled after the splice read past it would drop that splice.
+        demuxer.onVariantChanged = { [weak self, weak demuxer] change in
+            DispatchQueue.main.async {
+                guard let self, let demuxer, self.demuxer === demuxer else { return }
+                self.variantWillPlay(change)
+            }
+        }
+        pendingVariantChanges = []
+        // A network source is read ahead (started below), so that a slow network shows as buffering only once that
+        // runs out.
+        let readsAhead = demuxer.isNetworkSource || Self.readsAheadLocalFiles
+        // Adaptive bitrate needs the read-ahead's throughput and margin.
+        canSelectAutomaticVariant = readsAhead && demuxer.variants.count > 1
+        isVariantAutomatic = canSelectAutomaticVariant && demuxer.isAdaptiveBitrateEnabled
         self.currentPath = path
         self.currentHeaders = headers
         self.hasVideo = demuxer.hasVideo
@@ -679,6 +707,8 @@ extension PlayerEngine {
         hasDeferredTracksChange = true
         self.audioTracks = demuxer.audioTracks
         self.selectedAudioTrackId = demuxer.selectedAudioTrackIndex
+        self.variants = demuxer.variants
+        self.selectedVariantId = demuxer.selectedVariantId
         self.subtitleTracks = demuxer.subtitleTracks
         resetSubtitles()
         // Set directly, not via `setSubtitleDelay`: nothing to re-save, and the track below picks its cues with it.
@@ -929,6 +959,11 @@ extension PlayerEngine {
             demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
             demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)
             demuxer.purgeAudio(beforeSeconds: effectiveStartTime - audioDelay)
+        }
+        // Once the description above is read: from here on a variant switch's splice rewrites it on the reading thread
+        // (`MediaDemuxer.readingDescription`). Before the feeders start, as they then only take from the queues.
+        if readsAhead {
+            demuxer.startReadAhead()
         }
         setExactSeekDisplayFloor(effectiveStartTime > 0 ? effectiveStartTime : nil)
 

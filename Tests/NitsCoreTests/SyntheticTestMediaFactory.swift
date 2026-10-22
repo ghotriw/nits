@@ -12,6 +12,9 @@ public enum SyntheticTestMediaFactory {
         case h264HFR60
         /// H.264 without an audio track (20 seconds)
         case videoOnlyH264
+        /// H.264 video of 2 seconds with AAC audio of 10 seconds (MKV): the audio plays on 8 seconds past the
+        /// last picture
+        case videoEndsBeforeAudio
         /// Audio-only multi-channel FLAC (15 seconds)
         case audioOnlyFLAC
         /// HEVC 10-bit HDR video with BT.2020 color primaries and PQ transfer function (10 seconds)
@@ -107,9 +110,27 @@ public enum SyntheticTestMediaFactory {
         /// `captionsC608MOV` in a fragment a second (`frag_keyframe+empty_moov`): its `moov` lists no sample, and FFmpeg
         /// reads every fragment of a seekable file without a complete `sidx` at opening
         case captionsC608FragmentedMOV
+        /// HLS master playlist (6s, 2s segments, MPEG-TS) with two muxed H.264 + AAC variants: 320x180 at ~300 kbit/s
+        /// listed first, then 640x360 at ~900 kbit/s. Made as a directory; `filename` is its master playlist
+        case hlsVariants
+        /// HLS master playlist (40s, 2s segments, MPEG-TS) with three constant-bitrate H.264 + AAC variants, so a
+        /// segment's size matches its `BANDWIDTH`: 320x180 at ~0.43 Mbit/s, 480x270 at ~0.97, 640x360 at ~2.66
+        case hlsLadder
+        /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
+        case hlsVariantsFMP4
+        /// `hlsVariants` in AV1 (SVT-AV1) and fragmented MP4: the configuration in each variant's `av1C`
+        case hlsVariantsAV1
+        /// HLS master playlist (6s) with two H.264 variants (320x180, 640x360) and their audio and subtitles as
+        /// renditions (`EXT-X-MEDIA`) both share: English and Ukrainian AAC, two WebVTT subtitle playlists in one group
+        case hlsRenditions
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
         var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
+
+        /// Presets made as a directory of playlists and segments, `filename` being the master playlist.
+        var isHLS: Bool {
+            [.hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsRenditions, .hlsLadder].contains(self)
+        }
 
         public var filename: String {
             switch self {
@@ -119,6 +140,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_h264_60fps.mp4"
             case .videoOnlyH264:
                 return "synth_h264_video_only.mp4"
+            case .videoEndsBeforeAudio:
+                return "synth_video_ends_before_audio.mkv"
             case .audioOnlyFLAC:
                 return "synth_audio_flac_51.flac"
             case .hevc10BitHDR:
@@ -201,6 +224,16 @@ public enum SyntheticTestMediaFactory {
                 return "synth_captions_c608_fragmented.mov"
             case .captionsC608MOV:
                 return "synth_captions_c608.mov"
+            case .hlsVariants:
+                return "synth_hls_variants/master.m3u8"
+            case .hlsVariantsAV1:
+                return "synth_hls_variants_av1/master.m3u8"
+            case .hlsRenditions:
+                return "synth_hls_renditions/master.m3u8"
+            case .hlsVariantsFMP4:
+                return "synth_hls_variants_fmp4/master.m3u8"
+            case .hlsLadder:
+                return "synth_hls_ladder/master.m3u8"
             }
         }
     }
@@ -327,6 +360,31 @@ public enum SyntheticTestMediaFactory {
             }
         }
 
+        if preset.isHLS {
+            // Playlists and segments go to a private directory that is renamed into place whole.
+            let directory = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-hls")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let subtitlesPath = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString).srt").path
+            defer { try? FileManager.default.removeItem(atPath: subtitlesPath) }
+            if preset == .hlsRenditions {
+                let cues = "1\n00:00:00,500 --> 00:00:02,500\nHello\n\n2\n00:00:03,000 --> 00:00:05,000\nWorld\n"
+                guard FileManager.default.createFile(atPath: subtitlesPath, contents: Data(cues.utf8)) else {
+                    print("[SyntheticTestMediaFactory] Failed to write the subtitles for \(preset.rawValue)")
+                    return nil
+                }
+            }
+            let arguments = hlsArguments(for: preset, in: directory, subtitlesPath: subtitlesPath)
+            guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return nil }
+            let published = URL(fileURLWithPath: targetPath).deletingLastPathComponent().path
+            // Another process may have published its copy meanwhile: a directory can't be replaced atomically.
+            guard rename(directory.path, published) == 0 || FileManager.default.fileExists(atPath: targetPath) else {
+                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
+                return nil
+            }
+            return targetPath
+        }
+
         let encodedPath = partialPath()
         defer { try? FileManager.default.removeItem(atPath: encodedPath) }
         if preset.hasCaptionSEI {
@@ -394,6 +452,67 @@ public enum SyntheticTestMediaFactory {
         return targetPath
     }
 
+    /// FFmpeg arguments writing an HLS preset's master playlist, media playlists and segments into `directory`.
+    private static func hlsArguments(for preset: Preset, in directory: URL, subtitlesPath: String) -> [String] {
+        let file = { (name: String) in directory.appendingPathComponent(name).path }
+        let isFragmented = preset == .hlsVariantsFMP4 || preset == .hlsVariantsAV1
+        let output =
+            [
+                "-c:a", "aac", "-b:a", "64k",
+                "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", "-master_pl_name", "master.m3u8",
+                "-hls_segment_filename", file(isFragmented ? "v%v_%03d.m4s" : "v%v_%03d.ts"),
+            ]
+            + (isFragmented ? ["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init_%v.mp4"] : [])
+        // Two variants of one picture, the lower listed first.
+        let twoVariants = { (seconds: Int) in
+            [
+                "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=\(seconds)",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=\(seconds)",
+                "-filter_complex", "[0:v]split=2[low][high];[low]scale=320:180[lowout]",
+            ]
+        }
+        let x264 = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0"]
+        let rates = ["-b:v:0", "250k", "-b:v:1", "800k"]
+        let muxedAudio = ["-map", "[lowout]", "-map", "1:a", "-map", "[high]", "-map", "1:a"]
+        switch preset {
+        case .hlsVariantsAV1:
+            return twoVariants(6) + muxedAudio + [
+                "-c:v", "libsvtav1", "-preset", "10", "-pix_fmt", "yuv420p", "-g", "30",
+            ]
+                + rates + ["-var_stream_map", "v:0,a:0 v:1,a:1"] + output + [file("v%v.m3u8")]
+        case .hlsRenditions:
+            // Audio and subtitles as renditions (`EXT-X-MEDIA`) both variants share: English and Ukrainian audio
+            // (another tone each), and a WebVTT playlist per variant in one subtitle group.
+            return twoVariants(6) + [
+                "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=6", "-i", subtitlesPath,
+                "-map", "[lowout]", "-map", "[high]", "-map", "1:a", "-map", "2:a", "-map", "3:s", "-map", "3:s",
+            ] + x264 + rates + [
+                "-c:s", "webvtt", "-var_stream_map",
+                "v:0,s:0,agroup:aud,sgroup:subs v:1,s:1,agroup:aud,sgroup:subs "
+                    + "a:0,agroup:aud,language:eng,name:English,default:yes a:1,agroup:aud,language:ukr,name:Ukrainian",
+            ] + output + [file("v%v.m3u8")]
+        case .hlsLadder:
+            // Constant bitrate (HRD filler), so segments are as large as the bitrate says.
+            let ladderRates = ["300k", "800k", "2500k"].enumerated().flatMap { index, rate in
+                [
+                    "-b:v:\(index)", rate, "-minrate:v:\(index)", rate, "-maxrate:v:\(index)", rate,
+                    "-bufsize:v:\(index)", rate,
+                ]
+            }
+            return [
+                "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=40",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=40",
+                "-filter_complex", "[0:v]split=3[a][b][high];[a]scale=320:180[low];[b]scale=480:270[mid]",
+                "-map", "[low]", "-map", "1:a", "-map", "[mid]", "-map", "1:a", "-map", "[high]", "-map", "1:a",
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0",
+                "-x264-params", "nal-hrd=cbr", "-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2",
+            ] + ladderRates + output + [file("v%v.m3u8")]
+        default:
+            return twoVariants(6) + muxedAudio + x264 + rates + ["-var_stream_map", "v:0,a:0 v:1,a:1"] + output
+                + [file("v%v.m3u8")]
+        }
+    }
+
     /// Runs FFmpeg to completion. stderr is drained while the process runs (a full pipe would block it)
     /// and only errors are logged, so the output stays small.
     private static func runFFmpeg(_ ffmpeg: String, arguments: [String], preset: Preset) -> Bool {
@@ -425,8 +544,9 @@ public enum SyntheticTestMediaFactory {
 
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
-        case .captionsH264TS, .captionsH264MKV:
-            return []  // Made in steps by `generateMedia`.
+        case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsRenditions,
+            .hlsLadder:
+            return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [
                 "-y",
@@ -516,6 +636,16 @@ public enum SyntheticTestMediaFactory {
                 "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60",
                 "-c:a", "aac", "-b:a", "128k",
+                outputPath,
+            ]
+
+        case .videoEndsBeforeAudio:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24:duration=2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "24",
+                "-c:a", "aac", "-b:a", "64k",
                 outputPath,
             ]
 

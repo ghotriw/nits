@@ -29,6 +29,52 @@ public struct QuickVideoPane: View {
         return geometry.aspectRatio != nil || geometry.crop != nil || geometry.zoom != 1.0 || geometry.pan != .zero
     }
 
+    /// The variants playback can switch to; the others need decoders of their own.
+    private var qualitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Quality", systemImage: "square.stack.3d.up")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+
+            // `nil` is adaptive bitrate, offered while reading ahead (network sources).
+            Picker(
+                "Quality",
+                selection: Binding(
+                    get: { engine.isVariantAutomatic ? nil : engine.selectedVariantId },
+                    set: { id in
+                        if let id {
+                            engine.selectVariant(id: id)
+                        } else {
+                            engine.selectAutomaticVariant()
+                        }
+                    }
+                )
+            ) {
+                if engine.canSelectAutomaticVariant {
+                    Text(automaticTitle).tag(Int?.none)
+                }
+                ForEach(engine.variants.filter(\.isSwitchable)) { variant in
+                    Text(Self.variantTitle(variant)).tag(Optional(variant.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+        }
+    }
+
+    /// "Auto", with the variant playing while it chooses.
+    private var automaticTitle: String {
+        guard engine.isVariantAutomatic,
+            let playing = engine.variants.first(where: { $0.id == engine.selectedVariantId })
+        else { return "Auto" }
+        return "Auto (\(Self.variantTitle(playing)))"
+    }
+
+    static func variantTitle(_ variant: MediaDemuxer.StreamVariant) -> String {
+        let rate = String(format: "%.1f Mbit/s", Double(variant.bandwidth) / 1_000_000)
+        return variant.height > 0 ? "\(variant.width)×\(variant.height) • \(rate)" : rate
+    }
+
     private var pictureSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -219,6 +265,14 @@ public struct QuickVideoPane: View {
                 )
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.55))
+            }
+
+            // HLS variants
+            if engine.variants.filter(\.isSwitchable).count > 1 {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+
+                qualitySection
             }
 
             // Picture geometry: aspect ratio, crop, scaling, zoom

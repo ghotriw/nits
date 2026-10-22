@@ -97,9 +97,10 @@ extension PlayerEngine {
     func applyDeinterlaceMode(refresh: Bool) {
         guard isInterlacedContent, let demuxer else { return }
         decoder.setDeinterlaceMode(deinterlaceMode)
+        let contentFrameDuration = demuxer.readingDescription(\.nominalFrameDuration)
         let frameDuration =
             decoder.outputsFieldRate
-            ? FieldTiming.fieldDuration(ofFrameDuration: demuxer.nominalFrameDuration) : demuxer.nominalFrameDuration
+            ? FieldTiming.fieldDuration(ofFrameDuration: contentFrameDuration) : contentFrameDuration
         nominalFrameDuration = frameDuration
         nominalFrameDurationLock.withLock { $0 = frameDuration }
         updateDisplayLinkFrameRate()

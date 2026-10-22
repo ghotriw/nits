@@ -13,7 +13,11 @@ public enum VideoDecoderFactory {
     ) -> (any VideoDecoderProtocol)? {
         // Apple Silicon's hardware H.264 decoder rejects field-coded (interlaced) streams: every frame fails with
         // kVTVideoDecoderBadDataErr, so 1080i broadcasts and AVCHD camcorder footage would show nothing.
-        let isInterlacedH264 = codec == .h264 && demuxer.isInterlaced
+        // Read together: a variant switch's splice rewrites them on the reading thread.
+        let (parameters, timebase, formatDescription, isInterlaced) = demuxer.readingDescription {
+            ($0.videoCodecParameters, $0.timebase, $0.formatDescription, $0.isInterlaced)
+        }
+        let isInterlacedH264 = codec == .h264 && isInterlaced
         if isInterlacedH264 {
             AppLog.info(.video, "Interlaced H.264: VideoToolbox can't decode field-coded streams, using FFmpeg")
         }
@@ -24,7 +28,7 @@ public enum VideoDecoderFactory {
             // block, causing VTDecompressionSessionCreate to fail silently. Probe first and
             // fall through to FFmpeg when that happens.
             let needsProbe = codec == .av1 || codec == .vp9
-            if !needsProbe || canCreateVTSession(for: codec, formatDescription: demuxer.formatDescription) {
+            if !needsProbe || canCreateVTSession(for: codec, formatDescription: formatDescription) {
                 AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec)")
                 return VTVideoDecoder()
             }
@@ -34,11 +38,11 @@ public enum VideoDecoderFactory {
             )
         }
 
-        if let params = demuxer.getVideoCodecParameters() {
+        if let params = parameters {
             AppLog.info(.video, "Using Software FFmpeg decoder for \(codec)")
             if let softwareDecoder = FFmpegVideoDecoder(
-                codecParameters: params, timebase: demuxer.timebase, formatDescription: demuxer.formatDescription,
-                deinterlaceMode: demuxer.isInterlaced ? .auto : .frameRate)
+                codecParameters: params, timebase: timebase, formatDescription: formatDescription,
+                deinterlaceMode: isInterlaced ? .auto : .frameRate)
             {
                 return softwareDecoder
             }

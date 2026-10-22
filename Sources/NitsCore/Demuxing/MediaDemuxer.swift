@@ -48,6 +48,60 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let isDefault: Bool
     }
 
+    /// A variant of an adaptive stream: an HLS `EXT-X-STREAM-INF`, which FFmpeg exposes as a program.
+    public struct StreamVariant: Sendable, Identifiable, Equatable {
+        /// The program's id (`AVProgram.id`).
+        public let id: Int
+        /// Peak bits per second (`BANDWIDTH`).
+        public let bandwidth: Int
+        public let width: Int
+        public let height: Int
+        /// Whether playback can switch to it without rebuilding the decoders: the video codec and colour, and the
+        /// audio, are those of the variant chosen on load. See `selectVariant(id:)`.
+        public let isSwitchable: Bool
+    }
+
+    /// The variants of an HLS master playlist, highest bandwidth first; empty for anything else. Only the streams of
+    /// `selectedVariantId` are read: the others are discarded, so FFmpeg doesn't download their segments.
+    public internal(set) var variants: [StreamVariant] = []
+    /// The variant whose pictures are being read: a switch changes it at its splice. Its own lock: `lock` is held
+    /// through blocking reads.
+    public var selectedVariantId: Int? { variantSelection.withLock { $0.selected } }
+    let variantSelection = OSAllocatedUnfairLock(initialState: VariantSelection())
+    /// Streams of each variant by its id.
+    var variantStreams: [Int: VariantStreams] = [:]
+    /// The switch being spliced, behind `lock`.
+    var variantSwitch: VariantSwitch?
+    /// The pictures read from a timeline second on: of which variant, and as they are.
+    public struct VariantChange: Sendable {
+        public let variant: StreamVariant
+        /// Where they start: the splice, the target of a seek, where reading is when a switch is given up.
+        public let seconds: Double
+        /// From the parameter sets (`formatDescription`): a variant FFmpeg didn't probe reports 0 × 0.
+        public let width: Int
+        public let height: Int
+        public let sampleAspectRatio: RationalAspectRatio
+        public let frameDuration: Double
+    }
+
+    /// Called on the reading thread when the pictures read come from another variant (at a switch's splice), after
+    /// a seek and when a switch is given up. Set before reading starts.
+    public var onVariantChanged: (@Sendable (VariantChange) -> Void)?
+    /// Adaptive bitrate state (`MediaDemuxer+AdaptiveBitrate.swift`), behind `lock`; set by `startReadAhead` before
+    /// the thread that uses it starts.
+    var adaptiveBitrate = AdaptiveBitrateLogic()
+    /// Replaces the configuration `startReadAhead` scales to its limit (tests). Set before it.
+    var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
+    var transferWindow = TransferWindow()
+    var nextAdaptiveDecision = 0.0
+    /// `adaptiveTime` the read-ahead thread last waited at the live edge, for a playlist reload.
+    var liveEdgeReachedAt: Double?
+    let adaptiveEpoch = ContinuousClock.now
+    /// Bytes read from the inputs, as they came over the network (behind `lock`).
+    let ioBytes = FFmpegIOByteCounter()
+    /// Decode timestamp of the latest picture `readPacket` handed on (video time base), behind `lock`.
+    var lastVideoReadTime = Int64.min
+
     public internal(set) var audioTracks: [AudioTrack] = []
     public internal(set) var selectedAudioTrackIndex: Int = -1
     public internal(set) var audioExtraData: Data? = nil
@@ -69,29 +123,55 @@ public final class MediaDemuxer: @unchecked Sendable {
     }
     var lastAudioPts: Int64 = -1
     public var currentAudioPtsSeconds: Double {
-        lock.lock()
-        defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
         guard lastAudioPts >= 0 && audioTimebase.den > 0 else { return 0 }
         return Double(lastAudioPts) * Double(audioTimebase.num) / Double(audioTimebase.den)
     }
 
+    // Track selection runs on the main thread: it takes `queueLock` only, never the I/O lock the read-ahead thread
+    // holds through network reads. What the reads do with the selection (the stream indexes, the subtitle tracker)
+    // happens after `av_read_frame` returns, under `queueLock`; the streams' parameters don't change once opened.
+
+    /// Reads what a variant switch rewrites at its splice on the reading thread (the stream description:
+    /// `timebase`, `formatDescription`, `nominalFrameDuration`, `audioTimebase`, `audioTracks`, …) without racing it:
+    /// the splice holds `queueLock`. Needed once reading ahead, from any thread; `body` must not call the demuxer's
+    /// own locking methods.
+    public func readingDescription<T>(_ body: (MediaDemuxer) -> T) -> T {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        return body(self)
+    }
+
     public func getAudioCodecParameters() -> UnsafePointer<AVCodecParameters>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let ctx = formatCtx, audioStreamIndex >= 0 else { return nil }
-        return UnsafePointer(ctx.pointee.streams[audioStreamIndex]!.pointee.codecpar)
+        audioDecoderInput()?.parameters
+    }
+
+    /// The selected audio stream's parameters with its time base, read together (`readingDescription`).
+    public func audioDecoderInput() -> (parameters: UnsafePointer<AVCodecParameters>, timebase: AVRational)? {
+        readingDescription { demuxer in
+            guard let ctx = demuxer.formatCtx, demuxer.audioStreamIndex >= 0,
+                let stream = ctx.pointee.streams[demuxer.audioStreamIndex]
+            else { return nil }
+            return (UnsafePointer(stream.pointee.codecpar), demuxer.audioTimebase)
+        }
     }
 
     public func getVideoCodecParameters() -> UnsafePointer<AVCodecParameters>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let ctx = formatCtx, videoStreamIndex >= 0 else { return nil }
-        return UnsafePointer(ctx.pointee.streams[videoStreamIndex]!.pointee.codecpar)
+        readingDescription { $0.videoCodecParameters }
+    }
+
+    /// Behind `queueLock` (`readingDescription`).
+    var videoCodecParameters: UnsafePointer<AVCodecParameters>? {
+        guard let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] else {
+            return nil
+        }
+        return UnsafePointer(stream.pointee.codecpar)
     }
 
     public func selectAudioTrack(trackId: Int) {
-        lock.lock()
-        defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
         guard let ctx = formatCtx, let track = audioTracks.first(where: { $0.id == trackId }) else { return }
         self.audioStreamIndex = track.streamIndex
         self.selectedAudioTrackIndex = track.id
@@ -109,13 +189,15 @@ public final class MediaDemuxer: @unchecked Sendable {
             self.timebase = self.audioTimebase
         }
         self.audioQueue.removeAll()
+        streamSelectionChanged = true
     }
 
     /// Selects an embedded subtitle track by id (or nil to disable).
     public func selectSubtitleTrack(trackId: Int?) {
-        lock.lock()
-        defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
         self.selectedSubtitleTrackId = trackId
+        streamSelectionChanged = true
         // Packets from where the reads are now on belong to the new track; what came before is for a window read.
         let readAhead = readAheadState.withLock { $0 }
         subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
@@ -265,18 +347,42 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Cancels this demuxer's blocking I/O; share one across demuxers to cancel a whole load.
     public typealias InterruptContext = FFmpegInterrupt
 
-    private let interruptContext: InterruptContext
+    let interruptContext: InterruptContext
     private let ownsInterruptContext: Bool
     /// I/O lock is held across blocking `av_read_frame` / `av_seek_frame` calls (hundreds of ms on
-    /// network streams); readers on the main thread must never contend with it.
-    /// Lock order: `lock` -> the lock inside `subtitleTracker` (never the reverse).
+    /// network streams); readers on the main thread must never contend with it. Take it with `lockIO()`, which lets
+    /// the read-ahead thread step aside.
+    /// Lock order: `lock` -> `queueLock` -> the lock inside `subtitleTracker` (never the reverse).
     let lock = OSAllocatedUnfairLock()
+    /// Guards the packet queues and what goes with them (`targetPts`, `targetAudioPts`, `lastAudioPts`,
+    /// `isEOFInternal` and the read-ahead state). Held only briefly: while reading ahead, consumers take packets
+    /// under it alone, and the read-ahead thread releases it during `av_read_frame`.
+    let queueLock = OSAllocatedUnfairLock()
     var isEOFInternal: Bool = false
     public var isEOF: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isEOFInternal
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        return readsAhead ? readAheadEnded && videoQueue.isEmpty && audioQueue.isEmpty : isEOFInternal
     }
+
+    // Read-ahead (`MediaDemuxer+ReadAhead.swift`), behind `queueLock`.
+    /// A thread reads packets ahead into the queues; consumers only take them.
+    public internal(set) var readsAhead = false
+    /// Read over the network (`MediaURL.isNetworkSource`): a URL, or a saved HLS manifest of network media.
+    public private(set) var isNetworkSource = false
+    /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
+    var streamSelectionChanged = false
+    /// The read-ahead thread stopped at the end of the input or an error, until a seek.
+    var readAheadEnded = false
+    /// Timeline second of the packets last taken from the queues: the read-ahead target is measured from it.
+    var consumedSeconds = 0.0
+    var readAheadLimits = ReadAheadLimits()
+    /// Consumers waiting in `nextVideoSample(waitingForReadAhead:)` for `packetArrival`.
+    var packetWaiters = 0
+    let packetArrival = DispatchSemaphore(value: 0)
+    /// Wakes the read-ahead thread: a seek, a stop, a caller of `lockIO()`.
+    let readAheadWake = DispatchSemaphore(value: 0)
+    let readAheadControl = OSAllocatedUnfairLock(initialState: ReadAheadControl())
 
     /// Returns human-readable error description from FFmpeg av_strerror.
     public static func ffmpegErrorDescription(_ code: Int32) -> String {
@@ -309,6 +415,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         // Setup interrupt callback to abort hung network requests cleanly.
         // `self.interruptContext` keeps a strong reference to `ctxContext` across the lifetime of MediaDemuxer.
         ctxContext.install(on: allocatedCtx)
+        ioBytes.install(on: allocatedCtx)
 
         var avOptions: OpaquePointer? = nil
         defer {
@@ -317,10 +424,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        let isNetworkURL = MediaURL.isNetworkURL(url)
-        if isNetworkURL {
-            MediaURL.applyNetworkOptions(&avOptions, headers: headers)
-        }
+        isNetworkSource = MediaURL.applySourceOptions(&avOptions, path: url, headers: headers)
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
         guard ret >= 0, let formatCtx = ctx else {
@@ -352,8 +456,13 @@ public final class MediaDemuxer: @unchecked Sendable {
                 "Rebasing timestamps to a zero timeline (start_time \(Double(timelineOrigin) / Double(AV_TIME_BASE))s)")
         }
 
+        let streamsToRead = discoverVariants(in: formatCtx)
         for i in 0..<Int(formatCtx.pointee.nb_streams) {
             let stream = formatCtx.pointee.streams[i]!
+            if let streamsToRead, !streamsToRead.contains(i) {
+                stream.pointee.discard = AVDISCARD_ALL
+                continue
+            }
             let codecType = stream.pointee.codecpar.pointee.codec_type
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if codecType == AVMEDIA_TYPE_VIDEO && !isAttachedPic && self.videoStreamIndex < 0,
@@ -375,6 +484,8 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
+        // HLS: the renditions of the tracks selected only (`applyStreamSelection`).
+        applyStreamSelection(in: formatCtx)
         if videoStreamIndex >= 0 {
             self.hasVideo = true
             self.formatDescription = extractVideoFormatDescription()
@@ -394,6 +505,16 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
+
+        // A live HLS stream opens every playlist reload and segment through `io_open`, so the read-ahead thread tells
+        // the wait for the next segment from its transfer (`noteRead`). Kept alive, FFmpeg sends the requests over
+        // the open connection without a call; a new one per segment costs nothing there, as reads wait at the edge.
+        if durationSeconds <= 0, let iformat = formatCtx.pointee.iformat,
+            String(cString: iformat.pointee.name) == "hls",
+            let options = formatCtx.pointee.priv_data
+        {
+            av_opt_set_int(options, "http_persistent", 0, 0)
+        }
     }
 
     /// MPEG-TS / MPEG-PS: no index, and timestamps that continue the source clock. Seeking there bisects on
@@ -447,17 +568,36 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// (`readAheadSeconds`), and hands subtitle packets to `subtitleTracker`, as playback takes embedded subtitles in
     /// band: the main way for every source. A network source is opened again only to read its index and the windows
     /// that index tells of; a server with a single connection fails the index read, and no window is read.
-    func readPacket(_ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket) -> Int32 {
-        let ret = av_read_frame(ctx, &pkt)
-        if ret >= 0 {
-            Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
-            recordReadAhead(pkt, in: ctx)
-            subtitleTracker.readPacket(&pkt, in: ctx)
-        } else if ret == Self.averrorEOF {
-            readAheadState.withLock { $0 = .infinity }
-            subtitleTracker.finishCaptions()
+    ///
+    /// Called with `lock` and, but at opening, `queueLock` held. `releasingQueueLock` (the read-ahead thread) lets
+    /// consumers take packets while FFmpeg reads.
+    func readPacket(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket, releasingQueueLock: Bool = false
+    ) -> Int32 {
+        beginRequestedVariantSwitch(in: ctx)
+        applyChangedStreamSelection(in: ctx)
+        while true {
+            if releasingQueueLock { queueLock.unlock() }
+            let ret = av_read_frame(ctx, &pkt)
+            if releasingQueueLock { queueLock.lock() }
+            if ret >= 0 {
+                Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
+                if variantSwitch != nil, !admitDuringVariantSwitch(&pkt, in: ctx) {
+                    av_packet_unref(&pkt)
+                    continue
+                }
+                if pkt.stream_index == videoStreamIndex {
+                    lastVideoReadTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
+                }
+                recordReadAhead(pkt, in: ctx)
+                subtitleTracker.readPacket(&pkt, in: ctx)
+            } else if ret == Self.averrorEOF {
+                endVariantSwitchAtEOF(in: ctx)
+                readAheadState.withLock { $0 = .infinity }
+                subtitleTracker.finishCaptions()
+            }
+            return ret
         }
-        return ret
     }
 
     /// End of a packet (`pts` plus a positive `duration`), saturating instead of trapping on the corrupt timestamps
@@ -484,13 +624,19 @@ public final class MediaDemuxer: @unchecked Sendable {
     var timelineOrigin: Int64 = 0
     var targetAudioPts: Int64 = -1
 
-    public func nextVideoSample() -> CMSampleBuffer? {
-        lock.lock()
+    /// The next video sample. While reading ahead it comes from the queue: with `waitingForReadAhead` (synchronous
+    /// pumps on `seekQueue`) this waits for the read-ahead thread when the queue is empty; without (the video feeder,
+    /// which sleeps cooperatively) it returns nil at once, and `isEOF` tells the end.
+    public func nextVideoSample(waitingForReadAhead: Bool = true) -> CMSampleBuffer? {
+        if let queued = nextReadAheadVideoSample(waiting: waitingForReadAhead) { return queued }
+        lockIO()
         defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
 
         // Drain videoQueue first if audio reading buffered video packets
         while let vp = videoQueue.popFirst() {
-            if let sample = createVideoSample(from: vp.data, pts: vp.pts, dts: vp.dts, duration: vp.duration) {
+            if let sample = createVideoSample(from: vp) {
                 return sample
             }
         }
@@ -498,7 +644,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         guard let ctx = formatCtx, formatDescription != nil else { return nil }
 
         var pkt = AVPacket()
-        while readPacket(ctx, &pkt) >= 0 {
+        while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
                 let sample = createVideoSample(
@@ -526,22 +672,25 @@ public final class MediaDemuxer: @unchecked Sendable {
         return nil
     }
 
-    /// Retrieves next queued audio packet if available, or pumps stream until one arrives
+    /// Retrieves next queued audio packet if available, or pumps stream until one arrives. While reading ahead it
+    /// only takes from the queue, and returns nil at once when it is empty (`isEOF` tells the end).
     public func nextAudioPacket() -> DemuxedAudioPacket? {
-        lock.lock()
-        defer { lock.unlock() }
-
-        while let p = audioQueue.popFirst() {
-            if targetAudioPts >= 0 {
-                let packetEndPts = Self.packetEnd(pts: p.pts, duration: p.duration)
-                if packetEndPts < targetAudioPts {
-                    continue
-                }
-                targetAudioPts = -1
+        queueLock.lock()
+        if readsAhead {
+            defer { queueLock.unlock() }
+            let packet = popQueuedAudio()
+            if let packet, !hasVideo, audioTimebase.den > 0 {
+                consumedSeconds = Double(packet.pts) * Double(audioTimebase.num) / Double(audioTimebase.den)
             }
-            self.lastAudioPts = p.pts
-            return p
+            return packet
         }
+        queueLock.unlock()
+        lockIO()
+        defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
+
+        if let packet = popQueuedAudio() { return packet }
 
         // If audio queue is empty, pump demuxer to find the next audio packet
         guard let ctx = formatCtx, audioStreamIndex >= 0 else { return nil }
@@ -552,7 +701,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var pkt = AVPacket()
-        while readPacket(ctx, &pkt) >= 0 {
+        while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == audioStreamIndex {
                 let pktPts = pkt.pts
                 let pktDuration = pkt.duration
@@ -571,7 +720,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
                 subtitleTracker.processVideoPacket(&pkt)
-                let videoPacket = DemuxedVideoPacket(pkt)
+                let videoPacket = DemuxedVideoPacket(pkt, format: videoFormat)
                 videoQueue.append(videoPacket)
                 av_packet_unref(&pkt)
             } else {
@@ -584,15 +733,33 @@ public final class MediaDemuxer: @unchecked Sendable {
         return nil
     }
 
+    /// The first queued audio packet that ends at or after `targetAudioPts`. Behind `queueLock`.
+    private func popQueuedAudio() -> DemuxedAudioPacket? {
+        while let p = audioQueue.popFirst() {
+            if targetAudioPts >= 0 {
+                let packetEndPts = Self.packetEnd(pts: p.pts, duration: p.duration)
+                if packetEndPts < targetAudioPts {
+                    continue
+                }
+                targetAudioPts = -1
+            }
+            self.lastAudioPts = p.pts
+            return p
+        }
+        return nil
+    }
+
     public func cancel() {
+        stopReadAhead()
         interruptContext.cancel()
     }
 
     deinit {
+        stopReadAhead()
         if ownsInterruptContext {
             interruptContext.cancel()
         }
-        lock.lock()
+        lockIO()
         defer { lock.unlock() }
         if formatCtx != nil {
             avformat_close_input(&formatCtx)

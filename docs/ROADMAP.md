@@ -226,10 +226,51 @@ flowchart TD
 > Support modern adaptive web media streams with multi-rendition quality switching.
 
 - [ ] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
-  - Parsing master playlists (`.m3u8`) with multiple variant audio and video renditions.
-  - Dynamic stream selection (bandwidth adaptive or manual rendition picker in Quick Settings).
+  Built on FFmpeg's HLS demuxer, which parses master playlists and exposes each variant as an `AVProgram` (its
+  `BANDWIDTH` as `variant_bitrate`). A client of our own (as VLC's and GStreamer's) is left for DASH / LL-HLS.
+  - [x] Variant selection: `MediaDemuxer.variants`, the highest bandwidth played, the other variants' streams
+    discarded (`AVDISCARD_ALL`) so their segments aren't downloaded; their audio no longer lists as extra tracks.
+    Rewinding to the start works on HLS (no byte seeks): the first third of a second was lost.
+  - [x] Manual variant picker (Quality in Quick Settings' video pane, `PlayerEngine.selectVariant(id:)`). The switch
+    is spliced without a seek (`MediaDemuxer+Variants.swift`): the new variant is enabled beside the old one (FFmpeg
+    catches it up with `AVSEEK_FLAG_ANY`, mid-GOP), its pictures are dropped up to its first keyframe at T, the old
+    variant's from T on; audio takes over when the old one reaches T, and the old variant is discarded. Queued packets
+    keep the format description they were read with; VideoToolbox waits for the old format's frames before its new
+    session. A local HLS manifest now plays (it was parsed as a track playlist and opened nothing).
+  - [ ] Variants with another video codec, colour or audio (`isSwitchable == false`, not offered yet): switch them
+    with new decoders, through a seek to the current frame as an audio track switch does.
+  - [x] Network read-ahead (prerequisite for adaptive bitrate): a demuxer thread reads network sources up to 30 s /
+    192 MB ahead, as mpv's demuxer cache; feeders take packets without waiting for the network. Without it playback
+    had about a second and a half of margin, and downloads could not be measured (FFmpeg reads segments only inside
+    `av_read_frame`, which waited on the feeders).
+  - [x] Adaptive bitrate ("Auto" in Quality, the default for network sources with variants): throughput measured
+    by the read-ahead thread from the bytes that came over the network (`FFmpegIOByteCounter`, through FFmpeg's own
+    `io_open`), the lower of two exponential averages, combined with the read-ahead level; HLS segment prefetch off.
+    See "Network read-ahead" in `docs/ARCHITECTURE.md`. Tested against `TestHTTPServer` with a throttled link.
+  - [ ] Check adaptive bitrate by hand on real networks (Network Link Conditioner, a real HLS ladder, Emby), VOD
+    and live; and the Quality picker in the app bundle (UI is judged from the bundle only).
+  - [x] Audio and subtitle renditions (`EXT-X-MEDIA`): only the selected ones are read (`applyStreamSelection`),
+    applied by the reading thread at its next read or seek; FFmpeg discarded every subtitle rendition itself, so HLS
+    subtitles never showed before. Selecting one on a network source seeks to the current frame. Variants must
+    share their subtitle renditions to switch (a variant's own subtitle stream goes with its video).
+  - [x] AV1 / VP9 variants switch: their description comes from the new variant's `av1C` / `vpcC` (the splice asked
+    for H.264 parameter sets and gave every switch up).
+  - [ ] Thumbnails and seek previews of HLS read the lowest variant only.
+  - [ ] **Faster start (urgent for big ladders).** Opening a master playlist (`avformat_find_stream_info`) downloads
+    the first segment of every playlist: Apple's examples, a program per tier and audio group (54–99 programs), took
+    47 s (bipbop advanced), 58 s (AV1) and 142 s (Dolby Vision / Atmos) to open on 2026-10-22; small ladders (3cat,
+    Mux) 1.5–3 s. FFmpeg has no option to skip it: serve FFmpeg a master playlist cut to the compatible ladder of the
+    variant chosen (our `io_open` already sees every input), or probe less. Playback also starts on the highest
+    variant; start lower, or by a first measurement.
+  - [ ] Adaptive bitrate at playback rates above 1x: a variant then needs its bandwidth times the rate.
+  - [ ] Seeks and track switches on a live stream wait for the read-ahead thread, asleep in `av_read_frame` until
+    the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the
+    segment read (`AVERROR_EXIT`): find out first whether the playlist recovers from it.
 - [ ] **3.5.2. MPEG-DASH Integration:**
   - Parsing `.mpd` manifests and segmented MP4/WebM initialization fragments.
+  - The bundled FFmpeg has no DASH demuxer: it needs `--enable-libxml2` (`scripts/build_dependencies.sh`, bump
+    `DEPS_VERSION`); a Homebrew FFmpeg may have it, so `swift run` and the bundle can differ. FFmpeg's DASH demuxer
+    has no adaptive bitrate of its own either.
 
 ---
 

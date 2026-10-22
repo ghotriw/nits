@@ -71,6 +71,13 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         }
 
         lock.lock()
+        if let previous = session, currentFormatDescription != formatDesc {
+            // Frames of the previous format (an HLS variant switch) come out before its session goes; the output
+            // callback takes the lock.
+            lock.unlock()
+            VTDecompressionSessionWaitForAsynchronousFrames(previous)
+            lock.lock()
+        }
         if session == nil || currentFormatDescription != formatDesc {
             createSession(formatDescription: formatDesc)
         }

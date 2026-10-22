@@ -365,6 +365,34 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
     }
 
+    /// Reads local files ahead as well, as network sources are (`MediaDemuxer.startReadAhead`): for tests, which play
+    /// local files only. Set by `NITS_READ_AHEAD_LOCAL=1`.
+    nonisolated static let readsAheadLocalFiles = ProcessInfo.processInfo.environment["NITS_READ_AHEAD_LOCAL"] == "1"
+
+    /// The variants of an HLS master playlist, highest bandwidth first; empty for anything else.
+    public var variants: [MediaDemuxer.StreamVariant] = [] {
+        didSet {
+            if oldValue != variants { tracksDidChange() }
+        }
+    }
+    /// The variant chosen: set by `selectVariant(id:)` at once, by the demuxer when its pictures start playing.
+    public var selectedVariantId: Int? {
+        didSet {
+            if oldValue != selectedVariantId { tracksDidChange() }
+        }
+    }
+    /// Adaptive bitrate can choose the variant: a network source (read ahead) with variants.
+    public internal(set) var canSelectAutomaticVariant = false
+    /// Adaptive bitrate chooses the variant (network sources with variants, until `selectVariant(id:)`).
+    public internal(set) var isVariantAutomatic = false {
+        didSet {
+            if oldValue != isVariantAutomatic { tracksDidChange() }
+        }
+    }
+    /// Variants the demuxer reads ahead, by the timeline second their pictures play from (`variantWillPlay`).
+    @ObservationIgnored
+    var pendingVariantChanges: [MediaDemuxer.VariantChange] = []
+
     public var subtitleTracks: [SubtitleTrack] = [] {
         didSet {
             if oldValue != subtitleTracks { tracksDidChange() }
@@ -940,6 +968,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     self.currentTime = seconds
                     self.onTimeUpdate?(seconds, self.duration)
 
+                    self.applyDueVariantChanges(at: seconds)
                     // Update active subtitle cues
                     self.updateActiveSubtitles(at: seconds)
                     self.checkForStarvation()

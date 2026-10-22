@@ -59,8 +59,10 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 | `Unmanaged.toOpaque()` C callbacks | Swift closures / concurrency |
 | Allocating objects in SwiftUI computed properties | `@State` or an owning controller |
 
-The one intentional exception: display-layer `enqueueSampleBuffer:` / `flush` go through cached
-selectors (see Video pipeline).
+The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go through cached
+selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
+`io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
+(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: the demuxer holds it.
 
 ## Layer boundaries
 
@@ -141,6 +143,15 @@ selectors (see Video pipeline).
   (MaxCLL/MaxFALL, mastering display) from the stream; never hardcode. Peak luminance feeds
   `sourcePeakNits`.
 - Convert timestamps as `pts * Int64(timebase.num) / Int64(timebase.den)`.
+- **Network sources are read ahead** by a demuxer thread (`MediaDemuxer+ReadAhead.swift`). The demuxer's packet
+  queues, their state and the track selection are behind `queueLock`, the input behind `lock` taken through
+  `lockIO()` (order: `lock` → `queueLock`). Blocking FFmpeg calls (`av_read_frame`, `av_seek_frame`) run with
+  `queueLock` released (`readPacket(releasingQueueLock:)`, `withoutQueueLock`), so consumers and main-thread track
+  selection never wait for the network: never call them holding `queueLock`, never take `lock` from the main thread.
+  An HLS variant switch rewrites the stream description (`timebase`, `formatDescription`, `audioTimebase`, …) on the
+  reading thread: once reading ahead, read it through `readingDescription`.
+  After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
+  in `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add
   `timelineOffset` back to `av_seek_frame` targets. A bare `av_read_frame` breaks timing for these

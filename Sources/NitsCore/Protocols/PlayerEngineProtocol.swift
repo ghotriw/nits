@@ -131,11 +131,22 @@ public protocol PlayerVideoControlling: AnyObject, Sendable {
 
 /// Track selection and inspection for audio and subtitle streams.
 public protocol PlayerTrackControlling: AnyObject, Sendable {
-    /// Called when the audio or subtitle tracks, or the selected ones, change (once per load and per `stop()`).
+    /// Called when the audio or subtitle tracks or HLS variants, or the selected ones, change (once per load and per
+    /// `stop()`, and when a variant switch is asked for and when it plays).
     @MainActor var onTracksChanged: (() -> Void)? { get set }
     @MainActor var audioTracks: [MediaDemuxer.AudioTrack] { get }
     @MainActor var selectedAudioTrackId: Int { get }
     @MainActor func selectAudioTrack(id: Int)
+
+    /// HLS variants, highest bandwidth first; empty for anything else.
+    @MainActor var variants: [MediaDemuxer.StreamVariant] { get }
+    @MainActor var selectedVariantId: Int? { get }
+    /// Switches to a variant that `isSwitchable` and turns adaptive bitrate off.
+    @MainActor func selectVariant(id: Int)
+    /// Adaptive bitrate chooses the variant (network sources with variants).
+    @MainActor var canSelectAutomaticVariant: Bool { get }
+    @MainActor var isVariantAutomatic: Bool { get }
+    @MainActor func selectAutomaticVariant()
 
     /// Seconds audio is shifted against the picture: positive plays it later, negative earlier.
     @MainActor var audioDelay: Double { get }

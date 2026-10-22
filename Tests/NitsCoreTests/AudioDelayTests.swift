@@ -203,16 +203,17 @@ struct AudioDelayPlaybackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
-        let before = try #require(audioAhead(of: engine))
+        #expect(audioAhead(of: engine) != nil)
         let seekId = engine.currentSeekId
         let clockBefore = engine.synchronizer.currentTime().seconds
 
         engine.setAudioDelay(0.5)
         #expect(engine.audioDelay == 0.5)
-        // The renderer had held about `before` seconds; the same audio now ends half a second later.
-        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.1 })
-        // And it starts with audio already played once, now heard again at the clock: no gap. Continuing with the
-        // next decoded audio instead would start about `before` seconds past the clock.
+        // Audio is fed again (the feeding run restarts, `firstFedAudioPTS` is set by its first buffer). How far the
+        // renderer then holds audio ahead shows no shift when it was already full: it holds 1.1–1.4 s at most.
+        #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
+        // It starts with audio already played once, now heard again at the clock: no gap. Continuing with the next
+        // decoded audio instead would start as far past the clock as the renderer held audio.
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
         #expect(firstFed + 0.5 < clockBefore + 0.2, "Audio resumed from \(firstFed)s of the media at \(clockBefore)s")
         #expect(engine.currentSeekId == seekId, "The delay change seeked")
@@ -228,14 +229,17 @@ struct AudioDelayPlaybackTests {
         defer { engine.stop() }
         engine.load(path: path)
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
-        let before = try #require(audioAhead(of: engine))
         engine.pause()
         let seekId = engine.currentSeekId
+        let pausedAt = engine.synchronizer.currentTime().seconds
 
         engine.setAudioDelay(0.5)
         #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.audioSink.bufferedEnd == nil })
         engine.play()
-        #expect(await engine.waitUntil(timeout: .seconds(3)) { (audioAhead(of: engine) ?? 0) > before + 0.1 })
+        #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
+        // Heard at the clock, the audio is from half a second earlier in the media (see `changeWhilePlaying`).
+        let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
+        #expect(firstFed + 0.5 < pausedAt + 0.2, "Audio resumed from \(firstFed)s of the media at \(pausedAt)s")
         #expect(engine.currentSeekId == seekId, "The delay change seeked")
         #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
     }
