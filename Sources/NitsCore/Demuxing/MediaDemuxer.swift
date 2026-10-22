@@ -70,11 +70,15 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         /// This track with what is given replaced: another id (`PlaybackInputs` numbers an added file's tracks apart
         /// from the media's) and file, or the stream of another HLS variant.
-        func with(id: Int? = nil, streamIndex: Int? = nil, externalURL: URL? = nil) -> AudioTrack {
+        func with(
+            id: Int? = nil, streamIndex: Int? = nil, title: String? = nil, language: String? = nil,
+            isDefault: Bool? = nil, externalURL: URL? = nil
+        ) -> AudioTrack {
             AudioTrack(
-                id: id ?? self.id, streamIndex: streamIndex ?? self.streamIndex, title: title, language: language,
-                codecName: codecName, channels: channels, sampleRate: sampleRate, isDefault: isDefault,
-                describesVideo: describesVideo, externalURL: externalURL ?? self.externalURL)
+                id: id ?? self.id, streamIndex: streamIndex ?? self.streamIndex, title: title ?? self.title,
+                language: language ?? self.language, codecName: codecName, channels: channels, sampleRate: sampleRate,
+                isDefault: isDefault ?? self.isDefault, describesVideo: describesVideo,
+                externalURL: externalURL ?? self.externalURL)
         }
     }
 

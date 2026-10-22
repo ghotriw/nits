@@ -18,6 +18,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 
 **Audio & subtitles**
 - [x] Audio: multichannel 5.1/7.1, Spatial Audio, track switching, audio-only playback
+- [x] External audio tracks: a dub or commentary in a file of its own, picked up next to the video or added by hand
 - [x] Subtitles: embedded and external SRT / WebVTT with customizable styling; subtitle files next to the video are picked up automatically
 
 **Player & system**

@@ -130,7 +130,8 @@ public struct ControlAudioTrackButton: View {
     }
 
     public var body: some View {
-        if !engine.audioTracks.isEmpty {
+        // A picture without audio can still take an audio file.
+        if !engine.audioTracks.isEmpty || (engine.isLoaded && engine.media.hasVideo) {
             Button {
                 showAudioTrackMenu()
             } label: {
@@ -168,6 +169,29 @@ public struct ControlAudioTrackButton: View {
             item.representedObject = target
             menu.addItem(item)
         }
+
+        if !engine.audioTracks.isEmpty { menu.addItem(NSMenuItem.separator()) }
+        let loadExternalItem = NSMenuItem(
+            title: "Load Audio File...",
+            action: #selector(ControlMenuHelper.executeAction(_:)),
+            keyEquivalent: ""
+        )
+        let loadTarget = ControlMenuHelper { [weak engine, weak uiState] in
+            AudioFilePicker.pick { url in
+                Task {
+                    // The track chosen once the file opened, not the file asked for: it may not be read.
+                    guard let track = await engine?.loadExternalAudio(urls: [url]), engine?.enableOSD == true else {
+                        return
+                    }
+                    let label = TrackTitleFormatter.format(
+                        title: track.title, language: track.language, fallbackId: track.id + 1)
+                    uiState?.osd.show(.audioTrack(title: label))
+                }
+            }
+        }
+        loadExternalItem.target = loadTarget
+        loadExternalItem.representedObject = loadTarget
+        menu.addItem(loadExternalItem)
 
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }

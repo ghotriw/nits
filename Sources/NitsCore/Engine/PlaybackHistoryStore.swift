@@ -7,7 +7,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let position: Double
     public let duration: Double
     public let lastUpdated: Date
-    /// Selected audio track id (`nil` if unknown / not recorded).
+    /// Selected audio track id (`nil` if unknown / not recorded); `PlaybackRecord.externalAudio` the file at
+    /// `externalAudioPath`.
     public let audioTrackId: Int?
     /// Selected subtitle track id. `nil` means no recorded preference; `PlaybackRecord.subtitlesOff` means disabled,
     /// `PlaybackRecord.externalSubtitle` the file at `externalSubtitlePath`.
@@ -20,6 +21,10 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let externalSubtitlePath: String?
     /// Stream of that file, which tells apart the languages of a VobSub index; `nil` in older records.
     public let externalSubtitleStreamIndex: Int?
+    /// Path of the selected external audio file, when `audioTrackId` is `externalAudio`.
+    public let externalAudioPath: String?
+    /// Stream of that file among its audio streams (`AudioTrack.streamIndex`), when it holds several.
+    public let externalAudioStreamIndex: Int?
     /// Forced display aspect ratio; see `PlaybackPreferences.videoAspectRatio`.
     public let videoAspectRatio: RationalAspectRatio?
     /// Crop aspect ratio; see `PlaybackPreferences.videoCrop`.
@@ -29,6 +34,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public static let subtitlesOff = -1
     /// Sentinel value for `subtitleTrackId` meaning the external subtitle file at `externalSubtitlePath`.
     public static let externalSubtitle = -2
+    /// Sentinel value for `audioTrackId` meaning the external audio file at `externalAudioPath`.
+    public static let externalAudio = -2
 
     public init(
         position: Double,
@@ -45,6 +52,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.audioDelay = preferences.audioDelay
         self.externalSubtitlePath = preferences.externalSubtitlePath
         self.externalSubtitleStreamIndex = preferences.externalSubtitleStreamIndex
+        self.externalAudioPath = preferences.externalAudioPath
+        self.externalAudioStreamIndex = preferences.externalAudioStreamIndex
         self.videoAspectRatio = preferences.videoAspectRatio
         self.videoCrop = preferences.videoCrop
     }
@@ -57,6 +66,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
             audioDelay: audioDelay,
             externalSubtitlePath: externalSubtitlePath,
             externalSubtitleStreamIndex: externalSubtitleStreamIndex,
+            externalAudioPath: externalAudioPath,
+            externalAudioStreamIndex: externalAudioStreamIndex,
             videoAspectRatio: videoAspectRatio,
             videoCrop: videoCrop
         )
@@ -74,6 +85,10 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public var externalSubtitlePath: String?
     /// See `PlaybackRecord.externalSubtitleStreamIndex`.
     public var externalSubtitleStreamIndex: Int?
+    /// See `PlaybackRecord.externalAudioPath`.
+    public var externalAudioPath: String?
+    /// See `PlaybackRecord.externalAudioStreamIndex`.
+    public var externalAudioStreamIndex: Int?
     /// Display aspect ratio forced on the picture (`VideoGeometrySettings.aspectRatio`); `noGeometryOverride` when the
     /// stream's own is used.
     public var videoAspectRatio: RationalAspectRatio?
@@ -90,6 +105,8 @@ public struct PlaybackPreferences: Sendable, Equatable {
         audioDelay: Double? = nil,
         externalSubtitlePath: String? = nil,
         externalSubtitleStreamIndex: Int? = nil,
+        externalAudioPath: String? = nil,
+        externalAudioStreamIndex: Int? = nil,
         videoAspectRatio: RationalAspectRatio? = nil,
         videoCrop: RationalAspectRatio? = nil
     ) {
@@ -99,21 +116,33 @@ public struct PlaybackPreferences: Sendable, Equatable {
         self.audioDelay = audioDelay
         self.externalSubtitlePath = externalSubtitlePath
         self.externalSubtitleStreamIndex = externalSubtitleStreamIndex
+        self.externalAudioPath = externalAudioPath
+        self.externalAudioStreamIndex = externalAudioStreamIndex
         self.videoAspectRatio = videoAspectRatio
         self.videoCrop = videoCrop
     }
 
-    /// These preferences with the fields left `nil` taken from `saved`.
+    /// These preferences with the fields left `nil` taken from `saved`. A file's path and stream go with the choice of
+    /// it: choosing another track drops them.
     func merged(over saved: PlaybackPreferences?) -> PlaybackPreferences {
-        PlaybackPreferences(
+        let keepsSubtitleFile = subtitleTrackId == nil || subtitleTrackId == PlaybackRecord.externalSubtitle
+        let keepsAudioFile = audioTrackId == nil || audioTrackId == PlaybackRecord.externalAudio
+        return PlaybackPreferences(
             audioTrackId: audioTrackId ?? saved?.audioTrackId,
             subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
             subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
             audioDelay: audioDelay ?? saved?.audioDelay,
-            externalSubtitlePath: externalSubtitlePath ?? saved?.externalSubtitlePath,
+            externalSubtitlePath: keepsSubtitleFile ? externalSubtitlePath ?? saved?.externalSubtitlePath : nil,
             // Belongs to the path: a new path with no stream of its own doesn't take the old one's.
-            externalSubtitleStreamIndex: externalSubtitlePath != nil
-                ? externalSubtitleStreamIndex : (externalSubtitleStreamIndex ?? saved?.externalSubtitleStreamIndex),
+            externalSubtitleStreamIndex: !keepsSubtitleFile
+                ? nil
+                : externalSubtitlePath != nil
+                    ? externalSubtitleStreamIndex : (externalSubtitleStreamIndex ?? saved?.externalSubtitleStreamIndex),
+            externalAudioPath: keepsAudioFile ? externalAudioPath ?? saved?.externalAudioPath : nil,
+            externalAudioStreamIndex: !keepsAudioFile
+                ? nil
+                : externalAudioPath != nil
+                    ? externalAudioStreamIndex : (externalAudioStreamIndex ?? saved?.externalAudioStreamIndex),
             videoAspectRatio: videoAspectRatio ?? saved?.videoAspectRatio,
             videoCrop: videoCrop ?? saved?.videoCrop
         )

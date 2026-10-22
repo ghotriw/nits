@@ -586,3 +586,13 @@ reading ahead on its first selection and reads nothing while none of its tracks 
 - **Ends** are each stream's own (`isVideoEOF`, `isAudioEOF`): a file shorter than the picture ends while it plays on.
 - **Buffering** triggers on either input running out (see "Stalls and buffering"), since one running dry no longer
   drains the other.
+- **Files** come next to the media, named as it (`SidecarAudio`, the matching subtitle files use, `SidecarFiles`:
+  `Movie.uk.mka` next to `Movie.mkv`; audio extensions only, as a picture container named as the media is another
+  cut of it; only for media with a picture: next to `song.flac`, `song.mp3` is another copy), or by hand
+  (`loadExternalAudio`). Those next to it and the one the history saved are opened with the media, side by side and
+  off the main actor for a background load, before its tracks are chosen, so a request, the history and
+  `TrackAutoSelection` choose among all of them (on a tie the media's own wins: it comes first, and a file's default
+  flag is dropped). A file that can't be opened leaves the media playing without it. A track is named after its
+  stream's title or else its file ("Movie.uk (External)") and takes the language its name tags when the stream has
+  none. The history saves a local file's track by path and stream (`PlaybackRecord.externalAudio`); a URL (a host's,
+  maybe signed) is never saved. A file opened while playing has an interrupt of its own that `cancel()` aborts.

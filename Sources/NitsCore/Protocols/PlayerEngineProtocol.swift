@@ -145,6 +145,10 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor func setAudioDelay(_ seconds: Double)
     @MainActor func stepAudioDelay(by delta: Double)
     @MainActor func resetAudioDelay()
+
+    /// Adds audio files as tracks (a dub, a commentary) and selects the first track of the last file that could be
+    /// read, which it returns (`nil`: none could). `onTracksChanged` reports the tracks and the selection once.
+    @MainActor @discardableResult func loadExternalAudio(urls: [URL]) async -> MediaDemuxer.AudioTrack?
 }
 
 /// Container chapter markers and navigation.

@@ -39,6 +39,25 @@ extension PlayerEngine {
         seek(to: rereadPosition, exact: true)
     }
 
+    /// Adds audio files as tracks of the media playing (a dub, a commentary) and selects the first track of the last
+    /// file that could be read; a file added before (or being added) is reused. Files open off the main actor, as one
+    /// may be on a network volume; the added tracks and the selection are reported once (`onTracksChanged`). Returns
+    /// the track selected: `nil` when no file could be read, or another media was loaded meanwhile.
+    @discardableResult
+    public func loadExternalAudio(urls: [URL]) async -> MediaDemuxer.AudioTrack? {
+        guard let inputs else { return nil }
+        var chosen: MediaDemuxer.AudioTrack?
+        for url in urls {
+            if let first = await inputs.openExternalAudio(url: url).first { chosen = first }
+        }
+        guard self.inputs === inputs, let chosen else { return nil }
+        deferringTracksChanged {
+            audioTracks = inputs.audioTracks
+            selectAudioTrack(id: chosen.id)
+        }
+        return chosen
+    }
+
     /// Adds the audio tracks of a file to the media playing (`PlaybackInputs.openExternalAudio`), none selected.
     /// Returns them: none when the file can't be read, or another media was loaded meanwhile.
     @discardableResult

@@ -2,6 +2,7 @@
 import AppKit
 @preconcurrency import CoreMedia
 import Foundation
+import os
 
 extension PlayerEngine {
     /// Resolves the user-facing media title from a file/stream path, falling back to
@@ -329,13 +330,29 @@ extension PlayerEngine {
             return
         }
 
+        // The audio files that go with it, opened with it: their tracks are chosen from with the media's.
+        // Off the main actor: listing a network volume's folder can take seconds.
+        let lookup = externalAudioLookup(for: path, demuxer: demuxer)
+        let externalAudio = await Task.detached(priority: .userInitiated) {
+            Self.openExternalAudio(lookup, interrupt: interruptContext)
+        }.value
+        if self.currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled {
+            AppLog.warning(.engine, "Loading was superseded or cancelled for: \(path)")
+            if self.currentLoadID == loadID {
+                self.isLoading = false
+                self.playbackState = .idle
+            }
+            return
+        }
+
         applyLoadedDemuxer(
             demuxer,
             path: path,
             headers: request.headers,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
-            requestedSubtitleTrack: request.subtitleTrack
+            requestedSubtitleTrack: request.subtitleTrack,
+            externalAudio: externalAudio
         )
     }
 
@@ -378,7 +395,9 @@ extension PlayerEngine {
             headers: request.headers,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
-            requestedSubtitleTrack: request.subtitleTrack
+            requestedSubtitleTrack: request.subtitleTrack,
+            externalAudio: Self.openExternalAudio(
+                externalAudioLookup(for: path, demuxer: demuxer), interrupt: interruptContext)
         )
     }
 
@@ -421,14 +440,25 @@ extension PlayerEngine {
     /// Track selection, delays and the picture's aspect override and crop to persist. A selection made on load by
     /// `TrackAutoSelection` isn't saved; the subtitles write theirs (`SubtitleController.writePreferences`).
     private var preferencesForHistory: PlaybackPreferences {
-        // An added file's track isn't saved by its id, which numbers the files added this time: the saved choice stays.
-        let savesAudioTrack = selectedAudioTrackId >= 0 && !audioSelectionIsAutomatic && inputs?.isAudioSeparate != true
         var preferences = PlaybackPreferences(
-            audioTrackId: savesAudioTrack ? selectedAudioTrackId : nil,
             audioDelay: audioDelay,
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
+        if selectedAudioTrackId >= 0, !audioSelectionIsAutomatic {
+            let track = audioTracks.first { $0.id == selectedAudioTrackId }
+            if let url = track?.externalURL {
+                // A file's track is saved by its path, as a subtitle file is: its id numbers the files added this
+                // time. One that isn't a local file (a host's signed URL) can't be opened again: the saved choice stays.
+                if url.isFileURL {
+                    preferences.audioTrackId = PlaybackRecord.externalAudio
+                    preferences.externalAudioPath = url.path
+                    preferences.externalAudioStreamIndex = track?.streamIndex
+                }
+            } else {
+                preferences.audioTrackId = selectedAudioTrackId
+            }
+        }
         subtitles.writePreferences(into: &preferences)
         return preferences
     }
@@ -536,13 +566,70 @@ extension PlayerEngine {
         return max(min(target, baseTargetNits), 100.0)
     }
 
+    /// What to look for when opening the audio files that go with a media (`openExternalAudio`).
+    struct ExternalAudioLookup: Sendable {
+        /// The media's path, next to which files named as it are tracks of it; `nil` for none: media without a
+        /// picture (`song.mp3` next to `song.flac` is another copy, not its audio) or a network URL.
+        var sidecarsOf: String?
+        /// The file the history saved for the media, when one of its tracks was chosen.
+        var savedPath: String?
+    }
+
+    /// What the media at `path`, just opened by `demuxer`, takes audio files from. Reads the history only: the folder
+    /// is listed by `openExternalAudio`, which may run off the main actor.
+    private func externalAudioLookup(for path: String, demuxer: MediaDemuxer) -> ExternalAudioLookup {
+        let saved = historyStore.savedPreferences(for: path)
+        return ExternalAudioLookup(
+            sidecarsOf: demuxer.hasVideo && !MediaURL.isNetworkURL(path) ? path : nil,
+            savedPath: saved?.audioTrackId == PlaybackRecord.externalAudio ? saved?.externalAudioPath : nil)
+    }
+
+    /// Finds and opens the audio files `lookup` tells of, for their audio alone: those named as the media next to it
+    /// (`SidecarAudio`), then the one saved for it when it is elsewhere; those that can't be read are left out. Opens
+    /// them side by side, as each opening reads (a network volume: seconds); blocks, so off the main actor for one.
+    /// The load's `interrupt` aborts them with it.
+    nonisolated static func openExternalAudio(
+        _ lookup: ExternalAudioLookup, interrupt: MediaDemuxer.InterruptContext
+    ) -> [(url: URL, demuxer: MediaDemuxer)] {
+        var urls: [URL] = []
+        if let mediaPath = lookup.sidecarsOf {
+            let mediaURL = URL(string: mediaPath).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: mediaPath)
+            urls = SidecarAudio.urls(for: mediaURL).map(\.standardizedFileURL)
+        }
+        if let savedPath = lookup.savedPath, FileManager.default.fileExists(atPath: savedPath) {
+            let url = URL(fileURLWithPath: savedPath).standardizedFileURL
+            if !urls.contains(url) { urls.append(url) }
+        }
+        guard !urls.isEmpty else { return [] }
+
+        let opened = OSAllocatedUnfairLock(initialState: [Int: MediaDemuxer]())
+        DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+            guard !interrupt.isCancelled else { return }
+            let url = urls[index]
+            guard let demuxer = MediaDemuxer(url: url.path, interruptContext: interrupt, audioOnly: true) else {
+                if !interrupt.isCancelled {
+                    AppLog.warning(.audio, "Can't read audio file \(url.path); the media plays without it")
+                }
+                return
+            }
+            opened.withLock { $0[index] = demuxer }
+        }
+        let demuxers = opened.withLock { $0 }
+        return urls.indices.compactMap { index in demuxers[index].map { (urls[index], $0) } }
+    }
+
     func applyLoadedDemuxer(
         _ demuxer: MediaDemuxer, path: String, headers: [String: String], requestedStartTime: Double?,
-        requestedAudioTrack: String?, requestedSubtitleTrack: String?
+        requestedAudioTrack: String?, requestedSubtitleTrack: String?,
+        externalAudio: [(url: URL, demuxer: MediaDemuxer)] = []
     ) {
         resetRelativeSeekBurst()
         let inputs = PlaybackInputs(main: demuxer)
         self.inputs = inputs
+        for file in externalAudio {
+            let added = inputs.attachExternalAudio(file.demuxer, url: file.url)
+            AppLog.info(.audio, "Found \(added.count) audio track(s) in \(file.url.lastPathComponent)")
+        }
         // In order (the main queue is FIFO; tasks aren't, at the different priorities of the reading thread and
         // `seekQueue`): a seek's change handled after the splice read past it would drop that splice.
         demuxer.onVariantChanged = { [weak self, weak demuxer] change in
@@ -618,6 +705,12 @@ extension PlayerEngine {
         {
             inputs.selectAudioTrack(id: id)
             AppLog.info(.audio, "Using explicit audio track: \(id)")
+        } else if savedTracks?.audioTrackId == PlaybackRecord.externalAudio,
+            let savedPath = savedTracks?.externalAudioPath,
+            let id = inputs.audioTrackId(inFileAt: savedPath, streamIndex: savedTracks?.externalAudioStreamIndex)
+        {
+            inputs.selectAudioTrack(id: id)
+            AppLog.info(.audio, "Restored external audio file from saved history: \(savedPath)")
         } else if let saved = savedTracks?.audioTrackId,
             availableAudio.contains(where: { $0.id == saved })
         {
@@ -795,6 +888,10 @@ extension PlayerEngine {
             demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
             demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)
             demuxer.purgeAudio(beforeSeconds: effectiveStartTime - audioDelay)
+        }
+        // A file's track chosen above starts where the picture does, on its own input (a file just opened is at 0).
+        if let external = inputs.selectedExternal, effectiveStartTime - audioDelay > 0 {
+            external.seek(to: effectiveStartTime - audioDelay)
         }
         // Once the description above is read: from here on a variant switch's splice rewrites it on the reading thread
         // (`MediaDemuxer.readingDescription`). Before the feeders start, as they then only take from the queues.

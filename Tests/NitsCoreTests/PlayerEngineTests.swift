@@ -779,6 +779,7 @@ struct PlayerEngineTests {
             func setAudioDelay(_ seconds: Double) {}
             func stepAudioDelay(by delta: Double) {}
             func resetAudioDelay() {}
+            func loadExternalAudio(urls: [URL]) async -> MediaDemuxer.AudioTrack? { nil }
             func stop() {}
             func play() {}
             func pause() {}

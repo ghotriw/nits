@@ -15,6 +15,8 @@ final class PlaybackInputs {
         let demuxer: MediaDemuxer
         /// Its tracks are numbered from here in `audioTracks` (`externalTrackIdBase` apart for each file).
         let firstTrackId: Int
+        /// Its tracks as `audioTracks` lists them (`listedTracks`): renumbered, marked as the file's.
+        let tracks: [MediaDemuxer.AudioTrack]
     }
 
     /// The media's own input.
@@ -36,10 +38,15 @@ final class PlaybackInputs {
 
     /// The media's audio tracks, then the files', in the order they were added.
     var audioTracks: [MediaDemuxer.AudioTrack] {
-        main.readingDescription(\.audioTracks)
-            + externalAudio.flatMap { file in
-                file.demuxer.audioTracks.map { $0.with(id: file.firstTrackId + $0.id, externalURL: file.url) }
-            }
+        main.readingDescription(\.audioTracks) + externalAudio.flatMap(\.tracks)
+    }
+
+    /// The id in `audioTracks` of the file at `path`'s track of stream `streamIndex`, or its first; `nil` when that file
+    /// isn't added.
+    func audioTrackId(inFileAt path: String, streamIndex: Int?) -> Int? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let file = externalAudio.first(where: { $0.url == url }) else { return nil }
+        return (file.tracks.first { $0.streamIndex == streamIndex } ?? file.tracks.first)?.id
     }
 
     /// Where audio feeding reads the selected track; `nil` when none is selected (or the media has no audio).
@@ -59,7 +66,21 @@ final class PlaybackInputs {
     /// (`attachExternalAudio`). Returns its tracks: none when it can't be read or the inputs were cancelled meanwhile;
     /// `cancel()` aborts an opening stuck on a server.
     func openExternalAudio(url: URL, headers: [String: String] = [:]) async -> [MediaDemuxer.AudioTrack] {
+        let url = url.isFileURL ? url.standardizedFileURL : url
+        // A file added again is the one added before, or being opened.
+        if let added = externalAudio.first(where: { $0.url == url }) { return added.tracks }
+        if let opening = pendingOpenings[url] { return await opening.value }
         guard !isCancelled else { return [] }
+        let opening = Task { await open(url: url, headers: headers) }
+        pendingOpenings[url] = opening
+        defer { pendingOpenings[url] = nil }
+        return await opening.value
+    }
+
+    /// Files being opened (`openExternalAudio`), by URL.
+    private var pendingOpenings: [URL: Task<[MediaDemuxer.AudioTrack], Never>] = [:]
+
+    private func open(url: URL, headers: [String: String]) async -> [MediaDemuxer.AudioTrack] {
         let interrupt = MediaDemuxer.InterruptContext()
         openings.append(interrupt)
         defer { openings.removeAll { $0 === interrupt } }
@@ -81,13 +102,41 @@ final class PlaybackInputs {
     /// `audioTracks`, none selected. Returns them.
     @discardableResult
     func attachExternalAudio(_ demuxer: MediaDemuxer, url: URL) -> [MediaDemuxer.AudioTrack] {
+        let url = url.isFileURL ? url.standardizedFileURL : url
         // Nothing of it is read until one of its tracks is selected.
         demuxer.selectAudioTrack(trackId: nil)
+        let firstTrackId = Self.firstExternalTrackId + externalAudio.count * Self.externalTrackIdBase
         let file = ExternalAudio(
-            url: url, demuxer: demuxer,
-            firstTrackId: Self.firstExternalTrackId + externalAudio.count * Self.externalTrackIdBase)
+            url: url, demuxer: demuxer, firstTrackId: firstTrackId,
+            tracks: Self.listedTracks(of: demuxer.audioTracks, from: url, firstId: firstTrackId))
         externalAudio.append(file)
-        return demuxer.audioTracks.map { $0.with(id: file.firstTrackId + $0.id, externalURL: url) }
+        return file.tracks
+    }
+
+    /// A file's tracks as listed with the media's: marked "(External)" after the stream's own title ("Director's
+    /// Commentary") or, without one, the file's name; in the language its name tags when the stream tells none (the
+    /// views add the language). Its default flag doesn't count against the media's tracks: the file's flags are of the
+    /// file alone, and on a tie `TrackAutoSelection` keeps to the media's own.
+    static func listedTracks(
+        of tracks: [MediaDemuxer.AudioTrack], from url: URL, firstId: Int
+    ) -> [MediaDemuxer.AudioTrack] {
+        let name = url.deletingPathExtension().lastPathComponent
+        let taggedLanguage = SidecarFiles.tags(of: url).language
+        let labelled = tracks.map { track in
+            let isUnlabelled = track.language.isEmpty || track.language == "und"
+            let language = isUnlabelled ? (taggedLanguage ?? track.language) : track.language
+            return (track: track, title: track.title.isEmpty ? name : track.title, language: language)
+        }
+        return labelled.map { entry in
+            var title = entry.title
+            // Streams the list would show alike (stereo and 5.1 of one language, untitled): numbered apart.
+            if labelled.filter({ $0.title == entry.title && $0.language == entry.language }).count > 1 {
+                title += " #\(entry.track.id + 1)"
+            }
+            return entry.track.with(
+                id: firstId + entry.track.id, title: "\(title) (External)", language: entry.language,
+                isDefault: false, externalURL: url)
+        }
     }
 
     /// Selects track `id` of `audioTracks`: in its file (the media's demuxer then gets none), or in the media. Returns

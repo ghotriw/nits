@@ -44,9 +44,20 @@ public struct QuickAudioPane: View {
 
             // Audio Tracks Section
             VStack(alignment: .leading, spacing: 10) {
-                Label("Audio Tracks", systemImage: "waveform")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
+                HStack {
+                    Label("Audio Tracks", systemImage: "waveform")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    if engine.isLoaded {
+                        Button("Load External…") {
+                            loadExternalAudio()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                }
 
                 if engine.audioTracks.isEmpty {
                     Text("No audio tracks available")
@@ -154,6 +165,13 @@ public struct QuickAudioPane: View {
             Text("Positive plays audio later. J / K shift by 50 ms while playing.")
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.5))
+        }
+    }
+
+    /// Adds an audio file (a dub, a commentary) as a track of the media playing, and plays it.
+    private func loadExternalAudio() {
+        AudioFilePicker.pick { [engine] url in
+            Task { await engine.loadExternalAudio(urls: [url]) }
         }
     }
 

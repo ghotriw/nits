@@ -34,72 +34,19 @@ public enum SidecarSubtitles {
         return ["idx", "IDX"].map { base.appendingPathExtension($0) }.first { fileManager.fileExists(atPath: $0.path) }
     }
 
-    /// Language and flags read from the trailing dot-separated tags of a subtitle file name.
-    public struct NameTags: Equatable, Sendable {
-        public var language: String?
-        public var isForced: Bool
-        public var isSDH: Bool
-
-        public init(language: String? = nil, isForced: Bool = false, isSDH: Bool = false) {
-            self.language = language
-            self.isForced = isForced
-            self.isSDH = isSDH
-        }
-    }
+    public typealias NameTags = SidecarFiles.NameTags
 
     /// Subtitle files in the media's folder named as the media, optionally followed by dot-separated tags, sorted by
     /// name. Empty for anything but a local file.
     public static func urls(for mediaURL: URL, fileManager: FileManager = .default) -> [URL] {
-        guard mediaURL.isFileURL else { return [] }
-        let baseName = normalized(mediaURL.deletingPathExtension().lastPathComponent)
-        guard
-            let contents = try? fileManager.contentsOfDirectory(
-                at: mediaURL.deletingLastPathComponent(),
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )
-        else { return [] }
-
-        return
-            contents
-            .filter { url in
-                guard extensions.contains(url.pathExtension.lowercased()) else { return false }
-                let name = normalized(url.deletingPathExtension().lastPathComponent)
-                guard name == baseName || name.hasPrefix(baseName + ".") else { return false }
-                // A VobSub pair is one file, found as its `.idx`.
-                return vobSubIndex(forDataFile: url, fileManager: fileManager) == nil
-            }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-    }
-
-    /// Reads up to three trailing tags of the name (`movie.en.forced.srt`): `forced`, `sdh` / `cc`, and an ISO 639
-    /// language code. Stops at the first tag that is none of these, so title words and release tags are ignored.
-    public static func tags(of url: URL) -> NameTags {
-        var tags = NameTags()
-        let parts = url.deletingPathExtension().lastPathComponent.split(separator: ".")
-        for part in parts.dropFirst().reversed().prefix(3) {
-            let tag = part.lowercased()
-            // Flags first: "sdh" is also an ISO 639 code (Southern Kurdish).
-            if tag == "forced" {
-                tags.isForced = true
-            } else if tag == "sdh" || tag == "cc" {
-                tags.isSDH = true
-            } else if tags.language == nil, isLanguageCode(tag) {
-                tags.language = tag
-            } else {
-                break
-            }
+        // A VobSub pair is one file, found as its `.idx`.
+        SidecarFiles.urls(for: mediaURL, extensions: extensions, fileManager: fileManager) {
+            vobSubIndex(forDataFile: $0, fileManager: fileManager) == nil
         }
-        return tags
     }
 
-    static func isLanguageCode(_ tag: String) -> Bool {
-        guard tag != "und", tag.wholeMatch(of: #/[a-z]{2,3}(-[a-z0-9]{2,4})?/#) != nil else { return false }
-        return Locale.LanguageCode(tag).isISOLanguage
-    }
-
-    /// File names compare case-insensitively and regardless of Unicode normalization (APFS keeps either form).
-    private static func normalized(_ name: String) -> String {
-        name.precomposedStringWithCanonicalMapping.lowercased()
+    /// See `SidecarFiles.tags(of:)`.
+    public static func tags(of url: URL) -> NameTags {
+        SidecarFiles.tags(of: url)
     }
 }
