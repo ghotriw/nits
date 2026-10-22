@@ -958,6 +958,12 @@ extension PlayerEngine {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.currentLoadID == loadID else { return }
+                // Paused since the load (a host's "load, then pause"): it stays paused, on its first frame. Starting
+                // here would play from under the pause.
+                if self.playbackState == .paused {
+                    if self.currentSeekId == seekId { self.seek(to: effectiveStartTime, exact: true) }
+                    return
+                }
                 // A seek issued right after load (e.g. a host's "load, then seek") owns the pipeline: its
                 // preview is reading the demuxer on `seekQueue`, and starting the feeders here would race it
                 // for packets, leaving the seek on a keyframe. Hand it the autoplay intent instead; the

@@ -127,10 +127,11 @@ struct BitmapSubtitleTests {
         try #require(engine.isLoaded)
         engine.pause()
         // Playback has read past the set at 0 s and its clear at 1.5 s (which the file keeps after the picture at
-        // 1.67 s): only a window read reaching where playback reads from can bring both back.
+        // 1.67 s): only a window read reaching where playback reads from can bring both back. Read here, paused (the
+        // feeders stopped), so that the position stays before the clear however slow the host.
         let demuxer = try #require(engine.demuxer)
-        for _ in 0..<100 where demuxer.readAheadSeconds < 1.7 { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(demuxer.readAheadSeconds >= 1.7, "Read ahead only to \(demuxer.readAheadSeconds) s")
+        while demuxer.readAheadSeconds < 2, demuxer.nextVideoSample() != nil {}
+        try #require(demuxer.readAheadSeconds >= 2, "Read ahead only to \(demuxer.readAheadSeconds) s")
         engine.selectSubtitleTrack(id: try #require(engine.subtitleTracks.first).id)
         #expect(engine.subtitleLoads.isEmpty, "No whole-file read")
         for _ in 0..<100 where engine.currentSubtitleImages.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
