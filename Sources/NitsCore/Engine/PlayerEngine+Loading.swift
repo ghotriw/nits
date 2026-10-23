@@ -554,7 +554,7 @@ extension PlayerEngine {
         guard !urls.isEmpty else { return [] }
 
         let opened = OSAllocatedUnfairLock(initialState: [Int: MediaDemuxer]())
-        DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+        DispatchQueue.concurrentPerform(iterations: urls.count) { [urls] index in
             guard !interrupt.isCancelled else { return }
             let url = urls[index]
             guard let demuxer = MediaDemuxer(url: url.path, interruptContext: interrupt, audioOnly: true) else {
