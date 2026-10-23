@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreGraphics
 import Foundation
+import simd
 
 /// How a decoded frame's samples are encoded; decides the thumbnail conversion path.
 enum ThumbnailSourceEncoding: Equatable {
@@ -321,17 +322,13 @@ enum ThumbnailToneMapper {
         return value <= 0.5 ? value * value / 3 : (exp((value - c) / a) + b) / 12
     }
 
-    /// Dolby Vision Profile 5 IPT-PQ-C2 → linear BT.2020 nits (same matrices as `nitsFromIPT`).
-    /// Inputs are normalised: I in [0, 1], Ct / Cp centred on 0.
+    /// Dolby Vision Profile 5 IPT-PQ-C2 → linear BT.2020 nits using default IPT matrices without dynamic RPU reshaping.
+    /// Inputs are normalised: I in [0, 1], P / T centred on 0. Thumbnails decode keyframes without RPU reshaping: the
+    /// Profile 5 base layer alone can differ noticeably in contrast and saturation from playback.
     static func nitsFromIPT(i: Float, ct: Float, cp: Float) -> SIMD3<Float> {
-        let l = i + 0.0059148838 * ct + 0.1117555300 * cp
-        let m = i - 0.0051712496 * ct - 0.1082819800 * cp
-        let s = i - 0.8024930600 * ct + 0.0078749400 * cp
-        let lms = SIMD3(pqLUT[lutIndex(l)], pqLUT[lutIndex(m)], pqLUT[lutIndex(s)])
-        let r = 3.6841103 * lms.x - 2.9469796 * lms.y + 0.2628693 * lms.z
-        let g = -0.7183616 * lms.x + 1.7947118 * lms.y - 0.0763502 * lms.z
-        let b = 0.0560867 * lms.x - 0.1706692 * lms.y + 1.1145825 * lms.z
-        return SIMD3(max(r, 0), max(g, 0), max(b, 0))
+        let lmsPrime = DolbyVisionColorScience.defaultIptToLms * SIMD3(i, ct, cp)
+        let lms = SIMD3(pqLUT[lutIndex(lmsPrime.x)], pqLUT[lutIndex(lmsPrime.y)], pqLUT[lutIndex(lmsPrime.z)])
+        return simd_max(DolbyVisionColorScience.defaultLmsToRgb * lms, .zero)
     }
 
     /// Tone-maps the scaled 16-bit frame into packed 8-bit RGBX, or `nil` for an SDR encoding.

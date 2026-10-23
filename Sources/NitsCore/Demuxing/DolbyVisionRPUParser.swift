@@ -1,6 +1,9 @@
 import Foundation
+import simd
 
-/// Fast parser for Dolby Vision RPU payloads (NAL unit 62).
+/// Fast parser for Dolby Vision RPU payloads (NAL unit 62). The order and width of the fields follow the RPU format;
+/// ETSI GS CCM 001 gives the semantics of the values (pivots, coefficients, NLQ parameters, the DM signal description),
+/// not the RPU bitstream, so its clauses are cited for what a value means.
 public enum DolbyVisionRPUParser {
     /// SMPTE ST 2084 PQ to Linear optical nits conversion.
     public static func pqToNits(_ pq: Float) -> Float {
@@ -30,6 +33,14 @@ public enum DolbyVisionRPUParser {
             (bitPos >> 3) >= data.count
         }
 
+        func skipBits(_ n: Int) -> Bool {
+            guard n >= 0 else { return false }
+            let nextPos = bitPos + n
+            guard ((nextPos + 7) >> 3) <= data.count else { return false }
+            bitPos = nextPos
+            return true
+        }
+
         func getBits(_ n: Int) -> UInt32? {
             guard n > 0 else { return 0 }
             var res: UInt32 = 0
@@ -54,11 +65,9 @@ public enum DolbyVisionRPUParser {
         }
 
         func getSBits(_ n: Int) -> Int32? {
-            guard let v = getBits(n) else { return nil }
-            if (v & (1 << (n - 1))) != 0 {
-                return Int32(v) - (1 << n)
-            }
-            return Int32(v)
+            guard (1...32).contains(n), let v = getBits(n) else { return nil }
+            let shift = UInt32(32 - n)
+            return Int32(bitPattern: v << shift) >> shift
         }
 
         func getUE() -> UInt32? {
@@ -113,7 +122,42 @@ public enum DolbyVisionRPUParser {
         return unescaped
     }
 
-    /// Parses a raw NAL unit 62 (Dolby Vision RPU) and extracts L1 and L2 metadata.
+    /// What the RPU header (`vdr_seq_info`) tells the rest of the RPU. Without it, the defaults stand.
+    private struct Header {
+        enum CoefficientFormat {
+            /// A signed integer part and a fraction of `fractionBits` bits (`coefficient_log2_denom`).
+            case fixedPoint(fractionBits: Int)
+            /// An IEEE 754 single.
+            case float32
+        }
+
+        var coefficientFormat = CoefficientFormat.fixedPoint(fractionBits: 23)
+        var blBitDepth = 10
+        var elBitDepth = 10
+        /// Whether an enhancement-layer residual is added to the mapped base layer (`disable_residual_flag` 0), which
+        /// puts the NLQ parameters after the mapping.
+        var hasResidual = false
+        /// 0: the DM data carries the signal description (matrices, source range); 1: it reuses the previous one.
+        var dmCompression: UInt32 = 0
+        /// Whether the RPU carries `vdr_seq_info`; without it the rest is read with the defaults above.
+        var hasSequenceInfo = false
+    }
+
+    /// One piece of a component's mapping (ETSI GS CCM 001 5.3.3).
+    private enum MappingPiece {
+        /// Polynomial coefficients `(c0, c1, c2)`, `c2` 0 for a first-order one.
+        case polynomial(SIMD3<Float>)
+        case mmr(DolbyVisionFrameMetadata.MMRPiece)
+    }
+
+    /// The DM data's description of the signal: the colour matrices (when authored) and the source display's range.
+    private struct SignalDescription {
+        var colorMatrix: DolbyVisionFrameMetadata.ColorMatrix?
+        var sourceMinPQ: UInt16?
+        var sourceMaxPQ: UInt16?
+    }
+
+    /// Parses a raw NAL unit 62 (Dolby Vision RPU) and extracts L1, L2, reshaping curves, and color matrices.
     public static func parse(naluData: Data) -> DolbyVisionFrameMetadata? {
         guard naluData.count >= 6 else { return nil }
         let unescaped = unescapeRPU(from: naluData)
@@ -136,112 +180,23 @@ public enum DolbyVisionRPUParser {
         }
 
         let br = BitReader(data: payloadBytes)
-        guard let rpuType = br.getBits(6), rpuType == 2 else { return nil }
-
-        guard let rpuFormat = br.getBits(11),
-            br.getBits(4) != nil,  // vdr_rpu_profile
-            br.getBits(4) != nil,  // vdr_rpu_level
-            let vdrSeqInfoPresentBit = br.getBits1()
+        guard let header = readHeader(br),
+            let vdrDmMetadataPresent = br.getBits1(),
+            let usePrevVdrRpu = br.getBits1()
         else { return nil }
-        let vdrSeqInfoPresent = vdrSeqInfoPresentBit != 0
 
-        var coefDataType: UInt32 = 0
-        var blBitDepth: Int = 10
-        var disableResidual: UInt32 = 1
-
-        if vdrSeqInfoPresent {
-            guard br.getBits1() != nil,  // chroma_resampling_explicit_filter_flag
-                let cdt = br.getBits(2),
-                br.getUE() != nil,  // coef_log2_denom
-                br.getBits(2) != nil,  // vdr_rpu_normalized_idc
-                br.getBits1() != nil  // bl_video_full_range_flag
-            else { return nil }
-            coefDataType = cdt
-
-            if (rpuFormat & 0x700) == 0 {
-                guard let blMinus8 = br.getUE(),
-                    br.getUE() != nil,  // elMinus8
-                    br.getUE() != nil,  // vdrMinus8
-                    br.getBits1() != nil,  // spatial_resampling_filter_flag
-                    br.getBits(3) != nil,  // dm_compression
-                    br.getBits1() != nil,  // el_spatial_resampling_filter_flag
-                    let disRes = br.getBits1()
-                else { return nil }
-                blBitDepth = Int(blMinus8) + 8
-                disableResidual = disRes
-            } else {
-                return nil
-            }
-        }
-
-        // For Profile 7 with Enhancement Layer (EL), residual mapping is required.
-        // We reject streams with disableResidual == 0 to prevent desynchronization.
-        guard disableResidual == 1 else { return nil }
-
-        guard let vdrDmMetadataPresentBit = br.getBits1(),
-            let usePrevVdrRpuBit = br.getBits1()
-        else { return nil }
-        let vdrDmMetadataPresent = vdrDmMetadataPresentBit != 0
-        let usePrevVdrRpu = usePrevVdrRpuBit != 0
-
-        if !usePrevVdrRpu {
-            guard br.getUE() != nil,  // vdr_rpu_id
-                br.getUE() != nil,  // mapping_color_space
-                br.getUE() != nil  // mapping_chroma_format_idc
-            else { return nil }
-
-            var curvesPivots = [Int]()
-            for _ in 0..<3 {
-                guard let numPivotsUE = br.getUE(), numPivotsUE <= 7 else { return nil }
-                let numPivots = Int(numPivotsUE) + 2
-                curvesPivots.append(numPivots)
-                for _ in 0..<numPivots {
-                    guard br.getBits(blBitDepth) != nil else { return nil }
-                }
-            }
-
-            guard br.getUE() != nil,  // num_x_partitions
-                br.getUE() != nil  // num_y_partitions
-            else { return nil }
-
-            func readSECoef() -> Bool {
-                if coefDataType == 0 {
-                    return br.getSE() != nil
-                } else {
-                    return br.getBits(32) != nil
-                }
-            }
-
-            for c in 0..<3 {
-                let numP = curvesPivots[c]
-                for _ in 0..<(numP - 1) {
-                    guard let mappingIdc = br.getUE() else { return nil }
-                    if mappingIdc == 0 {
-                        guard let polyOrderMinus1 = br.getUE(), polyOrderMinus1 <= 2 else { return nil }
-                        if polyOrderMinus1 == 0 {
-                            guard br.getBits1() != nil else { return nil }
-                        }
-                        for _ in 0..<(polyOrderMinus1 + 2) {
-                            guard readSECoef() else { return nil }
-                        }
-                    } else if mappingIdc == 1 {
-                        guard let mmrOrderMinus1 = br.getBits(2), mmrOrderMinus1 <= 2 else { return nil }
-                        guard readSECoef() else { return nil }  // mmr_constant
-                        for _ in 0..<(mmrOrderMinus1 + 1) {
-                            for _ in 0..<7 {
-                                guard readSECoef() else { return nil }
-                            }
-                        }
-                    } else {
-                        return nil
-                    }
-                }
-            }
+        let curvesState: DolbyVisionFrameMetadata.ReshapingCurvesState
+        if usePrevVdrRpu == 0 {
+            guard let state = readMapping(br, header: header) else { return nil }
+            curvesState = state
         } else {
+            // Commercial Dolby Vision streams use a single RPU ID (id = 0), so reusing the last active
+            // curves avoids maintaining an array of 16 RPU contexts.
             guard br.getUE() != nil else { return nil }  // prev_vdr_rpu_id
+            curvesState = .reusePrevious
         }
 
-        guard vdrDmMetadataPresent else { return nil }
+        guard vdrDmMetadataPresent != 0 else { return nil }
 
         guard br.getUE() != nil,  // affected_dm_id
             br.getUE() != nil,  // current_dm_id
@@ -249,23 +204,24 @@ public enum DolbyVisionRPUParser {
         else { return nil }
         let sceneRefresh = sceneRefreshUE != 0
 
-        // Skip color matrices
-        for _ in 0..<9 { guard br.getBits(16) != nil else { return nil } }  // ycc_to_rgb_matrix
-        for _ in 0..<3 { guard br.getBits(32) != nil else { return nil } }  // ycc_to_rgb_offset
-        for _ in 0..<9 { guard br.getBits(16) != nil else { return nil } }  // rgb_to_lms_matrix
-
-        guard br.getBits(16) != nil,  // signal_eotf
-            br.getBits(16) != nil,  // signal_eotf_param0
-            br.getBits(16) != nil,  // signal_eotf_param1
-            br.getBits(32) != nil,  // signal_eotf_param2
-            br.getBits(5) != nil,  // signal_bit_depth
-            br.getBits(2) != nil,  // signal_color_space
-            br.getBits(2) != nil,  // signal_chroma_format
-            br.getBits(2) != nil,  // signal_full_range_flag
-            br.getBits(12) != nil,  // source_min_pq
-            br.getBits(12) != nil,  // source_max_pq
-            br.getBits(10) != nil  // source_diagonal
-        else { return nil }
+        let signal: SignalDescription
+        let colorMatrixState: DolbyVisionFrameMetadata.ColorMatrixState
+        if header.dmCompression == 0 {
+            guard let description = readSignalDescription(br) else { return nil }
+            // Read after a mapping of guessed widths without vdr_seq_info, the description may be off: neither its
+            // matrices nor its source range are taken.
+            signal = header.hasSequenceInfo ? description : SignalDescription()
+            if let matrix = signal.colorMatrix {
+                colorMatrixState = .matrix(matrix)
+            } else {
+                colorMatrixState = .defaults
+            }
+        } else {
+            // Commercial Dolby Vision streams use a single color matrix configuration; dm_compression == 1
+            // indicates reusing the previous matrix.
+            signal = SignalDescription()
+            colorMatrixState = .reusePrevious
+        }
 
         guard let numExtBlocksUE = br.getUE(), numExtBlocksUE <= 32 else { return nil }
         let numExtBlocks = Int(numExtBlocksUE)
@@ -315,10 +271,280 @@ public enum DolbyVisionRPUParser {
             let bitsRead = br.bitPos - startBit
             let totalBits = extLen * 8
             if totalBits > bitsRead {
-                guard br.getBits(totalBits - bitsRead) != nil else { return nil }
+                guard br.skipBits(totalBits - bitsRead) else { return nil }
             }
         }
 
-        return DolbyVisionFrameMetadata(sceneRefresh: sceneRefresh, l1: l1, l2Trims: l2Trims)
+        return DolbyVisionFrameMetadata(
+            sceneRefresh: sceneRefresh,
+            l1: l1,
+            l2Trims: l2Trims,
+            sourceMinPQ: signal.sourceMinPQ,
+            sourceMaxPQ: signal.sourceMaxPQ,
+            reshapingCurvesState: curvesState,
+            colorMatrixState: colorMatrixState
+        )
+    }
+
+    /// Reads the RPU type and format and, when present, `vdr_seq_info`; nil for an RPU this parser doesn't read. The
+    /// parser keeps no state between RPUs, so one without `vdr_seq_info` is read with the defaults (10-bit base layer,
+    /// 23 fraction bits, `dm_compression` 0): its curves, matrices and source range aren't taken, and with a
+    /// `dm_compression` other than the default its DM data reads wrong, mostly failing the RPU. Profile 5 and 8 streams
+    /// carry it in every RPU.
+    private static func readHeader(_ br: BitReader) -> Header? {
+        guard let rpuType = br.getBits(6), rpuType == 2 else { return nil }
+
+        guard let rpuFormat = br.getBits(11),
+            br.getBits(4) != nil,  // vdr_rpu_profile
+            br.getBits(4) != nil,  // vdr_rpu_level
+            let vdrSeqInfoPresent = br.getBits1()
+        else { return nil }
+
+        var header = Header()
+        guard vdrSeqInfoPresent != 0 else { return header }
+        header.hasSequenceInfo = true
+
+        guard br.getBits1() != nil,  // chroma_resampling_explicit_filter_flag
+            let coefficientDataType = br.getBits(2)
+        else { return nil }
+        switch coefficientDataType {
+        case 0:
+            // CCM 001 5.3.2 allows EL_bit_depth + 5 ... 32. It comes before the EL bit depth, and Profiles 5 and 8 have
+            // no EL, so the bound for the smallest (8-bit) EL is checked; 32 is also the widest fraction read.
+            guard let log2Denom = br.getUE(), (13...32).contains(log2Denom) else { return nil }
+            header.coefficientFormat = .fixedPoint(fractionBits: Int(log2Denom))
+        case 1:
+            header.coefficientFormat = .float32
+        default:
+            return nil
+        }
+        guard br.getBits(2) != nil,  // vdr_rpu_normalized_idc
+            br.getBits1() != nil,  // bl_video_full_range_flag
+            (rpuFormat & 0x700) == 0
+        else { return nil }
+
+        // The upper bits of el_bit_depth_minus8 carry ext_mapping_idc in newer streams.
+        guard let blBitDepthMinus8 = br.getUE(), blBitDepthMinus8 <= 8,
+            let elBitDepthMinus8 = br.getUE(),
+            br.getUE() != nil,  // vdr_bit_depth_minus8
+            br.getBits1() != nil,  // spatial_resampling_filter_flag
+            let dmCompression = br.getBits(3), dmCompression <= 1,
+            br.getBits1() != nil,  // el_spatial_resampling_filter_flag
+            let disableResidual = br.getBits1()
+        else { return nil }
+        header.blBitDepth = Int(blBitDepthMinus8) + 8
+        header.elBitDepth = Int(elBitDepthMinus8 & 0xFF) + 8
+        header.hasResidual = disableResidual == 0
+        header.dmCompression = dmCompression
+        // NLQ reads EL_bit_depth-bit values: an out-of-range depth leaves the rest unreadable.
+        guard !header.hasResidual || header.elBitDepth <= 16 else { return nil }
+        return header
+    }
+
+    /// Reads the mapping (`rpu_data_mapping`, and `rpu_data_nlq` with a residual) of an RPU that doesn't reuse the
+    /// previous one: the reshaping curves when the shader can apply them, `.unsupported` when they read fine but it
+    /// can't; nil when the rest of the RPU is unreadable.
+    private static func readMapping(
+        _ br: BitReader, header: Header
+    ) -> DolbyVisionFrameMetadata.ReshapingCurvesState? {
+        guard br.getUE() != nil,  // vdr_rpu_id
+            br.getUE() != nil,  // mapping_color_space
+            br.getUE() != nil  // mapping_chroma_format_idc
+        else { return nil }
+
+        // CCM 001 5.3.2: each pred_pivot_value adds to the previous pivot; normalized to the base layer's range here.
+        let pivotScale = 1.0 / Float((1 << header.blBitDepth) - 1)
+        var componentPivots: [[Float]] = []
+        for _ in 0..<3 {
+            // The shader holds 8 pieces (9 pivots) per component.
+            guard let numPivotsMinus2 = br.getUE(), numPivotsMinus2 <= 7 else { return nil }
+            var pivot: UInt32 = 0
+            var pivots: [Float] = []
+            for _ in 0..<(Int(numPivotsMinus2) + 2) {
+                guard let delta = br.getBits(header.blBitDepth) else { return nil }
+                pivot += delta
+                pivots.append(Float(pivot) * pivotScale)
+            }
+            componentPivots.append(pivots)
+        }
+
+        if header.hasResidual {
+            // nlq_method_idc 0 (NLQ_LINEAR_DZ) is the only one defined; its two pivots bound the residual.
+            guard let nlqMethodIdc = br.getBits(3), nlqMethodIdc == 0,
+                br.getBits(header.blBitDepth) != nil,
+                br.getBits(header.blBitDepth) != nil
+            else { return nil }
+        }
+
+        guard br.getUE() != nil,  // num_x_partitions_minus1
+            br.getUE() != nil  // num_y_partitions_minus1
+        else { return nil }
+
+        var curves: [DolbyVisionFrameMetadata.ReshapingCurve] = []
+        for (component, pivots) in componentPivots.enumerated() {
+            var pieces: [MappingPiece] = []
+            for _ in 1..<pivots.count {
+                guard let piece = readMappingPiece(br, format: header.coefficientFormat) else { return nil }
+                pieces.append(piece)
+            }
+            if let curve = reshapingCurve(component: component, pivots: pivots, pieces: pieces) {
+                curves.append(curve)
+            }
+        }
+
+        if header.hasResidual {
+            // rpu_data_nlq, per component: nlq_offset, hdr_in_max, linear_deadzone_slope and linear_deadzone_threshold
+            // (semantics in CCM 001 5.3.4).
+            for _ in 0..<3 {
+                guard br.getBits(header.elBitDepth) != nil,
+                    skipUnsignedCoefficient(br, format: header.coefficientFormat),
+                    skipUnsignedCoefficient(br, format: header.coefficientFormat),
+                    skipUnsignedCoefficient(br, format: header.coefficientFormat)
+                else { return nil }
+            }
+            // The picture needs the enhancement layer's residual, which isn't decoded: the base layer's reshaping
+            // alone would be wrong.
+            return .unsupported
+        }
+        // Without vdr_seq_info the bit depth and fraction bits are guessed: the curves may be wrong.
+        return curves.count == 3 && header.hasSequenceInfo ? .curves(curves) : .unsupported
+    }
+
+    /// Reads one piece of a component's mapping; nil for one this parser can't read (linear interpolation, an order
+    /// or `mapping_idc` CCM 001 doesn't define), which leaves the bit position, so the rest of the RPU, unknown.
+    private static func readMappingPiece(_ br: BitReader, format: Header.CoefficientFormat) -> MappingPiece? {
+        guard let mappingIdc = br.getUE() else { return nil }
+        switch mappingIdc {
+        case 0:
+            guard let polyOrderMinus1 = br.getUE(), polyOrderMinus1 <= 1 else { return nil }
+            if polyOrderMinus1 == 0 {
+                guard let linearInterpolation = br.getBits1(), linearInterpolation == 0 else { return nil }
+            }
+            var coefficients = SIMD3<Float>.zero
+            for i in 0...(Int(polyOrderMinus1) + 1) {
+                guard let coefficient = readCoefficient(br, format: format) else { return nil }
+                coefficients[i] = coefficient
+            }
+            return .polynomial(coefficients)
+        case 1:
+            guard let mmrOrderMinus1 = br.getBits(2), mmrOrderMinus1 <= 2,
+                let constant = readCoefficient(br, format: format)
+            else { return nil }
+            let order = Int(mmrOrderMinus1) + 1
+            var coefficients: [Float] = []
+            for _ in 0..<(order * 7) {
+                guard let coefficient = readCoefficient(br, format: format) else { return nil }
+                coefficients.append(coefficient)
+            }
+            return .mmr(DolbyVisionFrameMetadata.MMRPiece(order: order, constant: constant, coefs: coefficients))
+        default:
+            return nil
+        }
+    }
+
+    /// The curve of `component` the shader applies; nil for a mapping it can't: the shader reshapes I with polynomial
+    /// pieces only, and P / T with polynomial pieces or one MMR piece spanning the component. A mapping of zero
+    /// polynomials is no curve either, nor one with a coefficient out of CCM 001's range (NaN included), which could
+    /// overflow the shader's sums into a NaN it can't clamp away.
+    private static func reshapingCurve(
+        component: Int, pivots: [Float], pieces: [MappingPiece]
+    ) -> DolbyVisionFrameMetadata.ReshapingCurve? {
+        if case .mmr(let mmr) = pieces.first, pieces.count == 1, component > 0 {
+            guard ([mmr.constant] + mmr.coefs).allSatisfy(isValidMMRCoefficient) else { return nil }
+            return DolbyVisionFrameMetadata.ReshapingCurve(pivots: pivots, mmr: mmr)
+        }
+        var polynomials: [SIMD3<Float>] = []
+        for piece in pieces {
+            guard case .polynomial(let coefficients) = piece,
+                [coefficients.x, coefficients.y, coefficients.z].allSatisfy(isValidPolynomialCoefficient)
+            else { return nil }
+            polynomials.append(coefficients)
+        }
+        guard polynomials.contains(where: { $0 != .zero }) else { return nil }
+        return DolbyVisionFrameMetadata.ReshapingCurve(pivots: pivots, polyCoeffs: polynomials)
+    }
+
+    /// CCM 001 5.3.3.2: `poly_coef_int` is -64 ... 63, so a coefficient is in [-64, 64); false for NaN.
+    private static func isValidPolynomialCoefficient(_ value: Float) -> Bool {
+        value >= -64 && value < 64
+    }
+
+    /// CCM 001 5.3.3.3: `mmr_constant_int` and `mmr_coef_int` are -65 536 ... 65 535; false for NaN.
+    private static func isValidMMRCoefficient(_ value: Float) -> Bool {
+        value >= -65_536 && value < 65_536
+    }
+
+    /// A signed mapping coefficient: CCM 001 5.3.3, `(int << coefficient_log2_denom) + fraction`.
+    private static func readCoefficient(_ br: BitReader, format: Header.CoefficientFormat) -> Float? {
+        switch format {
+        case .fixedPoint(let fractionBits):
+            guard let integer = br.getSE(), let fraction = br.getBits(fractionBits) else { return nil }
+            return Float(integer) + Float(fraction) / Float(UInt64(1) << fractionBits)
+        case .float32:
+            return br.getBits(32).map { Float(bitPattern: $0) }
+        }
+    }
+
+    /// Skips an unsigned coefficient (the NLQ ones): an unsigned integer part, else as `readCoefficient`.
+    private static func skipUnsignedCoefficient(_ br: BitReader, format: Header.CoefficientFormat) -> Bool {
+        switch format {
+        case .fixedPoint(let fractionBits):
+            br.getUE() != nil && br.skipBits(fractionBits)
+        case .float32:
+            br.skipBits(32)
+        }
+    }
+
+    /// Reads the DM data's signal description (`dm_compression` 0): the colour matrices, the signal's coding and the
+    /// source display's PQ range (semantics in CCM 001 6.2.2; its byte layout, 6.2.1, is not the RPU's).
+    private static func readSignalDescription(_ br: BitReader) -> SignalDescription? {
+        // ycc_to_rgb_coef: Short, 1 = 8192; ycc_to_rgb_offset: unsigned 32-bit, in 2^28 units for Profile 5 (Profile 4
+        // uses 2^30; the matrix is applied to Profile 5 only); rgb_to_lms_coef: Short, 1 = 16384.
+        guard let yccToRgb = readMatrix(br, scale: 1.0 / 8192.0) else { return nil }
+        var yccToRgbOffset = SIMD3<Float>.zero
+        for i in 0..<3 {
+            guard let offset = br.getBits(32) else { return nil }
+            yccToRgbOffset[i] = Float(offset) / Float(UInt64(1) << 28)
+        }
+        guard let rgbToLms = readMatrix(br, scale: 1.0 / 16384.0),
+            br.getBits(16) != nil,  // signal_eotf
+            br.getBits(16) != nil,  // signal_eotf_param0
+            br.getBits(16) != nil,  // signal_eotf_param1
+            br.getBits(32) != nil,  // signal_eotf_param2
+            br.getBits(5) != nil,  // signal_bit_depth
+            br.getBits(2) != nil,  // signal_color_space
+            br.getBits(2) != nil,  // signal_chroma_format
+            br.getBits(2) != nil,  // signal_full_range_flag
+            let sourceMinPQ = br.getBits(12),
+            let sourceMaxPQ = br.getBits(12),
+            br.getBits(10) != nil  // source_diagonal
+        else { return nil }
+
+        var description = SignalDescription()
+        // An all-zero matrix is no matrix: the defaults stand.
+        let zero = simd_float3x3()
+        if yccToRgb != zero && rgbToLms != zero {
+            description.colorMatrix = DolbyVisionFrameMetadata.ColorMatrix(
+                yccToRgb: yccToRgb, yccToRgbOffset: yccToRgbOffset, rgbToLms: rgbToLms)
+        }
+        if sourceMaxPQ > 0 {
+            description.sourceMinPQ = UInt16(sourceMinPQ)
+            description.sourceMaxPQ = UInt16(sourceMaxPQ)
+        }
+        return description
+    }
+
+    /// Reads a 3×3 matrix of signed 16-bit coefficients, row by row, scaled by `scale`.
+    private static func readMatrix(_ br: BitReader, scale: Float) -> simd_float3x3? {
+        var rows: [SIMD3<Float>] = []
+        for _ in 0..<3 {
+            var row = SIMD3<Float>.zero
+            for i in 0..<3 {
+                guard let value = br.getSBits(16) else { return nil }
+                row[i] = Float(value) * scale
+            }
+            rows.append(row)
+        }
+        return simd_float3x3(rows: rows)
     }
 }

@@ -4,6 +4,7 @@ import Foundation
 import Metal
 import QuartzCore
 import os
+import simd
 
 public struct ToneMapUniforms: Sendable {
     public var targetNits: Float = 203.0  // 203 nits standard ITU SDR reference
@@ -20,12 +21,15 @@ public struct ToneMapUniforms: Sendable {
     public var bitDepth: UInt32 = 10  // 8 or 10
     public var isFullRange: UInt32 = 0  // 0: Video Range, 1: Full Range
     public var colorSpaceMode: UInt32 = 0  // 0: Standard YCbCr BT.2020, 1: BT.709, 2: Dolby Vision IPT / ICtCp
-    public var hasDoViL2Trim: UInt32 = 0  // 0: none, 1: authored L2 SDR trim active
-    public var doViTrimSlope: Float = 1.0
-    public var doViTrimOffset: Float = 0.0
-    public var doViTrimPower: Float = 1.0
-    public var doViTrimSaturation: Float = 0.0  // saturation gain, neutral 0
-    public var doViTrimTargetNits: Float = 100.0  // peak of the display the L2 trim was authored for
+    public var hasDoviL2Trim: UInt32 = 0  // 0: none, 1: authored L2 SDR trim active
+    public var doviTrimSlope: Float = 1.0
+    public var doviTrimOffset: Float = 0.0
+    public var doviTrimPower: Float = 1.0
+    public var doviTrimSaturation: Float = 0.0  // saturation gain, neutral 0
+    public var doviTrimTargetNits: Float = 100.0  // peak of the display the L2 trim was authored for
+
+    /// Dolby Vision Profile 5 reshaping and colour matrices; 16-byte aligned, at byte offset 80.
+    public var doviReshaping = DolbyVisionReshaping()
 
     public init(
         targetNits: Float = 203.0,
@@ -42,12 +46,12 @@ public struct ToneMapUniforms: Sendable {
         bitDepth: UInt32 = 10,
         isFullRange: UInt32 = 0,
         colorSpaceMode: UInt32 = 0,
-        hasDoViL2Trim: UInt32 = 0,
-        doViTrimSlope: Float = 1.0,
-        doViTrimOffset: Float = 0.0,
-        doViTrimPower: Float = 1.0,
-        doViTrimSaturation: Float = 0.0,
-        doViTrimTargetNits: Float = 100.0
+        hasDoviL2Trim: UInt32 = 0,
+        doviTrimSlope: Float = 1.0,
+        doviTrimOffset: Float = 0.0,
+        doviTrimPower: Float = 1.0,
+        doviTrimSaturation: Float = 0.0,
+        doviTrimTargetNits: Float = 100.0
     ) {
         self.targetNits = targetNits
         self.sourcePeakNits = sourcePeakNits
@@ -63,12 +67,12 @@ public struct ToneMapUniforms: Sendable {
         self.bitDepth = bitDepth
         self.isFullRange = isFullRange
         self.colorSpaceMode = colorSpaceMode
-        self.hasDoViL2Trim = hasDoViL2Trim
-        self.doViTrimSlope = doViTrimSlope
-        self.doViTrimOffset = doViTrimOffset
-        self.doViTrimPower = doViTrimPower
-        self.doViTrimSaturation = doViTrimSaturation
-        self.doViTrimTargetNits = doViTrimTargetNits
+        self.hasDoviL2Trim = hasDoviL2Trim
+        self.doviTrimSlope = doviTrimSlope
+        self.doviTrimOffset = doviTrimOffset
+        self.doviTrimPower = doviTrimPower
+        self.doviTrimSaturation = doviTrimSaturation
+        self.doviTrimTargetNits = doviTrimTargetNits
     }
 }
 

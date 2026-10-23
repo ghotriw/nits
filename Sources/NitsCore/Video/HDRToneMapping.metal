@@ -27,6 +27,22 @@ vertex VertexOutput hdrVertexShader(uint vertexID [[vertex_id]], constant float4
     return out;
 }
 
+// Dolby Vision Profile 5 reshaping (the RPU's curves per I / P / T component) and colour matrices
+// (`ToneMapUniforms.DolbyVisionReshaping` in Swift). The defaults are IPT-PQ-c2 without reshaping.
+struct DolbyVisionReshaping {
+    uint isActive;                       // 1: the curves reshape the decoded codewords; 0: normalize them by range
+    float3x3 iptToLms;                   // IPT -> LMS': the RPU's ycc_to_rgb_matrix, else IPT-PQ-c2's
+    float3 iptOffset;                    // subtracted from the reshaped I / P / T (ycc_to_rgb_offset)
+    float3x3 lmsToRgb;                   // LMS -> BT.2020 linear RGB, from the RPU's rgb_to_lms_matrix when present
+    uint3 pieceCounts;                   // polynomial pieces of I, P, T; 0 for an MMR component
+    uint3 mmrOrders;                     // MMR order of P (.y) and T (.z); 0 for a polynomial component
+    float3 mmrConstants;                 // MMR constant of P (.y) and T (.z)
+    float3 pivotMax;                     // upper end of each component's curve
+    float4 pivots[3][2];                 // the 8 pivots of each component
+    float4 polyCoeffs[3][8];             // (c0, c1, c2, 0) of each piece of each component
+    float4 mmrCoeffs[2][6];              // MMR coefficients of P and T: 7 per order
+};
+
 struct ToneMapUniforms {
     float targetNits;                    // 203.0
     float sourcePeakNits;                // 1000.0
@@ -42,12 +58,13 @@ struct ToneMapUniforms {
     uint bitDepth;                       // 8 or 10
     uint isFullRange;                    // 0: Video Range, 1: Full Range
     uint colorSpaceMode;                 // 0: Standard YCbCr BT.2020, 1: BT.709, 2: Dolby Vision IPT / ICtCp
-    uint hasDoViL2Trim;                  // 0: none, 1: authored L2 SDR trim active
-    float doViTrimSlope;                 // L2 slope
-    float doViTrimOffset;                // L2 offset
-    float doViTrimPower;                 // L2 power
-    float doViTrimSaturation;            // L2 saturation gain
-    float doViTrimTargetNits;            // L2 target display peak (~100 nits)
+    uint hasDoviL2Trim;                  // 0: none, 1: authored L2 SDR trim active
+    float doviTrimSlope;                 // L2 slope
+    float doviTrimOffset;                // L2 offset
+    float doviTrimPower;                 // L2 power
+    float doviTrimSaturation;            // L2 saturation gain
+    float doviTrimTargetNits;            // L2 target display peak (~100 nits)
+    DolbyVisionReshaping doviReshaping;  // Dolby Vision Profile 5 reshaping and colour matrices
 };
 
 // PQ (SMPTE ST 2084) electro-optical transfer functions (EOTF / Inverse EOTF)
@@ -116,71 +133,113 @@ float3 nitsFromYUV(float y, float2 uv, constant ToneMapUniforms &uniforms) {
     return pqToNits(clamp(nonlinear2020, 0.0, 1.0));
 }
 
-// Dolby Vision Profile 5: IPTc2 / ICtCp -> Linear BT.2020 Nits
-// Plane 0 is I (Intensity), Plane 1 is P (Protan) and T (Tritan)
-float3 nitsFromIPT(float y, float2 uv, constant ToneMapUniforms &uniforms) {
-    float I_norm, Ct_norm, Cp_norm;
-    if (uniforms.bitDepth == 8) {
-        if (uniforms.isFullRange == 1) {
-            I_norm  = y;
-            Ct_norm = uv.x - (128.0 / 255.0);
-            Cp_norm = uv.y - (128.0 / 255.0);
-        } else {
-            I_norm  = (y - (16.0 / 255.0)) / (219.0 / 255.0);
-            Ct_norm = (uv.x - (128.0 / 255.0)) / (224.0 / 255.0);
-            Cp_norm = (uv.y - (128.0 / 255.0)) / (224.0 / 255.0);
-        }
-    } else {
-        // 10-bit MSB normalized inputs in .r16Unorm / .rg16Unorm
-        if (uniforms.isFullRange == 1) {
-            I_norm  = y;
-            Ct_norm = uv.x - (32768.0 / 65535.0);
-            Cp_norm = uv.y - (32768.0 / 65535.0);
-        } else {
-            // Video range (SMPTE RP 2098-1 / ITU-R BT.2100-2 ICtCp)
-            I_norm  = (y - (4096.0 / 65535.0)) / (56064.0 / 65535.0);
-            Ct_norm = (uv.x - (32768.0 / 65535.0)) / (57344.0 / 65535.0);
-            Cp_norm = (uv.y - (32768.0 / 65535.0)) / (57344.0 / 65535.0);
+// One component's piecewise polynomial curve (ETSI GS CCM 001 5.4.2.3.2) of `x`, the codeword normalized to [0, 1].
+float evalDoviCurve(
+    float x,
+    uint numPieces,
+    constant float4 *pivotVectors,
+    float pivotMax,
+    constant float4 *coeffs
+) {
+    if (numPieces == 0) {
+        return clamp(x, 0.0, 1.0);
+    }
+    constant float *pivots = (constant float *)pivotVectors;
+    float xc = clamp(x, pivots[0], pivotMax);
+    uint piece = 0;
+    for (uint i = 1; i < numPieces && i < 8; ++i) {
+        if (xc >= pivots[i]) {
+            piece = i;
         }
     }
+    float4 c = coeffs[piece];
+    return clamp(c.x + xc * (c.y + xc * c.z), 0.0, 1.0);
+}
 
-    // Matrix IPT / ICtCp -> LMS' (Non-linear LMS, Column-major in Metal)
-    // Mathematical row-major transformation:
-    // ⎡ L' ⎤   ⎡ 1.0  0.0059148838  0.11175553 ⎤ ⎡ I  ⎤
-    // ⎢ M' ⎥ = ⎢ 1.0 -0.0051712496 -0.10828198 ⎥ ⎢ Ct ⎥
-    // ⎣ S' ⎦   ⎣ 1.0 -0.8024930600  0.00787494 ⎦ ⎣ Cp ⎦
-    //
-    // In Metal column-major float3x3(col0, col1, col2):
-    // col0 = coefficients of I  = ( 1.0,  1.0,  1.0)
-    // col1 = coefficients of Ct = ( 0.0059148838, -0.0051712496, -0.8024930600)
-    // col2 = coefficients of Cp = ( 0.1117555300, -0.1082819800,  0.0078749400)
-    float3x3 m_ipt_to_lms = float3x3(
-        float3(1.0, 1.0, 1.0),                                       // Column 0 (I)
-        float3(0.0059148838, -0.0051712496, -0.8024930600),         // Column 1 (Ct)
-        float3(0.1117555300, -0.1082819800,  0.0078749400)          // Column 2 (Cp)
-    );
-    float3 lms_prime = m_ipt_to_lms * float3(I_norm, Ct_norm, Cp_norm);
+// Multivariate Multiple Regression (MMR) chroma reshaping (ETSI GS CCM 001 5.4.2.3.3)
+float evalDoviMMR(
+    float3 s,
+    uint order,
+    float mmrConstant,
+    constant float4 *mmrCoeffs
+) {
+    float res = mmrConstant;
+    float s0 = s.x, s1 = s.y, s2 = s.z;
+    float s0_k = s0, s1_k = s1, s2_k = s2;
+    constant float *coefs = (constant float *)mmrCoeffs;
+    for (uint k = 0; k < order && k < 3; ++k) {
+        float s01 = s0_k * s1_k;
+        float s02 = s0_k * s2_k;
+        float s12 = s1_k * s2_k;
+        float s012 = s01 * s2_k;
+        uint base = k * 7;
+        res += coefs[base + 0] * s0_k;
+        res += coefs[base + 1] * s1_k;
+        res += coefs[base + 2] * s2_k;
+        res += coefs[base + 3] * s01;
+        res += coefs[base + 4] * s02;
+        res += coefs[base + 5] * s12;
+        res += coefs[base + 6] * s012;
+        s0_k *= s0;
+        s1_k *= s1;
+        s2_k *= s2;
+    }
+    return clamp(res, 0.0, 1.0);
+}
 
-    // Apply ST 2084 PQ Inverse EOTF (LMS' -> Linear LMS optical)
-    float3 lms_linear = pqToNits(clamp(lms_prime, 0.0, 1.0));
+// The reshaped component `c` (1: P, 2: T) of `raw`: by MMR when it has an order, else by its polynomial curve.
+float reshapeDoviChroma(float3 raw, uint c, constant DolbyVisionReshaping &r) {
+    if (r.mmrOrders[c] != 0) {
+        return evalDoviMMR(raw, r.mmrOrders[c], r.mmrConstants[c], r.mmrCoeffs[c - 1]);
+    }
+    return evalDoviCurve(raw[c], r.pieceCounts[c], r.pivots[c], r.pivotMax[c], r.polyCoeffs[c]);
+}
 
-    // Matrix LMS -> BT.2020 Linear RGB (Column-major in Metal)
-    // Mathematical row-major transformation:
-    // ⎡ R ⎤   ⎡  3.6841103 -2.9469796  0.2628693 ⎤ ⎡ L ⎤
-    // ⎢ G ⎥ = ⎢ -0.7183616  1.7947118 -0.0763502 ⎥ ⎢ M ⎥
-    // ⎣ B ⎦   ⎣  0.0560867 -0.1706692  1.1145825 ⎦ ⎣ S ⎦
-    //
-    // In Metal column-major float3x3(col0, col1, col2):
-    // col0 = coefficients of L = ( 3.6841103, -0.7183616,  0.0560867)
-    // col1 = coefficients of M = (-2.9469796,  1.7947118, -0.1706692)
-    // col2 = coefficients of S = ( 0.2628693, -0.0763502,  1.1145825)
-    float3x3 m_lms_to_bt2020 = float3x3(
-        float3( 3.6841103, -0.7183616,  0.0560867),                 // Column 0 (L)
-        float3(-2.9469796,  1.7947118, -0.1706692),                 // Column 1 (M)
-        float3( 0.2628693, -0.0763502,  1.1145825)                  // Column 2 (S)
-    );
-    float3 rgb2020 = m_lms_to_bt2020 * lms_linear;
-    return max(rgb2020, 0.0);
+// Dolby Vision Profile 5: IPT-PQ-c2 -> Linear BT.2020 Nits
+// Plane 0 is I (Intensity), Plane 1 is P (Protan) and T (Tritan)
+float3 nitsFromIPT(float y, float2 uv, constant ToneMapUniforms &uniforms) {
+    constant DolbyVisionReshaping &r = uniforms.doviReshaping;
+    float3 ipt;
+    if (r.isActive != 0) {
+        float3 raw = float3(y, uv.x, uv.y);
+        if (uniforms.bitDepth != 8) {
+            // 10-bit MSB-aligned P010 in .r16Unorm / .rg16Unorm: 1023 << 6 = 65472
+            raw = clamp(raw * (65535.0 / 65472.0), 0.0, 1.0);
+        }
+        float reshapedI = evalDoviCurve(raw.x, r.pieceCounts.x, r.pivots[0], r.pivotMax.x, r.polyCoeffs[0]);
+        ipt = float3(reshapedI, reshapeDoviChroma(raw, 1, r), reshapeDoviChroma(raw, 2, r)) - r.iptOffset;
+    } else {
+        // Without curves the base layer is normalized by its range and centred by fixed constants, not by the RPU's
+        // ycc_to_rgb_offset, which applies to the reshaped signal (an RPU matrix still applies: an approximation).
+        float I_norm, P_norm, T_norm;
+        if (uniforms.bitDepth == 8) {
+            if (uniforms.isFullRange == 1) {
+                I_norm = y;
+                P_norm = uv.x - (128.0 / 255.0);
+                T_norm = uv.y - (128.0 / 255.0);
+            } else {
+                I_norm = (y - (16.0 / 255.0)) / (219.0 / 255.0);
+                P_norm = (uv.x - (128.0 / 255.0)) / (224.0 / 255.0);
+                T_norm = (uv.y - (128.0 / 255.0)) / (224.0 / 255.0);
+            }
+        } else {
+            // 10-bit MSB normalized inputs in .r16Unorm / .rg16Unorm
+            if (uniforms.isFullRange == 1) {
+                I_norm = y * (65535.0 / 65472.0);
+                P_norm = uv.x * (65535.0 / 65472.0) - (512.0 / 1023.0);
+                T_norm = uv.y * (65535.0 / 65472.0) - (512.0 / 1023.0);
+            } else {
+                I_norm = (y - (4096.0 / 65535.0)) / (56064.0 / 65535.0);
+                P_norm = (uv.x - (32768.0 / 65535.0)) / (57344.0 / 65535.0);
+                T_norm = (uv.y - (32768.0 / 65535.0)) / (57344.0 / 65535.0);
+            }
+        }
+        ipt = float3(I_norm, P_norm, T_norm);
+    }
+
+    // IPT -> LMS' (non-linear), PQ EOTF -> linear LMS, LMS -> BT.2020 linear RGB
+    float3 lms_linear = pqToNits(clamp(r.iptToLms * ipt, 0.0, 1.0));
+    return max(r.lmsToRgb * lms_linear, 0.0);
 }
 
 // HLG (ARIB STD-B67 / ITU-R BT.2100) -> Optical Nits
@@ -385,21 +444,21 @@ float3 sampleAndToneMap(
     // its peak), the SOP curve is applied to its PQ code normalized to that peak, and the result is read back at our
     // white. Neutral trims (1, 0, 1) leave the base curve unchanged. The curve maps the max-RGB intensity, like the
     // base curve, and RGB is scaled by its ratio: per channel, a power or offset would shift hues.
-    if (uniforms.hasDoViL2Trim == 1) {
+    if (uniforms.hasDoviL2Trim == 1) {
         float3 base = clamp(mapped2020, 0.0, 1.0);
         float baseMax = max(base.r, max(base.g, base.b));
-        float trimPeakNits = max(uniforms.doViTrimTargetNits, 1.0);
+        float trimPeakNits = max(uniforms.doviTrimTargetNits, 1.0);
         float trimPeakPQ = nitsToPQ(float3(trimPeakNits)).x;
         float basePQ = nitsToPQ(float3(baseMax * trimPeakNits)).x / trimPeakPQ;
-        float s = max(uniforms.doViTrimSlope, 0.001);
-        float o = uniforms.doViTrimOffset;
-        float p = max(uniforms.doViTrimPower, 0.001);
+        float s = max(uniforms.doviTrimSlope, 0.001);
+        float o = uniforms.doviTrimOffset;
+        float p = max(uniforms.doviTrimPower, 0.001);
         float trimmedPQ = clamp(pow(max(basePQ * s + o, 1e-6), p), 0.0, 1.0);
         float trimmedMax = pqToNits(float3(trimmedPQ * trimPeakPQ)).x / trimPeakNits;
         float3 trimmed = baseMax > 1e-6 ? base * (trimmedMax / baseMax) : float3(trimmedMax);
 
-        if (uniforms.doViTrimSaturation != 0.0) {
-            float satScale = max(1.0 + uniforms.doViTrimSaturation, 0.0);
+        if (uniforms.doviTrimSaturation != 0.0) {
+            float satScale = max(1.0 + uniforms.doviTrimSaturation, 0.0);
             float luma = dot(trimmed, float3(0.2627, 0.6780, 0.0593));
             trimmed = mix(float3(luma), trimmed, satScale);
         }

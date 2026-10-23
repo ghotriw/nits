@@ -509,18 +509,18 @@ extension PlayerEngine {
 
     public func renderCurrentFrame(at explicitTime: CMTime?) {
         let currentSyncTime = explicitTime ?? synchronizer.currentTime()
-        let buffer: CVPixelBuffer?
-        if currentSyncTime.isValid, let b = frameQueue.getLatestFrame(forSyncTime: currentSyncTime) {
-            buffer = b
-        } else {
-            buffer = frameQueue.getLastRenderedBuffer()
+        if currentSyncTime.isValid {
+            // Makes the frame at the clock the last rendered one, with its RPU.
+            _ = frameQueue.getLatestFrame(forSyncTime: currentSyncTime)
         }
-
-        guard let buffer else { return }
+        guard let frame = frameQueue.getLastRenderedFrame() else { return }
         if activeRenderMode == .metalToneMap {
-            metalRenderer?.render(pixelBuffer: buffer)
+            // The frame's own curve, from its L1 as is: tone mapping may have last resolved another frame's (under
+            // `.system` none), so there is no playback to smooth from.
+            _ = toneMapping.applyFrame(doviMetadata: frame.doviMetadata, restartsSmoothing: true)
+            metalRenderer?.render(pixelBuffer: frame.pixelBuffer)
         } else {
-            presentToDisplayLayer(pixelBuffer: buffer)
+            presentToDisplayLayer(pixelBuffer: frame.pixelBuffer)
         }
     }
 
@@ -537,7 +537,7 @@ extension PlayerEngine {
     /// `doviMetadata`, when present, drives dynamic tone mapping so direct renders (seek preview, frame
     /// stepping) match the live playback path for Dolby Vision content.
     public func renderDirect(pixelBuffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata? = nil) {
-        frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts)
+        frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts, doviMetadata: doviMetadata)
         if activeRenderMode == .metalToneMap {
             _ = toneMapping.applyFrame(doviMetadata: doviMetadata)
             metalRenderer?.render(pixelBuffer: pixelBuffer)

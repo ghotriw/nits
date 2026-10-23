@@ -45,6 +45,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let doNotDisplay: Bool
         /// `MediaDemuxer.exactSeekTargetAttachmentKey`: overrides `doNotDisplay` once the frame (and field) PTS is known.
         let exactSeekTarget: Double?
+        let doviMetadata: DolbyVisionFrameMetadata?
     }
     private var inFlightMetadata: [UInt: PacketMeta] = [:]
     private var nextPacketSerial: UInt = 1
@@ -250,6 +251,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let duration: CMTime
         let doNotDisplay: Bool
         let exactSeekTarget: Double?
+        let doviMetadata: DolbyVisionFrameMetadata?
     }
 
     public func decode(sampleBuffer: CMSampleBuffer) {
@@ -285,6 +287,14 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             exactSeekTarget = first[MediaDemuxer.exactSeekTargetAttachmentKey] as? Double
         }
 
+        var doviMetadata: DolbyVisionFrameMetadata? = nil
+        if let box = CMGetAttachment(
+            sampleBuffer, key: MediaDemuxer.dolbyVisionMetadataAttachmentKey as CFString, attachmentModeOut: nil)
+            as? DolbyVisionMetadataBox
+        {
+            doviMetadata = box.metadata
+        }
+
         var receivedFrames: [RawReceivedFrame] = []
         var currentGen: UInt64 = 0
 
@@ -304,7 +314,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let serial = nextPacketSerial
         nextPacketSerial &+= 1
         inFlightMetadata[serial] = PacketMeta(
-            duration: duration, doNotDisplay: doNotDisplay, exactSeekTarget: exactSeekTarget)
+            duration: duration, doNotDisplay: doNotDisplay, exactSeekTarget: exactSeekTarget,
+            doviMetadata: doviMetadata)
         // Packets that never produce a frame (dropped, skip_frame) leave entries behind: keep the newest.
         if inFlightMetadata.count > 120 {
             for k in inFlightMetadata.keys.sorted().prefix(inFlightMetadata.count - 60) {
@@ -354,7 +365,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                             pts: timing.pts,
                             duration: timing.duration,
                             doNotDisplay: timing.doNotDisplay,
-                            exactSeekTarget: timing.exactSeekTarget
+                            exactSeekTarget: timing.exactSeekTarget,
+                            doviMetadata: timing.doviMetadata
                         )
                     )
                 } else {
@@ -410,7 +422,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
                             pts: timing.pts,
                             duration: timing.duration,
                             doNotDisplay: timing.doNotDisplay,
-                            exactSeekTarget: timing.exactSeekTarget
+                            exactSeekTarget: timing.exactSeekTarget,
+                            doviMetadata: timing.doviMetadata
                         )
                     )
                 } else {
@@ -506,7 +519,8 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
     // MARK: - Internal Conversion & Frame Construction
 
     private func extractTimingAndMetadata(from avFrame: UnsafeMutablePointer<AVFrame>) -> (
-        pts: CMTime, duration: CMTime, doNotDisplay: Bool, exactSeekTarget: Double?
+        pts: CMTime, duration: CMTime, doNotDisplay: Bool, exactSeekTarget: Double?,
+        doviMetadata: DolbyVisionFrameMetadata?
     ) {
         var rawPts = avFrame.pointee.best_effort_timestamp
         if rawPts == Int64.min || rawPts < 0 {
@@ -525,12 +539,14 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         var frameDuration: CMTime = .invalid
         var frameDoNotDisplay: Bool = false
         var exactSeekTarget: Double?
+        var doviMetadata: DolbyVisionFrameMetadata?
 
         let serial = UInt(bitPattern: avFrame.pointee.opaque)
         if let found = serial != 0 ? inFlightMetadata.removeValue(forKey: serial) : nil {
             frameDuration = found.duration
             frameDoNotDisplay = found.doNotDisplay
             exactSeekTarget = found.exactSeekTarget
+            doviMetadata = found.doviMetadata
             if let target = found.exactSeekTarget, framePts.isValid {
                 frameDoNotDisplay = framePts.seconds < target
             }
@@ -547,7 +563,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             lastFrameEnd = frameDuration.isValid ? framePts + frameDuration : .invalid
         }
 
-        return (framePts, frameDuration, frameDoNotDisplay, exactSeekTarget)
+        return (framePts, frameDuration, frameDoNotDisplay, exactSeekTarget, doviMetadata)
     }
 
     private func getOrCreatePool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
@@ -603,7 +619,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         let passThrough = [
             DecodedFrame(
                 pixelBuffer: pixelBuffer, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
-                generation: generation)
+                doviMetadata: raw.doviMetadata, generation: generation)
         ]
         guard let frame = raw.managedFrame.rawPointer, (frame.pointee.flags & AV_FRAME_FLAG_INTERLACED) != 0 else {
             return passThrough
@@ -642,7 +658,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             return [
                 DecodedFrame(
                     pixelBuffer: first, pts: raw.pts, duration: raw.duration, doNotDisplay: raw.doNotDisplay,
-                    generation: generation)
+                    doviMetadata: raw.doviMetadata, generation: generation)
             ]
         }
         guard let output = deinterlacer.deinterlace(pixelBuffer, previous: previous, keeping: fields),
@@ -657,16 +673,16 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
             return [
                 DecodedFrame(
                     pixelBuffer: output.frames[0], pts: raw.pts, duration: raw.duration,
-                    doNotDisplay: secondDoNotDisplay, generation: generation)
+                    doNotDisplay: secondDoNotDisplay, doviMetadata: raw.doviMetadata, generation: generation)
             ]
         }
         return [
             DecodedFrame(
                 pixelBuffer: output.frames[0], pts: raw.pts, duration: durations.first,
-                doNotDisplay: raw.doNotDisplay, generation: generation),
+                doNotDisplay: raw.doNotDisplay, doviMetadata: raw.doviMetadata, generation: generation),
             DecodedFrame(
                 pixelBuffer: output.frames[1], pts: secondPts, duration: durations.second,
-                doNotDisplay: secondDoNotDisplay, generation: generation),
+                doNotDisplay: secondDoNotDisplay, doviMetadata: raw.doviMetadata, generation: generation),
         ]
     }
 

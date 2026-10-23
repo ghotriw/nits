@@ -330,8 +330,13 @@ public final class MediaDemuxer: @unchecked Sendable {
     public var displayAspectRatio: Double {
         RationalAspectRatio.computeDisplayAspectRatio(width: width, height: height, sar: sampleAspectRatio)
     }
-    public internal(set) var maxPeakNits: Float = 1000.0
+    /// The static peak: MaxCLL, else the mastering display's; 1000 when the stream carries neither (or only zeros).
+    public internal(set) var maxPeakNits: Float = 1000.0 {
+        didSet { hasStaticPeak = true }
+    }
     public internal(set) var maxFallNits: Float = 0.0
+    /// Whether `maxPeakNits` comes from the stream rather than the default: a CLL block of 0 / 0 is no peak.
+    public private(set) var hasStaticPeak = false
     public internal(set) var colorPrimaries: CFString = kCVImageBufferColorPrimaries_ITU_R_709_2
     public internal(set) var transferFunction: CFString = kCVImageBufferTransferFunction_ITU_R_709_2
     public internal(set) var yCbCrMatrix: CFString = kCVImageBufferYCbCrMatrix_ITU_R_709_2

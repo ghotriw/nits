@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// Reference class box for attaching Dolby Vision metadata to CMSampleBuffer attachments.
 public final class DolbyVisionMetadataBox: NSObject, Sendable {
@@ -12,6 +13,48 @@ public final class DolbyVisionMetadataBox: NSObject, Sendable {
 
 /// Extracted Dolby Vision dynamic metadata per-frame from RPU (NAL unit 62).
 public struct DolbyVisionFrameMetadata: Sendable, Equatable {
+    /// Multivariate Multiple Regression (MMR) parameters for higher-order chroma reshaping (ETSI GS CCM 001).
+    public struct MMRPiece: Sendable, Equatable {
+        public let order: Int  // 1, 2, or 3
+        public let constant: Float
+        public let coefs: [Float]  // 7 * order coefficients
+
+        public init(order: Int, constant: Float, coefs: [Float]) {
+            self.order = order
+            self.constant = constant
+            self.coefs = coefs
+        }
+    }
+
+    /// Reshaping curve for one base-layer component (`I`, `P`, `T` or `Y`, `Cb`, `Cr`).
+    public struct ReshapingCurve: Sendable, Equatable {
+        /// Normalized pivot boundaries in `[0, 1]` (`numPieces + 1` elements, sorted ascending).
+        public let pivots: [Float]
+        /// Polynomial coefficients `(c0, c1, c2)` for each piece (when mapping is polynomial).
+        public let polyCoeffs: [SIMD3<Float>]
+        /// The MMR piece spanning this chroma component (when mapping is MMR).
+        public let mmr: MMRPiece?
+
+        public init(pivots: [Float], polyCoeffs: [SIMD3<Float>] = [], mmr: MMRPiece? = nil) {
+            self.pivots = pivots
+            self.polyCoeffs = polyCoeffs
+            self.mmr = mmr
+        }
+    }
+
+    /// Custom Dolby Vision RPU color matrices (`ycc_to_rgb_matrix`, `ycc_to_rgb_offset`, `rgb_to_lms_matrix`).
+    public struct ColorMatrix: Sendable, Equatable {
+        public let yccToRgb: simd_float3x3
+        public let yccToRgbOffset: SIMD3<Float>
+        public let rgbToLms: simd_float3x3
+
+        public init(yccToRgb: simd_float3x3, yccToRgbOffset: SIMD3<Float>, rgbToLms: simd_float3x3) {
+            self.yccToRgb = yccToRgb
+            self.yccToRgbOffset = yccToRgbOffset
+            self.rgbToLms = rgbToLms
+        }
+    }
+
     /// Level 1: Per-frame brightness metadata (SMPTE ST 2084 PQ domain)
     public struct Level1: Sendable, Equatable {
         public let minPQ: UInt16
@@ -74,18 +117,54 @@ public struct DolbyVisionFrameMetadata: Sendable, Equatable {
         }
     }
 
+    /// What an RPU does to the reshaping curves.
+    public enum ReshapingCurvesState: Sendable, Equatable {
+        /// Keeps the previous RPU's (`use_prev_vdr_rpu_flag`).
+        case reusePrevious
+        /// Reshapes by these (I, P, T).
+        case curves([ReshapingCurve])
+        /// Carries curves the shader can't apply (or that need the enhancement layer): no reshaping.
+        case unsupported
+    }
+
+    /// What an RPU does to the colour matrices.
+    public enum ColorMatrixState: Sendable, Equatable {
+        /// Keeps the previous RPU's (`dm_compression` 1).
+        case reusePrevious
+        /// Takes these.
+        case matrix(ColorMatrix)
+        /// Carries none (all zero): the IPT-PQ-c2 defaults.
+        case defaults
+    }
+
     public let sceneRefresh: Bool
     public let l1: Level1?
     public let l2Trims: [Level2Trim]
+    public let sourceMinPQ: UInt16?
+    public let sourceMaxPQ: UInt16?
+    public let reshapingCurvesState: ReshapingCurvesState
+    public let colorMatrixState: ColorMatrixState
 
     /// Preferred 100-nit SDR trim if authored by the colorist (target_max_pq ~ 2081)
     public var sdrTrim: Level2Trim? {
         l2Trims.first { abs($0.targetNits - 100.0) <= 20.0 || abs(Int($0.targetMaxPQ) - 2081) <= 50 }
     }
 
-    public init(sceneRefresh: Bool, l1: Level1?, l2Trims: [Level2Trim]) {
+    public init(
+        sceneRefresh: Bool,
+        l1: Level1?,
+        l2Trims: [Level2Trim],
+        sourceMinPQ: UInt16? = nil,
+        sourceMaxPQ: UInt16? = nil,
+        reshapingCurvesState: ReshapingCurvesState = .unsupported,
+        colorMatrixState: ColorMatrixState = .defaults
+    ) {
         self.sceneRefresh = sceneRefresh
         self.l1 = l1
         self.l2Trims = l2Trims
+        self.sourceMinPQ = sourceMinPQ
+        self.sourceMaxPQ = sourceMaxPQ
+        self.reshapingCurvesState = reshapingCurvesState
+        self.colorMatrixState = colorMatrixState
     }
 }

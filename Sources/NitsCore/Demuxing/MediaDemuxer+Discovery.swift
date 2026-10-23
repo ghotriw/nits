@@ -69,6 +69,10 @@ extension MediaDemuxer {
         // In MP4/MKV it is identified by dvvC/dvcC box (or stream side data).
         // Profile 5 uses IPTc2 color space with PQ transfer function.
         // Profile 8 uses standard BT.2020 PQ (8.1) or HLG (8.4) with dynamic RPU metadata.
+        self.dolbyVisionProfile = nil
+        self.dolbyVisionCompatibilityId = 0
+        self.dolbyVisionConfigData = nil
+        self.isDolbyVisionProfile5 = false
         if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
             let extraData = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
             if let parsed = HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: extraData) {

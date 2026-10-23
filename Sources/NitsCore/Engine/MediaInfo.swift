@@ -58,7 +58,11 @@ extension MediaInfo {
         video.bitDepth = demuxer.bitDepth
         video.sourcePeakNits = demuxer.maxPeakNits
 
-        video.colorPrimaries = ColorPrimariesClass(demuxer.colorPrimaries).label
+        video.colorPrimaries =
+            ToneMapController.shaderColor(
+                primaries: demuxer.colorPrimaries, transferFunction: demuxer.transferFunction,
+                isDolbyVisionProfile5: demuxer.isDolbyVisionProfile5
+            ).0.label
         if demuxer.isDolbyVisionProfile5 {
             video.transferFunction = "Dolby Vision (Profile 5 ICtCp)"
         } else if let profile = demuxer.dolbyVisionProfileString {
