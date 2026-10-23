@@ -121,16 +121,11 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Called on the reading thread when the pictures read come from another variant (at a switch's splice), after
     /// a seek and when a switch is given up. Set before reading starts.
     public var onVariantChanged: (@Sendable (VariantChange) -> Void)?
-    /// Adaptive bitrate state (`MediaDemuxer+AdaptiveBitrate.swift`), behind `lock`; set by `startReadAhead` before
-    /// the thread that uses it starts.
-    var adaptiveBitrate = AdaptiveBitrateLogic()
+    /// Adaptive bitrate state (`MediaDemuxer+AdaptiveBitrate.swift`); set up by `startReadAhead` before the thread
+    /// that uses it starts.
+    var adaptiveBitrate = AdaptiveBitrateState()
     /// Replaces the configuration `startReadAhead` scales to its limit (tests). Set before it.
     var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
-    var transferWindow = TransferWindow()
-    var nextAdaptiveDecision = 0.0
-    /// `adaptiveTime` the read-ahead thread last waited at the live edge, for a playlist reload.
-    var liveEdgeReachedAt: Double?
-    let adaptiveEpoch = ContinuousClock.now
     /// Bytes read from the inputs, as they came over the network (behind `lock`).
     let ioBytes = FFmpegIOByteCounter()
     /// Decode timestamp of the latest picture `readPacket` handed on (video time base), behind `lock`.

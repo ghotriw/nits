@@ -139,8 +139,8 @@ final class PlaybackInputs {
         }
     }
 
-    /// Selects track `id` of `audioTracks`: in its file (the media's demuxer then gets none), or in the media. Returns
-    /// whether `id` is a track. The caller re-reads from the current frame, as for any track switch.
+    /// Selects track `id` of `audioTracks`: in its file (the media's demuxer then gets none), or in the media; a choice
+    /// to save. Returns whether `id` is a track. The caller re-reads from the current frame, as for any track switch.
     @discardableResult
     func selectAudioTrack(id: Int) -> Bool {
         if let file = externalAudio.first(where: {
@@ -163,8 +163,64 @@ final class PlaybackInputs {
             selectedExternal = nil
         }
         selectedAudioTrackId = id
+        isAudioSelectionAutomatic = false
         return true
     }
+
+    /// The selected track was chosen on load by `TrackAutoSelection`: it isn't saved for the media, until it is chosen
+    /// (`keepAudioSelection`) or another one is.
+    private(set) var isAudioSelectionAutomatic = false
+
+    /// Keeps the track picked on load for the media, whatever the language settings become.
+    func keepAudioSelection() {
+        isAudioSelectionAutomatic = false
+    }
+
+    // MARK: - Load and history
+
+    /// Selects the track the media starts with, once its files are added: the request's (`requested`, a spec of
+    /// `PlayerEngine.resolveAudioTrackId`), else the one saved for it (a file's by its path), else by
+    /// `TrackAutoSelection` and the `languages`, marked automatic. None fitting leaves the demuxer's.
+    func selectAudioTrackOnLoad(requested: String?, saved: PlaybackPreferences?, languages: [String]) {
+        let tracks = audioTracks
+        if let spec = requested, let id = PlayerEngine.resolveAudioTrackId(spec, in: tracks) {
+            selectAudioTrack(id: id)
+            AppLog.info(.audio, "Using explicit audio track: \(id)")
+        } else if saved?.audioTrackId == PlaybackRecord.externalAudio, let path = saved?.externalAudioPath,
+            let id = audioTrackId(inFileAt: path, streamIndex: saved?.externalAudioStreamIndex)
+        {
+            selectAudioTrack(id: id)
+            AppLog.info(.audio, "Restored external audio file from saved history: \(path)")
+        } else if let id = saved?.audioTrackId, tracks.contains(where: { $0.id == id }) {
+            selectAudioTrack(id: id)
+            AppLog.info(.audio, "Restored audio track from saved history: \(id)")
+        } else if let id = TrackAutoSelection.audioTrackId(in: tracks, languages: languages) {
+            if id != selectedAudioTrackId {
+                selectAudioTrack(id: id)
+                AppLog.info(.audio, "Selected audio track \(id) by language and default flag")
+            }
+            isAudioSelectionAutomatic = true
+        }
+    }
+
+    /// Writes the selected track to persist; one chosen on load by `TrackAutoSelection` isn't. A file's track is saved
+    /// by its path, as a subtitle file is: its id numbers the files added this time. One that isn't a local file (a
+    /// host's signed URL) can't be opened again: the saved choice stays.
+    func writeAudioPreferences(into preferences: inout PlaybackPreferences) {
+        guard selectedAudioTrackId >= 0, !isAudioSelectionAutomatic else { return }
+        let track = audioTracks.first { $0.id == selectedAudioTrackId }
+        if let url = track?.externalURL {
+            if url.isFileURL {
+                preferences.audioTrackId = PlaybackRecord.externalAudio
+                preferences.externalAudioPath = url.path
+                preferences.externalAudioStreamIndex = track?.streamIndex
+            }
+        } else {
+            preferences.audioTrackId = selectedAudioTrackId
+        }
+    }
+
+    // MARK: - Reading
 
     /// The picture has been read to its end (or there is none).
     var isVideoEOF: Bool { main.isVideoEOF }

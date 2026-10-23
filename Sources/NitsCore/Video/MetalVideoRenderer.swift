@@ -86,9 +86,10 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private let uniformsLock = OSAllocatedUnfairLock(initialState: ToneMapUniforms())
     private let sourceRectLock = OSAllocatedUnfairLock(initialState: CGRect(x: 0, y: 0, width: 1, height: 1))
 
+    /// A copy of the uniforms. Read-only: they change only in one locked step (`updateUniforms`), as the display link
+    /// and the main thread both write them; a copy read, changed and set back would undo the other's write.
     public var uniforms: ToneMapUniforms {
-        get { uniformsLock.withLock { $0 } }
-        set { uniformsLock.withLock { $0 = newValue } }
+        uniformsLock.withLock { $0 }
     }
 
     /// The part of the frame drawn into the layer, normalized with the origin at the top left (crop, zoom, pan;

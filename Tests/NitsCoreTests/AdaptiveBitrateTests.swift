@@ -145,7 +145,7 @@ struct AdaptiveBitrateTests {
         #expect(
             await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 640 },
             "Playing \(String(describing: consumer.playedWidth))")
-        let estimate = try #require(demuxer.readingDescription { $0.adaptiveBitrate.estimate })
+        let estimate = try #require(demuxer.readingDescription { $0.adaptiveBitrate.logic.estimate })
         #expect(estimate > 6_000_000, "Measured \(Int(estimate / 1000)) kbit/s of 8000")
     }
 
@@ -172,7 +172,7 @@ struct AdaptiveBitrateTests {
             await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 640 },
             "Playing \(String(describing: consumer.playedWidth))")
         #expect(!consumer.pictures.contains { $0.width == 480 }, "Stepped up through 480")
-        #expect(demuxer.readingDescription { $0.adaptiveBitrate.estimate } != nil)
+        #expect(demuxer.readingDescription { $0.adaptiveBitrate.logic.estimate } != nil)
     }
 
     @Test("The latency share counts from the first segment read, and doesn't leap at the start")
@@ -194,7 +194,9 @@ struct AdaptiveBitrateTests {
         var shares: [Double] = []
         let deadline = ContinuousClock.now + .seconds(6)
         while ContinuousClock.now < deadline {
-            if let share = demuxer.readingDescription({ $0.adaptiveBitrate.latencyShare }) { shares.append(share) }
+            if let share = demuxer.readingDescription({ $0.adaptiveBitrate.logic.latencyShare }) {
+                shares.append(share)
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
         let highest = try #require(shares.max())
@@ -327,7 +329,7 @@ struct AdaptiveBitrateTests {
         demuxer.startReadAhead(limits: .init(seconds: 9))
         defer { demuxer.cancel() }
         try await Task.sleep(for: .seconds(10))
-        #expect(demuxer.readingDescription { $0.liveEdgeReachedAt } == nil)
+        #expect(demuxer.readingDescription { $0.adaptiveBitrate.liveEdgeReachedAt } == nil)
     }
 
     @Test("Only a long read of a live stream without data is a wait at its edge")

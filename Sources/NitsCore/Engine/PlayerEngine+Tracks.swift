@@ -11,9 +11,9 @@ extension PlayerEngine {
     /// new track up to a second ahead of the picture, further with every switch. An exact seek to the current frame
     /// re-reads both from there (as mpv does); the seek keeps playing or paused as it was.
     public func selectAudioTrack(id: Int) {
-        if id == selectedAudioTrackId, audioSelectionIsAutomatic {
+        if id == selectedAudioTrackId, let inputs, inputs.isAudioSelectionAutomatic {
             // Choosing the track picked on load keeps it for the file, whatever the language settings become.
-            audioSelectionIsAutomatic = false
+            inputs.keepAudioSelection()
             saveCurrentPlaybackProgress()
             return
         }
@@ -26,7 +26,6 @@ extension PlayerEngine {
         stopFeedingAudio()
         inputs.selectAudioTrack(id: id)
         self.selectedAudioTrackId = id
-        audioSelectionIsAutomatic = false
         saveCurrentPlaybackProgress()
         if let input = inputs.audioSource?.audioDecoderInput() {
             let decoder = FFAudioDecoder(codecParameters: input.parameters, timebase: input.timebase)

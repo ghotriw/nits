@@ -107,17 +107,7 @@ extension PlayerEngine {
         displayClockSmootherLock.withLock { $0 = DisplayClockSmoother() }
         tickDiagnosticsLock.withLock { $0 = TickDiagnostics() }
         currentMetrics = PlayerPerformanceMonitor.Metrics()
-        dynamicToneMapLock.withLock {
-            $0.basePeakNits = 1000.0
-            $0.baseTargetNits = 203.0
-            $0.smoothedPeakNits = 1000.0
-            $0.smoothedTargetNits = 203.0
-            $0.lastRenderModeName = "Metal SDR"
-            $0.lastDoviMetadata = nil
-        }
-        performanceMonitor.updateToneMapParams(
-            PlayerPerformanceMonitor.ToneMapParams(mode: .none, peakNits: 0, targetNits: 203)
-        )
+        toneMapping.reset()
         thumbnailManager.reset()
         audioDelay = 0
         audioSink.setDelay(.zero)
@@ -129,7 +119,6 @@ extension PlayerEngine {
         beginDeferringTracksChanged()
         audioTracks = []
         selectedAudioTrackId = -1
-        audioSelectionIsAutomatic = false
         variants = []
         selectedVariantId = nil
         isVariantAutomatic = false
@@ -437,28 +426,15 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Track selection, delays and the picture's aspect override and crop to persist. A selection made on load by
-    /// `TrackAutoSelection` isn't saved; the subtitles write theirs (`SubtitleController.writePreferences`).
+    /// Track selection, delays and the picture's aspect override and crop to persist. The audio and subtitle tracks
+    /// are written by their owners (`PlaybackInputs.writeAudioPreferences`, `SubtitleController.writePreferences`).
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioDelay: audioDelay,
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
-        if selectedAudioTrackId >= 0, !audioSelectionIsAutomatic {
-            let track = audioTracks.first { $0.id == selectedAudioTrackId }
-            if let url = track?.externalURL {
-                // A file's track is saved by its path, as a subtitle file is: its id numbers the files added this
-                // time. One that isn't a local file (a host's signed URL) can't be opened again: the saved choice stays.
-                if url.isFileURL {
-                    preferences.audioTrackId = PlaybackRecord.externalAudio
-                    preferences.externalAudioPath = url.path
-                    preferences.externalAudioStreamIndex = track?.streamIndex
-                }
-            } else {
-                preferences.audioTrackId = selectedAudioTrackId
-            }
-        }
+        inputs?.writeAudioPreferences(into: &preferences)
         subtitles.writePreferences(into: &preferences)
         return preferences
     }
@@ -539,31 +515,6 @@ extension PlayerEngine {
             return words.contains(key)
         }
         return lowerTitle.contains(key)
-    }
-
-    /// Computes the optimal target reference white (nits) for ITU-R BT.2390 tone mapping
-    /// on standard SDR displays, adapting to content peak and frame-average luminance.
-    public nonisolated static func computeAdaptiveTargetNits(
-        baseTargetNits: Float = 203.0,
-        maxPeakNits: Float,
-        maxFallNits: Float = 0.0
-    ) -> Float {
-        // If content is high-peak mastering (>= 950 nits) and not extremely dark, keep ITU reference (203.0)
-        if maxPeakNits >= 950.0 && (maxFallNits == 0 || maxFallNits >= 120.0) {
-            return baseTargetNits
-        }
-
-        // Scale reference white down smoothly for lower-peak mastering (300...1000 -> 100...baseTargetNits)
-        var target = 100.0 + (baseTargetNits - 100.0) * max(min((maxPeakNits - 300.0) / 700.0, 1.0), 0.0)
-
-        // If the scene average (MaxFALL) is known and low (< 100 nits, e.g. low-key dark drama),
-        // adjust the target white to prevent crushing midtones and shadows
-        if maxFallNits > 0 && maxFallNits < 100.0 {
-            let fallFactor = max(maxFallNits / 100.0, 0.7)
-            target = min(target, 100.0 + (target - 100.0) * fallFactor)
-        }
-
-        return max(min(target, baseTargetNits), 100.0)
     }
 
     /// What to look for when opening the audio files that go with a media (`openExternalAudio`).
@@ -698,33 +649,8 @@ extension PlayerEngine {
         // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
         // 3. `TrackAutoSelection` by the language settings and the tracks' flags
         let savedTracks = historyStore.savedPreferences(for: path)
-
-        let availableAudio = inputs.audioTracks
-        if let spec = requestedAudioTrack,
-            let id = Self.resolveAudioTrackId(spec, in: availableAudio)
-        {
-            inputs.selectAudioTrack(id: id)
-            AppLog.info(.audio, "Using explicit audio track: \(id)")
-        } else if savedTracks?.audioTrackId == PlaybackRecord.externalAudio,
-            let savedPath = savedTracks?.externalAudioPath,
-            let id = inputs.audioTrackId(inFileAt: savedPath, streamIndex: savedTracks?.externalAudioStreamIndex)
-        {
-            inputs.selectAudioTrack(id: id)
-            AppLog.info(.audio, "Restored external audio file from saved history: \(savedPath)")
-        } else if let saved = savedTracks?.audioTrackId,
-            availableAudio.contains(where: { $0.id == saved })
-        {
-            inputs.selectAudioTrack(id: saved)
-            AppLog.info(.audio, "Restored audio track from saved history: \(saved)")
-        } else if let id = TrackAutoSelection.audioTrackId(
-            in: availableAudio, languages: configuration.trackLanguages.audioLanguages)
-        {
-            audioSelectionIsAutomatic = true
-            if id != inputs.selectedAudioTrackId {
-                inputs.selectAudioTrack(id: id)
-                AppLog.info(.audio, "Selected audio track \(id) by language and default flag")
-            }
-        }
+        inputs.selectAudioTrackOnLoad(
+            requested: requestedAudioTrack, saved: savedTracks, languages: configuration.trackLanguages.audioLanguages)
 
         // The new tracks and the selection below are reported once, when the load is applied, even when they equal
         // the previous media's.
@@ -751,46 +677,7 @@ extension PlayerEngine {
             audioLanguage: audioTracks.first { $0.id == selectedAudioTrackId }?.language)
 
         if demuxer.hasVideo {
-            let baseAdaptive = Self.computeAdaptiveTargetNits(
-                baseTargetNits: 203.0,
-                maxPeakNits: demuxer.maxPeakNits,
-                maxFallNits: demuxer.maxFallNits
-            )
-            self.baseAdaptiveTargetNits = baseAdaptive
-            let effectiveTargetNits = max(min(baseAdaptive * self.targetNitsScale, 500.0), 80.0)
-            self.metalTargetNits = effectiveTargetNits
-            let autoShadowLift: Float =
-                (demuxer.maxFallNits > 0 && demuxer.maxFallNits < 80.0 && self.metalShadowLift == 0.0) ? 0.008 : 0.0
-
-            self.dynamicToneMapLock.withLock {
-                $0.basePeakNits = demuxer.maxPeakNits
-                $0.baseTargetNits = baseAdaptive
-                $0.smoothedPeakNits = demuxer.maxPeakNits
-                $0.smoothedTargetNits = effectiveTargetNits
-                $0.lastRenderModeName = "Metal SDR"
-                $0.lastDoviMetadata = nil
-            }
-
-            let primaries = ColorPrimariesClass(demuxer.colorPrimaries)
-            self.metalRenderer?.updateUniforms { uniforms in
-                uniforms.sourcePeakNits = demuxer.maxPeakNits
-                uniforms.targetNits = effectiveTargetNits
-                if autoShadowLift > 0.0 {
-                    uniforms.outputShadowLift = autoShadowLift
-                }
-                uniforms.colorPrimaries = primaries.shaderIndex
-                uniforms.transferFunction = TransferFunctionClass(demuxer.transferFunction).shaderIndex
-                uniforms.bitDepth = UInt32(demuxer.bitDepth)
-                uniforms.isFullRange = demuxer.isFullRange ? 1 : 0
-                if demuxer.isDolbyVisionProfile5 {
-                    uniforms.colorSpaceMode = 2  // Dolby Vision IPT / ICtCp
-                } else if primaries == .bt709 {
-                    uniforms.colorSpaceMode = 1  // BT.709
-                } else {
-                    uniforms.colorSpaceMode = 0  // Standard BT.2020 YCbCr
-                }
-            }
-
+            toneMapping.mediaDidLoad(demuxer)
             let video = media.video
             self.performanceMonitor.updateStreamMetadata(
                 resolution: "\(video.width)x\(video.height)",
@@ -799,26 +686,8 @@ extension PlayerEngine {
                 colorPrimaries: video.colorPrimaries,
                 transferFunction: video.transferFunction,
                 sourcePeakNits: video.sourcePeakNits,
-                targetNits: effectiveTargetNits,
+                targetNits: toneMapping.targetNits,
                 dolbyVisionProfile: video.dolbyVisionProfile
-            )
-
-            let initialToneMode: PlayerPerformanceMonitor.ToneMapEngineMode
-            if self.activeRenderMode == .system {
-                initialToneMode = .appleXDR
-            } else if demuxer.isDolbyVisionProfile5 || demuxer.dolbyVisionProfile != nil {
-                initialToneMode = .doviL1Auto
-            } else if demuxer.isHDR {
-                initialToneMode = .bt2390
-            } else {
-                initialToneMode = .directSDR
-            }
-            self.performanceMonitor.updateToneMapParams(
-                PlayerPerformanceMonitor.ToneMapParams(
-                    mode: initialToneMode,
-                    peakNits: demuxer.maxPeakNits,
-                    targetNits: effectiveTargetNits
-                )
             )
             self.currentMetrics = self.performanceMonitor.currentMetrics
         }

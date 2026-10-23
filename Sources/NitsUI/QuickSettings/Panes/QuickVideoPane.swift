@@ -8,8 +8,24 @@ public struct QuickVideoPane: View {
         self.engine = engine
     }
 
+    /// Bindings to the engine's tone-mapping settings.
+    private var toneMapping: Bindable<ToneMapController> { Bindable(engine.toneMapping) }
+
     private var isMetalActive: Bool {
         engine.activeRenderMode == .metalToneMap
+    }
+
+    /// The slider shows the shadow lift applied, the media's while the user has set none; moving it sets the user's.
+    private var shadowLiftBinding: Binding<Float> {
+        let toneMapping = engine.toneMapping
+        return Binding(get: { toneMapping.appliedShadowLift }, set: { toneMapping.shadowLift = $0 })
+    }
+
+    /// The shadow lift applied; one a dim media asks for while the user has set none is marked as such.
+    private var shadowLiftLabel: String {
+        let toneMapping = engine.toneMapping
+        let value = String(format: "%.3f", toneMapping.appliedShadowLift)
+        return toneMapping.shadowLift == nil && toneMapping.appliedShadowLift > 0 ? "\(value) (auto)" : value
     }
 
     private var deinterlaceDescription: String {
@@ -321,10 +337,10 @@ public struct QuickVideoPane: View {
                         Spacer()
                         Button("Reset") {
                             withAnimation {
-                                engine.metalSharpness = 0.5
-                                engine.metalExposure = 1.0
-                                engine.metalShadowLift = 0.0
-                                engine.targetNitsScale = 1.0
+                                engine.toneMapping.sharpness = 0.5
+                                engine.toneMapping.exposure = 1.0
+                                engine.toneMapping.shadowLift = nil
+                                engine.toneMapping.targetNitsScale = 1.0
                             }
                         }
                         .buttonStyle(.plain)
@@ -339,11 +355,11 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
-                            Text(String(format: "%.2f", engine.metalSharpness))
+                            Text(String(format: "%.2f", engine.toneMapping.sharpness))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: $engine.metalSharpness, in: 0.0...1.0)
+                        Slider(value: toneMapping.sharpness, in: 0.0...1.0)
                     }
 
                     // Target Nits Scale
@@ -354,12 +370,12 @@ public struct QuickVideoPane: View {
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
                             Text(
-                                "\(Int(engine.metalTargetNits)) nits (\(String(format: "%.2f", engine.targetNitsScale))×)"
+                                "\(Int(engine.toneMapping.targetNits)) nits (\(String(format: "%.2f", engine.toneMapping.targetNitsScale))×)"
                             )
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: $engine.targetNitsScale, in: 0.5...2.0)
+                        Slider(value: toneMapping.targetNitsScale, in: 0.5...2.0)
                     }
 
                     // Exposure
@@ -369,11 +385,11 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
-                            Text(String(format: "%.2f×", engine.metalExposure))
+                            Text(String(format: "%.2f×", engine.toneMapping.exposure))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: $engine.metalExposure, in: 0.5...2.0)
+                        Slider(value: toneMapping.exposure, in: 0.5...2.0)
                     }
 
                     // Shadow Lift
@@ -383,15 +399,15 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
-                            Text(String(format: "%.3f", engine.metalShadowLift))
+                            Text(shadowLiftLabel)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: $engine.metalShadowLift, in: 0.0...0.1)
+                        Slider(value: shadowLiftBinding, in: 0.0...0.1)
                     }
 
                     if engine.media.video.dolbyVisionProfile != nil {
-                        Toggle(isOn: $engine.applyDolbyVisionTrims) {
+                        Toggle(isOn: toneMapping.applyDolbyVisionTrims) {
                             Text("Dolby Vision Trims (L2)")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.8))

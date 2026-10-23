@@ -8,7 +8,7 @@ struct AdaptiveToneMappingTests {
     @Test("High-peak HDR10 content maintains standard 203 nits ITU reference")
     func testHighPeakHDR10TargetNits() {
         // High peak (1000 nits) and normal/high FALL (161 nits, like His Dark Materials)
-        let target1 = PlayerEngine.computeAdaptiveTargetNits(
+        let target1 = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 1000.0,
             maxFallNits: 161.0
@@ -16,7 +16,7 @@ struct AdaptiveToneMappingTests {
         #expect(target1 == 203.0)
 
         // High peak (1000 nits) without explicit FALL metadata (like Ms. Marvel)
-        let target2 = PlayerEngine.computeAdaptiveTargetNits(
+        let target2 = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 1000.0,
             maxFallNits: 0.0
@@ -24,7 +24,7 @@ struct AdaptiveToneMappingTests {
         #expect(target2 == 203.0)
 
         // 997 nits (w_hdm_full)
-        let target3 = PlayerEngine.computeAdaptiveTargetNits(
+        let target3 = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 997.0,
             maxFallNits: 161.0
@@ -35,7 +35,7 @@ struct AdaptiveToneMappingTests {
     @Test("Low-peak and low-FALL content dynamically scales target white to prevent darkness")
     func testLowPeakAndLowFallTargetNits() {
         // The Agency (451 nits peak, 68 nits FALL)
-        let agencyTarget = PlayerEngine.computeAdaptiveTargetNits(
+        let agencyTarget = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 451.0,
             maxFallNits: 68.0
@@ -44,7 +44,7 @@ struct AdaptiveToneMappingTests {
         #expect(agencyTarget >= 110.0 && agencyTarget <= 125.0)
 
         // House of the Dragon (699 nits peak, 94 nits FALL)
-        let hotdTarget = PlayerEngine.computeAdaptiveTargetNits(
+        let hotdTarget = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 699.0,
             maxFallNits: 94.0
@@ -56,7 +56,7 @@ struct AdaptiveToneMappingTests {
     @Test("Adaptive target white clamps cleanly between 100 and base target nits")
     func testBoundaryClamping() {
         // Ultra-low peak (e.g. 250 nits)
-        let minTarget = PlayerEngine.computeAdaptiveTargetNits(
+        let minTarget = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 250.0,
             maxFallNits: 40.0
@@ -64,7 +64,7 @@ struct AdaptiveToneMappingTests {
         #expect(minTarget >= 100.0)
 
         // Ultra-high peak (e.g. 4000 nits mastering)
-        let maxTarget = PlayerEngine.computeAdaptiveTargetNits(
+        let maxTarget = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 203.0,
             maxPeakNits: 4000.0,
             maxFallNits: 250.0
@@ -75,7 +75,7 @@ struct AdaptiveToneMappingTests {
     @Test("Explicit custom baseTargetNits is respected as maximum bound")
     func testCustomBaseTargetNits() {
         // User explicitly set 150 nits as base target
-        let target = PlayerEngine.computeAdaptiveTargetNits(
+        let target = ToneMapController.adaptiveTargetNits(
             baseTargetNits: 150.0,
             maxPeakNits: 451.0,
             maxFallNits: 68.0
@@ -89,17 +89,17 @@ struct AdaptiveToneMappingTests {
         let engine = PlayerEngine.makeForTesting()
 
         // 1.0x default
-        #expect(engine.targetNitsScale == 1.0)
-        #expect(engine.baseAdaptiveTargetNits == 203.0)
-        #expect(engine.metalTargetNits == 203.0)
+        #expect(engine.toneMapping.targetNitsScale == 1.0)
+        #expect(engine.toneMapping.baseTargetNits == 203.0)
+        #expect(engine.toneMapping.targetNits == 203.0)
 
         // Adjust scale knob to 0.8x (20% brighter midtones/shadows for all content)
-        engine.targetNitsScale = 0.8
-        #expect(abs(engine.metalTargetNits - (203.0 * 0.8)) < 0.01)
+        engine.toneMapping.targetNitsScale = 0.8
+        #expect(abs(engine.toneMapping.targetNits - (203.0 * 0.8)) < 0.01)
 
         // Adjust scale knob to 1.5x (higher contrast)
-        engine.targetNitsScale = 1.5
-        #expect(abs(engine.metalTargetNits - (203.0 * 1.5)) < 0.01)
+        engine.toneMapping.targetNitsScale = 1.5
+        #expect(abs(engine.toneMapping.targetNits - (203.0 * 1.5)) < 0.01)
     }
 
     @Test("DolbyVisionRPUParser correctly converts PQ to nits and handles 100-nit trim")
@@ -174,8 +174,81 @@ struct AdaptiveToneMappingTests {
     @MainActor
     func testPlayerEngineToneMappingReset() {
         let engine = PlayerEngine.makeForTesting()
-        #expect(engine.metalTargetNits == 203.0)
+        #expect(engine.toneMapping.targetNits == 203.0)
+        engine.toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0)
+        #expect(engine.toneMapping.targetNits < 203.0)
         engine.stop()
-        #expect(engine.metalTargetNits == 203.0)
+        #expect(engine.toneMapping.targetNits == 203.0)
+        #expect(engine.toneMapping.baseTargetNits == 203.0)
+    }
+
+    @Test("A dim media's shadow lift applies while the user sets none and goes with the media")
+    @MainActor
+    func mediaShadowLiftIsReset() {
+        let engine = PlayerEngine.makeForTesting()
+        let toneMapping = engine.toneMapping
+
+        toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0)
+        #expect(toneMapping.appliedShadowLift == ToneMapController.lowFallShadowLift)
+        #expect(
+            engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? toneMapping.appliedShadowLift
+                == ToneMapController.lowFallShadowLift)
+
+        toneMapping.shadowLift = 0.02
+        #expect(toneMapping.appliedShadowLift == 0.02)
+        // 0 is the user's: no lift at all, even on a dim media.
+        toneMapping.shadowLift = 0
+        #expect(toneMapping.appliedShadowLift == 0)
+        #expect(engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? 0 == 0)
+        toneMapping.shadowLift = nil
+        #expect(toneMapping.appliedShadowLift == ToneMapController.lowFallShadowLift)
+
+        // The next media isn't dim: it must not keep the previous one's lift.
+        toneMapping.adapt(toPeakNits: 1000.0, fallNits: 161.0)
+        #expect(toneMapping.appliedShadowLift == 0)
+        #expect(engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? 0 == 0)
+
+        toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0)
+        engine.stop()
+        #expect(toneMapping.appliedShadowLift == 0)
+    }
+
+    @Test("Re-applying the configuration keeps the smoothed Dolby Vision target and the settings changed since")
+    @MainActor
+    func reappliedConfigurationKeepsState() {
+        let configuration = PlayerConfiguration(targetNitsScale: 1.5)
+        let engine = PlayerEngine.makeForTesting(configuration: configuration)
+        let toneMapping = engine.toneMapping
+        let l1 = DolbyVisionFrameMetadata(
+            sceneRefresh: true, l1: DolbyVisionFrameMetadata.Level1(minPQ: 0, maxPQ: 2400, avgPQ: 1000), l2Trims: [])
+        _ = toneMapping.applyFrame(doviMetadata: l1)
+        let smoothedTarget = toneMapping.frameState.withLock { $0.smoothedTargetNits }
+        toneMapping.sharpness = 0.9
+
+        // Another setting changes: the tone-mapping ones are those of before.
+        var changed = configuration
+        changed.seekStepSeconds += 1
+        engine.applyConfiguration(changed)
+        #expect(toneMapping.frameState.withLock { $0.smoothedTargetNits } == smoothedTarget)
+        #expect(toneMapping.sharpness == 0.9)
+
+        // A setting changed in the configuration applies.
+        changed.sharpness = 0.2
+        engine.applyConfiguration(changed)
+        #expect(toneMapping.sharpness == 0.2)
+    }
+
+    @Test("The monitor reports the scaled target white after a reset and a render mode switch")
+    @MainActor
+    func monitorReportsScaledTarget() {
+        // A monitor of its own: the shared one is written by the tests running alongside.
+        let monitor = PlayerPerformanceMonitor()
+        let toneMapping = ToneMapController(renderer: nil, monitor: monitor)
+        toneMapping.apply(PlayerConfiguration(targetNitsScale: 1.5))
+        toneMapping.adapt(toPeakNits: 1000.0, fallNits: 161.0)
+        toneMapping.reset()
+        #expect(abs(monitor.currentMetrics.targetNits - 203.0 * 1.5) < 0.01)
+        toneMapping.renderModeDidChange(to: .metalToneMap)
+        #expect(abs(monitor.currentMetrics.targetNits - 203.0 * 1.5) < 0.01)
     }
 }

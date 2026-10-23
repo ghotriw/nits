@@ -161,12 +161,12 @@ struct DolbyVisionToneMapResolutionTests {
     func trimsOffByDefault() {
         let engine = PlayerEngine.makeForTesting()
         guard let renderer = engine.metalRenderer else { return }
-        #expect(engine.applyDolbyVisionTrims == false)
+        #expect(engine.toneMapping.applyDolbyVisionTrims == false)
 
-        let mode = engine.applyDynamicToneMap(
+        let mode = engine.toneMapping.applyFrame(
             doviMetadata: DolbyVisionFrameMetadata(
                 sceneRefresh: true, l1: Self.l1Frame.l1, l2Trims: [Self.trim(slope: 1800)]))
-        #expect(mode == "Metal SDR (DoVi L1)")
+        #expect(mode == ToneMapController.Mode(usesL1: true))
         #expect(renderer.uniforms.hasDoViL2Trim == 0)
     }
 
@@ -177,13 +177,13 @@ struct DolbyVisionToneMapResolutionTests {
         engine.renderMode = .metalToneMap
         #expect(engine.activeRenderMode == .metalToneMap)
 
-        _ = engine.applyDynamicToneMap(
+        _ = engine.toneMapping.applyFrame(
             doviMetadata: DolbyVisionFrameMetadata(
                 sceneRefresh: true, l1: Self.l1Frame.l1, l2Trims: [Self.trim(slope: 1800)]))
         #expect(renderer.uniforms.hasDoViL2Trim == 0)
-        engine.applyDolbyVisionTrims = true
+        engine.toneMapping.applyDolbyVisionTrims = true
         #expect(renderer.uniforms.hasDoViL2Trim == 1)
-        engine.applyDolbyVisionTrims = false
+        engine.toneMapping.applyDolbyVisionTrims = false
         #expect(renderer.uniforms.hasDoViL2Trim == 0)
     }
 
@@ -193,14 +193,14 @@ struct DolbyVisionToneMapResolutionTests {
         guard let renderer = engine.metalRenderer else { return }
         let l1 = Self.l1Frame.l1
 
-        let neutralMode = engine.applyDynamicToneMap(
+        let neutralMode = engine.toneMapping.applyFrame(
             doviMetadata: DolbyVisionFrameMetadata(sceneRefresh: true, l1: l1, l2Trims: [Self.trim(slope: 2048)]))
-        #expect(neutralMode == "Metal SDR (DoVi L1)")
+        #expect(neutralMode == ToneMapController.Mode(usesL1: true))
         #expect(renderer.uniforms.hasDoViL2Trim == 0)
 
-        let trimmedMode = engine.applyDynamicToneMap(
+        let trimmedMode = engine.toneMapping.applyFrame(
             doviMetadata: DolbyVisionFrameMetadata(sceneRefresh: true, l1: l1, l2Trims: [Self.trim(slope: 1800)]))
-        #expect(trimmedMode == "Metal SDR (DoVi L1 + L2 Trim)")
+        #expect(trimmedMode == ToneMapController.Mode(usesL1: true, usesL2Trim: true))
         #expect(renderer.uniforms.hasDoViL2Trim == 1)
     }
 
@@ -209,13 +209,13 @@ struct DolbyVisionToneMapResolutionTests {
         let engine = PlayerEngine.makeForTesting()
         guard let renderer = engine.metalRenderer else { return }
 
-        _ = engine.applyDynamicToneMap(doviMetadata: Self.l1Frame)
+        _ = engine.toneMapping.applyFrame(doviMetadata: Self.l1Frame)
         let scenePeak = renderer.uniforms.sourcePeakNits
         let sceneTarget = renderer.uniforms.targetNits
-        let staticPeak = engine.dynamicToneMapLock.withLock { $0.basePeakNits }
+        let staticPeak = engine.toneMapping.frameState.withLock { $0.basePeakNits }
         #expect(abs(scenePeak - staticPeak) > 50, "the L1 scene peak should differ from the static one")
 
-        _ = engine.applyDynamicToneMap(doviMetadata: nil)
+        _ = engine.toneMapping.applyFrame(doviMetadata: nil)
         #expect(renderer.uniforms.sourcePeakNits == scenePeak)
         #expect(renderer.uniforms.targetNits == sceneTarget)
     }

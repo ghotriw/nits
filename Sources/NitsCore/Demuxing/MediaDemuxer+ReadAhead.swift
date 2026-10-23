@@ -58,7 +58,8 @@ extension MediaDemuxer {
         readsAhead = true
         readAheadLimits = limits
         // Only the read-ahead thread uses it, from its start on: no `lock`, which the main thread must not take.
-        adaptiveBitrate = AdaptiveBitrateLogic(config: adaptiveBitrateConfig ?? .scaled(toReadAhead: limits.seconds))
+        adaptiveBitrate.logic = AdaptiveBitrateLogic(
+            config: adaptiveBitrateConfig ?? .scaled(toReadAhead: limits.seconds))
         queueLock.unlock()
 
         let thread = Thread { [weak self] in

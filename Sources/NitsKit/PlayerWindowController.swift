@@ -437,9 +437,9 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var metalSharpness: Float {
-        get { engine.metalSharpness }
+        get { engine.toneMapping.sharpness }
         set {
-            engine.metalSharpness = newValue
+            engine.toneMapping.sharpness = newValue
             if engine.enableOSD {
                 uiState.osd.show(.sharpness(value: newValue))
             }

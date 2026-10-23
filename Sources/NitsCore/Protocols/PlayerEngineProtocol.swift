@@ -105,13 +105,8 @@ public protocol PlayerVideoControlling: PlayerMediaDescribing {
     nonisolated var activeRenderMode: RenderMode { get }
     @MainActor var isDisplaySleepDisabled: Bool { get }
 
-    @MainActor var metalExposure: Float { get set }
-    @MainActor var metalShadowLift: Float { get set }
-    @MainActor var metalTargetNits: Float { get set }
-    @MainActor var targetNitsScale: Float { get set }
-    @MainActor var baseAdaptiveTargetNits: Float { get }
-    @MainActor var metalSharpness: Float { get set }
-    @MainActor var applyDolbyVisionTrims: Bool { get set }
+    /// The Metal path's tone mapping: exposure, shadow lift, target white, sharpness, Dolby Vision trims.
+    @MainActor var toneMapping: ToneMapController { get }
 
     @MainActor var droppedFramesCount: Int { get }
     @MainActor var pipelineDroppedFramesCount: Int { get }

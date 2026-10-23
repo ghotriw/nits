@@ -182,93 +182,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
             CATransaction.commit()
         }
     }
-    public var metalExposure: Float = 1.0 {
-        didSet {
-            metalRenderer?.uniforms.outputExposure = metalExposure
-        }
-    }
-    public var metalShadowLift: Float = 0.0 {
-        didSet {
-            metalRenderer?.uniforms.outputShadowLift = metalShadowLift
-        }
-    }
-    public var metalTargetNits: Float = 203.0 {
-        didSet {
-            metalRenderer?.uniforms.targetNits = metalTargetNits
-            performanceMonitor.updateTargetNits(metalTargetNits)
-        }
-    }
-    /// Content-adapted base reference white in nits (e.g. 203 for 1000-nit, ~116 for The Agency).
-    public package(set) var baseAdaptiveTargetNits: Float = 203.0
-
-    /// User scale multiplier adjusting the content-adaptive target white (default 1.0, range 0.5 ... 2.0 in UI, 0.1 ... 4.0 engine bound).
-    public var targetNitsScale: Float = 1.0 {
-        didSet {
-            let clamped = max(0.1, min(4.0, targetNitsScale))
-            if targetNitsScale != clamped {
-                targetNitsScale = clamped
-                return
-            }
-            targetNitsScaleLock.withLock { $0 = clamped }
-            recomputeEffectiveTargetNits()
-        }
-    }
-    @ObservationIgnored
-    let targetNitsScaleLock = OSAllocatedUnfairLock(initialState: Float(1.0))
-
-    /// Whether Dolby Vision L2 trims are applied on top of BT.2390 (see `PlayerConfiguration.applyDolbyVisionTrims`).
-    /// A paused frame is re-rendered right away, so the change can be compared on the same frame.
-    public var applyDolbyVisionTrims: Bool = false {
-        didSet {
-            guard applyDolbyVisionTrims != oldValue else { return }
-            let enabled = applyDolbyVisionTrims
-            let lastMetadata = dynamicToneMapLock.withLock {
-                $0.appliesTrims = enabled
-                return $0.lastDoviMetadata
-            }
-            guard !isPlaying, activeRenderMode == .metalToneMap, let lastMetadata else { return }
-            _ = applyDynamicToneMap(doviMetadata: lastMetadata)
-            metalRenderer?.redrawLastFrame()
-        }
-    }
-
-    struct BaseDynamicToneMapState {
-        var basePeakNits: Float = 1000.0
-        var baseTargetNits: Float = 203.0
-        var smoothedPeakNits: Float = 1000.0
-        var smoothedTargetNits: Float = 203.0
-        var lastRenderModeName: String = "Metal SDR"
-        var appliesTrims = false
-        /// RPU of the last tone-mapped frame, to re-render it when `appliesTrims` changes while paused.
-        var lastDoviMetadata: DolbyVisionFrameMetadata?
-    }
-    @ObservationIgnored
-    let dynamicToneMapLock = OSAllocatedUnfairLock(initialState: BaseDynamicToneMapState())
-
-    func recomputeEffectiveTargetNits() {
-        let base = baseAdaptiveTargetNits
-        let effective = max(min(base * targetNitsScale, 500.0), 80.0)
-        self.metalTargetNits = effective
-        dynamicToneMapLock.withLock {
-            // The base stays unscaled, as on load: tone mapping applies `targetNitsScale` to it.
-            $0.baseTargetNits = base
-            $0.smoothedTargetNits = effective
-        }
-    }
-
-    public var metalSharpness: Float = 0.5 {
-        didSet {
-            metalRenderer?.uniforms.outputSharpness = metalSharpness
-        }
-    }
 
     public func applyConfiguration(_ config: PlayerConfiguration) {
-        let previousVideoScaling = configuration.videoScaling
+        let previous = configuration
+        let previousVideoScaling = previous.videoScaling
         self.configuration = config
         self.isToneMappingPermitted = config.enableToneMapping
-        self.targetNitsScale = config.targetNitsScale
-        self.metalSharpness = config.sharpness
-        self.applyDolbyVisionTrims = config.applyDolbyVisionTrims
+        toneMapping.apply(config, previous: previous)
         subtitles.apply(config)
         self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
@@ -380,6 +300,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var tracksClearedUnreported = false
     /// The media's subtitle tracks, what of them is on screen and how it is drawn.
     public let subtitles: SubtitleController
+    /// Tone mapping of the Metal path: the user's adjustments and the curve adapted to the media and its frames.
+    public let toneMapping: ToneMapController
     /// Seconds audio is shifted against the picture: positive plays it later, negative earlier. Set with
     /// `setAudioDelay`.
     public internal(set) var audioDelay: Double = 0
@@ -465,7 +387,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let displayLayerLock = OSAllocatedUnfairLock()
     @ObservationIgnored
     let cachedVideoFormatDescription = OSAllocatedUnfairLock<CMVideoFormatDescription?>(initialState: nil)
-    public let metalRenderer = MetalVideoRenderer()
+    public let metalRenderer: MetalVideoRenderer?
     public let audioRenderer = AVSampleBufferAudioRenderer()
     let audioSink: DelayedAudioSink
     var videoFeedingTask: Task<Void, Never>?
@@ -623,10 +545,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let audioRouteMonitor = AudioDeviceRouteMonitor()
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
-    /// Whether the audio track was chosen on load by `TrackAutoSelection` and the user hasn't changed it since: it
-    /// isn't saved to the history, so later language settings apply to the file.
-    @ObservationIgnored
-    var audioSelectionIsAutomatic = false
     var configuration: PlayerConfiguration
     /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
     public internal(set) var currentPath: String?
@@ -734,14 +652,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
             userDefaults === UserDefaults.standard ? .shared : PlaybackHistoryStore(userDefaults: userDefaults)
         self.renderMode = configuration.defaultRenderMode
         self.isToneMappingPermitted = configuration.enableToneMapping
-        self.targetNitsScale = configuration.targetNitsScale
-        self.targetNitsScaleLock.withLock { $0 = configuration.targetNitsScale }
-        self.baseAdaptiveTargetNits = 203.0
-        let effectiveNits = max(min(203.0 * configuration.targetNitsScale, 500.0), 80.0)
-        self.metalTargetNits = effectiveNits
-        self.metalSharpness = configuration.sharpness
-        self.applyDolbyVisionTrims = configuration.applyDolbyVisionTrims
-        self.dynamicToneMapLock.withLock { $0.appliesTrims = configuration.applyDolbyVisionTrims }
+        let metalRenderer = MetalVideoRenderer()
+        self.metalRenderer = metalRenderer
+        let toneMapping = ToneMapController(renderer: metalRenderer, monitor: PlayerPerformanceMonitor.shared)
+        toneMapping.apply(configuration)
+        self.toneMapping = toneMapping
         self.volume = configuration.initialVolume
         let subtitles = SubtitleController()
         subtitles.apply(configuration)
@@ -756,8 +671,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
             durationCache: durationCache
         )
 
-        metalRenderer?.uniforms.targetNits = effectiveNits
-        metalRenderer?.uniforms.outputSharpness = configuration.sharpness
         let renderer = displayLayer.sampleBufferRenderer
         self.sampleBufferRenderer = renderer
         if renderer.responds(to: Self.enqueueSampleBufferSelector),
@@ -785,6 +698,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
 
         subtitles.host = self
+        toneMapping.host = self
         setupDisplayLink()
         setupAudioObservers()
         updateEffectiveRenderMode()

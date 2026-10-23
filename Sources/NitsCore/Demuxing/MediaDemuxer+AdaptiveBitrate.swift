@@ -8,14 +8,47 @@ import Foundation
 /// runs while the thread keeps reading. The switch it asks for is spliced like a manual one
 /// (`MediaDemuxer+Variants.swift`), at the read position.
 extension MediaDemuxer {
-    /// Transfer of the current reading spell, behind `lock`.
-    struct TransferWindow {
-        /// A read waited on the network during this spell.
-        var isNetworkBound = false
-        var bytes = 0
-        var seconds = 0.0
-        /// Seconds of media read.
-        var media = 0.0
+    /// What the read-ahead thread measures and decides with: the read-ahead thread's alone from its start on (behind
+    /// `lock` and `queueLock` there).
+    struct AdaptiveBitrateState {
+        /// Transfer of the current reading spell.
+        struct TransferWindow {
+            /// A read waited on the network during this spell.
+            var isNetworkBound = false
+            var bytes = 0
+            var seconds = 0.0
+            /// Seconds of media read.
+            var media = 0.0
+        }
+
+        /// Set up by `startReadAhead` for its limit.
+        var logic = AdaptiveBitrateLogic()
+        var window = TransferWindow()
+        var nextDecision = 0.0
+        /// `adaptiveTime` the read-ahead thread last waited at the live edge, for a playlist reload.
+        var liveEdgeReachedAt: Double?
+        let epoch = ContinuousClock.now
+
+        /// `bytes` came in `seconds` of a read's transfer, past its requests' `latency`, and `media` seconds were
+        /// read, at `time` (`adaptiveTime`). The latency counts for every read: reads served from what the socket
+        /// buffered read media too, whose requests waited before. Only the transfer tells a wait on the network: a
+        /// request answered, the media read may still come from what the socket buffered (a playlist reloaded, then
+        /// the segment read on).
+        mutating func addTransfer(bytes: Int, seconds: Double, latency: Double, media: Double, at time: Double) {
+            logic.addLatency(latency, media: media.isFinite ? media : 0)
+            if seconds >= MediaDemuxer.networkWait { window.isNetworkBound = true }
+            guard window.isNetworkBound else { return }
+            window.bytes += bytes
+            window.seconds += seconds
+            if media.isFinite { window.media += media }
+            let sample = MediaDemuxer.sample
+            if window.seconds >= sample.seconds
+                || (window.media >= sample.media && window.seconds >= sample.minimumSeconds)
+            {
+                logic.addSample(bytes: window.bytes, seconds: window.seconds, media: window.media, at: time)
+                window = TransferWindow(isNetworkBound: true)
+            }
+        }
     }
 
     /// A read taking this long waited on the network.
@@ -39,7 +72,7 @@ extension MediaDemuxer {
     }
 
     var adaptiveTime: Double {
-        (ContinuousClock.now - adaptiveEpoch) / .seconds(1)
+        (ContinuousClock.now - adaptiveBitrate.epoch) / .seconds(1)
     }
 
     /// A read of a live stream this long, at most this many bits a second, waited at the live edge: FFmpeg's HLS
@@ -96,67 +129,48 @@ extension MediaDemuxer {
                 bytes: Int(opened.total - mark.bytes),
                 seconds: (opened.asked - mark.time) / .seconds(1) - (opened.openSeconds - mark.openSeconds))
         {
-            liveEdgeReachedAt = adaptiveTime
-            transferWindow.isNetworkBound = false
+            adaptiveBitrate.liveEdgeReachedAt = adaptiveTime
+            adaptiveBitrate.window.isNetworkBound = false
             // The reloads while waiting are no cost of reading: only the segment's request counts.
-            noteTransfer(
+            adaptiveBitrate.addTransfer(
                 bytes: Int(bytesAfter - opened.total), seconds: (end - opened.opened) / .seconds(1),
-                latency: countsLatency ? ioBytes.openSeconds - opened.openSeconds : 0, media: media)
+                latency: countsLatency ? ioBytes.openSeconds - opened.openSeconds : 0, media: media, at: adaptiveTime)
             return
         }
         let opening = ioBytes.openSeconds - mark.openSeconds
-        noteTransfer(
+        adaptiveBitrate.addTransfer(
             bytes: Int(bytesAfter - mark.bytes), seconds: max((end - mark.time) / .seconds(1) - opening, 0),
-            latency: countsLatency ? opening : 0, media: media)
-    }
-
-    /// `bytes` came in `seconds` of a read's transfer, past its requests' `latency`, and `media` seconds were read. The
-    /// latency counts for every read: reads served from what the socket buffered read media too, whose requests waited
-    /// before. Only the transfer tells a wait on the network: a request answered, the media read may still come from
-    /// what the socket buffered (a playlist reloaded, then the segment read on).
-    private func noteTransfer(bytes: Int, seconds: Double, latency: Double, media: Double) {
-        adaptiveBitrate.addLatency(latency, media: media.isFinite ? media : 0)
-        if seconds >= Self.networkWait { transferWindow.isNetworkBound = true }
-        guard transferWindow.isNetworkBound else { return }
-        transferWindow.bytes += bytes
-        transferWindow.seconds += seconds
-        if media.isFinite { transferWindow.media += media }
-        if transferWindow.seconds >= Self.sample.seconds
-            || (transferWindow.media >= Self.sample.media && transferWindow.seconds >= Self.sample.minimumSeconds)
-        {
-            adaptiveBitrate.addSample(
-                bytes: transferWindow.bytes, seconds: transferWindow.seconds, media: transferWindow.media,
-                at: adaptiveTime)
-            transferWindow = TransferWindow(isNetworkBound: true)
-        }
+            latency: countsLatency ? opening : 0, media: media, at: adaptiveTime)
     }
 
     /// The read-ahead thread stopped reading (at its limit or the end): the next spell starts on what the socket
     /// buffered meanwhile, which doesn't count until a read waits again. The window carries over: with the
     /// read-ahead near its limit, spells are short.
     func noteReadAheadIdle() {
-        transferWindow.isNetworkBound = false
+        adaptiveBitrate.window.isNetworkBound = false
     }
 
     /// Asks for the variant `AdaptiveBitrateLogic` chooses, every `decisionInterval`. Behind `lock` and `queueLock`.
     func adaptBitrateIfDue() {
         let now = adaptiveTime
-        guard now >= nextAdaptiveDecision, variants.count > 1, variantSwitch == nil, !readAheadEnded else { return }
-        nextAdaptiveDecision = now + Self.decisionInterval
+        guard now >= adaptiveBitrate.nextDecision, variants.count > 1, variantSwitch == nil, !readAheadEnded else {
+            return
+        }
+        adaptiveBitrate.nextDecision = now + Self.decisionInterval
         let selection = variantSelection.withLock { $0 }
         guard selection.isAutomatic, selection.requested == nil, let current = selection.selected else { return }
         var readAhead = readAheadState.withLock { $0 } - consumedSeconds
         guard readAhead.isFinite else { return }
-        if let edge = liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory {
-            readAhead = max(readAhead, adaptiveBitrate.config.highBuffer)
+        if let edge = adaptiveBitrate.liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory {
+            readAhead = max(readAhead, adaptiveBitrate.logic.config.highBuffer)
         }
         let ladder = variants.filter(\.isSwitchable).map {
             AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth)
         }
-        guard let chosen = adaptiveBitrate.choose(current: current, among: ladder, readAhead: readAhead, at: now)
+        guard let chosen = adaptiveBitrate.logic.choose(current: current, among: ladder, readAhead: readAhead, at: now)
         else { return }
-        let estimate = adaptiveBitrate.estimate.map { "\(Int($0 / 1000)) kbit/s" } ?? "none"
-        let latency = adaptiveBitrate.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"
+        let estimate = adaptiveBitrate.logic.estimate.map { "\(Int($0 / 1000)) kbit/s" } ?? "none"
+        let latency = adaptiveBitrate.logic.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"
         AppLog.info(
             .demuxer,
             "ABR: read-ahead \(String(format: "%.1f", readAhead)) s, throughput \(estimate), latency \(latency)")

@@ -30,8 +30,8 @@ struct PlayerEngineTests {
         #expect(engine.media.duration == 0.0)
         #expect(engine.volume == 0.8)
         #expect(engine.isMuted == false)
-        #expect(engine.metalTargetNits == 250.0)
-        #expect(engine.metalSharpness == 0.7)
+        #expect(engine.toneMapping.targetNits == 250.0)
+        #expect(engine.toneMapping.sharpness == 0.7)
         #expect(engine.isToneMappingPermitted == true)
         #expect(engine.renderMode == .auto)
         #expect(engine.displayLayer.videoGravity == .resizeAspect)
@@ -744,13 +744,7 @@ struct PlayerEngineTests {
             var isToneMappingPermitted: Bool = true
             nonisolated var activeRenderMode: RenderMode { .metalToneMap }
             var isDisplaySleepDisabled: Bool = false
-            var metalExposure: Float = 0
-            var metalShadowLift: Float = 0
-            var metalTargetNits: Float = 203.0
-            var targetNitsScale: Float = 1.0
-            var baseAdaptiveTargetNits: Float = 203.0
-            var metalSharpness: Float = 0
-            var applyDolbyVisionTrims: Bool = false
+            let toneMapping = ToneMapController(renderer: nil, monitor: .shared)
             var volume: Float = 1.0
             var isMuted: Bool = false
             var playbackRate: Double = 1.0
