@@ -69,6 +69,8 @@ public protocol PlayerActions: AnyObject {
     func cycleVideoScaling()
     func stepVideoZoom(by steps: Int)
     func resetVideoZoom()
+    /// Saves the frame on screen as an image, as the render mode shows it.
+    func captureFrame()
 }
 
 extension PlayerActions {
@@ -96,6 +98,7 @@ extension PlayerActions {
     public func cycleVideoScaling() {}
     public func stepVideoZoom(by steps: Int) {}
     public func resetVideoZoom() {}
+    public func captureFrame() {}
     public func pressActionButton() {}
     public func dismissActionButton() {}
     public func seekForward() {

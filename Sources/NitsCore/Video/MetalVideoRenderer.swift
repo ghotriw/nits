@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import Foundation
 import Metal
+import NitsKernels
 import QuartzCore
 import os
 import simd
@@ -86,9 +87,29 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private var lastRenderedTextures: (CVMetalTexture?, CVMetalTexture?) = (nil, nil)
     /// Already kept alive by `lastRenderedTextures`; held for `redrawLastFrame()`.
     private var lastPixelBuffer: CVPixelBuffer?
+    private var lastPTS: Double = -1
     private let renderLock = OSAllocatedUnfairLock()
     private let uniformsLock = OSAllocatedUnfairLock(initialState: ToneMapUniforms())
     private let sourceRectLock = OSAllocatedUnfairLock(initialState: CGRect(x: 0, y: 0, width: 1, height: 1))
+    private let lastDrawnLock = OSAllocatedUnfairLock<DrawnFrame?>(initialState: nil)
+    /// The pipeline of `doviSignalFragmentShader`, built on the first still that needs it (`signalPipeline()`).
+    private let signalPipelineLock = OSAllocatedUnfairLock<(any MTLRenderPipelineState)?>(initialState: nil)
+
+    /// A frame as it was drawn into the layer: what a still of it must repeat (`renderStill`).
+    struct DrawnFrame: @unchecked Sendable {
+        let pixelBuffer: CVPixelBuffer
+        /// Presentation time of the frame, in seconds.
+        let pts: Double
+        let uniforms: ToneMapUniforms
+        let sourceRect: CGRect
+        let drawableSize: CGSize
+    }
+
+    /// The frame the layer shows, with its time and the uniforms, `sourceRect` and drawable size it was drawn with:
+    /// read in one step, so a frame, a curve or a layout drawn after it can't mix into its still. Nil after `clear()`.
+    var lastDrawnFrame: DrawnFrame? {
+        lastDrawnLock.withLock { $0 }
+    }
 
     /// A copy of the uniforms. Read-only: they change only in one locked step (`updateUniforms`), as the display link
     /// and the main thread both write them; a copy read, changed and set back would undo the other's write.
@@ -156,14 +177,17 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         }
     }
 
-    /// - Parameter onGPUCompleted: Called with the command buffer's `gpuEndTime` (host seconds) once the GPU finished
-    ///   the frame, 0 if it failed.
+    /// - Parameters:
+    ///   - pts: Presentation time of the frame, in seconds, for a still of it (`lastDrawnFrame`).
+    ///   - onGPUCompleted: Called with the command buffer's `gpuEndTime` (host seconds) once the GPU finished the
+    ///     frame, 0 if it failed.
     public func render(
-        pixelBuffer: CVPixelBuffer, onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)? = nil
+        pixelBuffer: CVPixelBuffer, pts: Double,
+        onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)? = nil
     ) {
         renderLock.lock()
         defer { renderLock.unlock() }
-        renderLocked(pixelBuffer: pixelBuffer, onGPUCompleted: onGPUCompleted)
+        renderLocked(pixelBuffer: pixelBuffer, pts: pts, onGPUCompleted: onGPUCompleted)
     }
 
     /// Re-renders the last frame at the current `drawableSize`: until the next frame, the layer would otherwise show
@@ -172,11 +196,11 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         renderLock.lock()
         defer { renderLock.unlock() }
         guard let lastPixelBuffer else { return }
-        renderLocked(pixelBuffer: lastPixelBuffer, onGPUCompleted: nil)
+        renderLocked(pixelBuffer: lastPixelBuffer, pts: lastPTS, onGPUCompleted: nil)
     }
 
     private func renderLocked(
-        pixelBuffer: CVPixelBuffer, onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)?
+        pixelBuffer: CVPixelBuffer, pts: Double, onGPUCompleted: (@Sendable (_ gpuEndTime: CFTimeInterval) -> Void)?
     ) {
         guard let pipelineState,
             let textureCache,
@@ -261,12 +285,165 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         // Retain textures in renderer slot until next frame without allocating a heap closure
         lastRenderedTextures = (yTextureRef, uvTextureRef)
         lastPixelBuffer = pixelBuffer
+        lastPTS = pts
+        let drawn = DrawnFrame(
+            pixelBuffer: pixelBuffer, pts: pts, uniforms: currentUniforms, sourceRect: source,
+            drawableSize: CGSize(width: drawable.texture.width, height: drawable.texture.height))
+        lastDrawnLock.withLock { $0 = drawn }
 
         if let onGPUCompleted {
             commandBuffer.addCompletedHandler { onGPUCompleted($0.status == .completed ? $0.gpuEndTime : 0) }
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    /// `pixelBuffer` drawn as the layer draws it (same shader) with `uniforms` over `sourceRect` (those of the frame on
+    /// screen: `lastDrawnFrame`) into a `width` × `height` texture of the layer's format, as 16-bit Display P3 RGB: the
+    /// 10-bit values the layer shows, exactly. Blocks until the GPU is done; the layer's own frames are not held up
+    /// meanwhile.
+    func renderStill(
+        pixelBuffer: CVPixelBuffer, uniforms: ToneMapUniforms, sourceRect: CGRect, width: Int, height: Int
+    ) -> CGImage? {
+        guard let pipelineState,
+            let output = drawStill(
+                pixelBuffer, sourceRect: sourceRect, width: width, height: height, pipeline: pipelineState,
+                format: .bgr10a2Unorm, uniforms: uniforms)
+        else { return nil }
+        return Self.displayP3Image(of: output)
+    }
+
+    /// A Dolby Vision Profile 5 frame composed by `reshaping` (its RPU's) to its BT.2100 PQ signal, untone-mapped, as
+    /// 16-bit RGB in the BT.2100 PQ space, over `sourceRect`. Blocks until the GPU is done.
+    func renderDolbyVisionSignal(
+        pixelBuffer: CVPixelBuffer, sourceRect: CGRect, width: Int, height: Int,
+        reshaping: ToneMapUniforms.DolbyVisionReshaping
+    ) -> CGImage? {
+        // The shader reads only the reshaping, and the bit depth and range `drawStill` sets from the buffer.
+        var signalUniforms = ToneMapUniforms()
+        signalUniforms.doviReshaping = reshaping
+        guard let signalPipeline = signalPipeline(),
+            let output = drawStill(
+                pixelBuffer, sourceRect: sourceRect, width: width, height: height, pipeline: signalPipeline,
+                format: .rgba16Unorm, uniforms: signalUniforms),
+            let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        else { return nil }
+        var rgba = Data(count: width * height * 8)
+        rgba.withUnsafeMutableBytes {
+            output.getBytes(
+                $0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        guard let provider = CGDataProvider(data: rgba as CFData) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 64, bytesPerRow: width * 8,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(
+                rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    /// The pipeline of `doviSignalFragmentShader`, built once on first use, as only stills need it.
+    private func signalPipeline() -> (any MTLRenderPipelineState)? {
+        signalPipelineLock.withLock { pipeline in
+            if let pipeline { return pipeline }
+            guard let library = (try? device.makeDefaultLibrary(bundle: .module)) ?? device.makeDefaultLibrary()
+            else { return nil }
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "hdrVertexShader")
+            descriptor.fragmentFunction = library.makeFunction(name: "doviSignalFragmentShader")
+            descriptor.colorAttachments[0].pixelFormat = .rgba16Unorm
+            pipeline = try? device.makeRenderPipelineState(descriptor: descriptor)
+            return pipeline
+        }
+    }
+
+    /// Draws `pixelBuffer` with `pipeline` and `uniforms` (bit depth and range set from the buffer) over `sourceRect`
+    /// into a new `width` × `height` texture of `format`, readable from the CPU.
+    private func drawStill(
+        _ pixelBuffer: CVPixelBuffer, sourceRect source: CGRect, width: Int, height: Int,
+        pipeline: any MTLRenderPipelineState, format: MTLPixelFormat, uniforms: ToneMapUniforms
+    ) -> (any MTLTexture)? {
+        guard width > 0, height > 0, let textureCache else { return nil }
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let is8Bit =
+            (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                || pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        let isFull =
+            (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                || pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
+        let planeWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let planeHeight = CVPixelBufferGetHeight(pixelBuffer)
+
+        func planeTexture(_ plane: Int, _ format: MTLPixelFormat, _ width: Int, _ height: Int) -> CVMetalTexture? {
+            var texture: CVMetalTexture?
+            let status = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault, textureCache, pixelBuffer, nil, format, width, height, plane, &texture)
+            return status == kCVReturnSuccess ? texture : nil
+        }
+        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: format, width: width, height: height, mipmapped: false)
+        outputDescriptor.usage = [.renderTarget]
+        outputDescriptor.storageMode = .shared
+        guard
+            let yTextureRef = planeTexture(0, is8Bit ? .r8Unorm : .r16Unorm, planeWidth, planeHeight),
+            let uvTextureRef = planeTexture(1, is8Bit ? .rg8Unorm : .rg16Unorm, planeWidth / 2, planeHeight / 2),
+            let yTexture = CVMetalTextureGetTexture(yTextureRef),
+            let uvTexture = CVMetalTextureGetTexture(uvTextureRef),
+            let output = device.makeTexture(descriptor: outputDescriptor),
+            let commandBuffer = commandQueue.makeCommandBuffer()
+        else { return nil }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = output
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        encoder.setRenderPipelineState(pipeline)
+        var sourceRectBytes = SIMD4<Float>(
+            Float(source.minX), Float(source.minY), Float(source.width), Float(source.height))
+        encoder.setVertexBytes(&sourceRectBytes, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+        encoder.setFragmentTexture(yTexture, index: 0)
+        encoder.setFragmentTexture(uvTexture, index: 1)
+        var currentUniforms = uniforms
+        currentUniforms.bitDepth = is8Bit ? 8 : 10
+        currentUniforms.isFullRange = isFull ? 1 : 0
+        encoder.setFragmentBytes(&currentUniforms, length: MemoryLayout<ToneMapUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        guard commandBuffer.status == .completed else { return nil }
+        // The plane textures are only valid while their CVMetalTextures live.
+        withExtendedLifetime((yTextureRef, uvTextureRef)) {}
+        return output
+    }
+
+    /// A `.bgr10a2Unorm` texture (`(A << 30) | (R << 20) | (G << 10) | B`) as 16-bit RGB in Display P3.
+    static func displayP3Image(of texture: any MTLTexture) -> CGImage? {
+        let width = texture.width
+        let height = texture.height
+        var packed = [UInt32](repeating: 0, count: width * height)
+        packed.withUnsafeMutableBytes {
+            texture.getBytes(
+                $0.baseAddress!, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        var rgb = Data(count: width * height * 6)
+        packed.withUnsafeBufferPointer { src in
+            rgb.withUnsafeMutableBytes { dst in
+                PackedRGBConversion.unpack10BitBGRA(
+                    from: src.baseAddress!, to: dst.bindMemory(to: UInt16.self).baseAddress!, count: src.count)
+            }
+        }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
+            let provider = CGDataProvider(data: rgb as CFData)
+        else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 48, bytesPerRow: width * 6,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(
+                rawValue: CGImageAlphaInfo.none.rawValue | CGBitmapInfo.byteOrder16Little.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 
     /// Clears the Metal layer frame by presenting a black clear frame.
@@ -276,6 +453,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
 
         lastRenderedTextures = (nil, nil)
         lastPixelBuffer = nil
+        lastDrawnLock.withLock { $0 = nil }
         guard let drawable = metalLayer.nextDrawable() else { return }
         renderPassDesc.colorAttachments[0].texture = drawable.texture
 

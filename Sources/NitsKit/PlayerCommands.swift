@@ -206,6 +206,12 @@ public struct PlayerCommands: Commands {
                 .disabled(
                     !hasVideo
                         || (playerActions?.videoGeometry.zoom == 1.0 && playerActions?.videoGeometry.pan == .zero))
+
+            Divider()
+
+            Button("Save Screenshot") { playerActions?.captureFrame() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!hasVideo)
         }
 
         CommandMenu("View") {

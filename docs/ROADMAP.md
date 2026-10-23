@@ -544,9 +544,16 @@ flowchart TD
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
 - [ ] **5.10.3. Color-Accurate Screenshot Capture (Frame Export):**
-  - Capture current frame (`⌘S`): export exact decoded `CVPixelBuffer`.
-  - Raw HDR mode: uncompressed 10-bit PNG / TIFF retaining mastering colorimetry.
-  - Tonemapped SDR mode: Display P3 snapshot after passing the Metal BT.2390 shader, capturing what is visually rendered on screen.
+  - [x] Save Screenshot (`⌘S`, Video menu): the frame on screen as the active render mode shows it, with the
+    on-screen crop, aspect ratio and zoom, at the source's resolution, to `~/Pictures/Nits` (`FrameCapture`,
+    `FrameStillWriter`).
+    - `.metalToneMap`: the frame drawn offscreen by the same shader and uniforms, a 16-bit Display P3 PNG of the
+      exact 10-bit values the layer shows.
+    - `.system`: the frame as the display layer is given it (Core Image reads the buffer's colorimetry): PQ / HLG
+      to a 10-bit HEIC in BT.2100, which the viewer maps to its display as the layer does; SDR to a PNG. Dolby
+      Vision Profile 5 (IPT-PQ-c2, which the layer composes itself) is composed from its RPU by
+      `doviSignalFragmentShader` to the BT.2100 PQ signal, without tone mapping.
+  - [ ] Raw mode: the decoded frame without tone mapping or geometry, keeping the stream's colorimetry.
 - [x] **5.10.4. Picture-in-Picture (PiP):**
   - Native macOS Picture-in-Picture via public `AVPictureInPictureController` + `ContentSource(sampleBufferDisplayLayer:)`
     (the video-call controller and automatic inline start are iOS-only). Toggle from View menu (`⌃⌘P`) and an

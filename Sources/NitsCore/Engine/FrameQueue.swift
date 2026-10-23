@@ -408,11 +408,13 @@ public final class FrameQueue: @unchecked Sendable {
         return lastRenderedBuffer
     }
 
-    /// The most recently rendered frame and its RPU, read together.
-    public func getLastRenderedFrame() -> (pixelBuffer: CVPixelBuffer, doviMetadata: DolbyVisionFrameMetadata?)? {
+    /// The most recently rendered frame, its presentation time (seconds) and its RPU, read together.
+    public func getLastRenderedFrame()
+        -> (pixelBuffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata?)?
+    {
         lock.lock()
         defer { lock.unlock() }
-        return lastRenderedBuffer.map { ($0, lastRenderedDoviMetadata) }
+        return lastRenderedBuffer.map { ($0, lastRenderedPTS, lastRenderedDoviMetadata) }
     }
 
     /// Resets the cumulative dropped and skipped frames counters (e.g. on new media load or manual seek).

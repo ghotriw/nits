@@ -244,6 +244,23 @@ public final class ToneMapController {
             PlayerPerformanceMonitor.ToneMapParams(mode: engineMode, peakNits: peak, targetNits: target))
     }
 
+    /// Follows the Profile 5 reshaping through frames given to the display layer (`.system`), which composes them
+    /// itself and has no curve to resolve: a still of one composes it with the reshaping on screen (`stillReshaping`).
+    nonisolated func trackReshaping(doviMetadata: DolbyVisionFrameMetadata?) {
+        frameState.withLock { $0.reshaper.update(with: doviMetadata) }
+    }
+
+    /// The Profile 5 reshaping a frame with `doviMetadata` is shown with: its RPU's, or for a frame without one the last
+    /// RPU's, which it keeps. Nil for other media.
+    nonisolated func stillReshaping(doviMetadata: DolbyVisionFrameMetadata?) -> ToneMapUniforms.DolbyVisionReshaping? {
+        frameState.withLock { state in
+            guard state.reshaper.isProfile5 else { return nil }
+            var reshaper = state.reshaper
+            reshaper.update(with: doviMetadata)
+            return reshaper.uniforms
+        }
+    }
+
     /// Resolves the curve for one frame's Dolby Vision metadata (L1 and L2 trims; the held or static values without
     /// RPU), writes it to the renderer's uniforms and reports it. Returns how the frame was tone-mapped. Called by the
     /// display link and by direct renders (seek preview, frame steps), so paused frame-stepping over Dolby Vision

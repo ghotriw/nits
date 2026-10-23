@@ -474,6 +474,20 @@ float3 sampleAndToneMap(
     return clamp(displayGamma, 0.0, 1.0);
 }
 
+// Dolby Vision Profile 5 composed to its BT.2100 PQ signal (BT.2020 primaries) by the RPU's reshaping and matrices,
+// without tone mapping: HDR stills of the `.system` path, whose display layer composes the picture the same way.
+fragment float4 doviSignalFragmentShader(
+    VertexOutput in [[stage_in]],
+    texture2d<float, access::sample> textureY [[texture(0)]],
+    texture2d<float, access::sample> textureUV [[texture(1)]],
+    constant ToneMapUniforms &uniforms [[buffer(0)]]
+) {
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    float y = textureY.sample(s, in.texCoords).r;
+    float2 uv = textureUV.sample(s, in.texCoords).rg;
+    return float4(nitsToPQ(nitsFromIPT(y, uv, uniforms)), 1.0);
+}
+
 fragment float4 hdrToneMapFragmentShader(
     VertexOutput in [[stage_in]],
     texture2d<float, access::sample> textureY [[texture(0)]],

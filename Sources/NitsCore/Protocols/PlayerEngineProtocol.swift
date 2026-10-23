@@ -114,6 +114,8 @@ public protocol PlayerVideoControlling: PlayerMediaDescribing {
     @MainActor var thumbnailManager: ThumbnailManager { get }
 
     @MainActor func renderCurrentFrame()
+    /// The frame on screen as a still image, as the active render mode shows it; nil without a frame.
+    @MainActor func captureFrame() async -> CapturedFrame?
 }
 
 /// Track selection and inspection for audio streams and HLS variants; subtitles are `PlayerSubtitleControlling`.

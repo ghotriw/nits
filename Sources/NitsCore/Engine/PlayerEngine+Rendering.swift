@@ -341,7 +341,7 @@ extension PlayerEngine {
             if mode == .metalToneMap {
                 let toneMapMode = toneMapping.applyFrame(doviMetadata: popped.doviMetadata)
                 let cadence = frameCadenceLock
-                metalRenderer?.render(pixelBuffer: popped.pixelBuffer) { gpuEndTime in
+                metalRenderer?.render(pixelBuffer: popped.pixelBuffer, pts: popped.pts.seconds) { gpuEndTime in
                     cadence.withLock {
                         $0.recordGPUCompletion(targetTimestamp: targetTimestamp, gpuEndTime: gpuEndTime)
                     }
@@ -369,6 +369,7 @@ extension PlayerEngine {
                     }
                 }
             } else {
+                toneMapping.trackReshaping(doviMetadata: popped.doviMetadata)
                 presentToDisplayLayer(pixelBuffer: popped.pixelBuffer)
                 performanceMonitor.updateToneMapParams(
                     PlayerPerformanceMonitor.ToneMapParams(mode: .appleXDR)
@@ -518,8 +519,9 @@ extension PlayerEngine {
             // The frame's own curve, from its L1 as is: tone mapping may have last resolved another frame's (under
             // `.system` none), so there is no playback to smooth from.
             _ = toneMapping.applyFrame(doviMetadata: frame.doviMetadata, restartsSmoothing: true)
-            metalRenderer?.render(pixelBuffer: frame.pixelBuffer)
+            metalRenderer?.render(pixelBuffer: frame.pixelBuffer, pts: frame.pts)
         } else {
+            toneMapping.trackReshaping(doviMetadata: frame.doviMetadata)
             presentToDisplayLayer(pixelBuffer: frame.pixelBuffer)
         }
     }
@@ -540,10 +542,34 @@ extension PlayerEngine {
         frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts, doviMetadata: doviMetadata)
         if activeRenderMode == .metalToneMap {
             _ = toneMapping.applyFrame(doviMetadata: doviMetadata)
-            metalRenderer?.render(pixelBuffer: pixelBuffer)
+            metalRenderer?.render(pixelBuffer: pixelBuffer, pts: pts)
         } else {
+            toneMapping.trackReshaping(doviMetadata: doviMetadata)
             presentToDisplayLayer(pixelBuffer: pixelBuffer)
         }
+    }
+
+    /// The frame on screen as a still, as the active render mode shows it, with the on-screen crop, aspect ratio
+    /// and zoom at the source's resolution (see `FrameCapture`). Nil without a frame.
+    public func captureFrame() async -> CapturedFrame? {
+        guard let frame = frameQueue.getLastRenderedFrame() else { return nil }
+        let mode = activeRenderMode
+        let renderer = metalRenderer
+        // Under Metal, the frame as the layer was given it, in one step: the display link may draw the next frame, or
+        // its curve, while this reads.
+        let drawn = mode == .metalToneMap ? renderer?.lastDrawnFrame : nil
+        nonisolated(unsafe) let pixelBuffer = drawn?.pixelBuffer ?? frame.pixelBuffer
+        let pts = drawn?.pts ?? frame.pts
+        let sourceRect = drawn?.sourceRect ?? renderer?.sourceRect ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+        let displaySize = drawn?.drawableSize ?? renderer?.metalLayer.drawableSize ?? .zero
+        let uniforms = drawn?.uniforms
+        // A drawn frame carries its reshaping in its uniforms.
+        let reshaping = drawn == nil ? toneMapping.stillReshaping(doviMetadata: frame.doviMetadata) : nil
+        return await Task.detached(priority: .userInitiated) {
+            FrameCapture.capture(
+                pixelBuffer, pts: pts, mode: mode, renderer: renderer, sourceRect: sourceRect,
+                displaySize: displaySize, uniforms: uniforms, dolbyVisionReshaping: reshaping)
+        }.value
     }
 
     /// Completely flushes and clears the video display layer and Metal canvas, removing any lingering video frame.

@@ -786,6 +786,7 @@ struct PlayerEngineTests {
             func toggleMute() {}
             func toggleDebugHUD() {}
             func renderCurrentFrame() {}
+            func captureFrame() async -> CapturedFrame? { nil }
             func selectAudioTrack(id: Int) {}
             func selectVariant(id: Int) {}
             func selectAutomaticVariant() {}

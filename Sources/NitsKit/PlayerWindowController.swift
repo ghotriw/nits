@@ -622,6 +622,32 @@ extension PlayerWindowController: PlayerActions {
             "Zoom: \(Int((zoom * 100).rounded()))%")
     }
 
+    public func captureFrame() {
+        guard engine.media.hasVideo else { return }
+        let title = engine.mediaTitle
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let frame = await engine.captureFrame() else {
+                showGeometryOSD(symbol: "exclamationmark.triangle", "Can't capture the frame")
+                return
+            }
+            do {
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try FrameStillWriter.write(frame, title: title)
+                }.value
+                if engine.enableOSD {
+                    uiState.osd.show(
+                        .custom(
+                            symbol: "camera", text: frame.isHDR ? "HDR Screenshot Saved" : "Screenshot Saved",
+                            subtext: url.lastPathComponent))
+                }
+            } catch {
+                AppLog.error(.ui, "Saving the screenshot failed: \(error)")
+                showGeometryOSD(symbol: "exclamationmark.triangle", "Can't save the screenshot")
+            }
+        }
+    }
+
     private func showGeometryOSD(symbol: String, _ text: String) {
         if engine.enableOSD {
             uiState.osd.show(.custom(symbol: symbol, text: text))
