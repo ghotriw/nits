@@ -27,6 +27,26 @@ for t in "${TARGETS[@]}"; do
     fi
 done
 
+# NitsCore stays portable across Apple platforms: UI frameworks, IOKit, the CoreAudio HAL and their types go only
+# in Sources/NitsCore/Platform/<os>/ (see "Layer boundaries" in AGENTS.md). Nothing builds NitsCore for another
+# platform yet, so the compiler would not catch a leak. Besides imports and UI types it lists the one-platform
+# members of shared frameworks that NitsCore has used; comment-only lines don't count.
+check_platform_boundary() {
+    local imports='^\s*(@preconcurrency )?import (AppKit|Cocoa|UIKit|IOKit|CoreAudio)\b'
+    local appkit='\bNS(App|Application|Bitmap[A-Za-z]*|Color|Cursor|Event|Font|GraphicsContext|Image|Menu[A-Za-z]*|Pasteboard|Responder|Screen|View|Window|Workspace)\b'
+    local uikit='\bUI(Application|Color|Device|Font|Image|Screen|View|Window)\b'
+    local members='\bAudioObject[A-Za-z]*\(|\bCVDisplayLink|\bCGDisplay|\bCGMainDisplayID\b|\baudioOutputDeviceUniqueID\b|\bdisplaySyncEnabled\b'
+    local leaks
+    # grep prints path:line:text, so the path filter stops at the first ':' and the comment filter reads the text.
+    leaks="$(grep -rnE "$imports|$appkit|$uikit|$members" Sources/NitsCore --include='*.swift' \
+        | grep -vE '^Sources/NitsCore/Platform/[^/:]+/' | grep -vE '^[^:]+:[0-9]+:\s*//' || true)"
+    if [[ -n "$leaks" ]]; then
+        echo "Platform-specific code outside Sources/NitsCore/Platform/<os>/:" >&2
+        echo "$leaks" >&2
+        return 1
+    fi
+}
+
 case "$MODE" in
     format|--format|-f)
         echo "Formatting Swift code..."
@@ -36,6 +56,7 @@ case "$MODE" in
     lint|--lint|-l)
         echo "Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
+        check_platform_boundary
         echo "Lint check passed."
         ;;
     typecheck|--typecheck|-t)
@@ -46,6 +67,7 @@ case "$MODE" in
     check|--check|-c)
         echo "1. Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
+        check_platform_boundary
         echo "2. Type-checking targets with strict concurrency..."
         swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
         echo "3. Running test suite..."

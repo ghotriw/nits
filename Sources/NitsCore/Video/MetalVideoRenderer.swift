@@ -1,4 +1,3 @@
-import AppKit
 import CoreVideo
 import Foundation
 import Metal

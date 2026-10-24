@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import AppKit
 import CFFmpeg
 @preconcurrency import CoreMedia
 import Foundation
@@ -108,7 +107,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var videoGeometry = VideoGeometrySettings() {
         didSet {
             guard oldValue != videoGeometry else { return }
-            displayLinkHostView?.needsLayout = true
+            videoHost?.setNeedsVideoLayout(immediately: false)
             // libass draws for the picture's pixel aspect, which a forced aspect ratio changes even when the
             // area drawn on keeps its size (Stretch).
             if oldValue.aspectRatio != videoGeometry.aspectRatio { subtitles.videoDidChange() }
@@ -147,10 +146,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// How the host view lays out `displayLayer` around Picture in Picture; `nil` fills the host view.
     public var pictureInPictureLayerGeometry: PictureInPictureLayerGeometry? {
         didSet {
-            guard oldValue != pictureInPictureLayerGeometry, let host = displayLinkHostView else { return }
+            guard oldValue != pictureInPictureLayerGeometry else { return }
             // The host window is usually ordered out during PiP and would not lay out on its own.
-            host.needsLayout = true
-            host.layoutSubtreeIfNeeded()
+            videoHost?.setNeedsVideoLayout(immediately: true)
         }
     }
     public var isHDRDisplay: Bool = false {
@@ -542,7 +540,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var relativeSeekBurstResetTask: Task<Void, Never>? = nil
     @ObservationIgnored
     var relativeSeekSessionStartTime: Double? = nil
-    let audioRouteMonitor = AudioDeviceRouteMonitor()
+    let audioOutputRoute = PlatformAudioOutputRoute()
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
     var configuration: PlayerConfiguration
@@ -618,8 +616,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     var displayLink: CADisplayLink?
     var displayLinkTarget: DisplayLinkTarget?
-    /// View the display link follows, used to resolve its current screen.
-    @ObservationIgnored weak var displayLinkHostView: NSView?
+    /// View showing the video: the display link follows it, geometry changes lay it out.
+    @ObservationIgnored weak var videoHost: (any VideoHost)?
 
     final class DisplayLinkTarget: NSObject, @unchecked Sendable {
         private weak var engine: PlayerEngine?
@@ -768,18 +766,13 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     func setupAudioObservers() {
         // Monitor system-wide default audio device changes (e.g. connecting AirPods, Bluetooth, or HDMI)
-        audioRouteMonitor.startMonitoring { [weak self] newUID in
-            self?.handleAudioDeviceRouteChange(newUID: newUID)
+        audioOutputRoute.startMonitoring(binding: audioRenderer) { [weak self] in
+            self?.handleAudioOutputRouteChange()
         }
     }
 
-    func handleAudioDeviceRouteChange(newUID: String?) {
-        AppLog.info(
-            .audio,
-            "Default audio output device route changed (UID: \(newUID ?? "nil [system default]"))"
-        )
-        // Explicitly update target output device UID to trigger CoreAudio re-binding
-        audioRenderer.audioOutputDeviceUniqueID = newUID
+    /// The renderer has just moved to a new output (see `AudioOutputRoute`).
+    func handleAudioOutputRouteChange() {
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
 
@@ -822,7 +815,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         if let observer = timeObserver {
             synchronizer.removeTimeObserver(observer)
         }
-        audioRouteMonitor.stopMonitoring()
+        audioOutputRoute.stopMonitoring()
         displayLink?.invalidate()
         displayLink = nil
         metricsTimer?.cancel()

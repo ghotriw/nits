@@ -1,63 +1,31 @@
 import Foundation
-import IOKit.pwr_mgt
-import os
 
 /// Prevents the display from dimming/sleeping and screen saver from activating
 /// while video playback is actively in progress.
-public final class DisplaySleepManager: Sendable {
-    private let assertionID = OSAllocatedUnfairLock<IOPMAssertionID>(initialState: 0)
+@MainActor
+public final class DisplaySleepManager {
+    /// Held while sleep is disabled; dropping it lets the display sleep again.
+    private var assertion: PlatformDisplaySleepAssertion?
     private let reason: String
 
     public init(reason: String = "Nits Video Playback") {
         self.reason = reason
     }
 
-    deinit {
-        assertionID.withLock { id in
-            if id != 0 {
-                IOPMAssertionRelease(id)
-                id = 0
-            }
-        }
-    }
-
     /// Whether display sleep and screen saver are currently disabled.
     public var isSleepDisabled: Bool {
-        assertionID.withLock { $0 != 0 }
+        assertion != nil
     }
 
     /// Disables display sleep and screen saver if not already disabled.
     public func disableDisplaySleep() {
-        assertionID.withLock { id in
-            guard id == 0 else { return }
-            var newID: IOPMAssertionID = 0
-            let result = IOPMAssertionCreateWithName(
-                kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
-                IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                reason as CFString,
-                &newID
-            )
-            if result == kIOReturnSuccess {
-                id = newID
-                AppLog.debug(.engine, "Display sleep disabled (assertionID: \(newID))")
-            } else {
-                AppLog.error(.engine, "Failed to create display sleep assertion: \(result)")
-            }
-        }
+        guard assertion == nil else { return }
+        assertion = PlatformDisplaySleepAssertion(reason: reason)
     }
 
     /// Enables display sleep and screen saver if currently disabled.
     public func enableDisplaySleep() {
-        assertionID.withLock { id in
-            guard id != 0 else { return }
-            let result = IOPMAssertionRelease(id)
-            if result != kIOReturnSuccess {
-                AppLog.error(.engine, "Failed to release display sleep assertion: \(result)")
-            } else {
-                AppLog.debug(.engine, "Display sleep re-enabled")
-            }
-            id = 0
-        }
+        assertion = nil
     }
 
     /// Updates display sleep state based on active video playback.

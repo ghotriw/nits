@@ -107,7 +107,7 @@ flowchart TD
   - Dynamic audio track discovery (`audioTracks`) and seamless hot-switching (`selectAudioTrack(id:)`).
   - Linear volume control (`0.0 ... 1.0`), mute toggling (`isMuted`), and volume level feedback in OSD.
 - [x] **2.4. CoreAudio Route Monitoring:**
-  - Real-time default audio output device monitoring via `AudioDeviceRouteMonitor` (`kAudioHardwarePropertyDefaultOutputDevice`).
+  - Real-time default audio output device monitoring via `CoreAudioOutputRoute` (`kAudioHardwarePropertyDefaultOutputDevice`).
   - Automatic audio rendering pipeline migration when connecting/disconnecting AirPods or external DACs.
 - [x] **2.5. Audio-Only Playback Mode:**
   - Native playback for standalone audio containers and lossless formats (FLAC, MP3, AAC, OGG, Opus, WAV, ALAC, AIFF, APE).
@@ -509,7 +509,7 @@ flowchart TD
   - Non-blocking ingestion: playlist parsing and folder scans run off the main actor with a loading indicator, and path resolution never touches the file system, so playlists of thousands of files on network volumes open in a fraction of a second.
   - Background durations for unplayed items: container-header probe (`MediaDurationProbe`, no decoding, 5 s per-item limit) for local files and LAN media files, persisted in `MediaDurationCache` together with durations learned during playback. The total shows `≈` while some are unknown.
 - [x] **5.6. Window Management & Display Sleep Prevention:**
-  - `DisplaySleepManager`: IOKit power assertions (`IOPMAssertionCreateWithName`) preventing display sleep and screen savers during active video playback.
+  - `DisplaySleepManager`: IOKit power assertions (`IOKitDisplaySleepAssertion`, `IOPMAssertionCreateWithName`) preventing display sleep and screen savers during active video playback.
   - Cursor autohide (`NSCursor.setHiddenUntilMouseMoves`) and controls overlay fading after 2.5s of user inactivity.
   - Borderless fullscreen mode with double-click toggles and `F` / `⌃⌘F` shortcuts.
   - Low-level layout-independent ANSI keycode handling in `PlayerWindow`.

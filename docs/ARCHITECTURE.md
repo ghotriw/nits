@@ -28,12 +28,45 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
 - **NitsCore** — demuxing, decoding, master clock, Metal rendering, frame queues, EDR/screen
   handover, playback history. No SwiftUI. `PlayerEngine` is `@Observable` directly, so there is no
   intermediate view-model; views re-evaluate only on the properties they read. Exports the
-  `NativeVideoHostView` canvas.
+  `NativeVideoHostView` canvas. Builds only for macOS today but is kept portable to iOS / tvOS
+  (see "Platform layer").
 - **NitsKit** — `@MainActor` window lifecycle (`PlayerWindowController`, `PlayerWindow`), menu
   commands (`PlayerCommands`), system media integration (`NowPlayingController`).
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
   `SettingsView`, `PerformanceHUDView`, `SubtitleOverlayView`). Transient UI state (fullscreen
   transitions, auto-hide) lives in `PlayerUIState`.
+
+### Platform layer
+
+Almost all of NitsCore uses frameworks that exist on every Apple platform (AVFoundation, CoreMedia,
+VideoToolbox, Metal, QuartzCore). What doesn't sits in `Sources/NitsCore/Platform/`: an interface per
+concern there, and each platform's implementation in `Platform/<os>/` (only `macOS/` so far),
+picked at compile time through a `Platform…` typealias or type of the same name on every platform.
+
+| Concern | Interface | macOS |
+|---|---|---|
+| The view showing the video: display link, screen, layout, visibility | `VideoHost` protocol | `NativeVideoHostView` (`NSView`) |
+| The main screen, before a view is attached | `PlatformScreen` enum, repeated per platform | `NSScreen.main` |
+| Audio output changes and latency | `AudioOutputRoute` protocol | `CoreAudioOutputRoute` (CoreAudio HAL, renderer device UID) |
+| Keeping the display awake | `DisplaySleepAssertion` protocol | `IOKitDisplaySleepAssertion` (IOPM assertion) |
+
+The engine holds a `VideoHost` as an existential (an embedding host may bring its own view). It reaches
+`AudioOutputRoute` and `DisplaySleepAssertion` only through their `Platform…` typealiases: those
+protocols are the contract a port's type is checked against at compile time, not dispatch points.
+
+The layer tree and its layout (`VideoLayers`: clip layer, crop and zoom, PiP geometry, the Metal
+drawable) are platform-neutral; a host view owns one and supplies its scale, its y-axis direction and
+pixel alignment. Policy stays in the engine, so a port adds implementations, not engine changes:
+`DisplaySleepManager` decides when to keep the display awake and the assertion only holds it; the host
+reports its screen's EDR headroom and calls `videoHostScreenDidChange()`, and the engine decides
+whether the screen is HDR (`minimumHDRDisplayHeadroom`) and the display-link rate.
+`./scripts/format.sh lint` fails on AppKit / UIKit / IOKit / CoreAudio HAL code, and on the
+one-platform members of shared frameworks NitsCore has used, outside `Platform/<os>/`, since nothing
+compiles NitsCore for another platform yet.
+
+What a port needs beyond that: FFmpeg, dav1d and libass built as xcframeworks (the `systemLibrary`
+targets are pkg-config only), `AVAudioSession` for the session and route, and on tvOS display
+criteria for the TV's HDR mode and refresh rate.
 
 ### Embedding (WKWebView / headless hosts)
 
@@ -415,7 +448,7 @@ clipped to the view, and the normalized part of the frame shown there. The host 
 overlay, the timeline preview and PiP's hand-back rect all take their geometry from it, so they
 can't drift apart.
 
-- **Display layer.** It sits in a clip layer inside `NativeVideoHostView`. With the default
+- **Display layer.** It sits in a clip layer (`VideoLayers`, inside `NativeVideoHostView`). With the default
   settings the layer covers the view with `.resizeAspect` and nothing clips, the layout before
   geometry existed. Otherwise the clip layer takes the visible rect with `masksToBounds` and the
   display layer the whole frame's rect with `.resize`. Crop, stretch and zoom are layer geometry,

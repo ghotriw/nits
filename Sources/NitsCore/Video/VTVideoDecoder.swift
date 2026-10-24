@@ -188,7 +188,6 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         let destinationImageBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferOpenGLCompatibilityKey as String: false,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
         ]
 

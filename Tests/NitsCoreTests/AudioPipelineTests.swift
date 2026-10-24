@@ -1,3 +1,4 @@
+import AVFoundation
 import AudioToolbox
 import CFFmpeg
 import CoreMedia
@@ -138,17 +139,17 @@ struct AudioPipelineTests {
         }
     }
 
-    @Test("AudioDeviceRouteMonitor fetches default output device and manages lifecycle cleanly")
+    @Test("CoreAudioOutputRoute fetches default output device and manages lifecycle cleanly")
     @MainActor
-    func testAudioDeviceRouteMonitorLifecycle() {
-        let monitor = AudioDeviceRouteMonitor()
-        let initialUID = AudioDeviceRouteMonitor.fetchDefaultOutputDeviceUID()
+    func testCoreAudioOutputRouteLifecycle() {
+        let monitor = CoreAudioOutputRoute()
+        let initialUID = CoreAudioOutputRoute.fetchDefaultOutputDeviceUID()
         if let initialUID {
             #expect(!initialUID.isEmpty)
         }
 
         let routeUpdateCount = OSAllocatedUnfairLock(initialState: 0)
-        monitor.startMonitoring { _ in
+        monitor.startMonitoring(binding: AVSampleBufferAudioRenderer()) {
             routeUpdateCount.withLock { $0 += 1 }
         }
         #expect(routeUpdateCount.withLock { $0 } == 0)

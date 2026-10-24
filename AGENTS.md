@@ -84,6 +84,11 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   change, and `videoStartTimeLock`), and what the request brings (`mediaTitle`, artwork; the container's artwork
   only stands in for the request's). Per-media state that stays on `PlayerEngine` is cleared in
   `resetMediaState`, the one reset `stop()` and every load share.
+- `NitsCore` stays portable to iOS / tvOS: AppKit / UIKit, IOKit, the CoreAudio HAL and anything else one
+  platform only has go in `Sources/NitsCore/Platform/<os>/`, implementing a protocol in `Platform/` (`VideoHost`,
+  `AudioOutputRoute`, `DisplaySleepAssertion`) or repeating an interface every platform has (`PlatformScreen`); the
+  engine keeps the policy (e.g. the HDR-screen threshold, from the host's EDR headroom). `./scripts/format.sh lint`
+  enforces it. See "Platform layer" in `docs/ARCHITECTURE.md`.
 - Hot loops that must run optimized in Debug too (SIMD pixel conversion, DSP) go in `NitsKernels`, the only
   target built with `-O` in Debug; keep its functions non-`@inlinable`.
 

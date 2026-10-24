@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import AppKit
 @preconcurrency import CoreMedia
 import Foundation
 

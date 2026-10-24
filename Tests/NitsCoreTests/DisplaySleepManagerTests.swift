@@ -3,6 +3,7 @@ import NitsCore
 import Testing
 
 @Suite("DisplaySleepManager Tests")
+@MainActor
 struct DisplaySleepManagerTests {
     @Test("Initial state has sleep enabled (assertion not held)")
     func testInitialState() {

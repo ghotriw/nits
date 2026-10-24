@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import AppKit
 @preconcurrency import CoreMedia
 import Foundation
 
@@ -177,7 +176,7 @@ extension PlayerEngine {
         if isReady {
             let startDelay =
                 alignWithBufferedAudio
-                ? min(AudioDeviceRouteMonitor.fetchDefaultOutputLatency() ?? 0, Self.maxOutputLatencyAlignment) : 0
+                ? min(PlatformAudioOutputRoute.currentOutputLatency() ?? 0, Self.maxOutputLatencyAlignment) : 0
             if startDelay > 0 {
                 AppLog.debug(
                     .engine,
@@ -279,12 +278,7 @@ extension PlayerEngine {
     /// means the link did not tick (hidden or occluded host window, paused link), the decoder delivered nothing,
     /// or the first queued frame lies beyond the anchor time.
     private func prerollDiagnostics(_ pending: PendingClockStart) -> String {
-        let windowState: String
-        if let window = displayLinkHostView?.window {
-            windowState = window.occlusionState.contains(.visible) ? "visible" : "occluded"
-        } else {
-            windowState = "none"
-        }
+        let windowState = videoHost?.visibilityDescription ?? "none"
         let linkState = displayLink.map { $0.isPaused ? "paused" : "running" } ?? "none"
         let head = frameQueue.headFramePTS.map { String(format: "%.3fs", $0.seconds) } ?? "none"
         let presentedPTS = frameQueue.getLastRenderedPTS()

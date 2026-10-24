@@ -8,7 +8,7 @@ import os
 /// tick runs as soon as the link fires. It touches only lock-guarded state, the Metal renderer (which has its own
 /// lock) and the display layer (see `PlayerEngine.displayLayerLock`); UI state goes to the main actor.
 ///
-/// Links are still created and configured on the main thread (`NSView.displayLink(target:selector:)` is AppKit);
+/// Links are still created and configured on the main thread (`VideoHost` and `PlatformScreen` make them);
 /// only their callbacks run here.
 final class DisplayLinkThread: @unchecked Sendable {
     static let shared = DisplayLinkThread()

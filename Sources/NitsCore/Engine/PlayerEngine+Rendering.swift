@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import AppKit
 @preconcurrency import CoreMedia
 import Foundation
 import QuartzCore
@@ -10,9 +9,10 @@ extension PlayerEngine {
         let target = DisplayLinkTarget(engine: self)
         self.displayLinkTarget = target
 
-        // If a screen is available on initialization, attach CADisplayLink to NSScreen.main
-        if let screen = NSScreen.main {
-            let link = screen.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        // If a screen is available on initialization, the link follows the main screen until a host is attached.
+        if let link = PlatformScreen.makeMainDisplayLink(
+            target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        {
             link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
             link.isPaused = true
             self.displayLink = link
@@ -20,18 +20,20 @@ extension PlayerEngine {
         }
     }
 
-    /// Attaches the engine's CADisplayLink to the video rendering host view.
+    /// Attaches the engine's CADisplayLink to the view showing the video, and matches the render mode to its screen.
     /// This ensures accurate VBLANK sync across ProMotion (120Hz) displays and seamless multi-monitor transitions.
-    public func attachDisplayLink(to view: NSView) {
-        displayLink?.invalidate()
+    public func attachDisplayLink(to host: any VideoHost) {
+        self.videoHost = host
+        updateHDRDisplay()
         let target = displayLinkTarget ?? DisplayLinkTarget(engine: self)
         self.displayLinkTarget = target
 
-        let link = view.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        guard let link = host.makeDisplayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+        else { return }
+        displayLink?.invalidate()
         link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
         link.isPaused = !isPlaying
         self.displayLink = link
-        self.displayLinkHostView = view
         guard !isPictureInPictureActive else {
             retargetDisplayLinkForPictureInPicture()
             return
@@ -39,20 +41,40 @@ extension PlayerEngine {
         updateDisplayLinkFrameRate()
     }
 
+    /// The host's screen changed, or that screen's parameters did (display mode, refresh rate, HDR, scale):
+    /// re-matches the display-link rate and the render mode to it. `VideoHost`s call it; the engine observes no
+    /// screens itself.
+    public func videoHostScreenDidChange() {
+        updateDisplayLinkFrameRate()
+        updateHDRDisplay()
+    }
+
+    /// EDR headroom above which a screen shows HDR itself; on one at or below it, HDR video is tone-mapped to SDR.
+    nonisolated static let minimumHDRDisplayHeadroom: CGFloat = 1.01
+
+    private func updateHDRDisplay() {
+        guard let videoHost else { return }
+        let isHDR = videoHost.screenEDRHeadroom > Self.minimumHDRDisplayHeadroom
+        guard isHDR != isHDRDisplay else { return }
+        isHDRDisplay = isHDR
+        videoHost.setNeedsVideoLayout(immediately: false)
+    }
+
     /// A view-based link stops when its window is hidden, which PiP usually does. While PiP is active the link
     /// follows the screen; on exit it returns to the host view.
     func retargetDisplayLinkForPictureInPicture() {
         let target = displayLinkTarget ?? DisplayLinkTarget(engine: self)
         self.displayLinkTarget = target
-        let link: CADisplayLink
+        let selector = #selector(DisplayLinkTarget.onTick(_:))
+        let newLink: CADisplayLink?
         if isPictureInPictureActive {
-            guard let screen = displayLinkHostView?.window?.screen ?? NSScreen.main else { return }
-            link = screen.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-        } else if let view = displayLinkHostView {
-            link = view.displayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
+            newLink =
+                videoHost?.makeScreenDisplayLink(target: target, selector: selector)
+                ?? PlatformScreen.makeMainDisplayLink(target: target, selector: selector)
         } else {
-            return
+            newLink = videoHost?.makeDisplayLink(target: target, selector: selector)
         }
+        guard let link = newLink else { return }
         displayLink?.invalidate()
         link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
         link.isPaused = !isPlaying
@@ -74,8 +96,7 @@ extension PlayerEngine {
     /// Call when the content frame rate or the screen changes.
     public func updateDisplayLinkFrameRate() {
         guard let displayLink else { return }
-        let screen = displayLinkHostView?.window?.screen ?? NSScreen.main
-        let screenMaxRate = screen?.maximumFramesPerSecond ?? 60
+        let screenMaxRate = videoHost?.maximumFramesPerSecond ?? PlatformScreen.mainMaximumFramesPerSecond ?? 60
         let rate = Self.preferredDisplayLinkRate(
             contentFrameDuration: nominalFrameDuration, screenMaximumRate: screenMaxRate)
         // Pinned rather than a range: allowed to go lower, Core Animation may pick a rate that is not a multiple of the
