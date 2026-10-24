@@ -149,9 +149,10 @@ struct AudioPipelineTests {
         }
 
         let routeUpdateCount = OSAllocatedUnfairLock(initialState: 0)
-        monitor.startMonitoring(binding: AVSampleBufferAudioRenderer()) {
-            routeUpdateCount.withLock { $0 += 1 }
-        }
+        monitor.startMonitoring(
+            binding: AVSampleBufferAudioRenderer(),
+            onChange: { routeUpdateCount.withLock { $0 += 1 } },
+            onRunningChange: { _ in })
         #expect(routeUpdateCount.withLock { $0 } == 0)
 
         monitor.stopMonitoring()

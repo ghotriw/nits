@@ -9,9 +9,11 @@ import Foundation
 /// audio at the queue's pace, so every buffer arrives already late: the renderer discards it and resyncs the queue
 /// several times a second, which is heard as choppy audio. It never recovers by itself; a pause and resume does.
 ///
-/// The symptom the engine sees is the feeder waiting for the renderer to take audio that is already due. A healthy
-/// renderer takes audio about a second ahead of the clock, and a real shortage of data leaves the feeder waiting on
-/// the demuxer, not on the renderer (see `PlayerEngine+Buffering`).
+/// Two detectors look for it. The output device stopping its IO under the started clock, seen through the route,
+/// catches the common case, AirPods switching from a placeholder to their real stream right after the start (see
+/// `AudioOutputInterruptionDetector`). The feeder waiting for the renderer to take audio that is already due catches
+/// a lag of other origins once it is large: a healthy renderer takes audio about a second ahead of the clock, and a
+/// real shortage of data leaves the feeder waiting on the demuxer, not on the renderer (see `PlayerEngine+Buffering`).
 extension PlayerEngine {
     /// Re-anchors the clock once `audioLagDetector` says the renderer has held back due audio for long enough.
     /// Called by the periodic time observer, which fires only while the clock runs.
@@ -31,7 +33,41 @@ extension PlayerEngine {
             "Audio renderer behind the clock: holding back audio from \(String(format: "%.3f", pending.seconds))s at "
                 + "\(String(format: "%.3f", clock.seconds))s for \(heldFor); re-anchoring the clock"
         )
-        // What a pause and resume does, without touching the user-facing playback state.
+        reanchorClockForAudio()
+    }
+
+    /// The output device started or stopped its IO (see `AudioOutputRoute`). Reads the clock's rate at once, on the
+    /// route's queue: by the time the main actor gets to it, the clock may have started or stopped.
+    nonisolated func audioOutputRunningChanged(_ isRunning: Bool) {
+        let rate = Double(synchronizer.rate)
+        let generation = audioOutputInterruptionLock.withLock {
+            $0.deviceRunningChanged(isRunning: isRunning, rate: rate, at: .now)
+        }
+        guard let generation else { return }
+        Task { @MainActor [weak self] in
+            self?.recoverFromAudioOutputInterruption(generation: generation)
+        }
+    }
+
+    /// The output device stopped its IO under the started clock and now runs again: the renderer's audio queue is left
+    /// behind the clock (see `AudioOutputInterruptionDetector`).
+    private func recoverFromAudioOutputInterruption(generation: UInt64) {
+        guard isPlaying, !isBuffering, !isSeeking, chaseTargetTime == nil, !isPrerolling, synchronizer.rate > 0
+        else { return }
+        // A pause, seek or buffering since stopped the clock, and its restart re-anchored the queue anyway.
+        guard audioOutputInterruptionLock.withLock({ $0.confirmRecovery(generation: generation, at: .now) }) else {
+            return
+        }
+        AppLog.warning(
+            .engine,
+            "Audio output restarted its IO under the running clock at "
+                + "\(String(format: "%.3f", synchronizer.currentTime().seconds))s; re-anchoring the clock")
+        reanchorClockForAudio()
+    }
+
+    /// What a pause and resume does, without touching the user-facing playback state: restarts the renderer's audio
+    /// queue and anchors it to the clock again.
+    private func reanchorClockForAudio() {
         haltPlaybackPipeline()
         startFeeding()
         startSynchronizerClockAfterPreroll(at: synchronizer.currentTime(), alignWithBufferedAudio: true)

@@ -126,6 +126,9 @@ extension PlayerEngine {
         {
             synchronizer.setRate(0, time: targetTime)
         }
+        if rate > 0 {
+            audioOutputInterruptionLock.withLock { $0.clockStarted(at: .now) }
+        }
         if startDelay > 0 && rate > 0 {
             let hostTime = hostNow + CMTime(seconds: startDelay, preferredTimescale: 1_000_000_000)
             synchronizer.setRate(Float(rate), time: targetTime, atHostTime: hostTime)
@@ -296,6 +299,7 @@ extension PlayerEngine {
         prerollTimeoutTask = nil
         cancelBuffering()
         audioLagDetector.clockRestarted()
+        audioOutputInterruptionLock.withLock { $0.clockStopped() }
     }
 
     public func togglePlayPause() {

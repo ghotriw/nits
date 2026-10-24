@@ -348,6 +348,27 @@ feeder has waited for 0.5 s for the renderer to take audio that is due (`BufferT
 under 0.15 s of playback ahead of the clock), it re-anchors the clock, at most once every 5 s. A healthy renderer
 takes audio about a second ahead, and a real shortage leaves the feeder waiting on the demuxer, not the renderer.
 
+The common case doesn't trip that check. When the Mac doesn't own the AirPods at the start (automatic switching;
+they last played for an iPhone), the device first runs its IO on a placeholder: the audio queue starts in ~0.1 s
+instead of ~0.3–0.7 s, and the clock goes. About 0.1 s later the device switches to its real A2DP stream, stopping
+its IO for ~0.6 s. The queue stays behind by 0.3–0.6 s (the amount varies per start) while the clock doesn't leap
+and the feeder still waits about a second ahead, so neither dropped frames nor `pendingStart` show it. The device's
+own state does: `AudioOutputRoute` reports `kAudioDevicePropertyDeviceIsRunning`, and
+`AudioOutputInterruptionDetector` counts an IO stop under the started clock of a run that began after the clock
+started and lasted 50 ms or more. Whether the clock is moving yet tells nothing (the synchronizer can hold it after
+the queue started); healthy starts that restart the IO stop it within ~10 ms, while the queue start still waits,
+and the placeholder switch comes 100–300 ms in. The engine's own stops (pause, seek, track switch, buffering) stop
+the clock first; a renderer flush under the running clock (an audio delay change, a new output device) restarts the
+queue and the device's IO with it, so `BufferTrackingAudioSink` reports every flush and the current run no longer
+counts. The device is shared, so a run that began before the clock started (the previous media's queue, another
+player's) doesn't count either; a device already running for another client and restarted by it is left to the
+check above, and so is a new output device's run under way when it is switched to; the route drops a previous
+device's events still queued after the switch. Once the device runs again,
+the main actor re-anchors the clock the same way, at most once every 5 s, and only if the clock hasn't been stopped
+or re-anchored since (a clock generation the detector bumps). The notifications arrive on a queue of the route's
+own, never the main one: `setRate` on the main thread can wait for the queue to start, and the start for the HAL to
+deliver them, which deadlocked for 15 s with a main-queue listener.
+
 ### Display pacing
 
 `CADisplayLink` from `view.displayLink(target:selector:)` / `screen.displayLink(...)`. Unlike

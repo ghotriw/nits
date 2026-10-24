@@ -98,9 +98,13 @@ final class BufferTrackingAudioSink: AudioRendererSink {
 
     private let wrapped: any AudioRendererSink
     private let state = OSAllocatedUnfairLock(initialState: State())
+    private let onFlush: (@Sendable () -> Void)?
 
-    init(wrapping wrapped: any AudioRendererSink) {
+    /// - Parameter onFlush: Called on every flush, before the renderer's: a flush restarts its audio queue, and with it
+    ///   the output device's IO, under a clock that may keep running (see `AudioOutputInterruptionDetector`).
+    init(wrapping wrapped: any AudioRendererSink, onFlush: (@Sendable () -> Void)? = nil) {
         self.wrapped = wrapped
+        self.onFlush = onFlush
     }
 
     /// End of the latest audio enqueued since the last flush; `nil` if none.
@@ -141,6 +145,7 @@ final class BufferTrackingAudioSink: AudioRendererSink {
             state.pending = nil
             state.generation &+= 1
         }
+        onFlush?()
         wrapped.flush()
     }
 }

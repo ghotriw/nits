@@ -90,6 +90,7 @@ extension PlayerEngine {
         stopPlaybackPipeline()
         synchronizer.setRate(0.0, time: .zero)
         audioLagDetector = AudioLagDetector()
+        audioOutputInterruptionLock.withLock { $0.reset() }
         clearVideoSurface()
 
         currentPath = nil

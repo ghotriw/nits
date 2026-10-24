@@ -85,6 +85,9 @@ extension PlayerEngine {
         guard isStarved else { return }
 
         synchronizer.setRate(0, time: clock)
+        // Holds the clock without `cancelPreroll()`, which would end this buffering: an IO stop from here on is the
+        // engine's own.
+        audioOutputInterruptionLock.withLock { $0.clockStopped() }
         isBuffering = true
         AppLog.info(
             .engine,

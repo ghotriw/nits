@@ -412,6 +412,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Watches for the audio renderer holding back audio that is already due; see `PlayerEngine+AudioLag`.
     @ObservationIgnored
     var audioLagDetector = AudioLagDetector()
+    /// Watches for the audio output device stopping its IO under a running clock; see `PlayerEngine+AudioLag`. Locked:
+    /// clock starts (`startSynchronizerClock`) and the device's notifications come off the main actor.
+    @ObservationIgnored
+    let audioOutputInterruptionLock = OSAllocatedUnfairLock(initialState: AudioOutputInterruptionDetector())
     var audioDecoder: FFAudioDecoder?
     let synchronizer = AVSampleBufferRenderSynchronizer()
     /// The inputs the media plays from: its own and audio files added to it; audio is read through it.
@@ -679,9 +683,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
             self.enqueueSampleBufferImp = nil
         }
         // Synchronizer drives the audio renderer and the master clock timeline
+        let audioOutputInterruption = audioOutputInterruptionLock
         self.audioSink = DelayedAudioSink(
             wrapping: BufferTrackingAudioSink(
-                wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer)))
+                wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer),
+                onFlush: { audioOutputInterruption.withLock { $0.rendererFlushed() } }))
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
@@ -766,13 +772,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
     func setupAudioObservers() {
         // Monitor system-wide default audio device changes (e.g. connecting AirPods, Bluetooth, or HDMI)
-        audioOutputRoute.startMonitoring(binding: audioRenderer) { [weak self] in
-            self?.handleAudioOutputRouteChange()
-        }
+        audioOutputRoute.startMonitoring(
+            binding: audioRenderer,
+            onChange: { [weak self] in self?.handleAudioOutputRouteChange() },
+            onRunningChange: { [weak self] isRunning in self?.audioOutputRunningChanged(isRunning) })
     }
 
     /// The renderer has just moved to a new output (see `AudioOutputRoute`).
     func handleAudioOutputRouteChange() {
+        audioOutputInterruptionLock.withLock { $0.outputDeviceChanged() }
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
 
