@@ -8,6 +8,10 @@ import os
 ///
 /// The rate paces whole chunks with `Task.sleep`, so a response arrives at about that rate; TCP windows, loss and
 /// latency of a real network are not modelled (check those by hand, with Network Link Conditioner).
+///
+/// Connections are served on the server's own queue, not the cooperative pool: tests that open or read a network
+/// demuxer synchronously block pool threads, and a CI runner's few left none to answer on (FFmpeg's requests timed
+/// out).
 final class TestHTTPServer: Sendable {
     /// How a path is served.
     struct Behavior: Sendable {
@@ -84,11 +88,12 @@ final class TestHTTPServer: Sendable {
         }
         let state = self.state
         let queue = self.queue
+        let executor = QueueTaskExecutor(queue: queue)
         let servedRoot = self.root
         listener.newConnectionHandler = { connection in
             state.withLock { $0.connections[ObjectIdentifier(connection)] = connection }
             connection.start(queue: queue)
-            Task { await Self.serve(connection, root: servedRoot, state: state) }
+            Task(executorPreference: executor) { await Self.serve(connection, root: servedRoot, state: state) }
         }
         listener.start(queue: queue)
         guard ready.wait(timeout: .now() + 5) == .success, let port = listener.port?.rawValue else {
@@ -332,5 +337,20 @@ final class TestHTTPServer: Sendable {
         case "mp4", "m4s": return "video/mp4"
         default: return "application/octet-stream"
         }
+    }
+}
+
+/// Runs a task's jobs on a dispatch queue, off the cooperative pool.
+private final class QueueTaskExecutor: TaskExecutor {
+    private let queue: DispatchQueue
+
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedTaskExecutor()
+        queue.async { job.runSynchronously(on: executor) }
     }
 }

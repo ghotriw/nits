@@ -194,6 +194,6 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   to report, so run them locally before pushing.
 - Frame-freeze detection uses `PixelBufferAnalyzer`.
 - Media tests skip when `ffmpeg` is missing; CI installs it.
-- A test that opens or reads a network demuxer against `TestHTTPServer` does so off the cooperative pool
-  (`offPool` in `HLSPrefetchTests`): the server answers on the pool, and opening synchronously on its threads left
-  it without one in a full run (FFmpeg's requests timed out).
+- `TestHTTPServer` serves connections on its own queue (a `TaskExecutor`), never the cooperative pool: tests that
+  open or read a network demuxer synchronously block pool threads, and a CI runner's three left it none to answer
+  on (FFmpeg's requests timed out). Check HTTP tests with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` (a one-thread pool).

@@ -16,8 +16,8 @@ struct HLSPrefetchTests {
         server.requests.filter { $0.userAgent?.hasPrefix("Lavf") == true }
     }
 
-    /// `body` on a thread of its own: opening and reading block on the network, and `TestHTTPServer` answers on the
-    /// cooperative pool, which a full run's tests blocking its threads left without one (FFmpeg's requests timed out).
+    /// `body` on a thread of its own: opening and reading block on the network, and mustn't hold a thread of the
+    /// cooperative pool while they wait.
     private static func offPool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async { continuation.resume(returning: body()) }
