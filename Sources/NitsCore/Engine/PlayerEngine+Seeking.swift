@@ -187,7 +187,8 @@ extension PlayerEngine {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.currentSeekId == seekId else { return }
                         self.renderDirect(
-                            pixelBuffer: preview.pixelBuffer, pts: preview.pts, doviMetadata: preview.doviMetadata)
+                            pixelBuffer: preview.pixelBuffer, pts: preview.pts, hdrMetadata: preview.hdrMetadata,
+                            restartsSmoothing: true)
                     }
                 }
             } else if let externalAudio, !isSuperseded() {
@@ -315,14 +316,15 @@ extension PlayerEngine {
     struct SeekPreviewResult: @unchecked Sendable {
         let pixelBuffer: CVPixelBuffer
         let pts: Double
-        /// The frame's Dolby Vision RPU: without it a paused seek tone-maps with static values, not the frame's.
-        let doviMetadata: DolbyVisionFrameMetadata?
+        /// The frame's HDR metadata (Dolby Vision RPU, HDR10+): without it a paused seek tone-maps with static values, not
+        /// the frame's.
+        let hdrMetadata: FrameHDRMetadata?
     }
 
     final class SeekPreviewBox: @unchecked Sendable {
         var buffer: CVPixelBuffer?
         var pts: Double = -1.0
-        var doviMetadata: DolbyVisionFrameMetadata?
+        var hdrMetadata: FrameHDRMetadata?
     }
 
     nonisolated static func seekPreview(
@@ -362,7 +364,7 @@ extension PlayerEngine {
                 frame.pts.seconds <= seconds + stepForwardMargin
             {
                 stepCache.append(
-                    pixelBuffer: frame.pixelBuffer, pts: frame.pts, doviMetadata: frame.doviMetadata)
+                    pixelBuffer: frame.pixelBuffer, pts: frame.pts, hdrMetadata: frame.hdrMetadata)
             }
             if (exact || !frame.doNotDisplay) && frame.pts.isValid {
                 lock.lock()
@@ -403,7 +405,7 @@ extension PlayerEngine {
                 if shouldUpdate {
                     box.buffer = frame.pixelBuffer
                     box.pts = framePts
-                    box.doviMetadata = frame.doviMetadata
+                    box.hdrMetadata = frame.hdrMetadata
                 }
                 lock.unlock()
             }
@@ -494,14 +496,14 @@ extension PlayerEngine {
         lock.lock()
         let finalBuf = box.buffer
         let finalPts = box.pts
-        let finalDoviMetadata = box.doviMetadata
+        let finalHDRMetadata = box.hdrMetadata
         lock.unlock()
 
         if let finalBuf, finalPts >= 0 {
             AppLog.debug(
                 .engine,
                 "seekPreview settled: pts=\(finalPts)s for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
-            return SeekPreviewResult(pixelBuffer: finalBuf, pts: finalPts, doviMetadata: finalDoviMetadata)
+            return SeekPreviewResult(pixelBuffer: finalBuf, pts: finalPts, hdrMetadata: finalHDRMetadata)
         }
         AppLog.debug(
             .engine, "seekPreview found no frame for target=\(seconds)s (exact=\(exact), attempts=\(attempts))")
@@ -619,7 +621,7 @@ extension PlayerEngine {
             decoder.setOutputHandler { frame in
                 if !frame.doNotDisplay, frame.pts.isValid {
                     stepCache.append(
-                        pixelBuffer: frame.pixelBuffer, pts: frame.pts, doviMetadata: frame.doviMetadata)
+                        pixelBuffer: frame.pixelBuffer, pts: frame.pts, hdrMetadata: frame.hdrMetadata)
                 }
             }
             defer {
@@ -689,7 +691,7 @@ extension PlayerEngine {
     /// Renders a stepped frame and synchronizes clock, timer, and subtitles to its PTS while paused.
     func presentSteppedFrame(_ entry: StepFrameCache.Entry) {
         let pts = entry.pts.seconds
-        renderDirect(pixelBuffer: entry.pixelBuffer, pts: pts, doviMetadata: entry.doviMetadata)
+        renderDirect(pixelBuffer: entry.pixelBuffer, pts: pts, hdrMetadata: entry.hdrMetadata)
         synchronizer.setRate(0.0, time: entry.pts)
         currentTime = pts
         subtitles.timeDidChange(to: pts, .tick)

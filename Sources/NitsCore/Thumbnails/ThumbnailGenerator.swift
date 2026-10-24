@@ -177,7 +177,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             let converter = ThumbnailFrameConverter(
                 width: thumbSize.width,
                 height: thumbSize.height,
-                isDolbyVisionProfile5: Self.isDolbyVisionProfile5(codecpar)
+                isDolbyVisionProfile5: Self.dolbyVisionProfile(codecpar) == 5
             )
         else { return [] }
 
@@ -197,6 +197,24 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         let timelineOrigin = MediaDemuxer.timelineOrigin(of: activeFormatCtx)
         let timelineOffset = MediaDemuxer.timelineOffset(timelineOrigin, in: timebase)
         var seenFramePts = Set<Int64>()
+        let dolbyVisionProfile = Self.dolbyVisionProfile(codecpar)
+        let staticLuminance = Self.staticLuminance(codecpar)
+        let videoCodec = VideoCodec.from(codecId: codecpar.pointee.codec_id)
+        let isPQ = codecpar.pointee.color_trc == AVCOL_TRC_SMPTE2084 || dolbyVisionProfile == 5
+        let isAnnexB = videoCodec.map { Self.isAnnexB(codecpar, codec: $0) } ?? false
+        /// The dynamic HDR metadata of the packets sent since the last seek, by their PTS, for the frames they decode to.
+        var hdrMetadataByPts: [Int64: FrameHDRMetadata] = [:]
+
+        func sendPacket() -> Bool {
+            if let videoCodec, let data = packet.pointee.data, packet.pointee.size > 4,
+                let metadata = FrameHDRMetadata(
+                    packet: data, count: Int(packet.pointee.size), codec: videoCodec, isAnnexB: isAnnexB,
+                    readsRPU: dolbyVisionProfile != nil, readsHDR10Plus: isPQ)
+            {
+                hdrMetadataByPts[packet.pointee.pts] = metadata
+            }
+            return avcodec_send_packet(codecCtx, packet) >= 0
+        }
 
         /// Pulls decoded frames and returns the first one not produced before.
         func receiveNewFrame(fallbackTime: Double) -> ThumbnailItem? {
@@ -206,8 +224,13 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                     ? frame.pointee.best_effort_timestamp
                     : frame.pointee.pts
                 // Frames without a timestamp can't be told apart, so they skip deduplication.
+                let metadata = hdrMetadataByPts[frame.pointee.pts]
                 guard pts == Int64.min || seenFramePts.insert(pts).inserted,
-                    let image = converter.makeImage(from: frame, codecpar: codecpar)
+                    let image = converter.makeImage(
+                        from: frame, codecpar: codecpar,
+                        dolbyVision: (dolbyVisionProfile == 5 ? metadata?.dolbyVision : nil)
+                            .flatMap(DolbyVisionPixelReshaping.init(metadata:)),
+                        curve: staticLuminance.curve(for: metadata))
                 else { continue }
 
                 let seconds =
@@ -246,12 +269,12 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                     if packetTime != Int64.min && !seenKeyPackets.insert(packetTime).inserted {
                         return nil
                     }
-                    guard avcodec_send_packet(codecCtx, packet) >= 0 else { return nil }
+                    guard sendPacket() else { return nil }
                     _ = avcodec_send_packet(codecCtx, nil)
                     return receiveNewFrame(fallbackTime: fallbackTime)
                 }
 
-                guard avcodec_send_packet(codecCtx, packet) >= 0 else { return nil }
+                guard sendPacket() else { return nil }
                 if let item = receiveNewFrame(fallbackTime: fallbackTime) {
                     return item
                 }
@@ -280,6 +303,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                 _ = av_seek_frame(activeFormatCtx, -1, targetPtsAV, AVSEEK_FLAG_BACKWARD)
             }
             avcodec_flush_buffers(codecCtx)
+            hdrMetadataByPts.removeAll(keepingCapacity: true)
 
             if let item = decodeFrameAfterSeek(fallbackTime: targetTime, keyframeShortcut: true, maxVideoPackets: 30) {
                 allThumbnails.append(item)
@@ -299,6 +323,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         if allThumbnails.isEmpty && !isCancelled {
             _ = av_seek_frame(activeFormatCtx, -1, 0, AVSEEK_FLAG_BACKWARD)
             avcodec_flush_buffers(codecCtx)
+            hdrMetadataByPts.removeAll()
             if let item = decodeFrameAfterSeek(fallbackTime: 0, keyframeShortcut: false, maxVideoPackets: 300) {
                 allThumbnails.append(item)
                 pendingCount += 1
@@ -327,8 +352,18 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         return (max(16, Int32((Double(maxThumbnailHeight) * aspect).rounded())), maxThumbnailHeight)
     }
 
-    /// True for Dolby Vision Profile 5, whose IPT-PQ-C2 base layer needs its own conversion.
-    static func isDolbyVisionProfile5(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
+    /// Whether the stream's packets are Annex B (start codes) rather than length-prefixed, as the demuxer tells it:
+    /// from the extradata's form (hvcC / avcC, or Annex B parameter sets), Annex B without any (MPEG-TS). The first
+    /// bytes of a packet can't tell: a 4-byte length of 256 to 511 reads as a start code.
+    static func isAnnexB(_ codecpar: UnsafeMutablePointer<AVCodecParameters>, codec: VideoCodec) -> Bool {
+        guard let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size > 0 else { return true }
+        return VideoFormatDescriptionBuilder.parameterSets(
+            fromExtradata: Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size)), codec: codec)?
+            .isAnnexB ?? (extradata[0] == 0)
+    }
+
+    /// The Dolby Vision profile of the stream, nil for none: from its configuration record.
+    static func dolbyVisionProfile(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Int? {
         let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
         if sideDataCount > 0, let sideData = codecpar.pointee.coded_side_data {
             for index in 0..<sideDataCount where sideData[index].type == AV_PKT_DATA_DOVI_CONF {
@@ -336,14 +371,67 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                     sideData[index].size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
                 else { continue }
                 let record = UnsafeRawPointer(data).assumingMemoryBound(to: AVDOVIDecoderConfigurationRecord.self)
-                return record.pointee.dv_profile == 5
+                return Int(record.pointee.dv_profile)
             }
         }
         if let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size >= 24 {
             let data = Data(bytes: extradata, count: Int(codecpar.pointee.extradata_size))
-            return HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: data)?.profile == 5
+            return HDRMetadataEncoding.parseDolbyVisionConfigurationBox(from: data).map { Int($0.profile) }
         }
-        return false
+        return nil
+    }
+
+    /// The stream's static luminance, as the player adapts to it on load (`ToneMapController.adapt`), and the curve of
+    /// a frame from it and the frame's dynamic metadata (`ToneMapController.applyFrame`).
+    struct StaticLuminance {
+        /// MaxCLL, else the mastering display's peak; nil without either.
+        let peakNits: Float?
+        let fallNits: Float
+
+        func curve(for metadata: FrameHDRMetadata?) -> ThumbnailToneMapper.Curve {
+            // Without a static peak, a Profile 5 RPU's source display peak stands in for it.
+            var staticPeak = peakNits ?? 1000
+            if peakNits == nil, let sourceMaxPQ = metadata?.dolbyVision?.sourceMaxPQ, sourceMaxPQ > 0 {
+                staticPeak = max(DolbyVisionRPUParser.pqToNits(Float(sourceMaxPQ) / 4095), 100)
+            }
+            let staticWhite = ToneMapController.adaptiveTargetNits(maxPeakNits: staticPeak, maxFallNits: fallNits)
+            let l1Peak = metadata?.dolbyVision?.l1.map(\.maxNits).flatMap { $0 > 0 ? $0 : nil }
+            guard let scenePeak = l1Peak ?? metadata?.hdr10Plus?.maxNits else {
+                return ThumbnailToneMapper.Curve(peakNits: staticPeak, whiteNits: staticWhite)
+            }
+            return ThumbnailToneMapper.Curve(
+                peakNits: scenePeak,
+                whiteNits: ToneMapController.sceneTargetNits(scenePeakNits: scenePeak, staticTargetNits: staticWhite))
+        }
+    }
+
+    /// MaxCLL / MaxFALL and the mastering display's peak from the stream's side data.
+    static func staticLuminance(_ codecpar: UnsafeMutablePointer<AVCodecParameters>) -> StaticLuminance {
+        var maxCLL: Float?
+        var maxFALL: Float = 0
+        var masteringPeak: Float?
+        let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
+        if sideDataCount > 0, let sideData = codecpar.pointee.coded_side_data {
+            for index in 0..<sideDataCount {
+                guard let data = sideData[index].data else { continue }
+                if sideData[index].type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+                    sideData[index].size >= MemoryLayout<AVContentLightMetadata>.size
+                {
+                    let level = UnsafeRawPointer(data).assumingMemoryBound(to: AVContentLightMetadata.self).pointee
+                    if level.MaxCLL > 0 { maxCLL = Float(level.MaxCLL) }
+                    maxFALL = Float(level.MaxFALL)
+                } else if sideData[index].type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+                    sideData[index].size >= MemoryLayout<AVMasteringDisplayMetadata>.size
+                {
+                    let display = UnsafeRawPointer(data).assumingMemoryBound(to: AVMasteringDisplayMetadata.self)
+                        .pointee
+                    if display.has_luminance != 0, display.max_luminance.den > 0, display.max_luminance.num > 0 {
+                        masteringPeak = Float(av_q2d(display.max_luminance))
+                    }
+                }
+            }
+        }
+        return StaticLuminance(peakNits: maxCLL ?? masteringPeak, fallNits: maxFALL)
     }
 
     /// Sample indices ordered coarse-to-fine (0, ½, ¼, ¾, ⅛, …) so the whole timeline gets

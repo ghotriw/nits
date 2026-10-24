@@ -8,7 +8,7 @@ short, enforceable invariants; this document explains how the pieces fit togethe
 Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on macOS:
 
 - **SDR displays** (external 4K/5K monitors, EDR == 1.0): a custom Metal tone-mapper (ITU-R
-  BT.2390 EETF, 203-nit reference white, Display P3, Gamma 2.2, FidelityFX CAS) instead of the
+  BT.2390 EETF with its black level lift, 203-nit reference white, Display P3, FidelityFX CAS) instead of the
   washed-out / crushed look of default OS tone mapping.
 - **XDR / EDR displays** (EDR > 1.01): decoded frames go straight to `AVSampleBufferDisplayLayer`
   to use the panel's full 1000–1600 nit peak.
@@ -554,9 +554,30 @@ player does; `assFonts` are the media's attached fonts.
 - **Input** — biplanar YCbCr: `r16Unorm` luma + `rg16Unorm` chroma for 10-bit (VideoToolbox
   MSB-aligns P010, so range limits are expressed on the 16-bit scale, e.g. `4096/65535`,
   `56064/65535`), and an 8-bit path. Full/video range comes from the format description.
-- **Pipeline** — PQ (ST 2084) inverse EOTF → linear nits → BT.2390 EETF compressed to
-  `targetNits = 203` → BT.2020 → Display P3 (D65) with gamut clamping → pure Gamma 2.2
-  (`pow(max(c, 0), 1/2.2)`).
+- **Pipeline** — PQ (ST 2084) inverse EOTF → linear nits → BT.2390 black level lift
+  (`liftBlackLevel`) → BT.2390 EETF compressed to `targetNits` → BT.2020 → Display P3 (D65) with gamut
+  clamping → sRGB encoding, the layer's transfer: macOS decodes it and maps it to the display, so the
+  luminance the curve gives is the one shown. (A pure gamma 2.2 encoding read as sRGB lifted the shadows
+  by up to 8× at 0.02 % of white, which hid a white and a black level that were both off.)
+- **Reference white** (`targetNits`, `ToneMapController`) — 203 nits (ITU-R BT.2408) for high-peak media, lowered
+  for low-peak mastering (`adaptiveTargetNits`). The scene's peak (Dolby Vision L1, else HDR10+) moves it between
+  100 nits and that static white: a scene that fits under 100 nits is shown as the XDR presentation shows it (PQ 100 nits on
+  SDR white), a brighter one keeps the static white, which leaves room for its highlights an SDR display has no
+  headroom above white for. The scene's average doesn't lower it: that overexposed bright scenes.
+- **Scene luminance** — the demuxer reads each HEVC and AV1 packet's dynamic metadata into `FrameHDRMetadata`, which
+  rides the sample buffer (`FrameHDRMetadataBox`) through the decoders and `FrameQueue` to
+  `ToneMapController.applyFrame`: the Dolby Vision RPU (NAL unit 62) and HDR10+ (SMPTE ST 2094-40: a T.35 message, in
+  an HEVC prefix SEI or an AV1 metadata OBU, decoded by FFmpeg's `av_dynamic_hdr_plus_from_t35`, `HDR10PlusParser`). Both give the scene's peak, which the curve maps from instead
+  of the whole title's MaxCLL, so a scene's highlights aren't compressed for a peak it doesn't have. L1 is smoothed
+  between frames but for a scene refresh; HDR10+ holds per scene and changes at cuts, so it is taken as is.
+- **Thumbnails** (`ThumbnailToneMapper`) are tone-mapped on the CPU the same way: each keyframe's packet metadata
+  (`FrameHDRMetadata`) gives the scene's peak and white (`ToneMapController.sceneTargetNits`), the BT.2390 black lift
+  and sRGB encoding follow, a Profile 5 frame is composed with its RPU's curves and matrices
+  (`DolbyVisionPixelReshaping`, the shader's formulas), and a shoulder of their own brings the scene's peak to white
+  in place of BT.2390's knee.
+- **Black level** — the BT.2390 lift towards a display black of 0.06 % of white (`displayBlackToWhite`): a dark
+  scene's shadows sit above it as on XDR, which a pure power curve crushes. mpv does the same with
+  `--target-contrast` (1000:1 for SDR by default).
 - **Sharpening** — AMD FidelityFX CAS: `peak = -1 / mix(8, 5, strength); weight = amplitude * peak`,
   which stays finite at `strength = 1`.
 - **Output** — `.bgr10a2Unorm` in Display P3; 8-bit output bands visibly in skies and shadows.

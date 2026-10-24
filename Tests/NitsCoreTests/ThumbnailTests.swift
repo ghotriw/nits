@@ -218,18 +218,30 @@ struct ThumbnailTests {
         #expect(abs(tinted.x - tinted.z) > 5)
     }
 
-    @Test("SDR tone curve: reference white stays below clip, black stays black")
+    @Test("SDR tone curve: reference white stays below clip, black lifts to the display black")
     func testToneMapperCurve() {
+        let curve = ThumbnailToneMapper.Curve(peakNits: 1000, whiteNits: 203)
         var pixel = [UInt8](repeating: 0, count: 4)
-        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 203), to: &pixel)
+        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 203), curve: curve, to: &pixel)
         #expect(pixel[0] == pixel[1] && pixel[1] == pixel[2])
         #expect(pixel[0] > 200 && pixel[0] < 255)
 
-        ThumbnailToneMapper.writeSDR(nits2020: .zero, to: &pixel)
-        #expect(pixel[0] == 0 && pixel[3] == 255)
+        // 0.06 % of white, sRGB-encoded: 2 of 255.
+        ThumbnailToneMapper.writeSDR(nits2020: .zero, curve: curve, to: &pixel)
+        #expect(pixel[0] == 2 && pixel[3] == 255)
 
-        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 4000), to: &pixel)
+        ThumbnailToneMapper.writeSDR(nits2020: SIMD3(repeating: 4000), curve: curve, to: &pixel)
         #expect(pixel[0] >= 250)
+    }
+
+    @Test("A frame's scene peak sets the white as in the player; without dynamic metadata the static one holds")
+    func testThumbnailCurveFollowsScene() {
+        let luminance = ThumbnailGenerator.StaticLuminance(peakNits: 1375, fallNits: 188)
+        #expect(luminance.curve(for: nil).whiteNits == 203)
+        let night = FrameHDRMetadata(hdr10Plus: HDR10PlusFrameMetadata(maxNits: 90, averageNits: 2))
+        #expect(luminance.curve(for: night).whiteNits == 100)
+        let bright = FrameHDRMetadata(hdr10Plus: HDR10PlusFrameMetadata(maxNits: 600, averageNits: 30))
+        #expect(luminance.curve(for: bright).whiteNits == 203)
     }
 
     /// Mean of R, G, B over the image rendered into 8-bit sRGB.

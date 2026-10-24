@@ -352,7 +352,7 @@ struct DolbyVisionToneMapResolutionTests {
         #expect(renderer.uniforms.hasDoviL2Trim == 1)
     }
 
-    @Test("A frame without RPU keeps the scene's L1 peak and target instead of the static ones")
+    @Test("A frame without RPU keeps the scene's L1 peak instead of the static one")
     func frameWithoutRPUHoldsL1Values() {
         let engine = PlayerEngine.makeForTesting()
         guard let renderer = engine.metalRenderer else { return }
@@ -368,6 +368,29 @@ struct DolbyVisionToneMapResolutionTests {
         #expect(renderer.uniforms.targetNits == sceneTarget)
     }
 
+    @Test("The reference white follows the scene's L1 peak between 100 nits and the static white, not its average")
+    func referenceWhiteFollowsScenePeak() {
+        let engine = PlayerEngine.makeForTesting()
+        guard let renderer = engine.metalRenderer else { return }
+
+        // About 600 nits peak and 12 nits average: highlights an SDR display needs room for under the static white.
+        let dimScene = DolbyVisionFrameMetadata(
+            sceneRefresh: true, l1: DolbyVisionFrameMetadata.Level1(minPQ: 0, maxPQ: 2867, avgPQ: 1270), l2Trims: [])
+        _ = engine.toneMapping.applyFrame(doviMetadata: dimScene)
+        #expect(renderer.uniforms.sourcePeakNits < 700)
+        #expect(renderer.uniforms.targetNits == ToneMapController.referenceWhiteNits)
+
+        // A night scene peaking at 100 nits fits under SDR white: white 100, as the XDR presentation shows it.
+        let nightScene = DolbyVisionFrameMetadata(
+            sceneRefresh: true, l1: DolbyVisionFrameMetadata.Level1(minPQ: 0, maxPQ: 2081, avgPQ: 800), l2Trims: [])
+        _ = engine.toneMapping.applyFrame(doviMetadata: nightScene)
+        #expect(abs(renderer.uniforms.targetNits - 100) < 1)
+
+        // The user's multiplier scales the scene's white, as on a paused frame: it doesn't restore the static one.
+        engine.toneMapping.targetNitsScale = 1.5
+        #expect(abs(renderer.uniforms.targetNits - 150) < 1.5)
+    }
+
     @Test("Redrawing the current frame (paused, after a render mode switch) tone-maps it with its own RPU, unsmoothed")
     func redrawUsesFrameRPU() throws {
         let engine = PlayerEngine.makeForTesting()
@@ -381,11 +404,13 @@ struct DolbyVisionToneMapResolutionTests {
         // Mid-scene, so the display link would only smooth towards its L1.
         let frame = DolbyVisionFrameMetadata(sceneRefresh: false, l1: Self.l1Frame.l1, l2Trims: [])
         let l1Peak = try #require(frame.l1).maxNits
-        engine.frameQueue.setLastRendered(buffer: buffer, pts: 1.0, doviMetadata: frame)
-        #expect(engine.toneMapping.frameState.withLock { $0.lastDoviMetadata } == nil)
+        engine.frameQueue.setLastRendered(buffer: buffer, pts: 1.0, hdrMetadata: FrameHDRMetadata(dolbyVision: frame))
+        #expect(engine.toneMapping.frameState.withLock { $0.lastHDRMetadata?.dolbyVision } == nil)
 
         engine.renderCurrentFrame(at: .invalid)
-        let (lastMetadata, peak) = engine.toneMapping.frameState.withLock { ($0.lastDoviMetadata, $0.smoothedPeakNits) }
+        let (lastMetadata, peak) = engine.toneMapping.frameState.withLock {
+            ($0.lastHDRMetadata?.dolbyVision, $0.smoothedPeakNits)
+        }
         #expect(lastMetadata == frame)
         #expect(abs(peak - l1Peak) < 0.01, "the redrawn frame's peak \(peak) should be its L1 peak \(l1Peak)")
     }

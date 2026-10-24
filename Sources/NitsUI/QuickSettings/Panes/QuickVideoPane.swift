@@ -15,19 +15,6 @@ public struct QuickVideoPane: View {
         engine.activeRenderMode == .metalToneMap
     }
 
-    /// The slider shows the shadow lift applied, the media's while the user has set none; moving it sets the user's.
-    private var shadowLiftBinding: Binding<Float> {
-        let toneMapping = engine.toneMapping
-        return Binding(get: { toneMapping.appliedShadowLift }, set: { toneMapping.shadowLift = $0 })
-    }
-
-    /// The shadow lift applied; one a dim media asks for while the user has set none is marked as such.
-    private var shadowLiftLabel: String {
-        let toneMapping = engine.toneMapping
-        let value = String(format: "%.3f", toneMapping.appliedShadowLift)
-        return toneMapping.shadowLift == nil && toneMapping.appliedShadowLift > 0 ? "\(value) (auto)" : value
-    }
-
     private var deinterlaceDescription: String {
         let fps = String(format: "%.4g", 1.0 / max(engine.nominalFrameDuration, 0.001))
         switch engine.deinterlaceMode {
@@ -339,7 +326,7 @@ public struct QuickVideoPane: View {
                             withAnimation {
                                 engine.toneMapping.sharpness = 0.5
                                 engine.toneMapping.exposure = 1.0
-                                engine.toneMapping.shadowLift = nil
+                                engine.toneMapping.shadowLift = 0
                                 engine.toneMapping.targetNitsScale = 1.0
                             }
                         }
@@ -370,7 +357,7 @@ public struct QuickVideoPane: View {
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
                             Text(
-                                "\(Int(engine.toneMapping.targetNits)) nits (\(String(format: "%.2f", engine.toneMapping.targetNitsScale))×)"
+                                "\(Int(engine.toneMapping.appliedTargetNits)) nits (\(String(format: "%.2f", engine.toneMapping.targetNitsScale))×)"
                             )
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.6))
@@ -399,11 +386,11 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.8))
                             Spacer()
-                            Text(shadowLiftLabel)
+                            Text(String(format: "%.3f", engine.toneMapping.shadowLift))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: shadowLiftBinding, in: 0.0...0.1)
+                        Slider(value: toneMapping.shadowLift, in: 0.0...0.1)
                     }
 
                     if engine.media.video.dolbyVisionProfile != nil {

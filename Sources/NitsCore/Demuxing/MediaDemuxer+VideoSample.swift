@@ -33,12 +33,10 @@ extension MediaDemuxer {
         let format = format ?? videoFormat
         guard let formatDesc = format.description, let bytes, count > 0 else { return nil }
 
-        var doviMetadata: DolbyVisionFrameMetadata?
-        if codec == .hevc && dolbyVisionProfile != nil {
-            if let nalu = NALUnitParser.findNALUnit62(bytes: bytes, count: count, isAnnexB: format.isAnnexB) {
-                doviMetadata = DolbyVisionRPUParser.parse(naluData: nalu)
-            }
-        }
+        let hdrMetadata = FrameHDRMetadata(
+            packet: bytes, count: count, codec: codec, isAnnexB: format.isAnnexB,
+            readsRPU: dolbyVisionProfile != nil,
+            readsHDR10Plus: transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
 
         let mem: UnsafeMutableRawPointer
         let finalSize: Int
@@ -158,10 +156,10 @@ extension MediaDemuxer {
                     sb, key: kCVImageBufferContentLightLevelInfoKey, value: contentLightLevel as CFData,
                     attachmentMode: kCMAttachmentMode_ShouldPropagate)
             }
-            if let doviMetadata {
+            if let hdrMetadata {
                 CMSetAttachment(
-                    sb, key: Self.dolbyVisionMetadataAttachmentKey as CFString,
-                    value: DolbyVisionMetadataBox(metadata: doviMetadata),
+                    sb, key: Self.hdrMetadataAttachmentKey as CFString,
+                    value: FrameHDRMetadataBox(metadata: hdrMetadata),
                     attachmentMode: kCMAttachmentMode_ShouldNotPropagate
                 )
             }

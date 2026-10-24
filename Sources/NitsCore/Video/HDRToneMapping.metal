@@ -317,9 +317,25 @@ float3 applyOutputExposure(float3 rgb, float exposure) {
     return mapped / (1.0 + (max(exposure, 1.0) - 1.0) * max(rgb, 0.0));
 }
 
-// Pure Gamma 2.2 transfer function (prevents sRGB piecewise black crush on calibrated displays)
+// Black of the SDR display the curve maps to, as a fraction of its white (1700:1). A dark scene's shadows land above
+// it, as the XDR presentation shows them; mpv assumes 1000:1 for an SDR display (`--target-contrast`).
+constant float displayBlackToWhite = 0.0006;
+
+// ITU-R BT.2390 black level lift (EETF step 4): E + b (1 - E)^4 in PQ normalized to the source range [0, peak], b
+// the display black. It changes the shadows only, so it may go before the knee, below which the curve is linear.
+float3 liftBlackLevel(float3 nits, float sourcePeakNits, float blackNits) {
+    float peakPQ = nitsToPQ(float3(max(sourcePeakNits, 100.0))).x;
+    float3 e = nitsToPQ(max(nits, 0.0)) / peakPQ;
+    float b = nitsToPQ(float3(blackNits)).x / peakPQ;
+    float3 rest = max(1.0 - e, 0.0);
+    return pqToNits((e + b * rest * rest * rest * rest) * peakPQ);
+}
+
+// sRGB encoding, the transfer of the layer's Display P3 space: macOS decodes the values with it and maps them to the
+// display itself, so the picture reaches the screen with the luminance the curve gave it.
 float3 linearToSDRDisplay(float3 rgb) {
-    return pow(max(rgb, 0.0), float3(1.0 / 2.2));
+    float3 c = max(rgb, 0.0);
+    return select(1.055 * pow(c, float3(1.0 / 2.4)) - 0.055, 12.92 * c, c <= 0.0031308);
 }
 
 // Low-end luminance shadow lift with smooth roll-off protection
@@ -437,6 +453,7 @@ float3 sampleAndToneMap(
 
     // Tone mapping to SDR display white: BT.2390, driven by the stream's (or Dolby Vision L1's) peak.
     float sdrWhite = max(uniforms.targetNits, 100.0);
+    sourceNits = liftBlackLevel(sourceNits, uniforms.sourcePeakNits, sdrWhite * displayBlackToWhite);
     float3 mapped2020 = mpvBT2390(sourceNits / sdrWhite, uniforms.sourcePeakNits, sdrWhite);
 
     // A Dolby Vision L2 trim (SMPTE ST 2094-10 slope / offset / power) corrects the base display mapping, so it goes

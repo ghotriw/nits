@@ -24,7 +24,7 @@ public final class FrameQueue: @unchecked Sendable {
     private var lastRenderedBuffer: CVPixelBuffer?
     private var lastRenderedPTS: Double = -1.0
     /// RPU of `lastRenderedBuffer`, so a frame drawn again (paused, after a render mode switch) is tone-mapped as it was.
-    private var lastRenderedDoviMetadata: DolbyVisionFrameMetadata?
+    private var lastRenderedHDRMetadata: FrameHDRMetadata?
     private var pipelineDroppedFramesCountInternal: Int = 0
     private var speedSkippedFramesCountInternal: Int = 0
     private var lastDropWarningInstant: ContinuousClock.Instant = .now - .seconds(10)
@@ -161,12 +161,12 @@ public final class FrameQueue: @unchecked Sendable {
     public struct PoppedFrame: @unchecked Sendable {
         public let pixelBuffer: CVPixelBuffer
         public let pts: CMTime
-        public let doviMetadata: DolbyVisionFrameMetadata?
+        public let hdrMetadata: FrameHDRMetadata?
 
-        public init(pixelBuffer: CVPixelBuffer, pts: CMTime, doviMetadata: DolbyVisionFrameMetadata? = nil) {
+        public init(pixelBuffer: CVPixelBuffer, pts: CMTime, hdrMetadata: FrameHDRMetadata? = nil) {
             self.pixelBuffer = pixelBuffer
             self.pts = pts
-            self.doviMetadata = doviMetadata
+            self.hdrMetadata = hdrMetadata
         }
     }
 
@@ -221,7 +221,7 @@ public final class FrameQueue: @unchecked Sendable {
 
             var chosen: CVPixelBuffer?
             var chosenPts: CMTime = .invalid
-            var chosenDovi: DolbyVisionFrameMetadata? = nil
+            var chosenHDRMetadata: FrameHDRMetadata? = nil
             var droppedInThisTick = 0
 
             while countInternal > 0 {
@@ -253,7 +253,7 @@ public final class FrameQueue: @unchecked Sendable {
                         // First valid candidate within [lateThreshold ... syncTime + maxLeadTime]
                         chosen = frame.pixelBuffer
                         chosenPts = frame.pts
-                        chosenDovi = frame.doviMetadata
+                        chosenHDRMetadata = frame.hdrMetadata
                         buffer[head] = nil
                         head = (head + 1) % capacity
                         countInternal -= 1
@@ -286,7 +286,7 @@ public final class FrameQueue: @unchecked Sendable {
                         }
                         chosen = frame.pixelBuffer
                         chosenPts = frame.pts
-                        chosenDovi = frame.doviMetadata
+                        chosenHDRMetadata = frame.hdrMetadata
                         buffer[head] = nil
                         head = (head + 1) % capacity
                         countInternal -= 1
@@ -302,7 +302,7 @@ public final class FrameQueue: @unchecked Sendable {
 
             if let chosen {
                 lastRenderedBuffer = chosen
-                lastRenderedDoviMetadata = chosenDovi
+                lastRenderedHDRMetadata = chosenHDRMetadata
                 if chosenPts.isValid {
                     lastRenderedPTS = chosenPts.seconds
                 }
@@ -323,7 +323,7 @@ public final class FrameQueue: @unchecked Sendable {
             }
 
             let result = chosen.map {
-                PoppedFrame(pixelBuffer: $0, pts: chosenPts, doviMetadata: chosenDovi)
+                PoppedFrame(pixelBuffer: $0, pts: chosenPts, hdrMetadata: chosenHDRMetadata)
             }
             return (result, payload)
         }
@@ -347,7 +347,7 @@ public final class FrameQueue: @unchecked Sendable {
         let leadThreshold = syncTime + CMTime(value: 100, timescale: 1000)
         var latestMatching: CVPixelBuffer?
         var matchingPts: CMTime = .invalid
-        var matchingDovi: DolbyVisionFrameMetadata?
+        var matchingHDRMetadata: FrameHDRMetadata?
 
         // Scan backward from newest frame
         for i in stride(from: countInternal - 1, through: 0, by: -1) {
@@ -355,14 +355,14 @@ public final class FrameQueue: @unchecked Sendable {
             if let frame = buffer[physicalIdx], !frame.doNotDisplay, frame.pts <= leadThreshold {
                 latestMatching = frame.pixelBuffer
                 matchingPts = frame.pts
-                matchingDovi = frame.doviMetadata
+                matchingHDRMetadata = frame.hdrMetadata
                 break
             }
         }
 
         if let latestMatching {
             lastRenderedBuffer = latestMatching
-            lastRenderedDoviMetadata = matchingDovi
+            lastRenderedHDRMetadata = matchingHDRMetadata
             if matchingPts.isValid {
                 lastRenderedPTS = matchingPts.seconds
             }
@@ -374,7 +374,7 @@ public final class FrameQueue: @unchecked Sendable {
             let physicalIdx = (head + i) % capacity
             if let frame = buffer[physicalIdx], !frame.doNotDisplay {
                 lastRenderedBuffer = frame.pixelBuffer
-                lastRenderedDoviMetadata = frame.doviMetadata
+                lastRenderedHDRMetadata = frame.hdrMetadata
                 if frame.pts.isValid {
                     lastRenderedPTS = frame.pts.seconds
                 }
@@ -386,12 +386,12 @@ public final class FrameQueue: @unchecked Sendable {
     }
 
     /// Explicitly updates the last rendered frame and its presentation timestamp.
-    public func setLastRendered(buffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata? = nil) {
+    public func setLastRendered(buffer: CVPixelBuffer, pts: Double, hdrMetadata: FrameHDRMetadata? = nil) {
         lock.lock()
         defer { lock.unlock() }
         lastRenderedBuffer = buffer
         lastRenderedPTS = pts
-        lastRenderedDoviMetadata = doviMetadata
+        lastRenderedHDRMetadata = hdrMetadata
     }
 
     /// Returns the presentation timestamp (in seconds) of the most recently rendered frame.
@@ -410,11 +410,11 @@ public final class FrameQueue: @unchecked Sendable {
 
     /// The most recently rendered frame, its presentation time (seconds) and its RPU, read together.
     public func getLastRenderedFrame()
-        -> (pixelBuffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata?)?
+        -> (pixelBuffer: CVPixelBuffer, pts: Double, hdrMetadata: FrameHDRMetadata?)?
     {
         lock.lock()
         defer { lock.unlock() }
-        return lastRenderedBuffer.map { ($0, lastRenderedPTS, lastRenderedDoviMetadata) }
+        return lastRenderedBuffer.map { ($0, lastRenderedPTS, lastRenderedHDRMetadata) }
     }
 
     /// Resets the cumulative dropped and skipped frames counters (e.g. on new media load or manual seek).
@@ -436,7 +436,7 @@ public final class FrameQueue: @unchecked Sendable {
         countInternal = 0
         lastRenderedBuffer = nil
         lastRenderedPTS = -1.0
-        lastRenderedDoviMetadata = nil
+        lastRenderedHDRMetadata = nil
         if resetDroppedFrames {
             pipelineDroppedFramesCountInternal = 0
             speedSkippedFramesCountInternal = 0

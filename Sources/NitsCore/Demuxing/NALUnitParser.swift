@@ -64,16 +64,13 @@ enum NALUnitParser {
         }
     }
 
-    /// Fast scan for HEVC NAL unit type 62 (Dolby Vision RPU) without allocating all NAL units.
-    static func findNALUnit62(in data: Data, isAnnexB: Bool) -> Data? {
-        data.withUnsafeBytes { ptr -> Data? in
-            guard let bytes = ptr.bindMemory(to: UInt8.self).baseAddress else { return nil }
-            return findNALUnit62(bytes: bytes, count: data.count, isAnnexB: isAnnexB)
-        }
-    }
-
-    static func findNALUnit62(bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool) -> Data? {
-        guard count >= 5 else { return nil }
+    /// Calls `body` with the type and bytes (header included) of each HEVC NAL unit of a packet, without copying,
+    /// until it returns false.
+    static func forEachHEVCNALUnit(
+        bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool,
+        _ body: (UInt8, UnsafeBufferPointer<UInt8>) -> Bool
+    ) {
+        guard count >= 5 else { return }
         if isAnnexB {
             var i = 0
             while i + 4 < count {
@@ -94,27 +91,23 @@ enum NALUnitParser {
 
                 let nalStart = i + prefixLen
                 guard nalStart < count else { break }
-                let nalType = (bytes[nalStart] >> 1) & 0x3F
-
-                if nalType == 62 {
-                    // Find the end of this NALU (next start code or EOF)
-                    var next = nalStart + 1
-                    while next + 2 < count {
-                        if bytes[next] == 0 && bytes[next + 1] == 0
-                            && (bytes[next + 2] == 1
-                                || (next + 3 < count && bytes[next + 2] == 0 && bytes[next + 3] == 1))
-                        {
-                            break
-                        }
-                        next += 1
+                // The unit ends at the next start code or the end of the packet.
+                var next = nalStart + 1
+                while next + 2 < count {
+                    if bytes[next] == 0 && bytes[next + 1] == 0
+                        && (bytes[next + 2] == 1 || (next + 3 < count && bytes[next + 2] == 0 && bytes[next + 3] == 1))
+                    {
+                        break
                     }
-                    let nalEnd = (next + 2 < count) ? next : count
-                    return Data(bytes: bytes.advanced(by: nalStart), count: nalEnd - nalStart)
+                    next += 1
                 }
-
-                i = nalStart
+                let nalEnd = (next + 2 < count) ? next : count
+                let nalType = (bytes[nalStart] >> 1) & 0x3F
+                guard body(nalType, UnsafeBufferPointer(start: bytes + nalStart, count: nalEnd - nalStart)) else {
+                    return
+                }
+                i = nalEnd
             }
-            return nil
         } else {
             var offset = 0
             while offset + 4 <= count {
@@ -124,12 +117,9 @@ enum NALUnitParser {
                 offset += 4
                 guard naluLen > 0, offset + naluLen <= count else { break }
                 let nalType = (bytes[offset] >> 1) & 0x3F
-                if nalType == 62 {
-                    return Data(bytes: bytes.advanced(by: offset), count: naluLen)
-                }
+                guard body(nalType, UnsafeBufferPointer(start: bytes + offset, count: naluLen)) else { return }
                 offset += naluLen
             }
-            return nil
         }
     }
 

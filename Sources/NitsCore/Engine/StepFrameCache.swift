@@ -15,7 +15,7 @@ public final class StepFrameCache: @unchecked Sendable {
     public struct Entry: @unchecked Sendable {
         public let pixelBuffer: CVPixelBuffer
         public let pts: CMTime
-        public let doviMetadata: DolbyVisionFrameMetadata?
+        public let hdrMetadata: FrameHDRMetadata?
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -45,7 +45,7 @@ public final class StepFrameCache: @unchecked Sendable {
 
     /// Inserts a decoded display frame, preserving ascending PTS order and evicting the furthest frame
     /// from the insertion point when over capacity (keeps a window around recent stepping activity).
-    public func append(pixelBuffer: CVPixelBuffer, pts: CMTime, doviMetadata: DolbyVisionFrameMetadata? = nil) {
+    public func append(pixelBuffer: CVPixelBuffer, pts: CMTime, hdrMetadata: FrameHDRMetadata? = nil) {
         guard pts.isValid else { return }
         let seconds = pts.seconds
         lock.lock()
@@ -60,7 +60,7 @@ public final class StepFrameCache: @unchecked Sendable {
         // element at the insertion point and its left neighbor to absorb float rounding on either side.
         if lo < entries.count && abs(entries[lo].pts.seconds - seconds) < 1e-6 { return }
         if lo > 0 && abs(entries[lo - 1].pts.seconds - seconds) < 1e-6 { return }
-        entries.insert(Entry(pixelBuffer: pixelBuffer, pts: pts, doviMetadata: doviMetadata), at: lo)
+        entries.insert(Entry(pixelBuffer: pixelBuffer, pts: pts, hdrMetadata: hdrMetadata), at: lo)
         if entries.count > capacity {
             // Drop whichever end is further from the just-inserted frame so the window follows stepping.
             if lo <= entries.count / 2 {

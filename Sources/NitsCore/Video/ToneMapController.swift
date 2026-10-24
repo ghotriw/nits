@@ -17,18 +17,23 @@ protocol ToneMapHost: AnyObject {
 @MainActor
 @Observable
 public final class ToneMapController {
-    /// How a frame was tone-mapped: by the BT.2390 base curve alone, or with what of its Dolby Vision RPU.
+    /// How a frame was tone-mapped: by the BT.2390 base curve alone, or with what of its Dolby Vision RPU or HDR10+.
     public struct Mode: Equatable, Sendable {
         public var usesL1 = false
         public var usesL2Trim = false
         /// Whether the RPU's curves reshaped the Profile 5 picture.
         public var usesReshaping = false
+        /// Whether HDR10+ gave the scene's luminance (a frame without L1).
+        public var usesHDR10Plus = false
 
         /// The render mode name the performance monitor shows.
         public var name: String {
-            let parts = [usesReshaping ? "Reshaping" : nil, usesL1 ? "L1" : nil, usesL2Trim ? "L2 Trim" : nil]
+            let dolbyVision = [usesReshaping ? "Reshaping" : nil, usesL1 ? "L1" : nil, usesL2Trim ? "L2 Trim" : nil]
                 .compactMap { $0 }
-            return parts.isEmpty ? "Metal SDR" : "Metal SDR (DoVi \(parts.joined(separator: " + ")))"
+            let parts =
+                (dolbyVision.isEmpty ? [] : ["DoVi \(dolbyVision.joined(separator: " + "))"])
+                + (usesHDR10Plus ? ["HDR10+"] : [])
+            return parts.isEmpty ? "Metal SDR" : "Metal SDR (\(parts.joined(separator: " + ")))"
         }
     }
 
@@ -37,23 +42,30 @@ public final class ToneMapController {
         /// The media's static peak, which L1 moves from.
         var basePeakNits: Float = 1000.0
         var smoothedPeakNits: Float = 1000.0
-        var smoothedTargetNits: Float = ToneMapController.referenceWhiteNits
+        /// The media's reference white, unscaled: the most L1 moves `sceneTargetNits` to.
+        var staticTargetNits: Float = ToneMapController.referenceWhiteNits
+        /// The scene's reference white, unscaled: the static one, which L1 moves (`applyFrame`).
+        var sceneTargetNits: Float = ToneMapController.referenceWhiteNits
         var targetNitsScale: Float = 1.0
+        /// The reference white the curve targets: the scene's, scaled by the user's multiplier.
+        var targetNits: Float { ToneMapController.scaledTargetNits(sceneTargetNits, scale: targetNitsScale) }
         /// The media has no static peak, and no RPU has set one yet (`applyFrame`).
         var awaitsSourcePeak = false
         var appliesTrims = false
         /// How the last frame was tone-mapped; a frame without RPU keeps it.
         var lastMode = Mode()
         /// RPU of the last tone-mapped frame, to re-render it when `appliesTrims` changes while paused.
-        var lastDoviMetadata: DolbyVisionFrameMetadata?
+        var lastHDRMetadata: FrameHDRMetadata?
+        /// The white last set to `appliedTargetNits`, rounded.
+        var publishedTargetNits: Float = ToneMapController.referenceWhiteNits
+        /// The last HDR10+ scene peak, unsmoothed: a change of more than a quarter from it is a cut (`applyFrame`).
+        var lastHDR10PlusPeakNits: Float?
         /// Profile 5 reshaping and colour matrices, which RPUs update.
         var reshaper = DolbyVisionReshaper()
     }
 
     /// ITU-R BT.2408 reference white: the target for high-peak HDR, which the adaptation lowers from.
     public nonisolated static let referenceWhiteNits: Float = 203.0
-    /// Shadow lift applied to a media with a low MaxFALL while the user sets none.
-    nonisolated static let lowFallShadowLift: Float = 0.008
 
     public var exposure: Float = 1.0 {
         didSet {
@@ -61,14 +73,8 @@ public final class ToneMapController {
             renderer?.updateUniforms { $0.outputExposure = exposure }
         }
     }
-    /// The user's shadow lift, 0 for none; `nil` leaves the one the media asks for (`appliedShadowLift`).
-    public var shadowLift: Float? {
-        didSet { updateShadowLiftUniform() }
-    }
-    /// Shadow lift the shader applies: the user's, else the one the media's luminance asks for.
-    public var appliedShadowLift: Float { shadowLift ?? mediaShadowLift }
-    /// Set on load for a media with a low MaxFALL, cleared by `reset`.
-    private var mediaShadowLift: Float = 0.0 {
+    /// The user's shadow lift on top of the curve, 0 for none.
+    public var shadowLift: Float = 0.0 {
         didSet { updateShadowLiftUniform() }
     }
     /// Multiplier of the content-adapted reference white (0.5 ... 2.0 in UI, 0.1 ... 4.0 here).
@@ -79,16 +85,19 @@ public final class ToneMapController {
                 targetNitsScale = clamped
                 return
             }
-            // The same value again (a configuration re-applied) must not restart the smoothed Dolby Vision curve.
             guard clamped != oldValue else { return }
             frameState.withLock { $0.targetNitsScale = clamped }
-            updateTargetNits()
+            // The scene's white stays: the multiplier scales it, on a paused frame as in playback.
+            updateTargetNits(restartsScene: false)
         }
     }
     /// Reference white adapted to the media's peak and MaxFALL (e.g. 203 for 1000-nit content, ~116 for a dim one).
     public private(set) var baseTargetNits: Float = ToneMapController.referenceWhiteNits
     /// `baseTargetNits` scaled by `targetNitsScale`: the target of the static curve.
     public private(set) var targetNits: Float = ToneMapController.referenceWhiteNits
+    /// The white the curve uses now, in whole nits: the scene's (which Dolby Vision L1 or HDR10+ moves), scaled. Set
+    /// from the display link when it changes by a nit, for the UI.
+    public private(set) var appliedTargetNits: Float = ToneMapController.referenceWhiteNits
     public var sharpness: Float = 0.5 {
         didSet {
             let sharpness = sharpness
@@ -103,10 +112,10 @@ public final class ToneMapController {
             let enabled = applyDolbyVisionTrims
             let lastMetadata = frameState.withLock {
                 $0.appliesTrims = enabled
-                return $0.lastDoviMetadata
+                return $0.lastHDRMetadata
             }
             guard let host, !host.isPlaying, host.activeRenderMode == .metalToneMap, let lastMetadata else { return }
-            _ = applyFrame(doviMetadata: lastMetadata)
+            _ = applyFrame(hdrMetadata: lastMetadata)
             renderer?.redrawLastFrame()
         }
     }
@@ -139,7 +148,6 @@ public final class ToneMapController {
 
     /// Forgets the media's luminance and its last frame; the user's adjustments stay.
     func reset() {
-        mediaShadowLift = 0
         baseTargetNits = Self.referenceWhiteNits
         updateTargetNits()
         frameState.withLock {
@@ -147,7 +155,8 @@ public final class ToneMapController {
             $0.smoothedPeakNits = 1000.0
             $0.awaitsSourcePeak = false
             $0.lastMode = Mode()
-            $0.lastDoviMetadata = nil
+            $0.lastHDRMetadata = nil
+            $0.lastHDR10PlusPeakNits = nil
             $0.reshaper.reset()
         }
         renderer?.updateUniforms { uniforms in
@@ -209,19 +218,19 @@ public final class ToneMapController {
             ? (.bt2020, .pq) : (ColorPrimariesClass(primaries), TransferFunctionClass(transferFunction))
     }
 
-    /// Adapts the reference white and the shadow lift to the media's static luminance (MaxCLL or the mastering
-    /// peak, MaxFALL; 0 for unknown), which L1 then moves from. Without a static peak (`hasStaticPeak` false,
-    /// `peakNits` a default) the first RPU's source display peak stands in for it, unless L1 came first.
+    /// Adapts the reference white to the media's static luminance (MaxCLL or the mastering peak, MaxFALL; 0 for
+    /// unknown), which L1 then moves from. Without a static peak (`hasStaticPeak` false, `peakNits` a default) the
+    /// first RPU's source display peak stands in for it, unless L1 came first.
     func adapt(toPeakNits peakNits: Float, fallNits: Float, hasStaticPeak: Bool) {
         baseTargetNits = Self.adaptiveTargetNits(maxPeakNits: peakNits, maxFallNits: fallNits)
-        mediaShadowLift = fallNits > 0 && fallNits < 80.0 ? Self.lowFallShadowLift : 0
         updateTargetNits()
         frameState.withLock {
             $0.basePeakNits = peakNits
             $0.smoothedPeakNits = peakNits
             $0.awaitsSourcePeak = !hasStaticPeak
             $0.lastMode = Mode()
-            $0.lastDoviMetadata = nil
+            $0.lastHDRMetadata = nil
+            $0.lastHDR10PlusPeakNits = nil
         }
         renderer?.updateUniforms { $0.sourcePeakNits = peakNits }
     }
@@ -238,7 +247,7 @@ public final class ToneMapController {
             let mode: PlayerPerformanceMonitor.ToneMapEngineMode =
                 state.lastMode.usesL2Trim
                 ? .doviL2Trim : Self.engineMode(of: state.lastMode, peakNits: state.smoothedPeakNits)
-            return (mode, state.smoothedPeakNits, state.smoothedTargetNits)
+            return (mode, state.smoothedPeakNits, state.targetNits)
         }
         monitor.updateToneMapParams(
             PlayerPerformanceMonitor.ToneMapParams(mode: engineMode, peakNits: peak, targetNits: target))
@@ -261,12 +270,14 @@ public final class ToneMapController {
         }
     }
 
-    /// Resolves the curve for one frame's Dolby Vision metadata (L1 and L2 trims; the held or static values without
-    /// RPU), writes it to the renderer's uniforms and reports it. Returns how the frame was tone-mapped. Called by the
-    /// display link and by direct renders (seek preview, frame steps), so paused frame-stepping over Dolby Vision
-    /// content keeps the curve of playback. `restartsSmoothing` takes the frame's L1 as is, as on a scene refresh: for a
-    /// frame drawn again with no playback before it to smooth from (after a render mode switch or a seek).
-    nonisolated func applyFrame(doviMetadata: DolbyVisionFrameMetadata?, restartsSmoothing: Bool = false) -> Mode {
+    /// Resolves the curve for one frame's HDR metadata (Dolby Vision L1 and L2 trims, or HDR10+; the held or static
+    /// values without), writes it to the renderer's uniforms and reports it. Returns how the frame was tone-mapped.
+    /// Called by the display link and by direct renders (seek preview, frame steps), so paused frame-stepping over
+    /// dynamic-metadata content keeps the curve of playback. `restartsSmoothing` takes the frame's L1 as is, as on a
+    /// scene refresh: for a frame drawn again with no playback before it to smooth from (after a render mode switch or
+    /// a seek).
+    nonisolated func applyFrame(hdrMetadata: FrameHDRMetadata?, restartsSmoothing: Bool = false) -> Mode {
+        let doviMetadata = hdrMetadata?.dolbyVision
         struct ResolvedParams {
             var trim: DolbyVisionFrameMetadata.Level2Trim?
             let peakNits: Float
@@ -277,40 +288,59 @@ public final class ToneMapController {
         }
 
         let resolved = frameState.withLock { state -> ResolvedParams in
-            state.lastDoviMetadata = doviMetadata
+            state.lastHDRMetadata = hdrMetadata
             state.reshaper.update(with: doviMetadata)
             let reshaping = state.reshaper.isProfile5 ? state.reshaper.uniforms : nil
 
             // Without a static peak in the container, the first RPU's source display peak (the mastering display's,
-            // so static too) stands in for it, once, before any L1: L1 then moves from it. Only this state takes it: the
-            // main actor's `baseTargetNits` (which the UI shows, and a `targetNitsScale` change restores until the next
-            // L1) keeps the default peak's. The two differ only for a source peak below 1000 nits without L1.
+            // so static too) stands in for it, once, before any L1: L1 then moves from it. Only this state takes it:
+            // the main actor's `baseTargetNits` (which the UI shows) keeps the default peak's. The two differ only for
+            // a source peak below 1000 nits.
             if state.awaitsSourcePeak, let sourceMaxPQ = doviMetadata?.sourceMaxPQ, sourceMaxPQ > 0 {
                 let sourcePeakNits = max(DolbyVisionRPUParser.pqToNits(Float(sourceMaxPQ) / 4095.0), 100.0)
                 let rawTarget = Self.adaptiveTargetNits(maxPeakNits: sourcePeakNits)
                 state.basePeakNits = sourcePeakNits
                 state.smoothedPeakNits = sourcePeakNits
-                state.smoothedTargetNits = Self.scaledTargetNits(rawTarget, scale: state.targetNitsScale)
+                state.staticTargetNits = rawTarget
+                state.sceneTargetNits = rawTarget
             }
-            // Without L1 (no RPU, e.g. HDR10 or a frame whose RPU failed to parse) the smoothed values hold: they
-            // start as the stream's static ones on load and only L1 moves them, so a lone frame without RPU in a
-            // Dolby Vision scene keeps its brightness instead of flashing to the static mastering peak.
+            // The scene's peak: Dolby Vision L1, smoothed between frames but for a scene refresh, else HDR10+. HDR10+
+            // has no scene refresh flag: it usually holds per scene and changes at cuts, but an encoder may write it
+            // per frame (x265 `--dhdr10-info`), so a change of more than a quarter is taken as a cut, as is, and a
+            // smaller one is smoothed like L1. Without either (no metadata, e.g. HDR10, or a
+            // frame whose RPU failed to parse) the smoothed values hold: they start as the stream's static ones on
+            // load and only the scene's peak moves them, so a lone frame without RPU in a Dolby Vision scene keeps its
+            // brightness instead of flashing to the static mastering peak.
+            // The reference white follows the scene's peak between 100 nits and the static white: a scene that fits
+            // under 100 nits is shown as the XDR presentation shows it (PQ 100 nits on SDR white), a brighter one
+            // keeps the static white, which leaves room for its highlights an SDR display has no headroom above white
+            // for. Lowering the white for a scene that doesn't fit (as for its low average) overexposed it.
+            let hdr10Plus = doviMetadata?.l1 == nil ? hdrMetadata?.hdr10Plus : nil
+            var scene: (peakNits: Float, alpha: Float)?
             if let l1 = doviMetadata?.l1 {
                 let alpha: Float = restartsSmoothing || doviMetadata?.sceneRefresh == true ? 1.0 : 0.15
-                let dynamicPeak = l1.maxNits > 0 ? l1.maxNits : state.basePeakNits
-                let rawTarget = Self.adaptiveTargetNits(maxPeakNits: dynamicPeak, maxFallNits: l1.avgNits)
-                let scaledTarget = Self.scaledTargetNits(rawTarget, scale: state.targetNitsScale)
-
-                state.smoothedPeakNits = (alpha * dynamicPeak) + ((1.0 - alpha) * state.smoothedPeakNits)
-                state.smoothedTargetNits = (alpha * scaledTarget) + ((1.0 - alpha) * state.smoothedTargetNits)
+                scene = (l1.maxNits > 0 ? l1.maxNits : state.basePeakNits, alpha)
+            } else if let hdr10Plus {
+                let isCut = state.lastHDR10PlusPeakNits.map { abs(log2(hdr10Plus.maxNits / $0)) > log2(1.25) } ?? true
+                scene = (hdr10Plus.maxNits, restartsSmoothing || isCut ? 1.0 : 0.15)
+                state.lastHDR10PlusPeakNits = hdr10Plus.maxNits
+            }
+            if let scene {
+                let sceneTarget = Self.sceneTargetNits(
+                    scenePeakNits: scene.peakNits, staticTargetNits: state.staticTargetNits)
+                state.smoothedPeakNits = (scene.alpha * scene.peakNits) + ((1.0 - scene.alpha) * state.smoothedPeakNits)
+                state.sceneTargetNits = (scene.alpha * sceneTarget) + ((1.0 - scene.alpha) * state.sceneTargetNits)
             }
             if doviMetadata?.l1 != nil || doviMetadata?.sourceMaxPQ ?? 0 > 0 {
                 state.awaitsSourcePeak = false
             }
+            if hdr10Plus != nil {
+                state.lastMode = Mode(usesHDR10Plus: true)
+            }
             guard let dovi = doviMetadata else {
                 return ResolvedParams(
                     peakNits: state.smoothedPeakNits,
-                    targetNits: state.smoothedTargetNits,
+                    targetNits: state.targetNits,
                     mode: state.lastMode,
                     reshaping: reshaping
                 )
@@ -321,11 +351,12 @@ public final class ToneMapController {
             // approximation; off by default). A neutral trim changes nothing.
             let trim = state.appliesTrims ? dovi.sdrTrim.flatMap { $0.isNeutral ? nil : $0 } : nil
             state.lastMode = Mode(
-                usesL1: dovi.l1 != nil, usesL2Trim: trim != nil, usesReshaping: reshaping?.isActive == 1)
+                usesL1: dovi.l1 != nil, usesL2Trim: trim != nil, usesReshaping: reshaping?.isActive == 1,
+                usesHDR10Plus: hdr10Plus != nil)
             return ResolvedParams(
                 trim: trim,
                 peakNits: state.smoothedPeakNits,
-                targetNits: state.smoothedTargetNits,
+                targetNits: state.targetNits,
                 mode: state.lastMode,
                 reshaping: reshaping
             )
@@ -346,6 +377,7 @@ public final class ToneMapController {
             uniforms.targetNits = resolved.targetNits
             if let reshaping { uniforms.doviReshaping = reshaping }
         }
+        publishAppliedTargetNits(resolved.targetNits)
         monitor.updateToneMapParams(
             PlayerPerformanceMonitor.ToneMapParams(
                 mode: trim != nil ? .doviL2Trim : Self.engineMode(of: resolved.mode, peakNits: resolved.peakNits),
@@ -385,6 +417,12 @@ public final class ToneMapController {
         return max(min(target, baseTargetNits), 100.0)
     }
 
+    /// The reference white of a scene peaking at `scenePeakNits`: its peak between 100 nits and the media's static
+    /// white (`applyFrame` tells why). Thumbnails take it too.
+    nonisolated static func sceneTargetNits(scenePeakNits: Float, staticTargetNits: Float) -> Float {
+        min(max(scenePeakNits, 100), max(staticTargetNits, 100))
+    }
+
     /// An adapted reference white scaled by the user's multiplier, within what an SDR display can take.
     nonisolated static func scaledTargetNits(_ nits: Float, scale: Float) -> Float {
         max(min(nits * scale, 500.0), 80.0)
@@ -395,25 +433,48 @@ public final class ToneMapController {
         -> PlayerPerformanceMonitor.ToneMapEngineMode
     {
         if mode.usesL1 { return .doviL1Auto }
+        if mode.usesHDR10Plus { return .hdr10PlusDynamic }
         return peakNits > 105.0 ? .bt2390 : .directSDR
     }
 
-    /// Recomputes `targetNits` from the base and the scale, and restarts the smoothed curve from it.
-    private func updateTargetNits() {
+    /// Recomputes `targetNits` from the base and the scale and writes the curve's white: the scene's, scaled, which
+    /// `restartsScene` (a new media's static white) first sets back to the base.
+    private func updateTargetNits(restartsScene: Bool = true) {
         let base = baseTargetNits
-        let effective = Self.scaledTargetNits(base, scale: targetNitsScale)
-        targetNits = effective
-        frameState.withLock {
-            $0.smoothedTargetNits = effective
+        targetNits = Self.scaledTargetNits(base, scale: targetNitsScale)
+        let effective = frameState.withLock {
+            if restartsScene {
+                $0.staticTargetNits = base
+                $0.sceneTargetNits = base
+            }
+            return $0.targetNits
         }
         renderer?.updateUniforms { $0.targetNits = effective }
         monitor.updateTargetNits(effective)
+        publishAppliedTargetNits(effective)
+    }
+
+    /// Sets `appliedTargetNits` when `nits` rounds to another whole nit than the last set: from the display link, the
+    /// smoothed white would otherwise post a change every frame.
+    nonisolated private func publishAppliedTargetNits(_ nits: Float) {
+        let rounded = nits.rounded()
+        let changed = frameState.withLock {
+            guard $0.publishedTargetNits != rounded else { return false }
+            $0.publishedTargetNits = rounded
+            return true
+        }
+        guard changed else { return }
+        // The latest value, not this call's: tasks from the display link and the main actor may run out of order.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            appliedTargetNits = frameState.withLock { $0.publishedTargetNits }
+        }
     }
 
     /// Uniforms are written in one locked step (`updateUniforms`), never through `uniforms`' getter and setter: the
     /// display link updates them meanwhile (`applyFrame`), and a copy read before would put back its stale curve.
     private func updateShadowLiftUniform() {
-        let lift = appliedShadowLift
+        let lift = shadowLift
         renderer?.updateUniforms { $0.outputShadowLift = lift }
     }
 }

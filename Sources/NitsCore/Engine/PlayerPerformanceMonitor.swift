@@ -19,6 +19,7 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
         case none = ""
         case doviL2Trim = "DoVi L2 SDR Trim"
         case doviL1Auto = "DoVi L1 Dynamic"
+        case hdr10PlusDynamic = "HDR10+ Dynamic"
         case bt2390 = "Metal BT.2390 EETF"
         case directSDR = "Direct SDR (Display P3)"
         case appleXDR = "Apple HDR Passthrough (Direct Scanout)"

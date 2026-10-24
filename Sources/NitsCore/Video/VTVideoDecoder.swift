@@ -13,7 +13,7 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
 
     private struct FrameContext: Sendable {
         let doNotDisplay: Bool
-        let doviMetadata: DolbyVisionFrameMetadata?
+        let hdrMetadata: FrameHDRMetadata?
         let pixelAspectRatio: RationalAspectRatio?
     }
 
@@ -97,11 +97,11 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
             }
         }
 
-        var dovi: DolbyVisionFrameMetadata? = nil
-        let doviKey = MediaDemuxer.dolbyVisionMetadataAttachmentKey as CFString
-        if let box = CMGetAttachment(sampleBuffer, key: doviKey, attachmentModeOut: nil) as? DolbyVisionMetadataBox {
-            dovi = box.metadata
-            CMRemoveAttachment(sampleBuffer, key: doviKey)
+        var hdrMetadata: FrameHDRMetadata? = nil
+        let metadataKey = MediaDemuxer.hdrMetadataAttachmentKey as CFString
+        if let box = CMGetAttachment(sampleBuffer, key: metadataKey, attachmentModeOut: nil) as? FrameHDRMetadataBox {
+            hdrMetadata = box.metadata
+            CMRemoveAttachment(sampleBuffer, key: metadataKey)
         }
 
         var parRational: RationalAspectRatio? = nil
@@ -125,7 +125,7 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
             nextFrameId = 1
         }
         inFlightFrames[frameId] = FrameContext(
-            doNotDisplay: doNotDisplay, doviMetadata: dovi, pixelAspectRatio: parRational)
+            doNotDisplay: doNotDisplay, hdrMetadata: hdrMetadata, pixelAspectRatio: parRational)
         lock.unlock()
 
         let refCon = UnsafeMutableRawPointer(bitPattern: UInt(frameId))
@@ -226,7 +226,7 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
                     pts: presentationTimeStamp,
                     duration: presentationDuration,
                     doNotDisplay: frameCtx?.doNotDisplay ?? false,
-                    doviMetadata: frameCtx?.doviMetadata
+                    hdrMetadata: frameCtx?.hdrMetadata
                 )
                 handler?(frame)
             },

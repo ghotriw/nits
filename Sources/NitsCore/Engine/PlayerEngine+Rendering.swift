@@ -339,7 +339,7 @@ extension PlayerEngine {
             let mode = activeRenderMode
             let renderStart = CACurrentMediaTime()
             if mode == .metalToneMap {
-                let toneMapMode = toneMapping.applyFrame(doviMetadata: popped.doviMetadata)
+                let toneMapMode = toneMapping.applyFrame(hdrMetadata: popped.hdrMetadata)
                 let cadence = frameCadenceLock
                 metalRenderer?.render(pixelBuffer: popped.pixelBuffer, pts: popped.pts.seconds) { gpuEndTime in
                     cadence.withLock {
@@ -369,7 +369,7 @@ extension PlayerEngine {
                     }
                 }
             } else {
-                toneMapping.trackReshaping(doviMetadata: popped.doviMetadata)
+                toneMapping.trackReshaping(doviMetadata: popped.hdrMetadata?.dolbyVision)
                 presentToDisplayLayer(pixelBuffer: popped.pixelBuffer)
                 performanceMonitor.updateToneMapParams(
                     PlayerPerformanceMonitor.ToneMapParams(mode: .appleXDR)
@@ -518,10 +518,10 @@ extension PlayerEngine {
         if activeRenderMode == .metalToneMap {
             // The frame's own curve, from its L1 as is: tone mapping may have last resolved another frame's (under
             // `.system` none), so there is no playback to smooth from.
-            _ = toneMapping.applyFrame(doviMetadata: frame.doviMetadata, restartsSmoothing: true)
+            _ = toneMapping.applyFrame(hdrMetadata: frame.hdrMetadata, restartsSmoothing: true)
             metalRenderer?.render(pixelBuffer: frame.pixelBuffer, pts: frame.pts)
         } else {
-            toneMapping.trackReshaping(doviMetadata: frame.doviMetadata)
+            toneMapping.trackReshaping(doviMetadata: frame.hdrMetadata?.dolbyVision)
             presentToDisplayLayer(pixelBuffer: frame.pixelBuffer)
         }
     }
@@ -536,15 +536,20 @@ extension PlayerEngine {
     }
 
     /// Directly renders a decoded pixel buffer onto the active video canvas and updates last rendered state.
-    /// `doviMetadata`, when present, drives dynamic tone mapping so direct renders (seek preview, frame
-    /// stepping) match the live playback path for Dolby Vision content.
-    public func renderDirect(pixelBuffer: CVPixelBuffer, pts: Double, doviMetadata: DolbyVisionFrameMetadata? = nil) {
-        frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts, doviMetadata: doviMetadata)
+    /// `hdrMetadata`, when present, drives dynamic tone mapping so direct renders (seek preview, frame
+    /// stepping) match the live playback path for Dolby Vision content. `restartsSmoothing` takes the frame's L1 as
+    /// is: for a frame with no playback before it to smooth from (a seek's), which would otherwise be drawn with
+    /// mostly the curve of where the seek came from.
+    public func renderDirect(
+        pixelBuffer: CVPixelBuffer, pts: Double, hdrMetadata: FrameHDRMetadata? = nil,
+        restartsSmoothing: Bool = false
+    ) {
+        frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts, hdrMetadata: hdrMetadata)
         if activeRenderMode == .metalToneMap {
-            _ = toneMapping.applyFrame(doviMetadata: doviMetadata)
+            _ = toneMapping.applyFrame(hdrMetadata: hdrMetadata, restartsSmoothing: restartsSmoothing)
             metalRenderer?.render(pixelBuffer: pixelBuffer, pts: pts)
         } else {
-            toneMapping.trackReshaping(doviMetadata: doviMetadata)
+            toneMapping.trackReshaping(doviMetadata: hdrMetadata?.dolbyVision)
             presentToDisplayLayer(pixelBuffer: pixelBuffer)
         }
     }
@@ -564,7 +569,7 @@ extension PlayerEngine {
         let displaySize = drawn?.drawableSize ?? renderer?.metalLayer.drawableSize ?? .zero
         let uniforms = drawn?.uniforms
         // A drawn frame carries its reshaping in its uniforms.
-        let reshaping = drawn == nil ? toneMapping.stillReshaping(doviMetadata: frame.doviMetadata) : nil
+        let reshaping = drawn == nil ? toneMapping.stillReshaping(doviMetadata: frame.hdrMetadata?.dolbyVision) : nil
         return await Task.detached(priority: .userInitiated) {
             FrameCapture.capture(
                 pixelBuffer, pts: pts, mode: mode, renderer: renderer, sourceRect: sourceRect,

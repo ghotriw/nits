@@ -93,9 +93,13 @@ final class ThumbnailFrameConverter {
         av_frame_free(&frame)
     }
 
+    /// `dolbyVision`: the reshaping of a Profile 5 frame's RPU, which its IPT is composed with; `curve`: the tone
+    /// curve of an HDR frame (its scene's peak and white).
     func makeImage(
         from frame: UnsafeMutablePointer<AVFrame>,
-        codecpar: UnsafeMutablePointer<AVCodecParameters>
+        codecpar: UnsafeMutablePointer<AVCodecParameters>,
+        dolbyVision: DolbyVisionPixelReshaping? = nil,
+        curve: ThumbnailToneMapper.Curve
     ) -> CGImage? {
         let format = AVPixelFormat(frame.pointee.format)
         let frameWidth = frame.pointee.width
@@ -156,7 +160,9 @@ final class ThumbnailFrameConverter {
                     encoding: encoding,
                     width: width,
                     height: height,
-                    fullRange: fullRange
+                    fullRange: fullRange,
+                    dolbyVision: dolbyVision,
+                    curve: curve
                 )
             else { return nil }
             return Self.makeCGImage(
@@ -288,21 +294,60 @@ final class ThumbnailFrameConverter {
     }
 }
 
-/// CPU tone mapping of 16-bit HDR thumbnails (PQ, HLG, Dolby Vision IPT) to 8-bit SDR Display P3.
-/// The tone curve and output encoding follow the SDR path of `HDRToneMapping.metal`.
+/// CPU tone mapping of 16-bit HDR thumbnails (PQ, HLG, Dolby Vision IPT) to 8-bit SDR Display P3, as the player's
+/// Metal path does it (`HDRToneMapping.metal`): the BT.2390 black level lift, the scene's reference white
+/// (`ToneMapController.sceneTargetNits`) and sRGB encoding, with a soft shoulder of its own in place of BT.2390's knee.
 enum ThumbnailToneMapper {
-    /// SDR reference white, ITU-R BT.2408.
-    static let referenceWhiteNits: Float = 203
     /// Nominal peak of the BT.2100 HLG reference display.
     static let hlgPeakNits: Float = 1000
+    /// The display black the shadows are lifted towards, as a fraction of white: `displayBlackToWhite` in
+    /// `HDRToneMapping.metal`.
+    static let displayBlackToWhite: Float = 0.0006
+
+    /// The curve of one frame: its scene's peak and reference white, and the black level lift they give.
+    struct Curve {
+        let whiteNits: Float
+        let peakPQ: Float
+        /// The lift's `b`: the display black in PQ normalized to the source range [0, peak].
+        let blackLift: Float
+        /// The shoulder's `k`, so that 0.6 + e / (1 + k e) reaches 1.0 at the peak (e = peak / white - 0.6).
+        let shoulder: Float
+
+        init(peakNits: Float, whiteNits: Float) {
+            self.whiteNits = whiteNits
+            shoulder = max(1 / 0.4 - 1 / max(peakNits / whiteNits - 0.6, 1e-3), 0)
+            peakPQ = ThumbnailToneMapper.nitsToPQ(max(peakNits, 100))
+            blackLift = ThumbnailToneMapper.nitsToPQ(whiteNits * ThumbnailToneMapper.displayBlackToWhite) / peakPQ
+        }
+
+        /// ITU-R BT.2390 black level lift (EETF step 4) of linear nits, as `liftBlackLevel` in the shader.
+        @inline(__always)
+        func liftBlackLevel(_ nits: Float) -> Float {
+            let e = ThumbnailToneMapper.nitsToPQ(nits) / peakPQ
+            let rest = max(1 - e, 0)
+            return ThumbnailToneMapper.pqToNits((e + blackLift * rest * rest * rest * rest) * peakPQ)
+        }
+    }
 
     /// PQ code value (16-bit) → absolute luminance in nits.
     private static let pqLUT: [Float] = (0...65535).map { pqToNits(Float($0) / 65535) }
     /// HLG code value (16-bit) → normalised scene-linear light.
     private static let hlgLUT: [Float] = (0...65535).map { hlgToSceneLinear(Float($0) / 65535) }
-    /// Linear [0, 1] → 8-bit pure gamma 2.2 (matches `linearToSDRDisplay`).
-    private static let gammaLUT: [UInt8] = (0...4095).map {
-        UInt8(min(255, max(0, (pow(Float($0) / 4095, 1 / 2.2) * 255).rounded())))
+    /// Linear [0, 1] → 8-bit sRGB, the transfer of the Display P3 the image is tagged with.
+    private static let srgbLUT: [UInt8] = (0...16383).map {
+        let c = Float($0) / 16383
+        let encoded = c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1 / 2.4) - 0.055
+        return UInt8(min(255, max(0, (encoded * 255).rounded())))
+    }
+
+    static func nitsToPQ(_ nits: Float) -> Float {
+        let m1: Float = 2610 / 16384
+        let m2: Float = 2523 / 32
+        let c1: Float = 3424 / 4096
+        let c2: Float = 2413 / 128
+        let c3: Float = 2392 / 128
+        let y = pow(max(nits, 0) / 10000, m1)
+        return pow((c1 + c2 * y) / (1 + c3 * y), m2)
     }
 
     static func pqToNits(_ value: Float) -> Float {
@@ -322,22 +367,25 @@ enum ThumbnailToneMapper {
         return value <= 0.5 ? value * value / 3 : (exp((value - c) / a) + b) / 12
     }
 
-    /// Dolby Vision Profile 5 IPT-PQ-C2 → linear BT.2020 nits using default IPT matrices without dynamic RPU reshaping.
-    /// Inputs are normalised: I in [0, 1], P / T centred on 0. Thumbnails decode keyframes without RPU reshaping: the
-    /// Profile 5 base layer alone can differ noticeably in contrast and saturation from playback.
+    /// Dolby Vision Profile 5 IPT-PQ-C2 → linear BT.2020 nits using default IPT matrices without dynamic RPU reshaping,
+    /// for a keyframe whose RPU is missing or has no curves to apply. Inputs are normalised: I in [0, 1], P / T centred
+    /// on 0. The base layer alone can differ much in contrast and colour from the reshaped picture.
     static func nitsFromIPT(i: Float, ct: Float, cp: Float) -> SIMD3<Float> {
         let lmsPrime = DolbyVisionColorScience.defaultIptToLms * SIMD3(i, ct, cp)
         let lms = SIMD3(pqLUT[lutIndex(lmsPrime.x)], pqLUT[lutIndex(lmsPrime.y)], pqLUT[lutIndex(lmsPrime.z)])
         return simd_max(DolbyVisionColorScience.defaultLmsToRgb * lms, .zero)
     }
 
-    /// Tone-maps the scaled 16-bit frame into packed 8-bit RGBX, or `nil` for an SDR encoding.
+    /// Tone-maps the scaled 16-bit frame into packed 8-bit RGBX, or `nil` for an SDR encoding; a Profile 5 frame with
+    /// `dolbyVision` through its RPU's curves and matrices.
     static func render(
         _ scaled: UnsafeMutablePointer<AVFrame>,
         encoding: ThumbnailSourceEncoding,
         width: Int,
         height: Int,
-        fullRange: Bool
+        fullRange: Bool,
+        dolbyVision: DolbyVisionPixelReshaping? = nil,
+        curve: ThumbnailToneMapper.Curve
     ) -> Data? {
         var output = Data(count: width * height * 4)
         let rendered: Bool = output.withUnsafeMutableBytes { raw in
@@ -359,7 +407,7 @@ enum ThumbnailToneMapper {
                             let ys = 0.2627 * scene.x + 0.6780 * scene.y + 0.0593 * scene.z
                             rgb = ys > 0 ? scene * (hlgPeakNits * pow(ys, 0.2)) : .zero
                         }
-                        writeSDR(nits2020: rgb, to: out + (y * width + x) * 4)
+                        writeSDR(nits2020: rgb, curve: curve, to: out + (y * width + x) * 4)
                     }
                 }
             case .dolbyVisionIPT:
@@ -379,12 +427,23 @@ enum ThumbnailToneMapper {
                     let cpRow = UnsafeRawPointer(cpPlane + y * Int(scaled.pointee.linesize.2))
                         .assumingMemoryBound(to: UInt16.self)
                     for x in 0..<width {
+                        if let dolbyVision {
+                            // The RPU's curves take the codewords themselves, whatever the range, as the shader does.
+                            let lmsPrime = dolbyVision.lmsPrime(
+                                raw: SIMD3(Float(iRow[x]), Float(ctRow[x]), Float(cpRow[x])) / 65535)
+                            let lms = SIMD3(
+                                pqLUT[lutIndex(lmsPrime.x)], pqLUT[lutIndex(lmsPrime.y)], pqLUT[lutIndex(lmsPrime.z)])
+                            writeSDR(
+                                nits2020: simd_max(dolbyVision.lmsToRgb * lms, .zero), curve: curve,
+                                to: out + (y * width + x) * 4)
+                            continue
+                        }
                         let rgb = nitsFromIPT(
                             i: (Float(iRow[x]) / 65535 - lumaOffset) * lumaScale,
                             ct: (Float(ctRow[x]) / 65535 - chromaOffset) * chromaScale,
                             cp: (Float(cpRow[x]) / 65535 - chromaOffset) * chromaScale
                         )
-                        writeSDR(nits2020: rgb, to: out + (y * width + x) * 4)
+                        writeSDR(nits2020: rgb, curve: curve, to: out + (y * width + x) * 4)
                     }
                 }
             case .sdr:
@@ -395,9 +454,11 @@ enum ThumbnailToneMapper {
         return rendered ? output : nil
     }
 
-    /// Linear BT.2020 nits → BT.2020-to-P3 gamut conversion → SDR tone curve → gamma 2.2 RGBX.
+    /// Linear BT.2020 nits → black level lift → BT.2020-to-P3 gamut conversion → SDR tone curve → sRGB RGBX.
     @inline(__always)
-    static func writeSDR(nits2020 rgb: SIMD3<Float>, to out: UnsafeMutablePointer<UInt8>) {
+    static func writeSDR(nits2020 source: SIMD3<Float>, curve: Curve, to out: UnsafeMutablePointer<UInt8>) {
+        let rgb = SIMD3(
+            curve.liftBlackLevel(source.x), curve.liftBlackLevel(source.y), curve.liftBlackLevel(source.z))
         let r = max(1.343578 * rgb.x - 0.282180 * rgb.y - 0.061399 * rgb.z, 0)
         let g = max(-0.065297 * rgb.x + 1.075788 * rgb.y - 0.010490 * rgb.z, 0)
         let b = max(0.002822 * rgb.x - 0.019598 * rgb.y + 1.016777 * rgb.z, 0)
@@ -411,13 +472,15 @@ enum ThumbnailToneMapper {
             return
         }
 
-        // Linear up to 0.6 of reference white, then a soft shoulder towards 1.0.
-        let x = peak / referenceWhiteNits
-        let mapped = x <= 0.6 ? x : 0.6 + 0.4 * ((x - 0.6) / (x - 0.6 + 1.2))
-        let scale = (mapped / x) / referenceWhiteNits
-        out[0] = gammaLUT[gammaIndex(r * scale)]
-        out[1] = gammaLUT[gammaIndex(g * scale)]
-        out[2] = gammaLUT[gammaIndex(b * scale)]
+        // Linear up to 0.6 of reference white, then a shoulder of slope 1 at its start that brings the scene's peak to
+        // 1.0, as the player's curve does (a peak at or below white leaves it linear). What exceeds the peak clips.
+        let x = peak / curve.whiteNits
+        let excess = x - 0.6
+        let mapped = excess <= 0 ? x : 0.6 + excess / (1 + excess * curve.shoulder)
+        let scale = (mapped / x) / curve.whiteNits
+        out[0] = srgbLUT[srgbIndex(r * scale)]
+        out[1] = srgbLUT[srgbIndex(g * scale)]
+        out[2] = srgbLUT[srgbIndex(b * scale)]
     }
 
     @inline(__always)
@@ -426,7 +489,7 @@ enum ThumbnailToneMapper {
     }
 
     @inline(__always)
-    private static func gammaIndex(_ value: Float) -> Int {
-        Int((min(max(value, 0), 1) * 4095).rounded())
+    private static func srgbIndex(_ value: Float) -> Int {
+        Int((min(max(value, 0), 1) * 16383).rounded())
     }
 }

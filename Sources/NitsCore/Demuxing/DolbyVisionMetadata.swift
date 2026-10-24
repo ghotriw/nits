@@ -1,16 +1,6 @@
 import Foundation
 import simd
 
-/// Reference class box for attaching Dolby Vision metadata to CMSampleBuffer attachments.
-public final class DolbyVisionMetadataBox: NSObject, Sendable {
-    public let metadata: DolbyVisionFrameMetadata
-
-    public init(metadata: DolbyVisionFrameMetadata) {
-        self.metadata = metadata
-        super.init()
-    }
-}
-
 /// Extracted Dolby Vision dynamic metadata per-frame from RPU (NAL unit 62).
 public struct DolbyVisionFrameMetadata: Sendable, Equatable {
     /// Multivariate Multiple Regression (MMR) parameters for higher-order chroma reshaping (ETSI GS CCM 001).

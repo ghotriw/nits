@@ -745,38 +745,7 @@ struct AdaptiveToneMappingTests {
         #expect(engine.toneMapping.baseTargetNits == 203.0)
     }
 
-    @Test("A dim media's shadow lift applies while the user sets none and goes with the media")
-    @MainActor
-    func mediaShadowLiftIsReset() {
-        let engine = PlayerEngine.makeForTesting()
-        let toneMapping = engine.toneMapping
-
-        toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0, hasStaticPeak: true)
-        #expect(toneMapping.appliedShadowLift == ToneMapController.lowFallShadowLift)
-        #expect(
-            engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? toneMapping.appliedShadowLift
-                == ToneMapController.lowFallShadowLift)
-
-        toneMapping.shadowLift = 0.02
-        #expect(toneMapping.appliedShadowLift == 0.02)
-        // 0 is the user's: no lift at all, even on a dim media.
-        toneMapping.shadowLift = 0
-        #expect(toneMapping.appliedShadowLift == 0)
-        #expect(engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? 0 == 0)
-        toneMapping.shadowLift = nil
-        #expect(toneMapping.appliedShadowLift == ToneMapController.lowFallShadowLift)
-
-        // The next media isn't dim: it must not keep the previous one's lift.
-        toneMapping.adapt(toPeakNits: 1000.0, fallNits: 161.0, hasStaticPeak: true)
-        #expect(toneMapping.appliedShadowLift == 0)
-        #expect(engine.metalRenderer.map { $0.uniforms.outputShadowLift } ?? 0 == 0)
-
-        toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0, hasStaticPeak: true)
-        engine.stop()
-        #expect(toneMapping.appliedShadowLift == 0)
-    }
-
-    @Test("Re-applying the configuration keeps the smoothed Dolby Vision target and the settings changed since")
+    @Test("Re-applying the configuration keeps the target white and the settings changed since")
     @MainActor
     func reappliedConfigurationKeepsState() {
         let configuration = PlayerConfiguration(targetNitsScale: 1.5)
@@ -785,14 +754,14 @@ struct AdaptiveToneMappingTests {
         let l1 = DolbyVisionFrameMetadata(
             sceneRefresh: true, l1: DolbyVisionFrameMetadata.Level1(minPQ: 0, maxPQ: 2400, avgPQ: 1000), l2Trims: [])
         _ = toneMapping.applyFrame(doviMetadata: l1)
-        let smoothedTarget = toneMapping.frameState.withLock { $0.smoothedTargetNits }
+        let target = toneMapping.frameState.withLock { $0.targetNits }
         toneMapping.sharpness = 0.9
 
         // Another setting changes: the tone-mapping ones are those of before.
         var changed = configuration
         changed.seekStepSeconds += 1
         engine.applyConfiguration(changed)
-        #expect(toneMapping.frameState.withLock { $0.smoothedTargetNits } == smoothedTarget)
+        #expect(toneMapping.frameState.withLock { $0.targetNits } == target)
         #expect(toneMapping.sharpness == 0.9)
 
         // A setting changed in the configuration applies.

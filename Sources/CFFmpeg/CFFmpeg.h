@@ -4,6 +4,7 @@
 #include <libavutil/avutil.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>

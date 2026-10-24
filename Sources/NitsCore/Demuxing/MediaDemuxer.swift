@@ -5,7 +5,7 @@ import VideoToolbox
 import os
 
 public final class MediaDemuxer: @unchecked Sendable {
-    public static let dolbyVisionMetadataAttachmentKey: String = "Nits.DolbyVisionMetadata"
+    public static let hdrMetadataAttachmentKey: String = "Nits.FrameHDRMetadata"
     /// Sample attachment set when the container had no PTS for the packet (AVI stores decode order
     /// only). The sample's PTS then falls back to its DTS; software decoders must not pass it on as
     /// a real PTS or B-frame reordering skews every presentation timestamp.

@@ -97,6 +97,8 @@ public struct PerformanceHUDView: View {
             return ("DV L2 Trim", "sparkles", Color(red: 0.8, green: 0.6, blue: 1.0))
         case .doviL1Auto:
             return ("DV L1 Auto", "wand.and.stars", Color.cyan)
+        case .hdr10PlusDynamic:
+            return ("HDR10+ Auto", "wand.and.stars", Color.orange)
         case .bt2390:
             return ("BT.2390 SDR", "display", Color.green)
         case .directSDR:
@@ -177,7 +179,7 @@ public struct PerformanceHUDView: View {
                 format: "Slope: %.2f  Offset: %+.2f  Power: %.2f  Sat: %+.2f",
                 params.slope, params.offset, params.power, params.saturation
             )
-        case .doviL1Auto:
+        case .doviL1Auto, .hdr10PlusDynamic:
             return String(format: "Scene Peak: %.0f nits → Target: %.0f nits", params.peakNits, params.targetNits)
         case .bt2390:
             return String(format: "Peak: %.0f nits → Target: %.0f nits", params.peakNits, params.targetNits)

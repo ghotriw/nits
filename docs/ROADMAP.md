@@ -49,7 +49,7 @@ flowchart TD
 
 - [x] **1.1. Reference Dual-Engine Presentation Pipeline:**
   - **Apple Liquid Retina XDR Displays (EDR > 1.01):** Direct hardware overlay via `AVSampleBufferDisplayLayer` unlocking 1000–1600 nits peak highlights.
-  - **Standard SDR Displays (EDR == 1.0, e.g., external 4K/5K monitors):** Custom Metal tone-mapping compute shader (ITU-R BT.2390 EETF, 203 nits reference white, Display P3 gamut, pure Gamma 2.2 output, AMD FidelityFX CAS 5× luma-optimized sharpening).
+  - **Standard SDR Displays (EDR == 1.0, e.g., external 4K/5K monitors):** Custom Metal tone-mapping compute shader (ITU-R BT.2390 EETF with its black level lift, 203 nits reference white (Dolby Vision: 100…203 by the scene peak), Display P3 gamut, sRGB-encoded output, AMD FidelityFX CAS 5× luma-optimized sharpening).
   - Dynamic display-adaptive handover between `.auto`, `.system`, and `.metalToneMap` with zero frame stalls or pipeline tear-down.
 - [x] **1.2. Hardware HEVC / H.265 Decoding (VideoToolbox):**
   - 10-bit P010 biplanar YCbCr decoding with MSB alignment normalization (`val * 65535.0 / 1023.0`).
@@ -58,7 +58,7 @@ flowchart TD
   - Parameter set extraction for SPS (NAL 7) and PPS (NAL 8).
   - Decompression session configuration via `CMVideoFormatDescriptionCreateFromH264ParameterSets`.
   - Dynamic pixel format binding (`.r8Unorm` vs. `.r16Unorm`, Video Range vs. Full Range).
-  - Direct SDR Metal render pass: BT.709 OETF $\to$ Linear BT.709 $\to$ Display P3 (Gamma 2.2) with FidelityFX CAS bypassing EETF tone-mapping overhead.
+  - Direct SDR Metal render pass: BT.709 OETF $\to$ Linear BT.709 $\to$ Display P3 (sRGB-encoded) with FidelityFX CAS bypassing EETF tone-mapping overhead.
 - [x] **1.4. Extended HDR Standards (HLG & Dolby Vision Profile 5):**
   - HLG (Hybrid Log-Gamma, BT.2100 / ARIB STD-B67): Inverse OETF and display-adapted OOTF gamma scaling.
   - Dolby Vision Profile 5: Extradata inspection for `dvvC`/`dvcC` boxes, IPTc2 / ICtCp matrix unpacking $\to$ LMS' $\to$ ST 2084 PQ EOTF $\to$ Linear BT.2020 in nits, eliminating green/purple tinting.
@@ -722,7 +722,7 @@ flowchart TD
 
 | Subsystem / Feature | Module | Current Status | Notes |
 | :--- | :--- | :--- | :--- |
-| **Metal Tone Mapper (BT.2390 EETF)** | `NitsCore` | Completed ✓ | Display P3, 10-bit, Gamma 2.2, FidelityFX CAS |
+| **Metal Tone Mapper (BT.2390 EETF)** | `NitsCore` | Completed ✓ | Display P3, 10-bit, sRGB-encoded, FidelityFX CAS |
 | **Direct XDR DisplayLayer** | `NitsCore` | Completed ✓ | Hardware Direct Scanout decoupled from synchronizer |
 | **Hardware VideoToolbox (HEVC / H.264)** | `NitsCore` | Completed ✓ | P010/NV12, MSB normalization, parameter set extraction |
 | **Dolby Vision P5 / P8.1 / P8.4** | `NitsCore` | Completed ✓ | Hardware `dvh1`, NAL 62 RPU parser, L1/L2 SDR SOP trims |
