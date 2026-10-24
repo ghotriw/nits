@@ -118,8 +118,10 @@ struct AdaptiveBitrateTests {
         #expect(demuxer.isAdaptiveBitrateEnabled)
     }
 
-    @Test("A low variant's small segments, slow to be answered on new connections, don't hold it there")
-    func latencyIsNoTransfer() async throws {
+    @Test(
+        "A low variant's small segments, slow to be answered, don't hold it there, on connections new or kept",
+        arguments: [true, false])
+    func latencyIsNoTransfer(closesConnection: Bool) async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
         defer { server.stop() }
@@ -129,13 +131,13 @@ struct AdaptiveBitrateTests {
         demuxer.selectVariant(id: low.id)
         demuxer.setAdaptiveBitrate(true)
 
-        // A CDN fetching from its origin that keeps no connection: 0.6 s before each segment's answer, then 8 Mbit/s.
-        // Counted as transfer, the 320 variant's 75 KB segments measured under 1 Mbit/s, and nothing above it fit.
-        // The 2.66 Mbit/s variant reads a second in 0.33 s of transfer and 0.3 s of latency, within `safety`. (A
-        // connection kept open answers without `io_open`: there the latency counts as transfer.)
+        // A CDN fetching from its origin: 0.6 s before each segment's answer, then 8 Mbit/s. Counted as transfer, the
+        // 320 variant's 75 KB segments measured under 1 Mbit/s, and nothing above it fit. The 2.66 Mbit/s variant
+        // reads a second in 0.33 s of transfer and 0.3 s of latency, within `safety`. A connection kept open answers
+        // without `io_open`: there the read that asked counts as latency.
         server.setLinkRate(8_000_000 / 8)
         server.setBehavior(
-            .init(delay: .milliseconds(600), closesConnection: true), forPaths: { $0.hasSuffix(".ts") })
+            .init(delay: .milliseconds(600), closesConnection: closesConnection), forPaths: { $0.hasSuffix(".ts") })
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }
@@ -215,8 +217,9 @@ struct AdaptiveBitrateTests {
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
 
-        // 1.5 s before each answer of a 2-second segment: the 2.66 Mbit/s variant's take 2.2 s at 8 Mbit/s, the
-        // lowest's 1.6 s. On a connection kept open the latency counts as transfer; on new ones, as its share.
+        // 1.5 s before each answer of a 2-second segment: the 2.66 Mbit/s variant's take 2.2 s at 8 Mbit/s, over
+        // `safety`; the 0.97 Mbit/s one's 1.75 s, within it, and the lowest's 1.6 s. The latency counts as its share,
+        // the request asked over a connection new or kept.
         server.setLinkRate(8_000_000 / 8)
         server.setBehavior(
             .init(delay: .milliseconds(1500), closesConnection: closesConnection), forPaths: { $0.hasSuffix(".ts") })
@@ -225,7 +228,7 @@ struct AdaptiveBitrateTests {
         defer { consumer.stop() }
 
         #expect(
-            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 320 },
+            await Self.waitUntil(timeout: .seconds(20)) { (consumer.playedWidth ?? 640) < 640 },
             "Playing \(String(describing: consumer.playedWidth))")
     }
 

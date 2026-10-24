@@ -76,6 +76,41 @@ struct HLSOverHTTPTests {
         #expect(Set(Self.segments(of: 1, in: server.requests)) == ["v1_000.ts", "v1_001.ts", "v1_002.ts"])
     }
 
+    @Test("A segment cut short is asked for again from where it stopped, and every frame plays")
+    func resumesCutShortBodies() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        server.setBehavior(.init(failure: .dropMidwayOnce), forPaths: { $0 == "v1_001.ts" })
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.startReadAhead()
+
+        var pictures = 0
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        #expect(pictures == 180)
+        let asked = server.requests.filter { $0.path == "v1_001.ts" }
+        #expect(asked.count == 2, "\(asked.map { $0.range ?? "whole" })")
+        let resumedAt = asked.last?.range.flatMap { Int($0.dropFirst("bytes=".count).prefix { $0 != "-" }) }
+        #expect((resumedAt ?? 0) > 0, "\(asked.map { $0.range ?? "whole" })")
+    }
+
+    @Test("Segments are asked for uncompressed, with the cookies the master's answer set")
+    func requestsAsFFmpegDoes() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        server.setBehavior(.init(setCookie: "token=abc; Path=/"), forPaths: { $0 == "master.m3u8" })
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        let opened = server.requests.count
+        demuxer.startReadAhead()
+        while demuxer.nextVideoSample() != nil {}
+
+        // Past the opening, the segments read are `HTTPSessionTransport`'s requests.
+        let segments = Array(server.requests.dropFirst(opened)).filter { $0.path.hasSuffix(".ts") }
+        #expect(!segments.isEmpty)
+        #expect(segments.allSatisfy { $0.acceptEncoding == "identity" }, "\(segments.map(\.acceptEncoding))")
+        #expect(
+            segments.allSatisfy { $0.cookie?.contains("token=abc") == true }, "\(segments.map(\.cookie))")
+    }
+
     @Test("A saved playlist of segments on the network is opened and read as a network source")
     func savedPlaylistOfNetworkSegments() throws {
         guard let server = try Self.server() else { return }

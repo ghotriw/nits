@@ -4,9 +4,10 @@ import Foundation
 /// Counts the bytes an `AVFormatContext` reads from its inputs, as they come over the network: what packets leave out
 /// too (container overhead, and what FFmpeg reads and drops: the HLS demuxer catches a variant it switches to up from
 /// the start of a segment). Installed as the context's `io_open` / `io_close2`, which call FFmpeg's own and keep the
-/// `AVIOContext`s they open: each counts its `bytes_read`. Nothing is wrapped, so the HTTP options FFmpeg reads back
-/// from them (cookies, redirects) stay as they are. While an HLS master opens, what `HLSPlaylistPrefetcher`
-/// downloaded is served from memory instead (`prefetched`), by inputs of its own.
+/// `AVIOContext`s they open: each counts its `bytes_read`. While an HLS master opens, what `HLSPlaylistPrefetcher`
+/// downloaded is served from memory instead (`prefetched`), by inputs of its own; and once the context is an HLS
+/// demuxer's, its HTTP(S) requests go through `transport`. What FFmpeg opens itself it keeps as it is, so the HTTP
+/// options it reads back from those inputs (cookies, redirects) stay.
 ///
 /// Behind the demuxer's `lock`: FFmpeg opens and closes inputs inside the calls made under it.
 final class FFmpegIOByteCounter: @unchecked Sendable {
@@ -34,8 +35,21 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     /// What was downloaded for a URL from an offset, while the context opens (`HLSPlaylistPrefetcher`): FFmpeg reads
     /// it instead of asking the server. Nil for others, which FFmpeg opens itself.
     var prefetched: ((String, Int64) -> HLSPlaylistPrefetcher.Answer?)?
-    /// The inputs read from a download, by their `AVIOContext`: closed here, not by FFmpeg.
-    private var prefetchedInputs: [UnsafeMutablePointer<AVIOContext>: PrefetchedInput] = [:]
+    /// The inputs served here (a download, `transport`'s requests), by their `AVIOContext`: closed here, not by FFmpeg.
+    private var customInputs: [UnsafeMutablePointer<AVIOContext>: any FFmpegInputSource] = [:]
+    /// Makes `transport`, when set before the context opens: a network source's.
+    var makeTransport: (() -> HTTPSessionTransport)?
+    /// Serves the HTTP(S) inputs an HLS demuxer asks for (`isHLS`): made for its first, none for other formats.
+    private(set) var transport: HTTPSessionTransport?
+    /// The context installed on: nested ones (an HLS playlist's) call back with their own.
+    private var context: UnsafeMutablePointer<AVFormatContext>?
+
+    /// The context is an HLS demuxer's: known once probed, before its header is read, so its master playlist (the
+    /// input probed) is FFmpeg's to open, and every request after `transport`'s. A file read over HTTP, which seeks,
+    /// never is.
+    private var isHLS: Bool {
+        context?.pointee.iformat.map { String(cString: $0.pointee.name) == "hls" } ?? false
+    }
 
     /// Bytes read so far by every input the context opened.
     var total: Int64 {
@@ -45,6 +59,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     /// Takes over `ctx`'s `io_open` / `io_close2` and its `opaque`, before it opens anything. FFmpeg only takes C
     /// callbacks with an unretained pointer, so the caller keeps `self` alive for as long as `ctx` is open.
     func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {
+        context = ctx
         originalOpen = ctx.pointee.io_open
         originalClose = ctx.pointee.io_close2
         // Nested contexts (the HLS demuxer's per playlist) call back with their own context, carrying this opaque.
@@ -66,7 +81,15 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
             case .refused?:
                 ret = -ENOENT
             case nil:
-                ret = open(s, pb, url, flags, options)
+                switch pb == nil ? nil : url.flatMap({ counter.transportInput($0, options) }) {
+                case .input(let input)?:
+                    pb?.pointee = input
+                    ret = 0
+                case .failed(let code)?:
+                    ret = code
+                case nil:
+                    ret = open(s, pb, url, flags, options)
+                }
             }
             let end = ContinuousClock.now
             counter.openSeconds += (end - begin) / .seconds(1)
@@ -83,9 +106,9 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
                 return pb.map { avio_close($0) } ?? 0
             }
             if let pb, counter.open.remove(pb) != nil { counter.closedBytes += pb.pointee.bytes_read }
-            if let pb, let input = counter.prefetchedInputs.removeValue(forKey: pb) {
+            if let pb, let input = counter.customInputs.removeValue(forKey: pb) {
                 input.close()
-                Unmanaged<PrefetchedInput>.fromOpaque(pb.pointee.opaque).release()
+                Unmanaged<InputBox>.fromOpaque(pb.pointee.opaque).release()
                 av_freep(&pb.pointee.buffer)
                 var context: UnsafeMutablePointer<AVIOContext>? = pb
                 avio_context_free(&context)
@@ -108,11 +131,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         _ s: UnsafeMutablePointer<AVFormatContext>, _ url: UnsafePointer<CChar>, _ flags: Int32,
         _ options: UnsafeMutablePointer<OpaquePointer?>?
     ) -> Prefetched? {
-        let option = { (name: String) in
-            av_dict_get(options?.pointee, name, nil, 0).flatMap { $0.pointee.value }.flatMap {
-                Int64(String(cString: $0))
-            }
-        }
+        let option = { (name: String) in Self.intOption(name, in: options) }
         let offset = option("offset") ?? 0
         guard let prefetched, let answer = prefetched(String(cString: url), offset), let open = originalOpen,
             let close = originalClose
@@ -137,27 +156,115 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
                 av_dict_free(&restOptions)
                 free(restURL)
             })
+        guard let context = makeContext(serving: input) else {
+            input.close()
+            return nil
+        }
+        return .input(context)
+    }
+
+    private enum TransportInput {
+        case input(UnsafeMutablePointer<AVIOContext>)
+        case failed(Int32)
+    }
+
+    /// `url` served by `transport`, from where FFmpeg asks for it (a byte range's `offset`, to its `end_offset`), or
+    /// the server's error; nil when FFmpeg opens it itself.
+    private func transportInput(_ url: UnsafePointer<CChar>, _ options: UnsafeMutablePointer<OpaquePointer?>?)
+        -> TransportInput?
+    {
+        let url = String(cString: url)
+        guard isHLS, HTTPSessionTransport.serves(url) else { return nil }
+        if transport == nil { transport = makeTransport?() }
+        guard let transport else { return nil }
+        let end = Self.intOption("end_offset", in: options).flatMap { $0 > 0 ? $0 : nil }
+        // The cookies FFmpeg takes from the answers of the inputs it opens itself (the master's), for every request.
+        let cookies = av_dict_get(options?.pointee, "cookies", nil, 0).flatMap { $0.pointee.value }.map {
+            String(cString: $0)
+        }
+        switch transport.open(
+            url, offset: Self.intOption("offset", in: options) ?? 0, end: end, cookies: cookies,
+            cookieOrigin: cookies == nil ? nil : masterLocation)
+        {
+        case .input(let input):
+            guard let context = makeContext(serving: input) else {
+                input.close()
+                return nil
+            }
+            // Read on from where it starts, as FFmpeg's HTTP inputs of a stream are.
+            context.pointee.seekable = 0
+            return .input(context)
+        case .failed(let code):
+            return .failed(code)
+        case .notServed:
+            return nil
+        }
+    }
+
+    /// Where the master was served from, after its redirects: the `location` FFmpeg's HTTP input of it tells, as the
+    /// HLS demuxer reads it to resolve the master's URIs. Nil for a master that is a file.
+    private var masterLocation: String? {
+        guard let pb = context?.pointee.pb else { return nil }
+        var location: UnsafeMutablePointer<UInt8>?
+        guard av_opt_get(UnsafeMutableRawPointer(pb), "location", AV_OPT_SEARCH_CHILDREN, &location) >= 0,
+            let location
+        else { return nil }
+        defer { av_free(location) }
+        return String(cString: location)
+    }
+
+    private static func intOption(_ name: String, in options: UnsafeMutablePointer<OpaquePointer?>?) -> Int64? {
+        av_dict_get(options?.pointee, name, nil, 0).flatMap { $0.pointee.value }.flatMap {
+            Int64(String(cString: $0))
+        }
+    }
+
+    /// An `AVIOContext` reading `input`, which it retains until closed through `io_close2`.
+    private func makeContext(serving input: any FFmpegInputSource) -> UnsafeMutablePointer<AVIOContext>? {
         let bufferSize: Int32 = 32 << 10
-        guard let buffer = av_malloc(Int(bufferSize))?.assumingMemoryBound(to: UInt8.self),
+        guard let buffer = av_malloc(Int(bufferSize))?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        let box = Unmanaged.passRetained(InputBox(input))
+        guard
             let context = avio_alloc_context(
-                buffer, bufferSize, 0, Unmanaged.passRetained(input).toOpaque(),
+                buffer, bufferSize, 0, box.toOpaque(),
                 { opaque, buffer, size in
                     guard let opaque, let buffer else { return -1 }
-                    return Unmanaged<PrefetchedInput>.fromOpaque(opaque).takeUnretainedValue().read(buffer, size)
+                    return Unmanaged<InputBox>.fromOpaque(opaque).takeUnretainedValue().source.read(buffer, size)
                 }, nil,
                 { opaque, offset, whence in
                     guard let opaque else { return -1 }
-                    return Unmanaged<PrefetchedInput>.fromOpaque(opaque).takeUnretainedValue().seek(offset, whence)
+                    return Unmanaged<InputBox>.fromOpaque(opaque).takeUnretainedValue().source.seek(offset, whence)
                 })
-        else { return nil }
-        prefetchedInputs[context] = input
-        return .input(context)
+        else {
+            box.release()
+            av_free(buffer)
+            return nil
+        }
+        customInputs[context] = input
+        return context
     }
 }
 
-/// A download of `HLSPlaylistPrefetcher` read as an input (`FFmpegIOByteCounter.prefetchedInput`). Its C callbacks
-/// reach it through the `AVIOContext`'s opaque, retained until the input is closed.
-private final class PrefetchedInput {
+/// An input served by Nits instead of FFmpeg's protocols (`FFmpegIOByteCounter`): its `AVIOContext`'s callbacks.
+protocol FFmpegInputSource: AnyObject {
+    func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32
+    /// `avio_seek`'s `offset` and `whence` (`AVSEEK_SIZE` among them).
+    func seek(_ offset: Int64, _ whence: Int32) -> Int64
+    /// The input is closed: what it holds is let go.
+    func close()
+}
+
+/// What an input's `AVIOContext` holds, through its opaque: C callbacks take no existential.
+private final class InputBox {
+    let source: any FFmpegInputSource
+
+    init(_ source: any FFmpegInputSource) {
+        self.source = source
+    }
+}
+
+/// A download of `HLSPlaylistPrefetcher` read as an input (`FFmpegIOByteCounter.prefetchedInput`).
+private final class PrefetchedInput: FFmpegInputSource {
     private let download: HLSPlaylistPrefetcher.Download
     /// Where in the file `download` starts, and where the input ends (a byte range's end, else the file's), if known.
     private let offset: Int64

@@ -4,31 +4,44 @@ import Foundation
 /// the packets taken). Pure: the demuxer feeds it samples and times (`MediaDemuxer+AdaptiveBitrate.swift`).
 ///
 /// Throughput is an exponentially weighted average over two half-lives, the lower of the two counting (as dash.js and
-/// GStreamer do: quick to fall, slow to rise). A sample weighs the media it read, or its transfer's seconds when it
-/// read slower than in real time: weighed by the transfer alone, a sample read fast weighed little for its media, and
-/// an estimate measured low (a slow start) held for minutes after the network got faster. It leaves out the requests'
-/// latency, which is measured apart, as seconds per second of media (`latencyShare`): a variant fits when reading a
-/// second of it, its transfer at the throughput and its share of latency, takes at most `safety` of a second.
+/// GStreamer do: quick to fall, slow to rise). A sample weighs its media (`addSample`). It leaves out the requests'
+/// latency, which is measured apart, as seconds per second of media (`latencyShare`): a variant is kept when reading a
+/// second of it, its transfer at the throughput and its share of latency, takes at most `safety` of a second, and
+/// stepped up to when at most `upSafety`, as hls.js keeps and steps up (0.95 and 0.7).
 /// - **Down**: when the current variant doesn't fit and the read-ahead is below `highBuffer`, to the highest variant
 ///   that fits. The read-ahead is low after every start and seek too, while it fills: that alone is no reason.
-/// - **Up**: only with a full read-ahead (`highBuffer`) and `upSwitchInterval` after the last switch: to the highest
-///   variant a recent estimate fits, or one step up without one. With the read-ahead full the thread reads what the
-///   socket buffered while it idled and measures nothing, however fast the network, so it probes: a step too high
-///   drains the read-ahead and comes down long before that runs out. A probe that comes down within
+/// - **Up** on a recent estimate: from `estimateUpBuffer` of read-ahead and `downSwitchInterval` after the last
+///   switch, to the highest variant the estimate fits with `upSafety`, as ExoPlayer (10 s buffered, 0.7 of the
+///   estimate) and hls.js (0.7) step up. The margin below `safety` keeps a variant stepped up to from being one that
+///   doesn't fit at once. Waiting for a full read-ahead and `upSwitchInterval` too, a start on a cold CDN cache (Apple's
+///   AV1 example at 184 ms of round trip: answers after 0.7 s, 300 ms of them a second of media) that came down a
+///   step on its first estimate stepped up 17 s in, on the estimate it had 8 s in, and the switch, spliced at the read
+///   position, showed 21 s later still.
+/// - **Up** otherwise: only with a full read-ahead (`highBuffer`) and `upSwitchInterval` after the last switch, one
+///   step up without a recent estimate. With the read-ahead full the thread reads
+///   what the socket buffered while it idled and measures nothing, however fast the network, so it probes: a step
+///   too high drains the read-ahead and comes down long before that runs out. A step up that comes down within
 ///   `failedProbeWindow` doubles the wait before the next (up to `maxProbeBackoff` times).
 struct AdaptiveBitrateLogic: Sendable {
     struct Config: Sendable {
         /// Read-ahead seconds from which the logic steps up, and below which it steps down.
         var highBuffer = 20.0
-        /// Share of the throughput estimate a variant's bandwidth may take.
-        var safety = 0.8
-        /// Seconds after a switch before stepping up.
+        /// Share of the throughput estimate a variant's bandwidth may take to be kept, or stepped down to: hls.js's
+        /// `abrBandWidthFactor`. At 0.8, a cold CDN cache's start on Apple's AV1 example (184 ms of round trip, 0.33 s
+        /// of answers a second of media) came down from 4K on its first estimate, 76 Mbit/s of the 150 to 180 it then
+        /// measured: 4K's 38.5 Mbit/s took 0.84 of a second to read, and the read-ahead grew all the same.
+        var safety = 0.95
+        /// Seconds after a switch before stepping up with a full read-ahead (a probe).
         var upSwitchInterval = 10.0
+        /// Read-ahead seconds from which a recent estimate steps up to the variant it fits with `upSafety`.
+        var estimateUpBuffer = 10.0
+        /// Share of the throughput estimate a variant stepped up to on an estimate may take.
+        var upSafety = 0.7
         /// Seconds after a switch before stepping down.
         var downSwitchInterval = 2.0
         /// Seconds an estimate stays recent enough to step up to the variant it fits.
         var estimateLifetime = 20.0
-        /// Half-lives (samples' weight: seconds of media, or of transfer when slower) of the two averages.
+        /// Half-lives (samples' weight: seconds of media) of the two averages.
         var halfLives = (fast: 2.0, slow: 8.0)
         /// Seconds after a step up within which coming down makes it a failed probe.
         var failedProbeWindow = 60.0
@@ -46,6 +59,7 @@ struct AdaptiveBitrateLogic: Sendable {
         static func scaled(toReadAhead seconds: Double) -> Config {
             var config = Config()
             config.highBuffer = min(config.highBuffer, seconds * 2 / 3)
+            config.estimateUpBuffer = min(config.estimateUpBuffer, seconds / 3)
             return config
         }
     }
@@ -92,11 +106,18 @@ struct AdaptiveBitrateLogic: Sendable {
         latency = (keep * latency.waited + waited, keep * latency.media + media)
     }
 
-    /// `bytes` transferred in `seconds` while waiting on the network, reading `media` seconds, at `time`.
+    /// `bytes` transferred in `seconds`, `media` seconds of it, at `time`: a request's transfer
+    /// (`HTTPSessionTransport`), whose media is what its bytes are at the variant's bandwidth.
+    ///
+    /// The sample weighs its media alone, slow or not (its seconds without media). Weighed by its seconds when slower
+    /// than in real time, one slow for its size (half a megabyte of audio on a connection TCP starts slowly, 5.7 Mbit/s
+    /// of 90 at 184 ms of round trip) weighed more than a 4K segment's whole, and brought playback down to 864 wide two
+    /// seconds in. Weighed by its seconds alone, a sample read fast weighed little for its media, and an estimate
+    /// measured low (a slow start) held for minutes after the network got faster.
     mutating func addSample(bytes: Int, seconds: Double, media: Double, at time: Double) {
         guard bytes > 0, seconds > 0 else { return }
         let sample = Double(bytes) * 8 / seconds
-        let weight = max(media, seconds)
+        let weight = media > 0 ? media : seconds
         for (index, halfLife) in [config.halfLives.fast, config.halfLives.slow].enumerated() {
             let keep = pow(0.5, weight / halfLife)
             averages[index].value = keep * averages[index].value + (1 - keep) * sample
@@ -116,12 +137,16 @@ struct AdaptiveBitrateLogic: Sendable {
         // leaves no time for any transfer: only the lowest variant comes nearest, with or without an estimate.
         let latencyShare = latencyShare ?? 0
         let isLatencyBound = latencyShare >= config.safety
-        let fitting =
+        let estimate = estimate
+        let fits = { (share: Double) in
             isLatencyBound
-            ? 0
-            : estimate.map { estimate in
-                ladder.lastIndex { Double($0.bandwidth) <= estimate * (config.safety - latencyShare) } ?? 0
-            }
+                ? 0
+                : estimate.map { estimate in
+                    ladder.lastIndex { Double($0.bandwidth) <= estimate * (share - latencyShare) } ?? 0
+                }
+        }
+        let fitting = fits(config.safety)
+        let fittingUp = isRecent ? fits(config.upSafety) : nil
         // A step up that held this long without coming down was no failed probe: the waits start over.
         if lastStepUpTime > lastStepDownTime, time - lastStepUpTime > config.failedProbeWindow { probeBackoff = 1 }
 
@@ -134,11 +159,17 @@ struct AdaptiveBitrateLogic: Sendable {
                     probeBackoff = min(probeBackoff * 2, config.maxProbeBackoff)
                 }
             }
-        } else if readAhead >= config.highBuffer, sinceSwitch >= config.upSwitchInterval * probeBackoff {
-            if let fitting, isRecent {
-                target = max(fitting, position)
-            } else if position + 1 < ladder.count, !isLatencyBound {
-                target = position + 1
+        } else {
+            if let fittingUp, fittingUp > position, readAhead >= config.estimateUpBuffer,
+                sinceSwitch >= config.downSwitchInterval * probeBackoff
+            {
+                target = fittingUp
+            } else if readAhead >= config.highBuffer, sinceSwitch >= config.upSwitchInterval * probeBackoff {
+                if let fittingUp {
+                    target = max(fittingUp, position)
+                } else if position + 1 < ladder.count, !isLatencyBound {
+                    target = position + 1
+                }
             }
             if target > position { lastStepUpTime = time }
         }

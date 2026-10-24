@@ -26,6 +26,8 @@ final class TestHTTPServer: Sendable {
         var rangeLimit: Int?
         /// Answered with a redirect (302) to this path, relative to the served directory.
         var redirect: String?
+        /// A `Set-Cookie` header with the answer.
+        var setCookie: String?
     }
 
     enum Failure: Sendable {
@@ -33,6 +35,8 @@ final class TestHTTPServer: Sendable {
         case status(Int)
         /// The connection is closed half way through the body.
         case dropMidway
+        /// As `dropMidway`, the first time a path is asked for only: later requests are answered whole.
+        case dropMidwayOnce
         /// No response at all, until the server stops.
         case hang
     }
@@ -44,6 +48,8 @@ final class TestHTTPServer: Sendable {
         var userAgent: String?
         /// The `Range` header.
         var range: String?
+        var acceptEncoding: String?
+        var cookie: String?
     }
 
     private struct State {
@@ -57,6 +63,8 @@ final class TestHTTPServer: Sendable {
         var responders: [String: @Sendable () -> Data] = [:]
         var behaviors: [(matches: @Sendable (String) -> Bool, behavior: Behavior)] = []
         var requests: [Request] = []
+        /// The paths a `dropMidwayOnce` response was cut short for.
+        var dropped: Set<String> = []
         var connections: [ObjectIdentifier: NWConnection] = [:]
     }
 
@@ -195,7 +203,9 @@ final class TestHTTPServer: Sendable {
                 headers[line[..<colon].lowercased()] = line[line.index(after: colon)...]
                     .trimmingCharacters(in: .whitespaces)
             }
-            let request = Request(path: path, time: .now, userAgent: headers["user-agent"], range: headers["range"])
+            let request = Request(
+                path: path, time: .now, userAgent: headers["user-agent"], range: headers["range"],
+                acceptEncoding: headers["accept-encoding"], cookie: headers["cookie"])
             state.withLock { $0.requests.append(request) }
 
             let behavior = behavior(for: path, in: state)
@@ -215,7 +225,7 @@ final class TestHTTPServer: Sendable {
                     return
                 }
                 continue
-            case .dropMidway, nil:
+            case .dropMidway, .dropMidwayOnce, nil:
                 break
             }
 
@@ -243,9 +253,16 @@ final class TestHTTPServer: Sendable {
             }
             responseHeaders["Content-Length"] = String(body.count)
             if behavior.closesConnection { responseHeaders["Connection"] = "close" }
+            if let cookie = behavior.setCookie { responseHeaders["Set-Cookie"] = cookie }
             guard await send(response(status: status, headers: responseHeaders), on: connection) else { return }
 
-            let dropAt = behavior.failure == nil ? Int.max : body.count / 2
+            let drops: Bool
+            switch behavior.failure {
+            case .dropMidway: drops = true
+            case .dropMidwayOnce: drops = state.withLock { $0.dropped.insert(path).inserted }
+            default: drops = false
+            }
+            let dropAt = drops ? body.count / 2 : Int.max
             guard await sendBody(body, until: dropAt, path: path, on: connection, state: state) else { return }
             if behavior.closesConnection || headers["connection"]?.lowercased() == "close" { return }
         }

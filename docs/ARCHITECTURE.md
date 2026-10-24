@@ -212,8 +212,8 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   of 142. Bipbop advanced (byte ranges, 54 programs) in 5–6 s instead of 47: FFmpeg reads 0.2–3 MB of each video
   variant's first fragment (8 s each), and goes on to the network for 13 of them. At 184 ms of round trip
   (Network Link Conditioner) the AV1 example opened in 7.2 s and 3.5 s instead of 51–80, Dolby Vision / Atmos in
-  12.7 s and 5.7 s. Keep-alive is off while opening:
-  FFmpeg would send the playlists over the master's connection without `io_open`. What isn't downloaded FFmpeg
+  12.7 s and 5.7 s. Keep-alive is off: FFmpeg would send the playlists over the master's connection without
+  `io_open`. What isn't downloaded FFmpeg
   opens as before: a playlist served from elsewhere (a redirect: its segments resolve against that place, which
   FFmpeg reading from memory wouldn't know), a failed download, encrypted segments, a probe starting elsewhere
   (`EXT-X-START`), a URI resolved otherwise than by FFmpeg. The downloads carry the source's headers; the user
@@ -234,52 +234,63 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   the one selected when it began.
 - **Adaptive bitrate** (`AdaptiveBitrateLogic`, `MediaDemuxer+AdaptiveBitrate.swift`) chooses the variant while
   reading ahead, until one is chosen by hand.
-  - *Throughput* is measured by the read-ahead thread: a read waits on the network, so bytes over the time spent
-    reading is the link's rate. The bytes are what came over the network (`FFmpegIOByteCounter`: FFmpeg's own
-    `io_open` / `io_close2`, summing each input's `bytes_read`), not packet sizes: container overhead and what FFmpeg
-    reads and drops (a variant switched to is caught up from the start of a segment) are a third and more. Reads
-    served from what the socket buffered while the thread idled at its limit don't count until one waits again. HLS
-    downloads one segment at a time (`http_multiple` off): FFmpeg's prefetch of the next would share the link with
-    the one read and halve what is measured. A sample ends after 0.5 s of transfer, or 2 s of media read in at least
-    0.1 s of it, and weighs the media it read, or its transfer's seconds when slower than real time. Weighed by the
-    transfer, and taken per half a second of it, a fast link's samples came dozens of segments apart and weighed
-    little for their media: a low variant's small segments left the estimate unset for minutes, and one measured low
-    (a slow start) held long after the network got faster.
-  - *Latency* of a request on a new connection is measured apart. An HTTP input opens once its response's headers
-    are in, so the time inside `io_open` (connection, TLS, the server's answer) is left out of the throughput:
-    counted, it capped the estimate at a segment's size over it. On Apple's AV1 example (2026-10-22, every segment
-    on a connection of its own) the 480p variant's 121 KB segments measured
-    3.4 Mbit/s of a 170 Mbit/s link, and a start on a cold CDN cache (answers after 0.5–1 s) 225 kbit/s. It counts
-    instead as seconds per second of media read (`latencyShare`), the same for every variant: a variant fits when a
-    second of it reads, transfer and latency, within `safety` of a second (dash.js weighs latency so too; FFmpeg reads
-    the playlists one request after another, so the latency adds up). A server slower to answer than its segments
-    last brings the variant down however fast the link, to the lowest when the latency alone takes `safety` of the
-    media, with no estimate yet too. A request counts once answered, ahead of its media: the share counts from 6 s of
-    media read on, which the few requests answered ahead (a segment per playlist read, an init section) overstate
-    by their latency over the media read, less and less. Nothing ties an opening to its playlist: FFmpeg's URLs
-    don't say which (variants and renditions often share a directory, signed URLs carry `/` in the query). Openings
-    while a variant switch catches the new variant up count neither: a cost of the switch, not of the variant, read
-    without media.
-  - *Connections* are kept open (FFmpeg's `http_persistent`), but for live streams. Kept alive, FFmpeg sends the
-    requests over the open connection without `io_open`: their latency, a round trip and the server's answer, counts
-    in the transfer, as in VLC and GStreamer (`.ref`), and only a new connection's is measured apart. A connection
-    per segment costs every request, video's and audio's, a handshake (TCP, TLS: about three round trips) and TCP's
-    slow start. Measured on Apple's AV1 example (2026-10-22, Wi-Fi, three runs each):
-    - 34 ms round trip: kept, 20 s read ahead in 2.8–4.7 s, 3840 wide throughout, throughput 132–203 Mbit/s; a
-      connection per segment, 5.6–15.4 s, down to 1920 for 13 s in two runs of three on its 81–170 ms/s of latency.
-    - 184 ms (Network Link Conditioner): kept, 20 s ahead in 9.9–17.8 s, down to 864–1280 wide and back up to
-      1920–3840, no stall, 16–23 Mbit/s; a connection per segment, 459–552 ms/s of latency, never 20 s ahead, down
-      to 480–1280 for good, 4–8 s of stalls.
-
-    A live stream opens a connection per segment all the same (`http_persistent` off once open; opening keeps it
-    for probing every playlist): its read-ahead thread tells the wait at the edge for the next segment by
-    `io_open` (`noteRead`), which a kept connection hides. TCP's slow start makes small segments measure low (a few
-    round trips for 100 KB), and the first bytes of a body, in with the headers, count at no time and offset some
-    of it.
-  - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) that doesn't carry
-    the current variant brings it down while the read-ahead is under two thirds of its limit; a full read-ahead
-    steps up to what a recent estimate carries, or probes one step up without one (at its limit the thread measures
-    nothing, however fast the network). A probe that comes down soon doubles the wait before the next.
+  - *Requests* go through `URLSession` (`HTTPSessionTransport`), not FFmpeg's HTTP: `FFmpegIOByteCounter`'s
+    `io_open` hands FFmpeg an `AVIOContext` of a task's own (`HTTPSessionInput`) for every HTTP(S) request of an HLS
+    demuxer, once the context is one (the master, probed first, FFmpeg opens itself, so a redirect still resolves).
+    `io_open` waits for the answer's headers; the body comes into a buffer while FFmpeg reads at its own pace
+    (suspended past 32 MB unread). The session keeps the connections open; FFmpeg's `http_persistent` is off, as it
+    only keeps those of its own inputs, and sends the requests over them past `io_open`. What isn't served so FFmpeg
+    opens as before: a redirected answer, a range answered whole, encrypted segments (`crypto+`), a file read over
+    HTTP (it seeks). The requests carry the source's headers, and FFmpeg's user agent (`Lavf/…`) without one.
+    Measured inside FFmpeg instead, the throughput was a guess from how long reads took: a read served from what the
+    socket buffered counted at memory speed, a request over a kept connection waited for its answer inside the read
+    (Apple's CDN answers after 0.6–0.8 s on a cold cache, `x-cache: hit-stale, miss`), and a live stream's edge
+    looked like a stalled network. Each guess needed a heuristic, and each heuristic missed a case: Apple's AV1
+    example came down to 1080p or lower within seconds of a start at 184 ms of round trip, and stalled for up to
+    1.4 s, on a link carrying 4K many times over.
+  - *Throughput* is each request's transfer, from its answer to its last byte (`NetworkTransferMeter`), as VLC,
+    hls.js and ExoPlayer measure their segments' downloads. A sample weighs the media its bytes are at the variant's
+    `BANDWIDTH`: an audio segment a twentieth of a 4K video one's. Taken over every transfer together, or weighed by
+    its seconds when slower than real time, half a megabyte of audio on a connection idle since its last (TCP starts
+    it slowly again: 5.7 Mbit/s of 90 at 184 ms) weighed more than a 4K segment, and took the variant down to 864 wide
+    two seconds in. The first estimate waits for a second of the variant's media: after the first video segment.
+    Requests stay one at a time (`http_multiple` off): the next segment asked for while one is read would hide its
+    answer's wait, but over HTTP/1.1 the body comes with the answer, so the one read, needed first, came in at half
+    the rate (a live stream at 1.5 Mbit/s: the read-ahead empty for 7 s), and a task suspended once answered took
+    its body all the same, into the socket's buffer. A sample comes once a request ends: a link collapsing in the
+    middle of a 4K segment shows in the estimate only after it (hls.js samples a fragment loading, to abandon it).
+  - *Latency*, the time inside `io_open` waiting for answers, counts as seconds per second of media read
+    (`latencyShare`), the same for every variant: a variant fits when a second of it reads, transfer and latency,
+    within its share of a second (dash.js weighs latency so too). A server slower to answer than its segments last
+    brings the variant down however fast the link, to the lowest when the latency alone takes `safety` of the
+    media, with no estimate yet too. A request counts once answered, ahead of its media: the share counts from 6 s
+    of media read on. Answers for bodies under 16 KB (init sections, keys) are paid once, at the start and a switch,
+    and count in no share: counted, two init sections' 0.76 s took the share from 0.29 s a second to 0.42 over the
+    first 6 s of media, enough to bring 4K down. Openings while a variant switch catches the new variant up count
+    neither: a cost of the switch, read without media.
+  - *Live edge*: FFmpeg sleeps inside the read, reloading the playlist, until it lists a segment: a long read with
+    next to no bytes (`isLiveEdgeWait`). It counts as a full read-ahead, which a live stream never reaches otherwise,
+    and the reloads as no latency.
+  - *Decisions*: an estimate (the lower of two exponential averages, as dash.js and GStreamer) keeps a variant that
+    reads within 0.95 of a second, as hls.js does (`abrBandWidthFactor`), and brings one that doesn't down while
+    the read-ahead is under two thirds of its limit. It steps up to what reads within 0.7 of a second (hls.js's
+    `abrBandWidthUpFactor`, ExoPlayer's `bandwidthFraction`) from 10 s of read-ahead (ExoPlayer's
+    `minDurationForQualityIncrease`), 2 s after a switch. Without a recent estimate a full read-ahead probes one step
+    up (at its limit the thread measures nothing, however fast the network), 10 s after a switch; a step up that
+    comes down soon doubles the wait before the next. At 0.8 to be kept, a start on a cold cache came down from 4K
+    on its first estimate (76 Mbit/s, before TCP had opened up; then 150–180): 4K's 38.5 Mbit/s read within 0.84 of a
+    second, and the read-ahead grew all the same. Waiting for a full read-ahead to step up, the step back up came
+    17 s in, and showed 21 s later still: a switch splices at the read position.
+  - Measured on Apple's AV1 example (2026-10-24, Wi-Fi, three runs each, 45 s from the start, time below 3840 wide):
+    - 34 ms round trip, warm cache: FFmpeg's HTTP and the transport alike 3840 throughout; the estimate's lowest
+      17–20 Mbit/s through FFmpeg, 276–286 through the transport.
+    - 184 ms (Network Link Conditioner), warm cache: FFmpeg's HTTP 27–38 s below, down to 608–1920, stalls of 0.1
+      and 1.4 s; the transport, its samples weighed by their seconds when slow, 27–41 s, down to 864; weighed by
+      their media, 0 s.
+    - 184 ms, cold cache (10 minutes apart): kept at 0.8 and stepped up on a full read-ahead, 27.5 s below; stepping
+      up from 10 s, 12–15.5 s; latency paid once left out, 11.5–12 s; kept at 0.95, 0 s. No stall in any of these.
+      A cold cache's origin sometimes sends the bodies slowly (36–51 Mbit/s): coming down to 1920–2560 there, with
+      4K at 38.5, is right.
   - FFmpeg hands out the packet a discarded variant held when it is enabled again, from back then: a splice comes
     only at a keyframe at or after the old variant's latest decode time.
 - **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their

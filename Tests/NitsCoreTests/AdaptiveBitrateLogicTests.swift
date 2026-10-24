@@ -83,7 +83,7 @@ struct AdaptiveBitrateLogicTests {
     @Test("Answers slower than `safety` of the media bring the variant down to the lowest, without an estimate too")
     func latencyBoundComesDown() {
         var logic = AdaptiveBitrateLogic()
-        for _ in 0..<5 { logic.addLatency(1.7, media: 2) }
+        for _ in 0..<5 { logic.addLatency(2, media: 2) }
         #expect(logic.estimate == nil)
         #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 10, at: 10) == 0)
         // Nor does a full read-ahead probe up from there.
@@ -102,14 +102,28 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 30, at: 10) == 2)
     }
 
-    @Test("A read slower than in real time weighs its transfer's seconds")
-    func slowReadsWeighTheirTransfer() throws {
+    @Test("A sample without media weighs its seconds")
+    func samplesWithoutMediaWeighTheirSeconds() throws {
         var logic = AdaptiveBitrateLogic()
         Self.measure(&logic, bitsPerSecond: 10_000_000, seconds: 10, at: 0)
-        // Half a second of media in 4 s: the network collapsed, and the estimate follows within the sample.
-        logic.addSample(bytes: 250_000, seconds: 4, media: 0.5, at: 14)
+        // 4 s at 0.5 Mbit/s of a stream whose bandwidth isn't known: two fast half-lives.
+        logic.addSample(bytes: 250_000, seconds: 4, media: 0, at: 14)
         let estimate = try #require(logic.estimate)
         #expect(estimate < 3_000_000, "\(estimate)")
+    }
+
+    @Test("A request's sample weighs its media alone: a small one slow to start neither makes nor sways the estimate")
+    func requestsWeighTheirMedia() throws {
+        // A 39 Mbit/s variant. Half a megabyte of audio in 0.8 s (5.7 Mbit/s, TCP's slow start) is 0.12 s of it:
+        // no estimate yet, where weighed by its seconds it was one, and the variant came down.
+        var logic = AdaptiveBitrateLogic()
+        let bandwidth = 39_000_000.0
+        logic.addSample(bytes: 574_648, seconds: 0.8, media: 574_648 * 8 / bandwidth, at: 0)
+        #expect(logic.estimate == nil)
+        // A 4K segment of 10 MB in 0.9 s (90 Mbit/s) outweighs it.
+        logic.addSample(bytes: 9_935_312, seconds: 0.886, media: 9_935_312 * 8 / bandwidth, at: 1)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate > 60_000_000, "\(estimate)")
     }
 
     @Test("A probe that comes down soon doubles the wait before the next")
@@ -127,15 +141,27 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 30, at: 31.5) == 2)
     }
 
-    @Test("Stepping up needs a full read-ahead and time since the last switch")
-    func stepsUp() {
+    @Test("A recent estimate steps up from `estimateUpBuffer` of read-ahead, to what it fits with `upSafety`")
+    func stepsUpOnAnEstimate() {
         var logic = AdaptiveBitrateLogic()
+        // 10 Mbit/s: 0.7 of it fits 5 Mbit/s.
         Self.measure(&logic, bitsPerSecond: 10_000_000, seconds: 10, at: 0)
-        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 15, at: 10) == nil)
-        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 25, at: 10) == 2)
-        // Just switched: no step up for `upSwitchInterval`.
-        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 15) == nil)
-        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 21) == 2)
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 8, at: 10) == nil)
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 10, at: 10) == 2)
+        // Just switched: no step up for `downSwitchInterval`.
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 15, at: 11) == nil)
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 15, at: 12.5) == 2)
+    }
+
+    @Test("Between `upSafety` and `safety` of the estimate a variant is kept, but not stepped up to")
+    func holdsBetweenTheSafeties() {
+        var logic = AdaptiveBitrateLogic()
+        // 6.6 Mbit/s: 5 Mbit/s takes 0.76 of it, within 0.95, over 0.7.
+        Self.measure(&logic, bitsPerSecond: 6_600_000, seconds: 10, at: 0)
+        #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 5, at: 10) == nil)
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 15, at: 10) == nil)
+        // A full read-ahead, long after a switch, doesn't probe past what a recent estimate fits either.
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 19) == nil)
     }
 
     @Test("Without a recent estimate a full read-ahead steps up one variant at a time")

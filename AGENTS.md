@@ -63,8 +63,9 @@ The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go th
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
 (`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: the demuxer holds it. An
-`AVIOContext` read from memory (`PrefetchedInput`, an HLS opening's prefetched playlists and segment starts) takes a
-retained one, released when FFmpeg closes the input through `io_close2`.
+`AVIOContext` served by Nits (`PrefetchedInput`, an HLS opening's prefetched playlists and segment starts;
+`HTTPSessionInput`, an HLS demuxer's HTTP requests) takes a retained one, released when FFmpeg closes the input through
+`io_close2`.
 
 ## Layer boundaries
 
@@ -172,6 +173,9 @@ retained one, released when FFmpeg closes the input through `io_close2`.
   selection never wait for the network: never call them holding `queueLock`, never take `lock` from the main thread.
   An HLS variant switch rewrites the stream description (`timebase`, `formatDescription`, `audioTimebase`, …) on the
   reading thread: once reading ahead, read it through `readingDescription`.
+  An HLS demuxer's HTTP(S) requests go through `URLSession` (`HTTPSessionTransport`), which measures each
+  request's transfer apart from its answer for adaptive bitrate; keep them one at a time (`http_multiple` off): over
+  HTTP/1.1 the next segment's body comes with its answer and halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
   in `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through

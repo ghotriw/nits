@@ -39,26 +39,31 @@ public enum MediaURL {
         return true
     }
 
+    /// `headers` without CR and LF (against header injection), and without the ones whose name is left empty.
+    static func sanitizedHeaders(_ headers: [String: String]) -> [String: String] {
+        let clean = { (text: String) in
+            text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+        }
+        var sanitized: [String: String] = [:]
+        for (key, value) in headers where !clean(key).isEmpty {
+            sanitized[clean(key)] = clean(value)
+        }
+        return sanitized
+    }
+
     /// Adds custom HTTP headers (CRLF-sanitized) plus reconnect and 10 s I/O timeout settings to
     /// `avformat_open_input` options for a network URL.
     static func applyNetworkOptions(_ options: inout OpaquePointer?, headers: [String: String]) {
-        if !headers.isEmpty {
-            var headerString = ""
-            for (key, value) in headers {
-                // Sanitize against CRLF injection
-                let cleanKey = key.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                let cleanVal = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-                guard !cleanKey.isEmpty else { continue }
-
-                if cleanKey.lowercased() == "user-agent" {
-                    _ = av_dict_set(&options, "user_agent", cleanVal, 0)
-                } else {
-                    headerString += "\(cleanKey): \(cleanVal)\r\n"
-                }
+        var headerString = ""
+        for (key, value) in sanitizedHeaders(headers) {
+            if key.lowercased() == "user-agent" {
+                _ = av_dict_set(&options, "user_agent", value, 0)
+            } else {
+                headerString += "\(key): \(value)\r\n"
             }
-            if !headerString.isEmpty {
-                _ = av_dict_set(&options, "headers", headerString, 0)
-            }
+        }
+        if !headerString.isEmpty {
+            _ = av_dict_set(&options, "headers", headerString, 0)
         }
 
         _ = av_dict_set(&options, "reconnect", "1", 0)
@@ -68,9 +73,9 @@ public enum MediaURL {
         _ = av_dict_set(&options, "rw_timeout", "10000000", 0)
         _ = av_dict_set(&options, "timeout", "10000000", 0)
         // HLS: one segment download at a time. By default FFmpeg opens the next segment while it reads one, to hide
-        // the request's latency, which the read-ahead hides anyway; two downloads share the link, so the read-ahead
-        // thread would measure half of it, and after a variant switch the prefetched segment is downloaded for
-        // nothing. Other formats leave the option unused.
+        // the request's latency; over HTTP/1.1 its body comes with the answer and shares the link, so the segment
+        // read, needed first, comes in at half the rate (`NetworkTransferMeter`), and after a variant switch the
+        // prefetched one is downloaded for nothing. Other formats leave the option unused.
         _ = av_dict_set(&options, "http_multiple", "0", 0)
     }
 

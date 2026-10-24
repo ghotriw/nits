@@ -104,10 +104,7 @@ extension MediaDemuxer {
     /// Behind `lock` and `queueLock`.
     private func readOnePacketAhead() -> Bool {
         adaptBitrateIfDue()
-        guard let ctx = formatCtx, !readAheadEnded, !isReadAheadFull else {
-            noteReadAheadIdle()
-            return true
-        }
+        guard let ctx = formatCtx, !readAheadEnded, !isReadAheadFull else { return true }
         var pkt = AVPacket()
         let mark = readMark
         let ret = readPacket(ctx, &pkt, releasingQueueLock: true)
