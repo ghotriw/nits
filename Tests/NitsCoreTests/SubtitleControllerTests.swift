@@ -10,7 +10,7 @@ struct SubtitleControllerTests {
     @MainActor
     final class FakeHost: SubtitleHost {
         var demuxer: MediaDemuxer? { nil }
-        var currentPath: String?
+        var currentSourcePath: String?
         var currentHeaders: [String: String] = [:]
         var currentTime: Double = 0
         var clockSeconds: Double { currentTime }

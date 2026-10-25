@@ -1,0 +1,230 @@
+import Foundation
+import Testing
+import os
+
+@testable import NitsCore
+
+/// Pages resolved into streams before the media opens (`PlayerEngine.mediaResolver`).
+@Suite("Media resolver", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@MainActor
+struct MediaResolverTests {
+    /// Resolves the pages under `/watch` into `resolved`, asked `order`; counts the pages it was asked for.
+    final class StubResolver: MediaResolver {
+        let resolved: Result<ResolvedMedia?, MediaResolutionError>
+        let resolutionOrder: MediaResolutionOrder
+        private let asked = OSAllocatedUnfairLock(initialState: [URL]())
+
+        init(_ resolved: Result<ResolvedMedia?, MediaResolutionError>, order: MediaResolutionOrder = .beforeOpening) {
+            self.resolved = resolved
+            self.resolutionOrder = order
+        }
+
+        var pages: [URL] { asked.withLock { $0 } }
+
+        func order(for url: URL) -> MediaResolutionOrder? { url.path == "/watch" ? resolutionOrder : nil }
+
+        func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
+            asked.withLock { $0.append(url) }
+            return try resolved.get()
+        }
+    }
+
+    @Test(
+        "A page plays its streams, each with its headers, and the history and title go by the page, which is resolved again on each load"
+    )
+    func playsResolvedPage() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let audioURL = URL(fileURLWithPath: audio)
+        try #require(videoURL.deletingLastPathComponent() == audioURL.deletingLastPathComponent())
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        // The host's own dub, beside the page's audio.
+        let audioContents = try Data(contentsOf: audioURL)
+        server.setResponder(forPath: "dub") { audioContents }
+        let remoteAudio = try #require(URL(string: server.url(audioURL.lastPathComponent)))
+        let resolver = StubResolver(
+            .success(
+                ResolvedMedia(
+                    path: server.url(videoURL.lastPathComponent), headers: ["User-Agent": "NitsTest"],
+                    audioFiles: [
+                        .init(
+                            url: remoteAudio, title: "Ukrainian, original", language: "ukr",
+                            headers: ["User-Agent": "NitsAudio"], isRequired: true)
+                    ],
+                    title: "A page's video", historyKey: "video.example:nits")))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+        let page = "https://video.example/watch?v=nits"
+        let dub = try #require(URL(string: server.url("dub")))
+
+        // From the playlist, where the page was before its title was known.
+        let pageURL = try #require(URL(string: page))
+        engine.playlist.replaceAll(items: [PlaylistItem(url: pageURL)])
+        engine.load(
+            MediaLoadRequest(path: page, headers: ["User-Agent": "NitsHost"], audioFiles: [.init(url: dub)]))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        #expect(engine.currentPath == page)
+        #expect(engine.mediaTitle == "A page's video")
+        #expect(engine.playlist.currentItem?.title == "A page's video")
+        let selected = try #require(engine.audioTracks.first { $0.id == engine.selectedAudioTrackId })
+        #expect(selected.externalURL == remoteAudio)
+        #expect(selected.title == "Ukrainian, original")
+        #expect(selected.language == "ukr")
+        #expect(engine.audioTracks.contains { $0.externalURL == dub }, "The host's file isn't a track")
+        #expect(!engine.isBuffering)
+        let agents = { (path: String) in Set(server.requests.filter { $0.path == path }.map(\.userAgent)) }
+        #expect(agents(videoURL.lastPathComponent) == ["NitsTest"])
+        #expect(agents(audioURL.lastPathComponent) == ["NitsAudio"])
+        #expect(agents("dub") == ["NitsHost"], "The host's file wasn't read with the request's headers")
+
+        // Saved under the resolver's name, not the page's URL (whose query the history drops) or the stream's.
+        engine.setAudioDelay(0.1)
+        engine.saveCurrentPlaybackProgress()
+        #expect(engine.historyStore.savedPreferences(for: "video.example:nits")?.audioDelay == 0.1)
+        #expect(engine.historyStore.savedPreferences(for: page) == nil)
+        #expect(engine.historyStore.savedPreferences(for: server.url(videoURL.lastPathComponent)) == nil)
+
+        engine.load(MediaLoadRequest(path: page))
+        await engine.waitForPendingLoad()
+        #expect(resolver.pages.count == 2)
+        #expect(engine.audioDelay == 0.1, "The history wasn't read by the resolver's name")
+    }
+
+    @Test("A page with nothing to play fails the load with the resolver's reason; other URLs aren't resolved")
+    func failsWithReason() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let resolver = StubResolver(.failure(MediaResolutionError("Video unavailable")))
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=gone"))
+        await engine.waitForPendingLoad()
+        #expect(engine.playbackState == .failed("Video unavailable"))
+        #expect(engine.loadError == "Video unavailable")
+
+        engine.load(MediaLoadRequest(path: video))
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+        #expect(resolver.pages.count == 1)
+    }
+
+    @Test("A URL the resolver declines opens as it is, under its own name")
+    func opensDeclinedURL() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let contents = try Data(contentsOf: videoURL)
+        server.setResponder(forPath: "watch") { contents }
+        let resolver = StubResolver(.success(nil))
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+        let stream = server.url("watch")
+
+        engine.load(MediaLoadRequest(path: stream))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+        #expect(resolver.pages.count == 1)
+        #expect(engine.currentPath == stream)
+        #expect(engine.currentSourcePath == stream)
+    }
+
+    @Test("A URL resolved after opening fails is asked only once it didn't open as media")
+    func resolvesAfterOpeningFails() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let contents = try Data(contentsOf: videoURL)
+        let isPage = OSAllocatedUnfairLock(initialState: false)
+        server.setResponder(forPath: "watch") {
+            isPage.withLock { $0 } ? Data("<!doctype html><html><body>A page</body></html>".utf8) : contents
+        }
+        let resolver = StubResolver(
+            .success(ResolvedMedia(path: server.url(videoURL.lastPathComponent), title: "Found in the page")),
+            order: .afterOpeningFails)
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+        let url = server.url("watch")
+
+        // Media itself (a media server's stream): opened without the resolver.
+        engine.load(MediaLoadRequest(path: url))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+        #expect(resolver.pages.isEmpty)
+
+        isPage.withLock { $0 = true }
+        engine.load(MediaLoadRequest(path: url))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+        #expect(resolver.pages.count == 1)
+        #expect(engine.mediaTitle == "Found in the page")
+        #expect(engine.currentSourcePath == server.url(videoURL.lastPathComponent))
+    }
+
+    @Test("A page's own audio that can't be read fails the load; a file the host adds is left out")
+    func failsWithoutRequiredAudio() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let missing = try #require(URL(string: server.url("missing-audio")))
+        let page = "https://video.example/watch?v=nits"
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+
+        engine.mediaResolver = StubResolver(
+            .success(
+                ResolvedMedia(
+                    path: server.url(videoURL.lastPathComponent), audioFiles: [.init(url: missing, isRequired: true)])))
+        engine.load(MediaLoadRequest(path: page))
+        await engine.waitForPendingLoad()
+        guard case .failed(let reason) = engine.playbackState else {
+            Issue.record("Played without its audio: \(engine.playbackState)")
+            return
+        }
+        #expect(reason.contains("audio"))
+        // Opened again before giving up, as the media is.
+        #expect(server.requests.filter { $0.path == "missing-audio" }.count >= 3)
+
+        engine.mediaResolver = StubResolver(
+            .success(ResolvedMedia(path: server.url(videoURL.lastPathComponent), audioFiles: [.init(url: missing)])))
+        engine.load(MediaLoadRequest(path: page))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+    }
+
+    @Test("Asked once the URL failed to open, a resolver that only failed to read it too leaves the demuxer's reason")
+    func keepsDemuxerReasonAfterOpeningFails() async throws {
+        let root = FileManager.default.temporaryDirectory
+        let server = try TestHTTPServer(root: root)
+        defer { server.stop() }
+        server.setResponder(forPath: "watch") { Data("<!doctype html><html><body>A page</body></html>".utf8) }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        let url = server.url("watch")
+
+        let unreadable = MediaResolutionError("HTTP Error 401: Unauthorized", isAboutPage: false)
+        engine.mediaResolver = StubResolver(.failure(unreadable), order: .afterOpeningFails)
+        engine.load(MediaLoadRequest(path: url))
+        await engine.waitForPendingLoad()
+        guard case .failed(let reason) = engine.playbackState else {
+            Issue.record("Didn't fail: \(engine.playbackState)")
+            return
+        }
+        #expect(reason != unreadable.message)
+
+        let unavailable = MediaResolutionError("Video unavailable")
+        engine.mediaResolver = StubResolver(.failure(unavailable), order: .afterOpeningFails)
+        engine.load(MediaLoadRequest(path: url))
+        await engine.waitForPendingLoad()
+        #expect(engine.playbackState == .failed("Video unavailable"))
+    }
+}

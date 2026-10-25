@@ -61,6 +61,18 @@ struct PlaybackHistoryStoreTests {
         #expect(retrieved == 500.0)
     }
 
+    @Test("A resolved page's name for its media keys a record of its own")
+    func testKeepsNamesOfOtherSchemes() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        #expect(store.storageKey(for: "youtube:dQw4w9WgXcQ") != store.storageKey(for: "youtube:jNQXAC9IVRw"))
+        // Not a path under the working directory, as before: its record would move with it.
+        #expect(
+            store.storageKey(for: "youtube:dQw4w9WgXcQ")
+                != store.storageKey(for: FileManager.default.currentDirectoryPath + "/youtube:dQw4w9WgXcQ"))
+        // Local paths stay standardized.
+        #expect(store.storageKey(for: "/Users/test/./a.mkv") == store.storageKey(for: "/Users/test/a.mkv"))
+    }
+
     @Test("PlaybackHistoryStore clearPosition and clearAll remove records")
     func testClearRecords() {
         let defaults = InMemoryUserDefaults()

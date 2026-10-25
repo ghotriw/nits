@@ -84,9 +84,8 @@ final class PlaybackInputs {
         let interrupt = MediaDemuxer.InterruptContext()
         openings.append(interrupt)
         defer { openings.removeAll { $0 === interrupt } }
-        let path = url.isFileURL ? url.path : url.absoluteString
         let opened = await Task.detached(priority: .userInitiated) {
-            MediaDemuxer(url: path, headers: headers, interruptContext: interrupt, audioOnly: true)
+            Self.openAudioFile(url, headers: headers, interrupt: interrupt)
         }.value
         guard let opened, !isCancelled else {
             opened?.cancel()
@@ -98,17 +97,31 @@ final class PlaybackInputs {
         return added
     }
 
+    /// Opens the audio file at `url` for its audio alone (`MediaDemuxer(url:audioOnly:)`), a network one with
+    /// `headers`. Blocks while it reads; `nil` when it can't be read.
+    nonisolated static func openAudioFile(
+        _ url: URL, headers: [String: String], interrupt: MediaDemuxer.InterruptContext
+    ) -> MediaDemuxer? {
+        let isFile = url.isFileURL
+        return MediaDemuxer(
+            url: isFile ? url.path : url.absoluteString, headers: isFile ? [:] : headers, interruptContext: interrupt,
+            audioOnly: true)
+    }
+
     /// Adds an audio file opened for its audio alone (`MediaDemuxer(url:audioOnly:)`); its tracks join
-    /// `audioTracks`, none selected. Returns them.
+    /// `audioTracks`, none selected, listed with the `title` and `language` a request gives it. Returns them.
     @discardableResult
-    func attachExternalAudio(_ demuxer: MediaDemuxer, url: URL) -> [MediaDemuxer.AudioTrack] {
+    func attachExternalAudio(
+        _ demuxer: MediaDemuxer, url: URL, title: String? = nil, language: String? = nil
+    ) -> [MediaDemuxer.AudioTrack] {
         let url = url.isFileURL ? url.standardizedFileURL : url
         // Nothing of it is read until one of its tracks is selected.
         demuxer.selectAudioTrack(trackId: nil)
         let firstTrackId = Self.firstExternalTrackId + externalAudio.count * Self.externalTrackIdBase
         let file = ExternalAudio(
             url: url, demuxer: demuxer, firstTrackId: firstTrackId,
-            tracks: Self.listedTracks(of: demuxer.audioTracks, from: url, firstId: firstTrackId))
+            tracks: Self.listedTracks(
+                of: demuxer.audioTracks, from: url, firstId: firstTrackId, title: title, language: language))
         externalAudio.append(file)
         return file.tracks
     }
@@ -117,24 +130,32 @@ final class PlaybackInputs {
     /// Commentary") or, without one, the file's name; in the language its name tags when the stream tells none (the
     /// views add the language). Its default flag doesn't count against the media's tracks: the file's flags are of the
     /// file alone, and on a tie `TrackAutoSelection` keeps to the media's own.
+    ///
+    /// A request's `title` and `language` (`MediaLoadRequest.AudioFile`) come first: a host names its files as it
+    /// wants them shown, and a signed URL's name ("videoplayback") tells nothing.
     static func listedTracks(
-        of tracks: [MediaDemuxer.AudioTrack], from url: URL, firstId: Int
+        of tracks: [MediaDemuxer.AudioTrack], from url: URL, firstId: Int, title: String? = nil,
+        language: String? = nil
     ) -> [MediaDemuxer.AudioTrack] {
         let name = url.deletingPathExtension().lastPathComponent
-        let taggedLanguage = SidecarFiles.tags(of: url).language
+        let taggedLanguage = url.isFileURL ? SidecarFiles.tags(of: url).language : nil
         let labelled = tracks.map { track in
             let isUnlabelled = track.language.isEmpty || track.language == "und"
-            let language = isUnlabelled ? (taggedLanguage ?? track.language) : track.language
-            return (track: track, title: track.title.isEmpty ? name : track.title, language: language)
+            let streamLanguage = isUnlabelled ? (taggedLanguage ?? track.language) : track.language
+            return (
+                track: track, title: title ?? (track.title.isEmpty ? name : track.title),
+                language: language ?? streamLanguage
+            )
         }
         return labelled.map { entry in
-            var title = entry.title
+            var shown = entry.title
             // Streams the list would show alike (stereo and 5.1 of one language, untitled): numbered apart.
             if labelled.filter({ $0.title == entry.title && $0.language == entry.language }).count > 1 {
-                title += " #\(entry.track.id + 1)"
+                shown += " #\(entry.track.id + 1)"
             }
+            if title == nil { shown += " (External)" }
             return entry.track.with(
-                id: firstId + entry.track.id, title: "\(title) (External)", language: entry.language,
+                id: firstId + entry.track.id, title: shown, language: entry.language,
                 isDefault: false, externalURL: url)
         }
     }

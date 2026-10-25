@@ -83,6 +83,23 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   read-ahead limit (see "Network read-ahead"); for a local file, the few seconds the feeders asked for.
 - The demuxer accepts HTTP/HTTPS/HLS URLs with custom headers (`X-Emby-Token`, `Authorization`,
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
+- A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
+  into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers). As in mpv, it
+  is asked before the URL opens only for the sites known to have pages (`MediaResolutionOrder.beforeOpening`), and
+  for other URLs once they failed to open as media: a media server's or IPTV stream neither waits for it (seconds per
+  load) nor fails on its errors. A URL it declines (`nil`) opens as it is. After a failed opening it isn't asked when
+  the host couldn't be reached (it couldn't either, and would add its timeout), and an error of its that is only about
+  reading the URL (`MediaResolutionError.isAboutPage` false: yt-dlp's generic extractor's HTTP errors, a timeout)
+  leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as
+  `Process` is macOS-only), runs the yt-dlp installed on the system rather than a bundled one, which would age with
+  the sites: `YTDLPLocator` searches `PATH` and the package managers' directories an app opened from the Finder
+  lacks, and runs it with them on its `PATH` (Deno, for YouTube). Its formats exclude DASH, which the bundled FFmpeg
+  can't demux; HLS opens from its master playlist (`manifest_url`), for its variants and adaptive bitrate. The load
+  keeps to the page: `currentPath`, the playlist and the title go by it, the history by the resolver's name for its
+  media (`historyKey`: the history keys an HTTP URL without its query, where a `watch?v=` page names its video; none
+  for yt-dlp's generic extractor, whose ids are a URL's last component). The streams expire, so every load resolves
+  again; `currentSourcePath` is the stream opened, which what reads the media again (thumbnails, embedded subtitles)
+  opens.
 
 ## Video pipeline
 
@@ -706,11 +723,14 @@ changes mid-stream (e.g. 5.1 → stereo after a track switch).
 
 ### Audio from another input
 
-An audio track can come from a file of its own (a dub next to the video, later a host's or yt-dlp's separate audio
-URL). `PlaybackInputs` holds the media's demuxer (`main`: picture, subtitles, variants) and a demuxer per added file,
-opened `audioOnly`, and lists the tracks of all of them (a file's from `firstExternalTrackId` on). The selected track's
-demuxer is the `audioSource` audio feeding reads; while a file's plays, the media's demuxer has none selected
-(`selectAudioTrack(trackId: nil)`) and drops its own audio as it reads. Each demuxer keeps its own locks and
+An audio track can come from a file of its own (a dub next to the video; a host's or a resolved page's separate audio,
+`MediaLoadRequest.audioFiles`, opened with the media, read with its own headers or else the request's, and listed with
+the title and language the request gives). A network one that doesn't open is tried twice more; one that still
+doesn't is left out, unless it is the media's own sound (`isRequired`, a page's audio apart from a picture without
+any), which fails the load rather than play it silent. `PlaybackInputs` holds the media's demuxer (`main`: picture,
+subtitles, variants) and a demuxer per added file, opened `audioOnly`, and lists the tracks of all of them (a file's
+from `firstExternalTrackId` on). The selected track's demuxer is the `audioSource` audio feeding reads; while a file's
+plays, the media's demuxer has none selected (`selectAudioTrack(trackId: nil)`) and drops its own audio as it reads. Each demuxer keeps its own locks and
 read-ahead thread and none is taken while another's is held, so a second input adds no lock order; a file starts
 reading ahead on its first selection and reads nothing while none of its tracks is selected.
 

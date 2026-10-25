@@ -542,6 +542,15 @@ public final class PlaylistManager: Sendable {
         items[index].duration = effectiveDuration
     }
 
+    /// Names the current item `title` (a resolved page's), when it has none of its own: a network item untitled is
+    /// shown as its URL.
+    public func updateCurrentItemTitle(_ title: String) {
+        guard let index = currentIndex, items.indices.contains(index), !title.isEmpty,
+            items[index].isNetworkStream, items[index].title == items[index].url.absoluteString
+        else { return }
+        items[index].title = title
+    }
+
     // MARK: - Background Durations
 
     /// Interval between publishing found durations, so a playlist resolved from the cache

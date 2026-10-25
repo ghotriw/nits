@@ -169,6 +169,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
 
     /// Policy for timeline hover thumbnail generation on network streams (default .localNetworkOnly).
     public var networkThumbnailPolicy: NetworkThumbnailPolicy
+    /// Whether the pages of video sites play, resolved by yt-dlp found on the system (default true).
+    public var resolvesWithYTDLP: Bool
+    /// The yt-dlp to run in place of the one found on the system (empty: search for it).
+    public var ytdlpPath: String
     /// What happens to the player window while its video plays in Picture in Picture.
     public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
     /// Pause playback when Picture in Picture starts.
@@ -227,6 +231,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         playlistRepeatMode: PlaylistRepeatMode = .off,
         playlistIsShuffled: Bool = false,
         networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
+        resolvesWithYTDLP: Bool = true,
+        ytdlpPath: String = "",
         pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
         pausesOnPictureInPicture: Bool = false,
         entersPictureInPictureOnMinimize: Bool = false,
@@ -276,6 +282,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.playlistRepeatMode = playlistRepeatMode
         self.playlistIsShuffled = playlistIsShuffled
         self.networkThumbnailPolicy = networkThumbnailPolicy
+        self.resolvesWithYTDLP = resolvesWithYTDLP
+        self.ytdlpPath = ytdlpPath
         self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
         self.pausesOnPictureInPicture = pausesOnPictureInPicture
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
@@ -317,6 +325,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyPlaylistRepeatMode = "Nits.playlistRepeatMode"
     public static let keyPlaylistIsShuffled = "Nits.playlistIsShuffled"
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
+    public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
+    public static let keyYTDLPPath = "Nits.ytdlpPath"
     public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
     public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
@@ -438,6 +448,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
         {
             config.networkThumbnailPolicy = policy
         }
+        if userDefaults.object(forKey: keyResolvesWithYTDLP) != nil {
+            config.resolvesWithYTDLP = userDefaults.bool(forKey: keyResolvesWithYTDLP)
+        }
+        if let path = userDefaults.string(forKey: keyYTDLPPath) {
+            config.ytdlpPath = path
+        }
         if let pipWindowRaw = userDefaults.string(forKey: keyPictureInPictureWindowBehavior),
             let behavior = PictureInPictureWindowBehavior(rawValue: pipWindowRaw)
         {
@@ -510,6 +526,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
         userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
+        userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
+        userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
         userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
         userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
@@ -664,6 +682,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 } else if val == "lan" || val == "local" || val == "localnetwork" {
                     config.networkThumbnailPolicy = .localNetworkOnly
                 }
+            } else if arg == "--no-ytdl" {
+                config.resolvesWithYTDLP = false
+            } else if arg == "--ytdl" {
+                config.resolvesWithYTDLP = true
+            } else if arg.starts(with: "--ytdl-path=") {
+                config.ytdlpPath = String(arg.dropFirst("--ytdl-path=".count))
             } else if arg == "--no-network-thumbnails" {
                 config.networkThumbnailPolicy = .never
             } else if arg == "--always-network-thumbnails" {

@@ -25,6 +25,7 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 - [x] Keyboard shortcuts, OSD, frame stepping, quick settings, playlists, customizable control bar
 - [x] macOS integration: Now Playing media keys, Control Center, sleep prevention
 - [x] Network streaming over HTTP/HTTPS with custom headers
+- [x] Video sites (YouTube and others) through yt-dlp, found on the system (`brew install yt-dlp deno`)
 - [x] Playback history: resume where you left off
 - [x] Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
 
@@ -241,6 +242,8 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 | `--audio-track=<id\|name>` | Pick audio track |
 | `--subtitle-track=<id\|name\|off>` | Pick subtitle track |
 | `--header="Key: Value"` | Custom HTTP header |
+| `--no-ytdl` / `--ytdl` | Don't / do open the pages of video sites through yt-dlp (default on) |
+| `--ytdl-path=<path>` | The yt-dlp to run instead of the one found on the system |
 
 ## Requirements
 
@@ -251,6 +254,9 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
   the `ffmpeg` CLI used to generate test media
 - libass (ASS / SSA subtitles) ships in the same bundle; plain `swift build` falls back to Homebrew
   (`brew install libass`)
+- yt-dlp, optional, for the pages of video sites: Nits runs the one installed (`brew install yt-dlp`; YouTube also
+  needs Deno, `brew install deno`), found on `PATH`, in Homebrew's, pipx's and MacPorts' directories, or set by
+  `--ytdl-path`
 
 ## Building
 

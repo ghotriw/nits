@@ -7,8 +7,9 @@ import Observation
 protocol SubtitleHost: AnyObject {
     /// The demuxer of the media playing; `nil` before one opens.
     var demuxer: MediaDemuxer? { get }
-    /// Path or URL of the media playing, and the HTTP headers it opened with.
-    var currentPath: String? { get }
+    /// Path or URL of the stream playing (a resolved page's, `PlayerEngine.currentSourcePath`), and the HTTP headers
+    /// it opened with.
+    var currentSourcePath: String? { get }
     var currentHeaders: [String: String] { get }
     /// Playback position shown, in seconds.
     var currentTime: Double { get }

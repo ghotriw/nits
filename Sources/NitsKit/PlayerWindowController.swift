@@ -65,11 +65,19 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         applyOSDConfiguration(config)
         applyPictureInPictureConfiguration(config)
         applyActionButtonConfiguration(config)
+        applyMediaResolverConfiguration(config)
     }
 
     private func applyActionButtonConfiguration(_ config: PlayerConfiguration) {
         uiState.actionButton.displayDuration = config.actionButtonDisplayDuration
         uiState.actionButton.autoPress = config.actionButtonAutoPress
+    }
+
+    /// Resolves the pages of video sites with yt-dlp (`PlayerConfiguration.resolvesWithYTDLP`), unless the host gave
+    /// the engine a resolver of its own.
+    private func applyMediaResolverConfiguration(_ config: PlayerConfiguration) {
+        guard engine.mediaResolver == nil || engine.mediaResolver is YTDLPResolver else { return }
+        engine.mediaResolver = config.resolvesWithYTDLP ? YTDLPResolver(customPath: config.ytdlpPath) : nil
     }
 
     private func applyPictureInPictureConfiguration(_ config: PlayerConfiguration) {
@@ -117,6 +125,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         applyOSDConfiguration(configuration)
         applyPictureInPictureConfiguration(configuration)
         applyActionButtonConfiguration(configuration)
+        applyMediaResolverConfiguration(configuration)
 
         window.title = "Nits"
         window.titlebarAppearsTransparent = true

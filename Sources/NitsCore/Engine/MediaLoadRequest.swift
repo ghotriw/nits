@@ -17,6 +17,35 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// HTTP/HTTPS or streaming headers (e.g. auth tokens, custom user-agent).
     public var headers: [String: String]
 
+    /// Audio files that go with the media (a host's or yt-dlp's separate audio), opened with it and listed as its
+    /// tracks; a network one with `headers`. The track to start with is chosen from them and the media's own alike.
+    public var audioFiles: [AudioFile]
+
+    /// An audio file of the media, and what to list its tracks as.
+    public struct AudioFile: Sendable, Equatable {
+        public var url: URL
+        /// Shown for its tracks as given, over the stream's own title and the file's name ("English, original").
+        public var title: String?
+        /// Its language (ISO 639), over the one its streams tell.
+        public var language: String?
+        /// What a network one is read with; `nil` for those it comes with (the request's, or a resolved page's).
+        public var headers: [String: String]?
+        /// The media's own sound (a site's audio apart from its picture): the load fails without it, where a file
+        /// that can't be read is otherwise left out.
+        public var isRequired: Bool
+
+        public init(
+            url: URL, title: String? = nil, language: String? = nil, headers: [String: String]? = nil,
+            isRequired: Bool = false
+        ) {
+            self.url = url
+            self.title = title
+            self.language = language
+            self.headers = headers
+            self.isRequired = isRequired
+        }
+    }
+
     /// An optional custom start playback position in seconds. Any value, including `0`, overrides the saved
     /// resume position; `nil` leaves resuming to `PlayerConfiguration.resumePlayback`.
     public var startTime: Double?
@@ -40,6 +69,7 @@ public struct MediaLoadRequest: Sendable, Equatable {
         artworkData: Data? = nil,
         artworkURL: URL? = nil,
         headers: [String: String] = [:],
+        audioFiles: [AudioFile] = [],
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
@@ -53,6 +83,7 @@ public struct MediaLoadRequest: Sendable, Equatable {
         self.artworkData = artworkData
         self.artworkURL = artworkURL
         self.headers = headers
+        self.audioFiles = audioFiles
         self.startTime = startTime
         self.audioTrack = audioTrack
         self.subtitleTrack = subtitleTrack
@@ -81,6 +112,12 @@ public struct MediaLoadRequest: Sendable, Equatable {
     public func headers(_ value: [String: String]) -> Self {
         var copy = self
         copy.headers = value
+        return copy
+    }
+
+    public func audioFiles(_ value: [AudioFile]) -> Self {
+        var copy = self
+        copy.audioFiles = value
         return copy
     }
 

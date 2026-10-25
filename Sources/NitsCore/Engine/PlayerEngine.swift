@@ -28,6 +28,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public internal(set) var loadGeneration: Int = 0
     /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
     public var onActionButton: ((_ id: String) -> Void)?
+    /// Resolves the pages a load is given (a video site's) into the streams that play them; `nil` opens every URL as
+    /// is. Asked for network URLs only, before the demuxer opens (`MediaResolver`).
+    @ObservationIgnored
+    public var mediaResolver: (any MediaResolver)?
     /// Set by a host that keeps its own queue: Next and Previous go to it instead of `playlist`, and the end of the
     /// media leaves what plays next to the host. The host answers by loading the item it moves to.
     public var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)?
@@ -550,6 +554,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var configuration: PlayerConfiguration
     /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
     public internal(set) var currentPath: String?
+    /// Path or URL of the stream the demuxer opened, which `currentHeaders` go with: `currentPath`, or the stream a
+    /// `mediaResolver` found for it. What reads the media again (thumbnails, embedded subtitles) opens this one.
+    var currentSourcePath: String?
+    /// What the media loaded is saved as in the history: `currentPath`, or a resolver's name for the page's media
+    /// (`ResolvedMedia.historyKey`).
+    var currentHistoryKey: String?
     public let historyStore: PlaybackHistoryStore
     public let playlist: PlaylistManager
     public let thumbnailManager = ThumbnailManager()

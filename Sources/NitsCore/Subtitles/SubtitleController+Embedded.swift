@@ -10,7 +10,7 @@ extension SubtitleController {
     /// the one running. What playback read of the track before it was chosen (`MediaDemuxer.takeStashedSubtitles`) is
     /// merged first, for every source, and the window is what it leaves out.
     func refreshEmbedded(around seconds: Double) {
-        guard let host, let demuxer = host.demuxer, let path = host.currentPath,
+        guard let host, let demuxer = host.demuxer, let path = host.currentSourcePath,
             let track = tracks.first(where: { $0.id == selectedTrackId }), !track.isExternal
         else { return }
         let selection = demuxer.liveSubtitleSelection

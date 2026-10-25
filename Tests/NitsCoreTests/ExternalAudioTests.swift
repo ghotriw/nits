@@ -233,6 +233,34 @@ struct ExternalAudioTests {
         #expect(engine.historyStore.savedPreferences(for: media)?.externalAudioPath == nil)
     }
 
+    @Test("A request's audio over HTTP opens with the media, with the request's headers, and plays with the picture")
+    func playsRequestedAudioOverHTTP() async throws {
+        guard let media = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let dub = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let dubURL = URL(fileURLWithPath: dub)
+        let server = try TestHTTPServer(root: dubURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        let remote = try #require(URL(string: server.url(dubURL.lastPathComponent)))
+        engine.load(
+            MediaLoadRequest(path: media, headers: ["User-Agent": "NitsTest"], audioFiles: [.init(url: remote)]))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+
+        // The media has no audio of its own: the file's track is the one it starts with.
+        let selected = try #require(engine.audioTracks.first { $0.id == engine.selectedAudioTrackId })
+        #expect(selected.externalURL == remote)
+        #expect(engine.inputs?.isAudioSeparate == true)
+        #expect(!engine.isBuffering)
+        let clock = engine.synchronizer.currentTime().seconds
+        let fed = try await firstFedAudio(engine)
+        #expect(abs(fed - clock) < 1, "The file's audio started at \(fed)s with the clock at \(clock)s")
+        let asked = server.requests.filter { $0.path == dubURL.lastPathComponent }
+        #expect(!asked.isEmpty && asked.allSatisfy { $0.userAgent == "NitsTest" })
+    }
+
     @Test("Stopping aborts a file still opening on a server that doesn't answer")
     func stopAbortsOpening() async throws {
         guard let media = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),

@@ -179,6 +179,9 @@ public final class PlaybackHistoryStore: Sendable {
             } else {
                 normalized = url.path
             }
+        } else if !path.hasPrefix("/"), let scheme = URL(string: path)?.scheme, scheme.lowercased() != "file" {
+            // A name of its own (a resolved page's media, `youtube:dQw4w9WgXcQ`) or another protocol's URL: as is.
+            normalized = path
         } else {
             normalized = URL(fileURLWithPath: path).standardized.path
         }
