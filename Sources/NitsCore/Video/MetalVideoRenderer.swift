@@ -7,7 +7,7 @@ import os
 import simd
 
 public struct ToneMapUniforms: Sendable {
-    public var targetNits: Float = 203.0  // 203 nits standard ITU SDR reference
+    public var targetNits: Float = ToneMapController.referenceWhiteNits
     public var sourcePeakNits: Float = 1000.0  // from SEI 144 / mastering display
     public var outputExposure: Float = 1.0
     public var outputSaturation: Float = 1.0
@@ -30,9 +30,13 @@ public struct ToneMapUniforms: Sendable {
 
     /// Dolby Vision Profile 5 reshaping and colour matrices; 16-byte aligned, at byte offset 80.
     public var doviReshaping = DolbyVisionReshaping()
+    /// Strength of the local contrast (`ContrastRecovery`), 0 ... 1, 0: off: how much of the detail above the low-pass
+    /// bypasses the curve. The user's (`ToneMapController.localContrast`); the renderer turns it off for each frame it
+    /// can't compute it for.
+    public var contrastRecovery: Float = 0
 
     public init(
-        targetNits: Float = 203.0,
+        targetNits: Float = ToneMapController.referenceWhiteNits,
         sourcePeakNits: Float = 1000.0,
         outputExposure: Float = 1.0,
         outputSaturation: Float = 1.0,
@@ -93,6 +97,11 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     private let lastDrawnLock = OSAllocatedUnfairLock<DrawnFrame?>(initialState: nil)
     /// The pipeline of `doviSignalFragmentShader`, built on the first still that needs it (`signalPipeline()`).
     private let signalPipelineLock = OSAllocatedUnfairLock<(any MTLRenderPipelineState)?>(initialState: nil)
+    private var contrastRecovery: ContrastRecovery?
+    /// The local contrast's textures for the layer's frames, behind `renderLock`; rebuilt when the frame size changes.
+    private var recoveryWorkspace: ContrastRecovery.Workspace?
+    /// Bound in place of the local contrast's coefficients when a frame has none (SDR, or no pipeline).
+    private var placeholderCoefficients: (any MTLTexture)?
 
     /// A frame as it was drawn into the layer: what a still of it must repeat (`renderStill`).
     struct DrawnFrame: @unchecked Sendable {
@@ -174,6 +183,36 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         } catch {
             AppLog.error(.renderer, "Pipeline state creation failed: \(error)")
         }
+
+        contrastRecovery = ContrastRecovery(device: device, library: defaultLibrary)
+        if contrastRecovery == nil {
+            AppLog.error(.renderer, "Contrast recovery pipelines failed; tone mapping goes without local contrast")
+        }
+        let placeholder = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: ContrastRecovery.coefficientFormat, width: 1, height: 1, mipmapped: false)
+        placeholder.usage = [.shaderRead]
+        placeholderCoefficients = device.makeTexture(descriptor: placeholder)
+    }
+
+    /// Encodes the local contrast of an HDR frame into `commandBuffer` at the strength `uniforms` ask for; returns the
+    /// texture the fragment shader samples for it (the placeholder, with the strength set to 0, when it is off, for SDR
+    /// or without a pipeline). `workspace` is reused when it fits the frame, else replaced.
+    private func encodeContrastRecovery(
+        into commandBuffer: any MTLCommandBuffer, luma: any MTLTexture, chroma: any MTLTexture,
+        uniforms: inout ToneMapUniforms, workspace: inout ContrastRecovery.Workspace?
+    ) -> (any MTLTexture)? {
+        let strength = min(uniforms.contrastRecovery, 1)
+        uniforms.contrastRecovery = 0
+        let isSDR = uniforms.transferFunction == 2 || uniforms.colorPrimaries == 1
+        guard strength > 0, !isSDR, let contrastRecovery else { return placeholderCoefficients }
+        if workspace?.fits(frameWidth: luma.width, frameHeight: luma.height) != true {
+            workspace = ContrastRecovery.Workspace(device: device, frameWidth: luma.width, frameHeight: luma.height)
+        }
+        guard let workspace else { return placeholderCoefficients }
+        contrastRecovery.encode(
+            into: commandBuffer, luma: luma, chroma: chroma, uniforms: uniforms, workspace: workspace)
+        uniforms.contrastRecovery = strength
+        return workspace.boxedCoefficients
     }
 
     /// - Parameters:
@@ -259,11 +298,14 @@ public final class MetalVideoRenderer: @unchecked Sendable {
 
         renderPassDesc.colorAttachments[0].texture = drawable.texture
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc)
-        else {
-            return
-        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+        var currentUniforms = uniforms
+        currentUniforms.bitDepth = is8Bit ? 8 : 10
+        currentUniforms.isFullRange = isFull ? 1 : 0
+        let recoveryCoefficients = encodeContrastRecovery(
+            into: commandBuffer, luma: yTexture, chroma: uvTexture, uniforms: &currentUniforms,
+            workspace: &recoveryWorkspace)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else { return }
 
         encoder.setRenderPipelineState(pipelineState)
         let source = sourceRect
@@ -272,10 +314,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         encoder.setVertexBytes(&sourceRectBytes, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         encoder.setFragmentTexture(yTexture, index: 0)
         encoder.setFragmentTexture(uvTexture, index: 1)
-
-        var currentUniforms = uniforms
-        currentUniforms.bitDepth = is8Bit ? 8 : 10
-        currentUniforms.isFullRange = isFull ? 1 : 0
+        encoder.setFragmentTexture(recoveryCoefficients, index: 2)
         encoder.setFragmentBytes(&currentUniforms, length: MemoryLayout<ToneMapUniforms>.stride, index: 0)
 
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -391,6 +430,17 @@ public final class MetalVideoRenderer: @unchecked Sendable {
             let output = device.makeTexture(descriptor: outputDescriptor),
             let commandBuffer = commandQueue.makeCommandBuffer()
         else { return nil }
+        var currentUniforms = uniforms
+        currentUniforms.bitDepth = is8Bit ? 8 : 10
+        currentUniforms.isFullRange = isFull ? 1 : 0
+        // As the layer drew it: with the local contrast if the frame had it, in textures of the still's own.
+        var recoveryCoefficients = placeholderCoefficients
+        if uniforms.contrastRecovery > 0 {
+            var workspace: ContrastRecovery.Workspace?
+            recoveryCoefficients = encodeContrastRecovery(
+                into: commandBuffer, luma: yTexture, chroma: uvTexture, uniforms: &currentUniforms,
+                workspace: &workspace)
+        }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = output
@@ -404,9 +454,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         encoder.setVertexBytes(&sourceRectBytes, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
         encoder.setFragmentTexture(yTexture, index: 0)
         encoder.setFragmentTexture(uvTexture, index: 1)
-        var currentUniforms = uniforms
-        currentUniforms.bitDepth = is8Bit ? 8 : 10
-        currentUniforms.isFullRange = isFull ? 1 : 0
+        encoder.setFragmentTexture(recoveryCoefficients, index: 2)
         encoder.setFragmentBytes(&currentUniforms, length: MemoryLayout<ToneMapUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()

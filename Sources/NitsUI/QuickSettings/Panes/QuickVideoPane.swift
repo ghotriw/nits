@@ -328,6 +328,7 @@ public struct QuickVideoPane: View {
                                 engine.toneMapping.exposure = 1.0
                                 engine.toneMapping.shadowLift = 0
                                 engine.toneMapping.targetNitsScale = 1.0
+                                engine.toneMapping.localContrast = ToneMapController.defaultLocalContrast
                             }
                         }
                         .buttonStyle(.plain)
@@ -391,6 +392,23 @@ public struct QuickVideoPane: View {
                                 .foregroundStyle(.white.opacity(0.6))
                         }
                         Slider(value: toneMapping.shadowLift, in: 0.0...0.1)
+                    }
+
+                    // Local contrast (ContrastRecovery)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Local Contrast")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.8))
+                            Spacer()
+                            Text(
+                                engine.toneMapping.localContrast > 0
+                                    ? String(format: "%.2f", engine.toneMapping.localContrast) : "Off"
+                            )
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.6))
+                        }
+                        Slider(value: toneMapping.localContrast, in: 0.0...1.0)
                     }
 
                     if engine.media.video.dolbyVisionProfile != nil {

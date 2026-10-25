@@ -14,6 +14,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyApplyDolbyVisionTrims)
     private var applyDolbyVisionTrims: Bool = false
 
+    @AppStorage(PlayerConfiguration.keyLocalContrast)
+    private var localContrast: Double = Double(ToneMapController.defaultLocalContrast)
+
     @AppStorage(PlayerConfiguration.keyResumePlayback)
     private var resumePlayback: Bool = true
 
@@ -457,6 +460,26 @@ public struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Local Contrast:")
+                        Spacer()
+                        Text(localContrast > 0 ? String(format: "%.2f", localContrast) : "Off")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $localContrast, in: 0.0...1.0, step: 0.05)
+                        .disabled(!enableToneMapping)
+                        .onChange(of: localContrast) { _, _ in
+                            notifyChange()
+                        }
+                    Text(
+                        "Brings back the texture of bright areas (skies, haze, lit faces) that the tone curve flattens near white. 0.50 matches the HDR picture best; higher values add more detail and may show halos around bright edges. 0 turns it off."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Tone Mapping Tuning")
             }
@@ -482,6 +505,7 @@ public struct SettingsView: View {
             targetNitsScale: Float(targetNitsScale),
             sharpness: Float(sharpness),
             applyDolbyVisionTrims: applyDolbyVisionTrims,
+            localContrast: Float(localContrast),
             resumePlayback: resumePlayback,
             resumeStartThreshold: resumeStartThreshold,
             resumeEndThresholdRatio: resumeEndThresholdRatio,

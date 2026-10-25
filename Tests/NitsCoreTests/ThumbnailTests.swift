@@ -237,11 +237,11 @@ struct ThumbnailTests {
     @Test("A frame's scene peak sets the white as in the player; without dynamic metadata the static one holds")
     func testThumbnailCurveFollowsScene() {
         let luminance = ThumbnailGenerator.StaticLuminance(peakNits: 1375, fallNits: 188)
-        #expect(luminance.curve(for: nil).whiteNits == 203)
+        #expect(luminance.curve(for: nil).whiteNits == ToneMapController.referenceWhiteNits)
         let night = FrameHDRMetadata(hdr10Plus: HDR10PlusFrameMetadata(maxNits: 90, averageNits: 2))
         #expect(luminance.curve(for: night).whiteNits == 100)
         let bright = FrameHDRMetadata(hdr10Plus: HDR10PlusFrameMetadata(maxNits: 600, averageNits: 30))
-        #expect(luminance.curve(for: bright).whiteNits == 203)
+        #expect(luminance.curve(for: bright).whiteNits == ToneMapController.referenceWhiteNits)
     }
 
     /// Mean of R, G, B over the image rendered into 8-bit sRGB.

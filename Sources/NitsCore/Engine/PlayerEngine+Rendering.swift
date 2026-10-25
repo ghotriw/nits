@@ -360,7 +360,8 @@ extension PlayerEngine {
             let mode = activeRenderMode
             let renderStart = CACurrentMediaTime()
             if mode == .metalToneMap {
-                let toneMapMode = toneMapping.applyFrame(hdrMetadata: popped.hdrMetadata)
+                let toneMapMode = toneMapping.applyFrame(
+                    hdrMetadata: popped.hdrMetadata, pixelBuffer: popped.pixelBuffer)
                 let cadence = frameCadenceLock
                 metalRenderer?.render(pixelBuffer: popped.pixelBuffer, pts: popped.pts.seconds) { gpuEndTime in
                     cadence.withLock {
@@ -539,7 +540,8 @@ extension PlayerEngine {
         if activeRenderMode == .metalToneMap {
             // The frame's own curve, from its L1 as is: tone mapping may have last resolved another frame's (under
             // `.system` none), so there is no playback to smooth from.
-            _ = toneMapping.applyFrame(hdrMetadata: frame.hdrMetadata, restartsSmoothing: true)
+            _ = toneMapping.applyFrame(
+                hdrMetadata: frame.hdrMetadata, pixelBuffer: frame.pixelBuffer, restartsSmoothing: true)
             metalRenderer?.render(pixelBuffer: frame.pixelBuffer, pts: frame.pts)
         } else {
             toneMapping.trackReshaping(doviMetadata: frame.hdrMetadata?.dolbyVision)
@@ -567,7 +569,8 @@ extension PlayerEngine {
     ) {
         frameQueue.setLastRendered(buffer: pixelBuffer, pts: pts, hdrMetadata: hdrMetadata)
         if activeRenderMode == .metalToneMap {
-            _ = toneMapping.applyFrame(hdrMetadata: hdrMetadata, restartsSmoothing: restartsSmoothing)
+            _ = toneMapping.applyFrame(
+                hdrMetadata: hdrMetadata, pixelBuffer: pixelBuffer, restartsSmoothing: restartsSmoothing)
             metalRenderer?.render(pixelBuffer: pixelBuffer, pts: pts)
         } else {
             toneMapping.trackReshaping(doviMetadata: hdrMetadata?.dolbyVision)

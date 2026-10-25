@@ -8,7 +8,7 @@ short, enforceable invariants; this document explains how the pieces fit togethe
 Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on macOS:
 
 - **SDR displays** (external 4K/5K monitors, EDR == 1.0): a custom Metal tone-mapper (ITU-R
-  BT.2390 EETF with its black level lift, 203-nit reference white, Display P3, FidelityFX CAS) instead of the
+  BT.2390 EETF with its black level lift, a reference white set against the XDR picture, Display P3, FidelityFX CAS) instead of the
   washed-out / crushed look of default OS tone mapping.
 - **XDR / EDR displays** (EDR > 1.01): decoded frames go straight to `AVSampleBufferDisplayLayer`
   to use the panel's full 1000–1600 nit peak.
@@ -620,21 +620,67 @@ player does; `assFonts` are the media's attached fonts.
   MSB-aligns P010, so range limits are expressed on the 16-bit scale, e.g. `4096/65535`,
   `56064/65535`), and an 8-bit path. Full/video range comes from the format description.
 - **Pipeline** — PQ (ST 2084) inverse EOTF → linear nits → BT.2390 black level lift
-  (`liftBlackLevel`) → BT.2390 EETF compressed to `targetNits` → BT.2020 → Display P3 (D65) with gamut
-  clamping → sRGB encoding, the layer's transfer: macOS decodes it and maps it to the display, so the
+  (`liftBlackLevel`) → BT.2390 EETF compressed to `targetNits` → BT.2020 → Display P3 (D65), fit at constant Oklab
+  lightness and hue (`fitToDisplayP3`, `DisplayGamutFit.metal`, ToneLab's `oklab_gamut_fit`: clipping each channel
+  turned a sunset's orange outside P3 towards yellow, up to ~17° with mpv's curve) → sRGB encoding, the layer's
+  transfer: macOS decodes it and maps it to the display, so the
   luminance the curve gives is the one shown. (A pure gamma 2.2 encoding read as sRGB lifted the shadows
   by up to 8× at 0.02 % of white, which hid a white and a black level that were both off.)
-- **Reference white** (`targetNits`, `ToneMapController`) — 203 nits (ITU-R BT.2408) for high-peak media, lowered
-  for low-peak mastering (`adaptiveTargetNits`). The scene's peak (Dolby Vision L1, else HDR10+) moves it between
-  100 nits and that static white: a scene that fits under 100 nits is shown as the XDR presentation shows it (PQ 100 nits on
-  SDR white), a brighter one keeps the static white, which leaves room for its highlights an SDR display has no
-  headroom above white for. The scene's average doesn't lower it: that overexposed bright scenes.
+- **Tone curve** (`mpvBT2390`, `BT2390ToneMapping.metal`, LGPL) — mpv's BT.2390 EETF on max(RGB), with its
+  desaturation of bright colours: a saturated colour keeps its saturation and is darkened for it. A curve on luminance
+  (a blend of Y and a smooth max(RGB), with its own gamut compression) and libplacebo's on cone LMS were tried against
+  the XDR stills and dropped. Both matched mpv's below the knee; in highlights the luminance curve let saturated colours
+  keep their brightness and wash out towards white (a sun's glow, 0.67–0.78 of XDR's Oklab C/L on sunsets against mpv's
+  ~0.88, mean ΔE 7.59 against 7.50), and libplacebo's left bright areas darker than XDR (0.77 of its luminance just under
+  SDR white, against ~0.81). The hue shift that once argued against mpv's curve on sunsets came from clipping each
+  channel to P3, which the Oklab fit after it replaced.
+- **Reference white** (`targetNits`, `ToneMapController`) — set by the title's static peak and the frame's average
+  brightness (`measuredTargetNits`): max(100 + 17 ln(peak / 451), 80 + 65 (1 − e^(−avg / 12))), ~100 to ~150 nits. The
+  average is measured on the frame itself (`FrameLuminanceMeter`: the PQ mean of max(RGB), as Dolby Vision's L1
+  average, on a 64×36 grid on the CPU, so the frame drawn gets its own white with no GPU readback delay), smoothed
+  between frames but for scene refreshes and cuts (a jump of more than 3 % PQ). Fitted for the least ΔE_ITP against
+  the XDR presentation of 45 scenes of four titles (stills of the screen, ⌘S under `.system`, both relative to SDR
+  white): the presentation sets a title's white by its MaxCLL (a dark scene's ~100 nits at MaxCLL 451, ~115 at ~1000,
+  ~150 at 8154) and raises it for bright scenes; the scene's peak doesn't predict it (L1 max said 300 nits for a scene
+  whose frame peaked at 123 and wanted ~110), and L1's own average is static in some Dolby Vision 8.1 encodes, so the
+  frame is measured for every HDR source. Mean ΔE 9.6, against 9.3 for each scene's best white. Never below 100 nits,
+  the user's scale (`targetNitsScale`) included. Before a frame is measured, and for SDR, the static white (`referenceWhiteNits`,
+  `adaptiveTargetNits`) and the scene's peak set it. Known limit: the average takes the whole frame, letterbox bars
+  included, so a letterboxed film gets a lower white (a brighter picture) than the same film without bars. The fit can't
+  settle it: its one letterboxed title (2.39:1 in 16:9) has a static L1, and XDR keeps its white at ~100 nits in every
+  scene. With its bars counted, the average's term stays under its title's (100) and the rule gives that 100 by
+  accident; leaving black out (libplacebo's `black_cutoff`, or only the bars) lifts the average term over it, the white
+  to 110–137 and its mean ΔE from 3.9 to 7.9. Checked out of sample on a second letterboxed title (23 XDR stills, also
+  a static L1 avg): bars left out, mean ΔE 8.7 → 12.3. So the whole frame stays, but both titles have a static L1
+  average, where XDR keeps the white near the title's; letterboxed titles with a dynamic L1, and HDR10 ones, are
+  untested.
+- **Local contrast** (`ContrastRecovery`, `applyContrastRecovery`) — BT.2390's shoulder ends with slope 0, so the
+  brightest part of a frame (a hazy sky, a lit shirt) loses its texture: the far ridges of a desert at 250–340 nits
+  landed within a few percent of white. The curve maps a low-pass of the PQ intensity, and half of the detail above
+  it is added back unmapped (base / detail decomposition, as libplacebo's `contrast_recovery`). The low-pass is a
+  guided filter of the intensity by itself, which keeps edges: a Gaussian left bright halos around mountains against
+  the sky. Its coefficients are computed on the GPU at a quarter of the frame's size before the frame is drawn
+  (statistics, MPS box filters, radius 1/60 of the width) and applied per pixel at full resolution. The low-pass is
+  mapped in the pixel's own colour, not as a grey: the curve, on max(RGB), compresses a saturated colour more than a
+  grey of its luminance, so a grey base came out brighter than the pixel and lifted whole hazy areas (the far ridges
+  washed out) instead of adding their detail. Brightening stops where the brightest channel reaches white, so the colour keeps its hue and
+  saturation: clipped per channel, a sun's red stopped while green and blue rose, and it went yellow-white. Changing the
+  curve's shape instead (a lower knee, a slope at the peak, headroom above it) only moved the contrast from one part
+  of the highlights to another and moved the picture away from XDR. Against the XDR stills: mean ΔE_ITP 7.73 → 7.50,
+  fine detail in highlights 65 % → 73 % of the XDR picture's. Stills (⌘S) compute it for their own frame. The
+  strength is the user's (`ToneMapController.localContrast`, Settings / Quick Settings / `--local-contrast`, default
+  the fitted 0.5); 0 skips the GPU passes.
 - **Scene luminance** — the demuxer reads each HEVC and AV1 packet's dynamic metadata into `FrameHDRMetadata`, which
   rides the sample buffer (`FrameHDRMetadataBox`) through the decoders and `FrameQueue` to
   `ToneMapController.applyFrame`: the Dolby Vision RPU (NAL unit 62) and HDR10+ (SMPTE ST 2094-40: a T.35 message, in
   an HEVC prefix SEI or an AV1 metadata OBU, decoded by FFmpeg's `av_dynamic_hdr_plus_from_t35`, `HDR10PlusParser`). Both give the scene's peak, which the curve maps from instead
   of the whole title's MaxCLL, so a scene's highlights aren't compressed for a peak it doesn't have. L1 is smoothed
-  between frames but for a scene refresh; HDR10+ holds per scene and changes at cuts, so it is taken as is.
+  between frames but for a scene refresh; HDR10+ holds per scene and changes at cuts, so it is taken as is. The curve's
+  peak is never below the frame's own, as `FrameLuminanceMeter` measures it with the average (its brightest sample,
+  smoothed with the average): L1 max is under-reported in some Dolby Vision encodes (Apple's Profile 5 demo changes it
+  every six frames inside a shot, 316 nits for a frame whose sky reaches 630), and everything above the curve's peak
+  is white. libplacebo does the same (`scene_max` raises `input_max`). Neutral against the XDR stills (mean ΔE 7.50
+  either way): where L1 is honest the grid's brightest sample rarely exceeds it.
 - **Thumbnails** (`ThumbnailToneMapper`) are tone-mapped on the CPU the same way: each keyframe's packet metadata
   (`FrameHDRMetadata`) gives the scene's peak and white (`ToneMapController.sceneTargetNits`), the BT.2390 black lift
   and sRGB encoding follow, a Profile 5 frame is composed with its RPU's curves and matrices
@@ -642,7 +688,9 @@ player does; `assFonts` are the media's attached fonts.
   in place of BT.2390's knee.
 - **Black level** — the BT.2390 lift towards a display black of 0.06 % of white (`displayBlackToWhite`): a dark
   scene's shadows sit above it as on XDR, which a pure power curve crushes. mpv does the same with
-  `--target-contrast` (1000:1 for SDR by default).
+  `--target-contrast` (1000:1 for SDR by default). The lift goes on each channel, which takes chroma from dark colours
+  as the XDR presentation does; a lift on luminance that kept the chromaticity left the shadows 1.2 to 1.7× more
+  saturated than XDR stills of the same frames. Thumbnails lift the same way.
 - **Sharpening** — AMD FidelityFX CAS: `peak = -1 / mix(8, 5, strength); weight = amplitude * peak`,
   which stays finite at `strength = 1`.
 - **Output** — `.bgr10a2Unorm` in Display P3; 8-bit output bands visibly in skies and shadows.
