@@ -30,22 +30,29 @@ public struct ResolvedMedia: Sendable, Equatable {
     public var headers: [String: String]
     /// Audio of its own (a site's separate audio streams), before the request's.
     public var audioFiles: [MediaLoadRequest.AudioFile]
+    /// Chapters of the media (a site's chapters, e.g. from yt-dlp), used when the stream's container has none.
+    public var chapters: [MediaChapter]
     /// The page's title, shown when the request gives none.
     public var title: String?
     /// What the history saves the media as, the same for every address of the page (yt-dlp's extractor and id,
     /// `youtube:dQw4w9WgXcQ`); `nil` saves it as the page's URL, which the history keys without its query, so pages
     /// told apart by it (`watch?v=`) would share one record.
     public var historyKey: String?
+    /// Action buttons for spans of the timeline (e.g. SponsorBlock "Skip Sponsor" / "Skip Intro").
+    public var actionButtons: [PlaybackActionButton]
 
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],
-        title: String? = nil, historyKey: String? = nil
+        chapters: [MediaChapter] = [], title: String? = nil, historyKey: String? = nil,
+        actionButtons: [PlaybackActionButton] = []
     ) {
         self.path = path
         self.headers = headers
         self.audioFiles = audioFiles
+        self.chapters = chapters
         self.title = title
         self.historyKey = historyKey
+        self.actionButtons = actionButtons
     }
 }
 

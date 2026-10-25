@@ -27,12 +27,25 @@ struct YTDLPInfo: Decodable, Sendable {
         var hasAudio: Bool { acodec != "none" }
     }
 
+    struct Chapter: Decodable, Sendable {
+        var startTime: Double?
+        var endTime: Double?
+        var title: String?
+
+        enum CodingKeys: String, CodingKey {
+            case startTime = "start_time"
+            case endTime = "end_time"
+            case title
+        }
+    }
+
     var type: String?
     var id: String?
     var title: String?
     var extractorKey: String?
     /// A URL the generic extractor found to be media itself, not a page.
     var direct: Bool?
+    var duration: Double?
     /// The format chosen, when it is one (a site's muxed stream): the top level carries it.
     var url: String?
     var `protocol`: String?
@@ -40,10 +53,11 @@ struct YTDLPInfo: Decodable, Sendable {
     var httpHeaders: [String: String]?
     /// The formats chosen, when `-f` merged several (a picture and its audio).
     var requestedFormats: [Format]?
+    var chapters: [Chapter]?
 
     enum CodingKeys: String, CodingKey {
         case type = "_type"
-        case id, title, direct, url, `protocol`
+        case id, title, direct, url, `protocol`, duration, chapters
         case extractorKey = "extractor_key"
         case manifestURL = "manifest_url"
         case httpHeaders = "http_headers"
@@ -57,8 +71,9 @@ struct YTDLPInfo: Decodable, Sendable {
         return `protocol` == "http" || `protocol` == "https" || `protocol`.hasPrefix("m3u8")
     }
 
-    /// The streams to play the page from; `nil` when `pageURL` is media itself, to open as it is.
-    func resolvedMedia(for pageURL: URL) throws -> ResolvedMedia? {
+    /// The streams to play the page from; `nil` when `pageURL` is media itself, to open as it is. `sponsorBlock`, the
+    /// video's SponsorBlock segments, become skip buttons, and chapters when the author gave none.
+    func resolvedMedia(for pageURL: URL, sponsorBlock: [SponsorBlockSegment] = []) throws -> ResolvedMedia? {
         if type == "playlist" {
             throw MediaResolutionError("Playlists aren't supported yet")
         }
@@ -81,10 +96,21 @@ struct YTDLPInfo: Decodable, Sendable {
         let historyKey = extractorKey.flatMap { key in
             key == "Generic" ? nil : id.map { "\(key.lowercased()):\($0)" }
         }
+        let segments = SponsorBlockSegment.matching(sponsorBlock, duration: duration)
+        let authorRaw = (chapters ?? []).compactMap { ch -> MediaChapter.Raw? in
+            guard let start = ch.startTime, start.isFinite else { return nil }
+            return MediaChapter.Raw(title: ch.title, start: start, end: ch.endTime)
+        }
+        let rawChapters = !authorRaw.isEmpty ? authorRaw : SponsorBlockSegment.chapters(in: segments)
+        let resolvedChapters = MediaChapter.normalized(rawChapters, duration: duration ?? 0)
+        let buttons = SponsorBlockSegment.actionButtons(from: segments)
+
         // HLS opens from its master playlist, which a URL without `.m3u8` needed yt-dlp to tell: its variants and
         // audio renditions, not the one variant `-f` chose, play with adaptive bitrate.
         if main.protocol?.hasPrefix("m3u8") == true, let master = main.manifestURL {
-            return ResolvedMedia(path: master, headers: headers, title: title, historyKey: historyKey)
+            return ResolvedMedia(
+                path: master, headers: headers, chapters: resolvedChapters, title: title, historyKey: historyKey,
+                actionButtons: buttons)
         }
         let audio = formats.filter { $0.hasAudio && !$0.hasVideo && $0.url != nil }
         return ResolvedMedia(
@@ -98,8 +124,10 @@ struct YTDLPInfo: Decodable, Sendable {
                         headers: format.httpHeaders, isRequired: true)
                 }
             },
+            chapters: resolvedChapters,
             title: title,
-            historyKey: historyKey)
+            historyKey: historyKey,
+            actionButtons: buttons)
     }
 
     /// The title of an audio format's track: its codec, and whether it is the original among dubs (YouTube notes

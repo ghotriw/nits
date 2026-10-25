@@ -47,9 +47,9 @@ public struct MediaInfo: Equatable, Sendable {
 
 extension MediaInfo {
     /// Reads the description of the media `demuxer` has just opened (before it reads ahead).
-    init(demuxer: MediaDemuxer) {
+    init(demuxer: MediaDemuxer, fallbackChapters: [MediaChapter] = []) {
         duration = demuxer.durationSeconds
-        chapters = demuxer.chapters
+        chapters = !demuxer.chapters.isEmpty ? demuxer.chapters : fallbackChapters
         hasVideo = demuxer.hasVideo
         isNetworkSource = demuxer.isNetworkSource
         guard demuxer.hasVideo else { return }

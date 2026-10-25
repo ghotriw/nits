@@ -40,10 +40,10 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         set { engine.onActionButton = newValue }
     }
 
-    /// Replaces the action buttons of the media playing now; the next load replaces them again (see
-    /// `openStream(actionButtons:)`).
+    /// Replaces the action buttons of the media playing now, preserving any resolved buttons (e.g. SponsorBlock);
+    /// the next load replaces them again (see `openStream(actionButtons:)`).
     public func setActionButtons(_ buttons: [PlaybackActionButton]) {
-        engine.actionButtons = buttons
+        engine.setActionButtons(buttons)
     }
 
     /// Set by a host that keeps its own queue (a media server client's series): Next and Previous from the control
@@ -77,7 +77,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     /// the engine a resolver of its own.
     private func applyMediaResolverConfiguration(_ config: PlayerConfiguration) {
         guard engine.mediaResolver == nil || engine.mediaResolver is YTDLPResolver else { return }
-        engine.mediaResolver = config.resolvesWithYTDLP ? YTDLPResolver(customPath: config.ytdlpPath) : nil
+        engine.mediaResolver =
+            config.resolvesWithYTDLP
+            ? YTDLPResolver(customPath: config.ytdlpPath, sponsorBlock: config.sponsorBlock) : nil
     }
 
     private func applyPictureInPictureConfiguration(_ config: PlayerConfiguration) {

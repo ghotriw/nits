@@ -39,6 +39,82 @@ struct YTDLPResolverTests {
                 ])
         #expect(resolved.title == "Big Buck Bunny")
         #expect(resolved.historyKey == "youtube:aqz-KE-bpKQ")
+        #expect(resolved.chapters.isEmpty)
+        #expect(resolved.actionButtons.isEmpty)
+    }
+
+    @Test("Reads author chapters from yt-dlp JSON into normalized MediaChapter markers")
+    func readsAuthorChapters() throws {
+        let json = """
+            {"_type": "video", "id": "ch1", "title": "Tutorial", "extractor_key": "Youtube", "duration": 300,
+             "url": "https://media.example/video", "protocol": "https",
+             "chapters": [
+               {"start_time": 0.0, "end_time": 60.0, "title": "Intro"},
+               {"start_time": 60.0, "end_time": 200.0, "title": "Main Content"},
+               {"start_time": 200.0, "end_time": 300.0, "title": "Outro"}
+             ]}
+            """
+        let resolved = try #require(try info(json).resolvedMedia(for: Self.page))
+        #expect(resolved.chapters.count == 3)
+        #expect(resolved.chapters.map(\.title) == ["Intro", "Main Content", "Outro"])
+        #expect(resolved.chapters.map(\.start) == [0.0, 60.0, 200.0])
+        #expect(resolved.chapters.map(\.end) == [60.0, 200.0, 300.0])
+        #expect(resolved.chapters.map(\.id) == [0, 1, 2])
+    }
+
+    static let video600 = """
+        {"_type": "video", "id": "sb1", "title": "Review", "extractor_key": "Youtube", "duration": 600,
+         "url": "https://media.example/video", "protocol": "https"}
+        """
+
+    @Test("SponsorBlock segments become skip buttons, chapters none")
+    func readsSponsorBlockActionButtons() throws {
+        let segments = [
+            ("intro", 10.0, 30.0), ("sponsor", 120, 180), ("chapter", 200, 250),
+            ("preview", 400, 430), ("hook", 450, 470), ("selfpromo", 500, 550),
+        ].map { SponsorBlockSegment(category: $0.0, start: $0.1, end: $0.2, videoDuration: 600) }
+        let resolved = try #require(try info(Self.video600).resolvedMedia(for: Self.page, sponsorBlock: segments))
+        #expect(resolved.actionButtons.count == 5)
+        #expect(
+            resolved.actionButtons.map(\.title) == [
+                "Skip Intro", "Skip Sponsor", "Skip Preview", "Skip Hook", "Skip Promotion",
+            ])
+        #expect(resolved.actionButtons.map(\.start) == [10.0, 120.0, 400.0, 450.0, 500.0])
+        #expect(resolved.actionButtons.map(\.end) == [30.0, 180.0, 430.0, 470.0, 550.0])
+        #expect(resolved.actionButtons.map(\.allowsAutoPress) == [true, true, false, false, true])
+        #expect(resolved.actionButtons.allSatisfy { $0.seeksToEnd })
+    }
+
+    @Test("SponsorBlock's community chapters stand in for the author's only when the author gave none")
+    func readsCommunityChaptersWhenAuthorGivesNone() throws {
+        let segments = [
+            SponsorBlockSegment(category: "chapter", start: 0, end: 120, description: "Song 1"),
+            SponsorBlockSegment(category: "chapter", start: 120, end: 600, description: "Song 2"),
+        ]
+        let resolved = try #require(try info(Self.video600).resolvedMedia(for: Self.page, sponsorBlock: segments))
+        #expect(resolved.chapters.map(\.title) == ["Song 1", "Song 2"])
+        #expect(resolved.chapters.map(\.start) == [0.0, 120.0])
+        #expect(resolved.chapters.map(\.end) == [120.0, 600.0])
+
+        let authored = Self.video600.replacingOccurrences(
+            of: "}", with: #", "chapters": [{"start_time": 0, "end_time": 600, "title": "All"}]}"#)
+        let byAuthor = try #require(try info(authored).resolvedMedia(for: Self.page, sponsorBlock: segments))
+        #expect(byAuthor.chapters.map(\.title) == ["All"])
+    }
+
+    @Test("Segments marked on another version of the video are dropped, the rest snapped to its start and end")
+    func dropsSegmentsOfAnotherVersion() throws {
+        let segments = [
+            SponsorBlockSegment(category: "sponsor", start: 0.4, end: 20, videoDuration: 600.3),
+            // Marked on a version 30 s longer: the spans moved.
+            SponsorBlockSegment(category: "sponsor", start: 100, end: 160, videoDuration: 630),
+            SponsorBlockSegment(category: "outro", start: 570, end: 599.5, videoDuration: 600.5),
+            SponsorBlockSegment(category: "sponsor", start: 0, end: 0),
+        ]
+        let resolved = try #require(try info(Self.video600).resolvedMedia(for: Self.page, sponsorBlock: segments))
+        #expect(resolved.actionButtons.map(\.title) == ["Skip Sponsor", "Skip Outro"])
+        #expect(resolved.actionButtons.map(\.start) == [0, 570])
+        #expect(resolved.actionButtons.map(\.end) == [20, 600])
     }
 
     @Test("A muxed stream or HLS plays alone; media found by the generic extractor opens as it is")
@@ -106,6 +182,22 @@ struct YTDLPResolverTests {
         #expect(choices.allSatisfy { $0.contains("[protocol^=m3u8]") || $0.contains("[protocol!*=dash]") })
         let arguments = YTDLPResolver.arguments(for: Self.page, headers: ["Referer": "https://a.example/"])
         #expect(arguments.suffix(4) == ["--add-headers", "Referer:https://a.example/", "--", Self.page.absoluteString])
+    }
+
+    @Test("The video id of a YouTube page's URL, asked of SponsorBlock while yt-dlp runs")
+    func extractsYouTubeVideoID() {
+        let id = { (url: String) in YTDLPResolver.youTubeVideoID(from: URL(string: url)!) }
+        #expect(id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10") == "dQw4w9WgXcQ")
+        #expect(id("https://m.youtube.com/watch?v=dQw4w9WgXcQ") == "dQw4w9WgXcQ")
+        #expect(id("https://youtu.be/dQw4w9WgXcQ?t=10") == "dQw4w9WgXcQ")
+        #expect(id("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ")
+        #expect(id("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ") == "dQw4w9WgXcQ")
+        #expect(id("https://www.youtube.com/live/dQw4w9WgXcQ") == "dQw4w9WgXcQ")
+        // A channel's live page names no video; nor another site, nor a malformed id.
+        #expect(id("https://www.youtube.com/@channel/live") == nil)
+        #expect(id("https://notyoutube.com/watch?v=dQw4w9WgXcQ") == nil)
+        #expect(id("https://www.youtube.com/watch?v=short") == nil)
+        #expect(id("https://vimeo.com/12345") == nil)
     }
 
     // MARK: - Finding and running yt-dlp

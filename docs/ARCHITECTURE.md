@@ -84,17 +84,22 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
 - The demuxer accepts HTTP/HTTPS/HLS URLs with custom headers (`X-Emby-Token`, `Authorization`,
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
 - A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
-  into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers). As in mpv, it
-  is asked before the URL opens only for the sites known to have pages (`MediaResolutionOrder.beforeOpening`), and
-  for other URLs once they failed to open as media: a media server's or IPTV stream neither waits for it (seconds per
-  load) nor fails on its errors. A URL it declines (`nil`) opens as it is. After a failed opening it isn't asked when
+  into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers, the page's chapters
+  and action buttons). As in mpv, it is asked before the URL opens only for the sites known to have pages
+  (`MediaResolutionOrder.beforeOpening`), and for other URLs once they failed to open as media: a media server's
+  or IPTV stream neither waits for it (seconds per load) nor fails on its errors.
+  A URL it declines (`nil`) opens as it is. After a failed opening it isn't asked when
   the host couldn't be reached (it couldn't either, and would add its timeout), and an error of its that is only about
   reading the URL (`MediaResolutionError.isAboutPage` false: yt-dlp's generic extractor's HTTP errors, a timeout)
-  leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as
-  `Process` is macOS-only), runs the yt-dlp installed on the system rather than a bundled one, which would age with
-  the sites: `YTDLPLocator` searches `PATH` and the package managers' directories an app opened from the Finder
-  lacks, and runs it with them on its `PATH` (Deno, for YouTube). Its formats exclude DASH, which the bundled FFmpeg
-  can't demux; HLS opens from its master playlist (`manifest_url`), for its variants and adaptive bitrate. The load
+  leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as `Process` is macOS-only), runs the yt-dlp
+  installed on the system rather than a bundled one, which would age with the sites: `YTDLPLocator` searches `PATH`
+  and the package managers' directories an app opened from the Finder lacks, and runs it with them on its `PATH`
+  (Deno, for YouTube). Its formats exclude DASH, which the bundled FFmpeg can't demux; HLS opens from its master
+  playlist (`manifest_url`), for its variants and adaptive bitrate.
+  The author's chapters stand in for a container without any. A YouTube video's SponsorBlock segments become skip
+  buttons (`seeksToEnd`) and, when the author gave none, chapters: `SponsorBlockClient` asks the API itself by the id's
+  hash prefix, while yt-dlp runs, and gives none when it fails (not yt-dlp's `--sponsorblock-mark`, which fails the
+  whole page when the API can't be reached). The load
   keeps to the page: `currentPath`, the playlist and the title go by it, the history by the resolver's name for its
   media (`historyKey`: the history keys an HTTP URL without its query, where a `watch?v=` page names its video; none
   for yt-dlp's generic extractor, whose ids are a URL's last component). The streams expire, so every load resolves

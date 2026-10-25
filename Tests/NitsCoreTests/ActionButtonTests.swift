@@ -53,7 +53,7 @@ struct ActionButtonTests {
         engine.onActionButton = { pressed.append($0) }
 
         engine.currentTime = 15
-        engine.actionButtons = [Self.intro, Self.next]
+        engine.setActionButtons([Self.intro, Self.next])
         // Nothing is active until media is loaded.
         #expect(engine.activeActionButton == nil)
         engine.isLoaded = true
@@ -68,7 +68,7 @@ struct ActionButtonTests {
         engine.performActionButton(Self.recap)  // not one of the engine's buttons
         #expect(pressed == ["next"])
 
-        engine.actionButtons = []
+        engine.setActionButtons([])
         #expect(engine.activeActionButton == nil)
     }
 
@@ -76,7 +76,7 @@ struct ActionButtonTests {
     @MainActor
     func testLoadReplacesButtons() {
         let engine = PlayerEngine.makeForTesting()
-        engine.actionButtons = [Self.next]
+        engine.setActionButtons([Self.next])
 
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("nits-missing-\(UUID()).mkv").path
         let generation = engine.loadGeneration

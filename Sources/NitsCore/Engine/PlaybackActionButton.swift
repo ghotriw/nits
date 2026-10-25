@@ -21,6 +21,9 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
     /// A 16:9 picture of what the button leads to (e.g. the next episode's thumbnail). The URL carries any
     /// authentication itself: it is fetched without headers.
     public let artworkURL: URL?
+    /// Whether pressing the button causes the engine to seek to its `end` directly without host intervention
+    /// (the host's `onActionButton` is not called for this button).
+    public let seeksToEnd: Bool
 
     public init(
         id: String,
@@ -29,7 +32,8 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
         end: Double? = nil,
         allowsAutoPress: Bool = true,
         subtitle: String? = nil,
-        artworkURL: URL? = nil
+        artworkURL: URL? = nil,
+        seeksToEnd: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -38,6 +42,7 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
         self.allowsAutoPress = allowsAutoPress
         self.subtitle = subtitle
         self.artworkURL = artworkURL
+        self.seeksToEnd = seeksToEnd
     }
 
     /// Whether the button shows as an "Up Next" card (artwork, title and subtitle) rather than a plain title.
@@ -61,5 +66,41 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
             active = button
         }
         return active
+    }
+}
+
+/// The action buttons of the media: the host's and the resolver's (SponsorBlock segments), kept apart so that the host
+/// replacing its own keeps the resolver's. A host button replaces a resolver's of the same `id`.
+struct ActionButtonSet: Sendable, Equatable {
+    private(set) var host: [PlaybackActionButton] = []
+    private(set) var resolved: [PlaybackActionButton] = []
+    private(set) var combined: [PlaybackActionButton] = []
+
+    mutating func setHost(_ buttons: [PlaybackActionButton]) {
+        host = buttons
+        rebuild()
+    }
+
+    mutating func setResolved(_ buttons: [PlaybackActionButton]) {
+        resolved = buttons
+        rebuild()
+    }
+
+    mutating func reset(host: [PlaybackActionButton] = []) {
+        resolved = []
+        self.host = host
+        rebuild()
+    }
+
+    private mutating func rebuild() {
+        var result = resolved
+        for button in host {
+            if let idx = result.firstIndex(where: { $0.id == button.id }) {
+                result[idx] = button
+            } else {
+                result.append(button)
+            }
+        }
+        combined = result
     }
 }

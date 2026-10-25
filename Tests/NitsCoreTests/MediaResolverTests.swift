@@ -227,4 +227,124 @@ struct MediaResolverTests {
         await engine.waitForPendingLoad()
         #expect(engine.playbackState == .failed("Video unavailable"))
     }
+
+    @Test("A resolved page's chapters and action buttons apply when the container stream has none")
+    func appliesResolvedChaptersAndActionButtons() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let chapters = [
+            MediaChapter(id: 0, title: "Intro", start: 0, end: 1),
+            MediaChapter(id: 1, title: "Outro", start: 1, end: 2),
+        ]
+        let buttons = [
+            PlaybackActionButton(id: "sponsorblock-0", title: "Skip Sponsor", start: 0.5, end: 1.5, seeksToEnd: true)
+        ]
+        let resolver = StubResolver(
+            .success(
+                ResolvedMedia(
+                    path: server.url(videoURL.lastPathComponent),
+                    chapters: chapters,
+                    actionButtons: buttons
+                )
+            )
+        )
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+        let page = "https://video.example/watch?v=ch-test"
+
+        let hostButton = PlaybackActionButton(id: "host-next", title: "Next Episode", start: 2.0)
+        engine.load(MediaLoadRequest(path: page, actionButtons: [hostButton]))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+
+        #expect(engine.media.chapters.count == 2)
+        #expect(engine.media.chapters.map(\.title) == ["Intro", "Outro"])
+        #expect(engine.actionButtons.contains { $0.id == "host-next" })
+        #expect(engine.actionButtons.contains { $0.id == "sponsorblock-0" })
+    }
+
+    @Test("seeksToEnd button triggers seek in engine even when host has onActionButton handler")
+    func seeksToEndButtonSeeksEvenWhenHostSetsHandler() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let button = PlaybackActionButton(
+            id: "sponsorblock-0", title: "Skip Sponsor", start: 0.5, end: 1.5, seeksToEnd: true)
+        let resolver = StubResolver(
+            .success(ResolvedMedia(path: server.url(videoURL.lastPathComponent), actionButtons: [button]))
+        )
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        var hostPressed: [String] = []
+        engine.onActionButton = { hostPressed.append($0) }
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=seek-test"))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+
+        engine.performActionButton(button)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(engine.currentTime >= 1.45)
+        #expect(hostPressed.isEmpty, "Host handler should not receive buttons handled directly by the engine")
+    }
+
+    @Test("Host action button without seeksToEnd dispatches to onActionButton and does not seek")
+    func hostButtonWithoutSeeksToEndDispatchesToHostHandler() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let hostButton = PlaybackActionButton(id: "host-next", title: "Next Episode", start: 0.5, end: 2.0)
+        let resolver = StubResolver(.success(ResolvedMedia(path: server.url(videoURL.lastPathComponent))))
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        var hostPressed: [String] = []
+        engine.onActionButton = { hostPressed.append($0) }
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=host-test", actionButtons: [hostButton]))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+
+        let positionBefore = engine.currentTime
+        engine.performActionButton(hostButton)
+        #expect(hostPressed == ["host-next"])
+        #expect(abs(engine.currentTime - positionBefore) < 0.5, "Engine should not seek for host-managed buttons")
+    }
+
+    @Test("setActionButtons during playback preserves resolved buttons from media")
+    func setActionButtonsPreservesResolvedButtons() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let resolvedButton = PlaybackActionButton(
+            id: "sponsorblock-0", title: "Skip Sponsor", start: 0.5, end: 1.5, seeksToEnd: true)
+        let resolver = StubResolver(
+            .success(ResolvedMedia(path: server.url(videoURL.lastPathComponent), actionButtons: [resolvedButton]))
+        )
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=merge-test"))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.2))
+        #expect(engine.actionButtons.map(\.id) == ["sponsorblock-0"])
+
+        // Host updates its action buttons mid-stream (e.g. Next Episode becomes known)
+        let hostButton = PlaybackActionButton(id: "host-next", title: "Next Episode", start: 2.0)
+        engine.setActionButtons([hostButton])
+        #expect(engine.actionButtons.contains { $0.id == "sponsorblock-0" })
+        #expect(engine.actionButtons.contains { $0.id == "host-next" })
+
+        // Host clears its action buttons
+        engine.setActionButtons([])
+        #expect(engine.actionButtons.map(\.id) == ["sponsorblock-0"])
+    }
 }

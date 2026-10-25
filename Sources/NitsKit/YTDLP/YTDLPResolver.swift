@@ -14,15 +14,21 @@ public final class YTDLPResolver: MediaResolver {
     let locator: YTDLPLocator
     /// How long yt-dlp may take on a page (a slow site, a network that doesn't answer); the load fails after it.
     let timeout: Duration
+    /// Asks SponsorBlock for a YouTube video's segments to skip (sponsors, intros, …) and chapters; `nil`: none.
+    let sponsorBlock: SponsorBlockClient?
 
-    /// - Parameter customPath: The yt-dlp to run in place of the one found on the system (empty: search for it).
-    public convenience init(customPath: String = "") {
-        self.init(locator: YTDLPLocator(customPath: customPath))
+    /// - Parameters:
+    ///   - customPath: The yt-dlp to run in place of the one found on the system (empty: search for it).
+    ///   - sponsorBlock: Whether YouTube videos get SponsorBlock's skip buttons and chapters.
+    public convenience init(customPath: String = "", sponsorBlock: Bool = true) {
+        self.init(
+            locator: YTDLPLocator(customPath: customPath), sponsorBlock: sponsorBlock ? SponsorBlockClient() : nil)
     }
 
-    init(locator: YTDLPLocator, timeout: Duration = .seconds(60)) {
+    init(locator: YTDLPLocator, timeout: Duration = .seconds(60), sponsorBlock: SponsorBlockClient? = nil) {
         self.locator = locator
         self.timeout = timeout
+        self.sponsorBlock = sponsorBlock
     }
 
     /// Asks for the streams `-f` picks: the best picture and audio over progressive HTTP (what YouTube gives as
@@ -55,6 +61,41 @@ public final class YTDLPResolver: MediaResolver {
         return Self.isPageSite(url) ? .beforeOpening : .afterOpeningFails
     }
 
+    /// The id of the YouTube video `url` is a page of (`watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`), to
+    /// ask SponsorBlock while yt-dlp runs; `nil` for other pages.
+    static func youTubeVideoID(from url: URL) -> String? {
+        guard let host = url.host?.lowercased() else { return nil }
+        let path = url.pathComponents.filter { $0 != "/" }
+        let id: String?
+        if host == "youtu.be" {
+            id = path.first
+        } else if ["youtube.com", "youtube-nocookie.com"].contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
+            if path.first == "watch" {
+                id =
+                    URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first(where: { $0.name == "v" })?.value
+            } else if path.count >= 2, ["shorts", "embed", "live", "v"].contains(path[0]) {
+                id = path[1]
+            } else {
+                id = nil
+            }
+        } else {
+            id = nil
+        }
+        // 11 characters of base64url.
+        guard let id, id.count == 11,
+            id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return id
+    }
+
+    private static func segments(
+        from sponsorBlock: SponsorBlockClient?, for videoID: String?
+    ) async -> [SponsorBlockSegment] {
+        guard let sponsorBlock, let videoID else { return [] }
+        return await sponsorBlock.segments(for: videoID)
+    }
+
     static func arguments(for url: URL, headers: [String: String]) -> [String] {
         var arguments = ["--dump-single-json", "--no-playlist", "--flat-playlist", "--no-warnings"]
         arguments += ["-f", formatSelector]
@@ -67,6 +108,11 @@ public final class YTDLPResolver: MediaResolver {
     public func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
         guard let executable = locator.executable() else { return nil }
         let started = ContinuousClock.now
+        // SponsorBlock answers while yt-dlp runs, which takes longer.
+        let sponsorBlock = sponsorBlock
+        let pageVideoID = sponsorBlock != nil ? Self.youTubeVideoID(from: url) : nil
+        async let pageSegments = Self.segments(from: sponsorBlock, for: pageVideoID)
+
         let output = try await YTDLPProcess.run(
             executable, arguments: Self.arguments(for: url, headers: headers),
             path: locator.processPath(for: executable), timeout: timeout)
@@ -87,7 +133,12 @@ public final class YTDLPResolver: MediaResolver {
             throw MediaResolutionError(
                 "yt-dlp answered what Nits can't read: \(error.localizedDescription)", isAboutPage: false)
         }
-        let resolved = try info.resolvedMedia(for: url)
+        var segments = await pageSegments
+        // A YouTube page whose URL doesn't name the video (a channel's live page) is asked once yt-dlp tells its id.
+        if info.extractorKey == "Youtube", let id = info.id, id != pageVideoID {
+            segments = await Self.segments(from: sponsorBlock, for: id)
+        }
+        let resolved = try info.resolvedMedia(for: url, sponsorBlock: segments)
         AppLog.info(
             .ytdlp,
             "\(url.absoluteString) in \(elapsed): "

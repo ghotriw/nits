@@ -244,6 +244,7 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 | `--header="Key: Value"` | Custom HTTP header |
 | `--no-ytdl` / `--ytdl` | Don't / do open the pages of video sites through yt-dlp (default on) |
 | `--ytdl-path=<path>` | The yt-dlp to run instead of the one found on the system |
+| `--sponsorblock` / `--no-sponsorblock` | Skip buttons for SponsorBlock segments (sponsors, intros) via k-anonymity API (default on) |
 
 ## Requirements
 

@@ -15,11 +15,26 @@ public final class PlayerEngine: PlayerEngineProtocol {
             updateActiveActionButton()
         }
     }
-    /// Host-provided buttons for spans of the timeline; replaced by each load's `MediaLoadRequest.actionButtons`.
-    public var actionButtons: [PlaybackActionButton] = [] {
+    /// The action buttons of the media: the host's and the resolver's (SponsorBlock segments).
+    public var actionButtons: [PlaybackActionButton] { actionButtonSet.combined }
+    private var actionButtonSet = ActionButtonSet() {
         didSet {
             updateActiveActionButton()
         }
+    }
+
+    /// Replaces the host's action buttons of the media playing now, keeping the resolver's.
+    public func setActionButtons(_ buttons: [PlaybackActionButton]) {
+        actionButtonSet.setHost(buttons)
+    }
+
+    func setResolvedActionButtons(_ buttons: [PlaybackActionButton]) {
+        actionButtonSet.setResolved(buttons)
+    }
+
+    /// Takes `host`'s buttons for new media, and none of the resolver's yet.
+    func resetActionButtons(host: [PlaybackActionButton] = []) {
+        actionButtonSet.reset(host: host)
     }
     /// The button whose span contains `currentTime`; `nil` outside every span and while no media is loaded.
     public internal(set) var activeActionButton: PlaybackActionButton?

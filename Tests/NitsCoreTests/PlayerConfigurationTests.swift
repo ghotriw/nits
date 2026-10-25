@@ -314,4 +314,14 @@ struct OSDDurationConfigurationTests {
         let (tooShort, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=0"])
         #expect(tooShort.osdDuration == 0.5)
     }
+
+    @Test("CLI arguments parse SponsorBlock flags")
+    func testParseSponsorBlock() {
+        let (disabled, _) = PlayerConfiguration.parse(arguments: ["Nits", "--no-sponsorblock"])
+        #expect(disabled.sponsorBlock == false)
+
+        let (enabled, _) = PlayerConfiguration.parse(
+            arguments: ["Nits", "--sponsorblock"], base: PlayerConfiguration(sponsorBlock: false))
+        #expect(enabled.sponsorBlock == true)
+    }
 }

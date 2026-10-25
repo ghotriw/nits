@@ -221,10 +221,11 @@ extension PlayerEngine {
         await loadAsyncKeepingHostState(request)
     }
 
-    /// Takes the request's action buttons and track navigation. Now, not when a background load resets the rest: the
-    /// previous media's must not apply to this one, and what the host sets right after `load` must survive that reset.
+    /// Takes the request's action buttons and track navigation. Now, not when a background load resets the rest
+    /// (`resetMediaState`): the previous media's host state must not apply to this one while the load prepares, and
+    /// any updates the host sets right after calling `load` must survive the asynchronous load reset.
     private func applyHostState(of request: MediaLoadRequest) {
-        actionButtons = request.actionButtons
+        resetActionButtons(host: request.actionButtons)
         trackNavigation = request.trackNavigation
     }
 
@@ -273,6 +274,8 @@ extension PlayerEngine {
         var source = request
         var historyKey = path
         var resolvedTitle: String?
+        var chaptersFromResolver: [MediaChapter] = []
+        var buttonsFromResolver: [PlaybackActionButton] = []
         let resolver = mediaResolver
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
         let order = pageURL.flatMap { resolver?.order(for: $0) }
@@ -309,6 +312,8 @@ extension PlayerEngine {
                     return file
                 }
             historyKey = resolved.historyKey ?? path
+            chaptersFromResolver = resolved.chapters
+            buttonsFromResolver = resolved.actionButtons
             if request.title?.isEmpty ?? true, let title = resolved.title, !title.isEmpty {
                 mediaTitle = title
                 resolvedTitle = title
@@ -426,7 +431,9 @@ extension PlayerEngine {
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
             externalAudio: externalAudio,
-            resolvedTitle: resolvedTitle
+            resolvedTitle: resolvedTitle,
+            resolvedChapters: chaptersFromResolver,
+            resolvedActionButtons: buttonsFromResolver
         )
     }
 
@@ -494,7 +501,7 @@ extension PlayerEngine {
         mediaTitle = ""
         artworkData = nil
         artworkURL = nil
-        actionButtons = []
+        resetActionButtons()
         trackNavigation = TrackNavigation()
         isLoading = false
         playbackState = .idle
@@ -693,7 +700,9 @@ extension PlayerEngine {
         _ demuxer: MediaDemuxer, path: String, sourcePath: String, historyKey: String, headers: [String: String],
         requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
-        externalAudio: [OpenedAudioFile] = [], resolvedTitle: String? = nil
+        externalAudio: [OpenedAudioFile] = [], resolvedTitle: String? = nil,
+        resolvedChapters: [MediaChapter] = [],
+        resolvedActionButtons: [PlaybackActionButton] = []
     ) {
         resetRelativeSeekBurst()
         let inputs = PlaybackInputs(main: demuxer)
@@ -722,7 +731,8 @@ extension PlayerEngine {
         self.currentHistoryKey = historyKey
         self.currentSourcePath = sourcePath
         self.currentHeaders = headers
-        self.media = MediaInfo(demuxer: demuxer)
+        self.media = MediaInfo(demuxer: demuxer, fallbackChapters: resolvedChapters)
+        setResolvedActionButtons(resolvedActionButtons)
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }

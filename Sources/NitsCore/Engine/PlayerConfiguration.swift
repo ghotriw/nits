@@ -173,6 +173,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public var resolvesWithYTDLP: Bool
     /// The yt-dlp to run in place of the one found on the system (empty: search for it).
     public var ytdlpPath: String
+    /// Skip buttons for a YouTube video's SponsorBlock segments (sponsors, intros, …), and its community chapters
+    /// when the author gave none (default true).
+    public var sponsorBlock: Bool
     /// What happens to the player window while its video plays in Picture in Picture.
     public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
     /// Pause playback when Picture in Picture starts.
@@ -233,6 +236,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
         resolvesWithYTDLP: Bool = true,
         ytdlpPath: String = "",
+        sponsorBlock: Bool = true,
         pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
         pausesOnPictureInPicture: Bool = false,
         entersPictureInPictureOnMinimize: Bool = false,
@@ -284,6 +288,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.networkThumbnailPolicy = networkThumbnailPolicy
         self.resolvesWithYTDLP = resolvesWithYTDLP
         self.ytdlpPath = ytdlpPath
+        self.sponsorBlock = sponsorBlock
         self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
         self.pausesOnPictureInPicture = pausesOnPictureInPicture
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
@@ -327,6 +332,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
     public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
     public static let keyYTDLPPath = "Nits.ytdlpPath"
+    public static let keySponsorBlock = "Nits.sponsorBlock"
     public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
     public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
@@ -454,6 +460,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if let path = userDefaults.string(forKey: keyYTDLPPath) {
             config.ytdlpPath = path
         }
+        if userDefaults.object(forKey: keySponsorBlock) != nil {
+            config.sponsorBlock = userDefaults.bool(forKey: keySponsorBlock)
+        }
         if let pipWindowRaw = userDefaults.string(forKey: keyPictureInPictureWindowBehavior),
             let behavior = PictureInPictureWindowBehavior(rawValue: pipWindowRaw)
         {
@@ -528,6 +537,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
         userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
         userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
+        userDefaults.set(sponsorBlock, forKey: Self.keySponsorBlock)
         userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
         userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
@@ -688,6 +698,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.resolvesWithYTDLP = true
             } else if arg.starts(with: "--ytdl-path=") {
                 config.ytdlpPath = String(arg.dropFirst("--ytdl-path=".count))
+            } else if arg == "--no-sponsorblock" {
+                config.sponsorBlock = false
+            } else if arg == "--sponsorblock" {
+                config.sponsorBlock = true
             } else if arg == "--no-network-thumbnails" {
                 config.networkThumbnailPolicy = .never
             } else if arg == "--always-network-thumbnails" {

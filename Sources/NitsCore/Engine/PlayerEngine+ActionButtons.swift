@@ -1,11 +1,16 @@
 import Foundation
 
 extension PlayerEngine {
-    /// Reports a press of `button` to the host (`onActionButton`); what the press does is up to the host.
+    /// Performs `button`: if `button.seeksToEnd` and it has an `end`, seeks to `end`; otherwise reports the press to
+    /// the host (`onActionButton`), letting the host decide what to do (e.g. Next Episode).
     public func performActionButton(_ button: PlaybackActionButton) {
         guard actionButtons.contains(where: { $0.id == button.id }) else { return }
         AppLog.info(.engine, "Action button '\(button.id)' pressed at \(currentTime)s")
-        onActionButton?(button.id)
+        if button.seeksToEnd, let end = button.end {
+            seek(to: end)
+        } else {
+            onActionButton?(button.id)
+        }
     }
 
     func updateActiveActionButton() {
