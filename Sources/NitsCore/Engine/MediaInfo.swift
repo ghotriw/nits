@@ -8,6 +8,9 @@ public struct MediaInfo: Equatable, Sendable {
     public var duration: Double = 0
     public var chapters: [MediaChapter] = []
     public var hasVideo = false
+    /// Read over a network, and so ahead of playback by up to half a minute (`PlayerEngine.bufferedTime`); a local
+    /// file is read only the few seconds the feeders ask for.
+    public var isNetworkSource = false
     /// The video stream; empty when there is none (`hasVideo`).
     public var video = VideoInfo()
 
@@ -48,6 +51,7 @@ extension MediaInfo {
         duration = demuxer.durationSeconds
         chapters = demuxer.chapters
         hasVideo = demuxer.hasVideo
+        isNetworkSource = demuxer.isNetworkSource
         guard demuxer.hasVideo else { return }
         video.width = demuxer.width
         video.height = demuxer.height

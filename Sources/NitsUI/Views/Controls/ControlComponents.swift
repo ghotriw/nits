@@ -558,6 +558,20 @@ public struct ControlTimelineSection: View {
                         .fill(.white.opacity(0.25))
                         .frame(height: 6)
 
+                    // What a network source has read ahead of playback (half a minute at most); a local file's few
+                    // seconds would only flicker. `bufferedTime` isn't observable, and grows while paused or
+                    // buffering, when the time stands: read twice a second.
+                    if engine.media.isNetworkSource {
+                        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                            let buffered = min(max(engine.bufferedTime / total, 0), 1)
+                            Capsule()
+                                .fill(.white.opacity(0.25))
+                                .frame(width: geo.size.width * max(buffered, progress), height: 6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(height: 6)
+                    }
+
                     Capsule()
                         .fill(.tint)
                         .frame(width: geo.size.width * progress, height: 6)
