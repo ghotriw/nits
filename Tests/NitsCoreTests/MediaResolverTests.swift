@@ -95,6 +95,56 @@ struct MediaResolverTests {
         #expect(engine.audioDelay == 0.1, "The history wasn't read by the resolver's name")
     }
 
+    @Test("A page's streams are read in HTTP requests of the size it gives each, which the host's files don't take")
+    func readsInRequestsOfResolvedSize() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let audioURL = URL(fileURLWithPath: audio)
+        try #require(videoURL.deletingLastPathComponent() == audioURL.deletingLastPathComponent())
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: audioURL)
+        server.setResponder(forPath: "dub") { audioContents }
+        let (videoSize, audioSize) = (64 << 10, 32 << 10)
+        let resolver = StubResolver(
+            .success(
+                ResolvedMedia(
+                    path: server.url(videoURL.lastPathComponent),
+                    audioFiles: [
+                        .init(
+                            url: try #require(URL(string: server.url(audioURL.lastPathComponent))), isRequired: true,
+                            httpRequestSize: audioSize)
+                    ],
+                    httpRequestSize: videoSize)))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        let dub = try #require(URL(string: server.url("dub")))
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=nits", audioFiles: [.init(url: dub)]))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+
+        /// The lengths of the ranges asked for `path`; `nil` for one open to the end of the file.
+        let lengths = { (path: String) in
+            server.requests.filter { $0.path == path }.map { request -> Int? in
+                guard let range = request.range?.replacingOccurrences(of: "bytes=", with: ""),
+                    let dash = range.firstIndex(of: "-"), let start = Int(range[..<dash]),
+                    let end = Int(range[range.index(after: dash)...])
+                else { return nil }
+                return end - start + 1
+            }
+        }
+        let videoLengths = lengths(videoURL.lastPathComponent)
+        #expect(videoLengths.count > 1, "Read in \(videoLengths.count) request(s)")
+        #expect(videoLengths.allSatisfy { $0 != nil && $0! <= videoSize }, "Asked for \(videoLengths)")
+        let audioLengths = lengths(audioURL.lastPathComponent)
+        #expect(!audioLengths.isEmpty && audioLengths.allSatisfy { $0 != nil && $0! <= audioSize })
+        #expect(lengths("dub").contains { $0 == nil }, "The host's file was read in the page's requests")
+    }
+
     @Test("A page with nothing to play fails the load with the resolver's reason; other URLs aren't resolved")
     func failsWithReason() async throws {
         guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }

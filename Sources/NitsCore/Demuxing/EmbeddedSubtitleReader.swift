@@ -89,7 +89,9 @@ enum EmbeddedSubtitleReader {
 
     /// A secondary demuxer of the file, probed unless its header describes every stream (Matroska, MP4): probing reads
     /// the first clusters, and on a network source that's more requests. `interrupt` aborts its I/O, blocking reads
-    /// included (a stalled network volume); it must outlive the context.
+    /// included (a stalled network volume); it must outlive the context. Read in one HTTP request, without the media's
+    /// `httpRequestSize`: the streams that need it (YouTube's) carry no subtitles. Media that does would take it from
+    /// the engine, as `headers`.
     static func openInput(url: String, headers: [String: String], interrupt: FFmpegInterrupt?)
         -> UnsafeMutablePointer<AVFormatContext>?
     {

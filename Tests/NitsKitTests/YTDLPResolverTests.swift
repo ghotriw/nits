@@ -15,9 +15,10 @@ struct YTDLPResolverTests {
         {"_type": "video", "id": "aqz-KE-bpKQ", "title": "Big Buck Bunny", "extractor_key": "Youtube",
          "requested_formats": [
            {"url": "https://media.example/video", "protocol": "https", "vcodec": "av01.0.13M.08", "acodec": "none",
-            "http_headers": \(headers)},
+            "http_headers": \(headers), "downloader_options": {"http_chunk_size": 10485760}},
            {"url": "https://media.example/audio", "protocol": "https", "vcodec": "none", "acodec": "opus",
-            "language": "en", "format_note": "English (US) original (default), medium", "http_headers": \(headers)}
+            "language": "en", "format_note": "English (US) original (default), medium", "http_headers": \(headers),
+            "downloader_options": {"http_chunk_size": 5242880}}
          ]}
         """
 
@@ -25,17 +26,21 @@ struct YTDLPResolverTests {
         try JSONDecoder().decode(YTDLPInfo.self, from: Data(json.utf8))
     }
 
-    @Test("A picture and its audio in separate files play as the media and an audio file of it, named by the page")
+    @Test(
+        "A picture and its audio in separate files play as the media and an audio file of it, named by the page, each read in requests of its chunk size"
+    )
     func readsSeparateStreams() throws {
         let resolved = try #require(try info(Self.separateStreams).resolvedMedia(for: Self.page))
         #expect(resolved.path == "https://media.example/video")
         #expect(resolved.headers["User-Agent"] == "Mozilla/5.0")
+        #expect(resolved.httpRequestSize == 10 << 20)
         #expect(
             resolved.audioFiles
                 == [
                     .init(
                         url: URL(string: "https://media.example/audio")!, title: "Opus, original", language: "en",
-                        headers: ["User-Agent": "Mozilla/5.0", "Accept-Language": "en-us,en;q=0.5"], isRequired: true)
+                        headers: ["User-Agent": "Mozilla/5.0", "Accept-Language": "en-us,en;q=0.5"], isRequired: true,
+                        httpRequestSize: 5 << 20)
                 ])
         #expect(resolved.title == "Big Buck Bunny")
         #expect(resolved.historyKey == "youtube:aqz-KE-bpKQ")

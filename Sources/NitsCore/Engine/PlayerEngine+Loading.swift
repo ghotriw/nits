@@ -303,12 +303,15 @@ extension PlayerEngine {
             guard let resolved else { return .declined }
             source.path = Self.normalizeMediaPath(resolved.path)
             source.headers = resolved.headers
-            // The request's own files are read with its headers, not the page's streams'.
+            source.httpRequestSize = resolved.httpRequestSize
+            // The request's own files are read with its headers and request size, not the page's streams' (0: the
+            // rest of the file in one request, not the page's size).
             source.audioFiles =
                 resolved.audioFiles
                 + request.audioFiles.map { file in
                     var file = file
                     file.headers = file.headers ?? request.headers
+                    file.httpRequestSize = file.httpRequestSize ?? request.httpRequestSize ?? 0
                     return file
                 }
             historyKey = resolved.historyKey ?? path
@@ -324,7 +327,7 @@ extension PlayerEngine {
 
         /// Opens `source` as media, again on a transient network failure; `nil` when it can't be (or the load ended).
         func openSource() async -> MediaDemuxer? {
-            let (sourcePath, sourceHeaders) = (source.path, source.headers)
+            let (sourcePath, sourceHeaders, requestSize) = (source.path, source.headers, source.httpRequestSize)
             // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
             var isNetwork = MediaURL.isNetworkURL(sourcePath)
             if !isNetwork {
@@ -337,7 +340,9 @@ extension PlayerEngine {
                 if currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled { return nil }
                 let opened = await Task.detached(priority: .userInitiated) { () -> MediaDemuxer? in
                     guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
-                    return MediaDemuxer(url: sourcePath, headers: sourceHeaders, interruptContext: interruptContext)
+                    return MediaDemuxer(
+                        url: sourcePath, headers: sourceHeaders, httpRequestSize: requestSize,
+                        interruptContext: interruptContext)
                 }.value
                 if let opened { return opened }
                 if currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled { return nil }
@@ -398,7 +403,8 @@ extension PlayerEngine {
             AppLog.warning(.audio, "Opening \(missing.count) audio file(s) again in \(attempt * 250)ms")
             try? await Task.sleep(for: .milliseconds(attempt * 250))
             if endIfSuperseded() { return }
-            let retry = ExternalAudioLookup(requested: missing, headers: lookup.headers)
+            let retry = ExternalAudioLookup(
+                requested: missing, headers: lookup.headers, httpRequestSize: lookup.httpRequestSize)
             externalAudio += await Task.detached(priority: .userInitiated) {
                 Self.openExternalAudio(retry, interrupt: interruptContext)
             }.value
@@ -427,6 +433,7 @@ extension PlayerEngine {
             sourcePath: source.path,
             historyKey: historyKey,
             headers: source.headers,
+            httpRequestSize: source.httpRequestSize,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -465,7 +472,11 @@ extension PlayerEngine {
             "Loading sync: \(path) title: \(self.mediaTitle) startTime: \(String(describing: request.startTime))"
         )
 
-        guard let demuxer = MediaDemuxer(url: path, headers: request.headers, interruptContext: interruptContext) else {
+        guard
+            let demuxer = MediaDemuxer(
+                url: path, headers: request.headers, httpRequestSize: request.httpRequestSize,
+                interruptContext: interruptContext)
+        else {
             let errorDetail: String
             if let err = interruptContext.lastError {
                 errorDetail = "\(err.message) (code \(err.code))"
@@ -485,6 +496,7 @@ extension PlayerEngine {
             sourcePath: path,
             historyKey: path,
             headers: request.headers,
+            httpRequestSize: request.httpRequestSize,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -623,9 +635,11 @@ extension PlayerEngine {
 
     /// What to look for when opening the audio files that go with a media (`openExternalAudio`).
     struct ExternalAudioLookup: Sendable {
-        /// The request's files (`MediaLoadRequest.audioFiles`), and the headers a network one is read with.
+        /// The request's files (`MediaLoadRequest.audioFiles`), and the headers and request size a network one is
+        /// read with.
         var requested: [MediaLoadRequest.AudioFile] = []
         var headers: [String: String] = [:]
+        var httpRequestSize: Int?
         /// The media's path, next to which files named as it are tracks of it; `nil` for none: media without a
         /// picture (`song.mp3` next to `song.flac` is another copy, not its audio) or a network URL.
         var sidecarsOf: String?
@@ -650,6 +664,7 @@ extension PlayerEngine {
                 return file
             },
             headers: source.headers,
+            httpRequestSize: source.httpRequestSize,
             sidecarsOf: demuxer.hasVideo && !MediaURL.isNetworkURL(path) ? path : nil,
             savedPath: saved?.audioTrackId == PlaybackRecord.externalAudio ? saved?.externalAudioPath : nil)
     }
@@ -682,7 +697,8 @@ extension PlayerEngine {
             let file = files[index]
             guard
                 let demuxer = PlaybackInputs.openAudioFile(
-                    file.url, headers: file.headers ?? lookup.headers, interrupt: interrupt)
+                    file.url, headers: file.headers ?? lookup.headers,
+                    httpRequestSize: file.httpRequestSize ?? lookup.httpRequestSize, interrupt: interrupt)
             else {
                 if !interrupt.isCancelled {
                     AppLog.warning(
@@ -698,7 +714,7 @@ extension PlayerEngine {
 
     func applyLoadedDemuxer(
         _ demuxer: MediaDemuxer, path: String, sourcePath: String, historyKey: String, headers: [String: String],
-        requestedStartTime: Double?,
+        httpRequestSize: Int? = nil, requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
         externalAudio: [OpenedAudioFile] = [], resolvedTitle: String? = nil,
         resolvedChapters: [MediaChapter] = [],
@@ -770,6 +786,7 @@ extension PlayerEngine {
                 for: sourcePath,
                 duration: demuxer.durationSeconds,
                 headers: headers,
+                httpRequestSize: httpRequestSize,
                 networkPolicy: configuration.networkThumbnailPolicy
             )
         }

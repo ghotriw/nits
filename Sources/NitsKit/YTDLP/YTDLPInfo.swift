@@ -13,18 +13,30 @@ struct YTDLPInfo: Decodable, Sendable {
         /// The master playlist an HLS format is a variant of.
         var manifestURL: String?
         var httpHeaders: [String: String]?
+        var downloaderOptions: DownloaderOptions?
 
         enum CodingKeys: String, CodingKey {
             case url, `protocol`, vcodec, acodec, language
             case formatNote = "format_note"
             case manifestURL = "manifest_url"
             case httpHeaders = "http_headers"
+            case downloaderOptions = "downloader_options"
         }
 
         /// A stream of the picture (perhaps with sound); yt-dlp says "none" for a stream without one, and nothing
         /// when it doesn't know (a site's single format).
         var hasVideo: Bool { vcodec != "none" }
         var hasAudio: Bool { acodec != "none" }
+    }
+
+    /// How yt-dlp downloads a format: YouTube's HTTPS ones in requests of 10 MB (`http_chunk_size`), as it throttles a
+    /// request for the whole file to about twice the stream's bitrate.
+    struct DownloaderOptions: Decodable, Sendable {
+        var httpChunkSize: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case httpChunkSize = "http_chunk_size"
+        }
     }
 
     struct Chapter: Decodable, Sendable {
@@ -51,6 +63,7 @@ struct YTDLPInfo: Decodable, Sendable {
     var `protocol`: String?
     var manifestURL: String?
     var httpHeaders: [String: String]?
+    var downloaderOptions: DownloaderOptions?
     /// The formats chosen, when `-f` merged several (a picture and its audio).
     var requestedFormats: [Format]?
     var chapters: [Chapter]?
@@ -61,6 +74,7 @@ struct YTDLPInfo: Decodable, Sendable {
         case extractorKey = "extractor_key"
         case manifestURL = "manifest_url"
         case httpHeaders = "http_headers"
+        case downloaderOptions = "downloader_options"
         case requestedFormats = "requested_formats"
     }
 
@@ -83,7 +97,9 @@ struct YTDLPInfo: Decodable, Sendable {
         let picture = formats.first(where: \.hasVideo) ?? formats.first
         let main =
             picture
-            ?? Format(url: url, protocol: `protocol`, manifestURL: manifestURL, httpHeaders: httpHeaders)
+            ?? Format(
+                url: url, protocol: `protocol`, manifestURL: manifestURL, httpHeaders: httpHeaders,
+                downloaderOptions: downloaderOptions)
         guard let path = main.url else { throw MediaResolutionError("yt-dlp found no stream to play") }
         let chosen = formats.isEmpty ? [main] : formats
         if let unplayable = chosen.first(where: { !Self.isPlayable($0.protocol) }) {
@@ -121,13 +137,15 @@ struct YTDLPInfo: Decodable, Sendable {
                 format.url.flatMap(URL.init(string:)).map {
                     MediaLoadRequest.AudioFile(
                         url: $0, title: Self.audioTitle(of: format), language: format.language,
-                        headers: format.httpHeaders, isRequired: true)
+                        headers: format.httpHeaders, isRequired: true,
+                        httpRequestSize: format.downloaderOptions?.httpChunkSize)
                 }
             },
             chapters: resolvedChapters,
             title: title,
             historyKey: historyKey,
-            actionButtons: buttons)
+            actionButtons: buttons,
+            httpRequestSize: main.downloaderOptions?.httpChunkSize)
     }
 
     /// The title of an audio format's track: its codec, and whether it is the original among dubs (YouTube notes

@@ -16,12 +16,14 @@ public final class ThumbnailGenerator: @unchecked Sendable {
     private let path: String
     private let duration: Double
     private let headers: [String: String]
+    private let httpRequestSize: Int?
     private let cancelToken = FFmpegInterrupt()
 
-    public init(path: String, duration: Double = 0, headers: [String: String] = [:]) {
+    public init(path: String, duration: Double = 0, headers: [String: String] = [:], httpRequestSize: Int? = nil) {
         self.path = path
         self.duration = duration
         self.headers = headers
+        self.httpRequestSize = httpRequestSize
     }
 
     public var isCancelled: Bool {
@@ -74,7 +76,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         }
 
         if MediaURL.isNetworkURL(path) {
-            MediaURL.applyNetworkOptions(&avOptions, headers: headers)
+            MediaURL.applyNetworkOptions(&avOptions, headers: headers, httpRequestSize: httpRequestSize)
         }
 
         let cleanPath = PlayerEngine.normalizeMediaPath(path)

@@ -472,11 +472,14 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
-    /// - Parameter audioOnly: Reads the input's audio streams only, every other one discarded (pictures, cover art,
-    ///   subtitles, closed captions): an audio track of other media, whose own picture nobody would take.
+    /// - Parameters:
+    ///   - httpRequestSize: What a network input's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`).
+    ///   - audioOnly: Reads the input's audio streams only, every other one discarded (pictures, cover art,
+    ///     subtitles, closed captions): an audio track of other media, whose own picture nobody would take.
     public init?(
         url: String,
         headers: [String: String] = [:],
+        httpRequestSize: Int? = nil,
         interruptContext: InterruptContext? = nil,
         audioOnly: Bool = false
     ) {
@@ -499,7 +502,8 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        isNetworkSource = MediaURL.applySourceOptions(&avOptions, path: url, headers: headers)
+        isNetworkSource = MediaURL.applySourceOptions(
+            &avOptions, path: url, headers: headers, httpRequestSize: httpRequestSize)
         // An HLS demuxer's requests go through `URLSession`, which tells their answers from their transfers and
         // keeps the connections open (`HTTPSessionTransport`, made for the first). FFmpeg's own keep-alive
         // (`http_persistent`, an option of the HLS demuxer, which other formats leave unused) would send the

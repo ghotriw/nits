@@ -28,6 +28,9 @@ public struct ResolvedMedia: Sendable, Equatable {
     public var path: String
     /// What its streams are read with, in place of the request's.
     public var headers: [String: String]
+    /// What the HTTP requests of `path` ask for (`MediaLoadRequest.httpRequestSize`; yt-dlp's `http_chunk_size`).
+    /// An audio file of `audioFiles` without its own takes it, as it takes `headers`.
+    public var httpRequestSize: Int?
     /// Audio of its own (a site's separate audio streams), before the request's.
     public var audioFiles: [MediaLoadRequest.AudioFile]
     /// Chapters of the media (a site's chapters, e.g. from yt-dlp), used when the stream's container has none.
@@ -44,10 +47,11 @@ public struct ResolvedMedia: Sendable, Equatable {
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],
         chapters: [MediaChapter] = [], title: String? = nil, historyKey: String? = nil,
-        actionButtons: [PlaybackActionButton] = []
+        actionButtons: [PlaybackActionButton] = [], httpRequestSize: Int? = nil
     ) {
         self.path = path
         self.headers = headers
+        self.httpRequestSize = httpRequestSize
         self.audioFiles = audioFiles
         self.chapters = chapters
         self.title = title

@@ -98,14 +98,14 @@ final class PlaybackInputs {
     }
 
     /// Opens the audio file at `url` for its audio alone (`MediaDemuxer(url:audioOnly:)`), a network one with
-    /// `headers`. Blocks while it reads; `nil` when it can't be read.
+    /// `headers` and requests of `httpRequestSize`. Blocks while it reads; `nil` when it can't be read.
     nonisolated static func openAudioFile(
-        _ url: URL, headers: [String: String], interrupt: MediaDemuxer.InterruptContext
+        _ url: URL, headers: [String: String], httpRequestSize: Int? = nil, interrupt: MediaDemuxer.InterruptContext
     ) -> MediaDemuxer? {
         let isFile = url.isFileURL
         return MediaDemuxer(
-            url: isFile ? url.path : url.absoluteString, headers: isFile ? [:] : headers, interruptContext: interrupt,
-            audioOnly: true)
+            url: isFile ? url.path : url.absoluteString, headers: isFile ? [:] : headers,
+            httpRequestSize: httpRequestSize, interruptContext: interrupt, audioOnly: true)
     }
 
     /// Adds an audio file opened for its audio alone (`MediaDemuxer(url:audioOnly:)`); its tracks join

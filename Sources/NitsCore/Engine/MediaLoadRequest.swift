@@ -17,6 +17,11 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// HTTP/HTTPS or streaming headers (e.g. auth tokens, custom user-agent).
     public var headers: [String: String]
 
+    /// Bytes each HTTP request of a network input asks for, the file read in successive range requests; `nil` or 0
+    /// asks for the rest of it in one. Some servers throttle a request for the whole file: YouTube's to about twice the
+    /// stream's bitrate, which playback at 2x outruns, where requests of 10 MB come at the link's full rate.
+    public var httpRequestSize: Int?
+
     /// Audio files that go with the media (a host's or yt-dlp's separate audio), opened with it and listed as its
     /// tracks; a network one with `headers`. The track to start with is chosen from them and the media's own alike.
     public var audioFiles: [AudioFile]
@@ -33,16 +38,21 @@ public struct MediaLoadRequest: Sendable, Equatable {
         /// The media's own sound (a site's audio apart from its picture): the load fails without it, where a file
         /// that can't be read is otherwise left out.
         public var isRequired: Bool
+        /// What a network one's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`): `nil` for what it comes
+        /// with, as `headers` (the request's, or a resolved page's); 0 for the rest of the file in one request, whatever
+        /// that is (a load gives the request's own files 0 when a page's size would otherwise apply).
+        public var httpRequestSize: Int?
 
         public init(
             url: URL, title: String? = nil, language: String? = nil, headers: [String: String]? = nil,
-            isRequired: Bool = false
+            isRequired: Bool = false, httpRequestSize: Int? = nil
         ) {
             self.url = url
             self.title = title
             self.language = language
             self.headers = headers
             self.isRequired = isRequired
+            self.httpRequestSize = httpRequestSize
         }
     }
 
@@ -74,8 +84,10 @@ public struct MediaLoadRequest: Sendable, Equatable {
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
         actionButtons: [PlaybackActionButton] = [],
-        trackNavigation: TrackNavigation = TrackNavigation()
+        trackNavigation: TrackNavigation = TrackNavigation(),
+        httpRequestSize: Int? = nil
     ) {
+        self.httpRequestSize = httpRequestSize
         self.actionButtons = actionButtons
         self.trackNavigation = trackNavigation
         self.path = path
@@ -112,6 +124,12 @@ public struct MediaLoadRequest: Sendable, Equatable {
     public func headers(_ value: [String: String]) -> Self {
         var copy = self
         copy.headers = value
+        return copy
+    }
+
+    public func httpRequestSize(_ value: Int?) -> Self {
+        var copy = self
+        copy.httpRequestSize = value
         return copy
     }
 

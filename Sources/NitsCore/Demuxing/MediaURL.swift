@@ -30,9 +30,11 @@ public enum MediaURL {
     /// is: the network options, and for a saved manifest the HTTP protocols too. A file is allowed the file
     /// protocol's whitelist (file, crypto, data), so its segments on the network would be refused; the HLS demuxer
     /// still opens nothing but files and HTTP(S) from it.
-    static func applySourceOptions(_ options: inout OpaquePointer?, path: String, headers: [String: String]) -> Bool {
+    static func applySourceOptions(
+        _ options: inout OpaquePointer?, path: String, headers: [String: String], httpRequestSize: Int? = nil
+    ) -> Bool {
         guard isNetworkSource(path) else { return false }
-        applyNetworkOptions(&options, headers: headers)
+        applyNetworkOptions(&options, headers: headers, httpRequestSize: httpRequestSize)
         if !isNetworkURL(path) {
             _ = av_dict_set(&options, "protocol_whitelist", "file,crypto,data,http,https,tcp,tls", 0)
         }
@@ -52,8 +54,16 @@ public enum MediaURL {
     }
 
     /// Adds custom HTTP headers (CRLF-sanitized) plus reconnect and 10 s I/O timeout settings to
-    /// `avformat_open_input` options for a network URL.
-    static func applyNetworkOptions(_ options: inout OpaquePointer?, headers: [String: String]) {
+    /// `avformat_open_input` options for a network URL, and the size of its HTTP requests
+    /// (`MediaLoadRequest.httpRequestSize`).
+    static func applyNetworkOptions(
+        _ options: inout OpaquePointer?, headers: [String: String], httpRequestSize: Int? = nil
+    ) {
+        // FFmpeg asks for `Range: bytes=off-(off+size-1)` and the next range once one ends, over a kept-alive
+        // connection; a server that answers no range (200) streams on as without it.
+        if let httpRequestSize, httpRequestSize > 0 {
+            _ = av_dict_set_int(&options, "request_size", Int64(httpRequestSize), 0)
+        }
         var headerString = ""
         for (key, value) in sanitizedHeaders(headers) {
             if key.lowercased() == "user-agent" {

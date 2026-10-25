@@ -46,6 +46,7 @@ public final class ThumbnailManager {
         for path: String,
         duration: Double,
         headers: [String: String] = [:],
+        httpRequestSize: Int? = nil,
         networkPolicy: NetworkThumbnailPolicy = .localNetworkOnly
     ) async -> [ThumbnailItem] {
         guard duration > 0 else {
@@ -115,7 +116,8 @@ public final class ThumbnailManager {
 
         // Launch low-priority background generation
         AppLog.info(.engine, "ThumbnailManager: Starting background thumbnail generation for '\(path)'")
-        let generator = ThumbnailGenerator(path: path, duration: duration, headers: headers)
+        let generator = ThumbnailGenerator(
+            path: path, duration: duration, headers: headers, httpRequestSize: httpRequestSize)
         self.currentGenerator = generator
         self.isGenerating = true
         self.progress = 0.0
@@ -155,6 +157,7 @@ public final class ThumbnailManager {
         for path: String,
         duration: Double,
         headers: [String: String] = [:],
+        httpRequestSize: Int? = nil,
         networkPolicy: NetworkThumbnailPolicy = .localNetworkOnly
     ) {
         if currentPath == path && (!thumbnails.isEmpty || isGenerating) {
@@ -167,6 +170,7 @@ public final class ThumbnailManager {
                 for: path,
                 duration: duration,
                 headers: headers,
+                httpRequestSize: httpRequestSize,
                 networkPolicy: networkPolicy
             )
         }
