@@ -574,7 +574,7 @@ extension PlayerEngine {
         let baseTime = currentFramePTS
         // 1) Zero-decode: serve the next frame already decoded into the step window.
         if let entry = stepFrameCache.frameAfter(baseTime) {
-            presentSteppedFrame(entry)
+            presentSteppedFrame(entry, forward: true)
             return
         }
         // 2) Window exhausted forward: decode ahead incrementally from the current contiguous position.
@@ -590,7 +590,7 @@ extension PlayerEngine {
         // Backward stepping cannot cheaply decode in reverse; serve from the step window or fall back to a
         // full keyframe re-seek (which reseeds the window around the new position).
         if let entry = stepFrameCache.frameBefore(currentFramePTS) {
-            presentSteppedFrame(entry)
+            presentSteppedFrame(entry, forward: false)
         } else {
             stepFrame(forward: false)
         }
@@ -668,7 +668,7 @@ extension PlayerEngine {
                 }
                 self.isSeeking = false
                 if let entry {
-                    self.presentSteppedFrame(entry)
+                    self.presentSteppedFrame(entry, forward: true)
                 } else if hitBoundary {
                     // Reached EOF / end of readable samples: keep the current frame, stay contiguous.
                     self.stepDecodeContiguous = true
@@ -687,10 +687,14 @@ extension PlayerEngine {
         }
     }
 
-    /// Renders a stepped frame and synchronizes clock, timer, and subtitles to its PTS while paused.
-    func presentSteppedFrame(_ entry: StepFrameCache.Entry) {
+    /// Renders a stepped frame and synchronizes clock, timer, and subtitles to its PTS while paused. A step forward
+    /// smooths the scene's luminance from the frame before, as playback does; a step back takes the frame's as is:
+    /// the frame it smoothed from would come after it, often in the next scene (whose scene refresh it would carry
+    /// back across the cut), and playback never steps back for it to match.
+    func presentSteppedFrame(_ entry: StepFrameCache.Entry, forward: Bool) {
         let pts = entry.pts.seconds
-        renderDirect(pixelBuffer: entry.pixelBuffer, pts: pts, hdrMetadata: entry.hdrMetadata)
+        renderDirect(
+            pixelBuffer: entry.pixelBuffer, pts: pts, hdrMetadata: entry.hdrMetadata, restartsSmoothing: !forward)
         synchronizer.setRate(0.0, time: entry.pts)
         currentTime = pts
         subtitles.timeDidChange(to: pts, .tick)
