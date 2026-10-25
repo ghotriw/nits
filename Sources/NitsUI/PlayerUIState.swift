@@ -23,6 +23,9 @@ public final class PlayerUIState {
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
     @ObservationIgnored public var togglePictureInPicture: (() -> Void)?
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
+    /// Controls, OSD, HUD, subtitles and the action button are hidden while the window is captured for a still of the
+    /// picture as the screen shows it.
+    public var isCapturingScreen: Bool = false
     public let osd: OSDManager
     public let controlsConfig: ControlsConfiguration
     public let actionButton: ActionButtonPresenter

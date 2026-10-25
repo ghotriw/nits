@@ -1,6 +1,7 @@
 import AppKit
 import NitsCore
 import NitsUI
+import ScreenCaptureKit
 import SwiftUI
 
 @MainActor
@@ -627,6 +628,14 @@ extension PlayerWindowController: PlayerActions {
         let title = engine.mediaTitle
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // HDR the display layer maps to the screen itself: what it shows, from the screen.
+            if engine.activeRenderMode == .system, engine.media.video.isHDR, let window,
+                let host = Self.videoHostView(in: window.contentView), !host.presentedVideoRect.isEmpty
+            {
+                await captureScreenStill(
+                    window: window, videoRect: host.convert(host.presentedVideoRect, to: nil), title: title)
+                return
+            }
             guard let frame = await engine.captureFrame() else {
                 showGeometryOSD(symbol: "exclamationmark.triangle", "Can't capture the frame")
                 return
@@ -646,6 +655,53 @@ extension PlayerWindowController: PlayerActions {
                 showGeometryOSD(symbol: "exclamationmark.triangle", "Can't save the screenshot")
             }
         }
+    }
+
+    /// Saves `videoRect` of `window` as the screen shows it (`PresentedFrameCapture`), with the overlays hidden while it
+    /// is read.
+    private func captureScreenStill(window: NSWindow, videoRect: CGRect, title: String) async {
+        let pts = engine.currentFramePTS
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) { uiState.isCapturingScreen = true }
+        // The window redraws without the overlays in a frame or two.
+        try? await Task.sleep(for: .milliseconds(80))
+        let still: CapturedFrame
+        do {
+            let heic = try await PresentedFrameCapture.capture(window: window, videoRect: videoRect)
+            still = CapturedFrame(data: heic, contentType: .heic, pts: pts, isHDR: true)
+            withTransaction(instant) { uiState.isCapturingScreen = false }
+        } catch {
+            withTransaction(instant) { uiState.isCapturingScreen = false }
+            AppLog.error(.ui, "Capturing the screen failed: \(error)")
+            let declined = (error as? SCStreamError)?.code == .userDeclined
+            showGeometryOSD(
+                symbol: "exclamationmark.triangle",
+                declined ? "Allow Screen Recording for Nits to capture HDR" : "Can't capture the screen")
+            return
+        }
+        do {
+            let url = try await Task.detached(priority: .userInitiated) {
+                try FrameStillWriter.write(still, title: title)
+            }.value
+            if engine.enableOSD {
+                uiState.osd.show(
+                    .custom(symbol: "camera", text: "Screen Capture Saved", subtext: url.lastPathComponent))
+            }
+        } catch {
+            AppLog.error(.ui, "Saving the screen capture failed: \(error)")
+            showGeometryOSD(symbol: "exclamationmark.triangle", "Can't save the screenshot")
+        }
+    }
+
+    /// The view the picture is drawn in, found in the SwiftUI hierarchy under `view`.
+    private static func videoHostView(in view: NSView?) -> NativeVideoHostView? {
+        guard let view else { return nil }
+        if let host = view as? NativeVideoHostView { return host }
+        for subview in view.subviews {
+            if let host = videoHostView(in: subview) { return host }
+        }
+        return nil
     }
 
     private func showGeometryOSD(symbol: String, _ text: String) {

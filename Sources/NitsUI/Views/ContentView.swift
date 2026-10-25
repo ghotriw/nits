@@ -152,11 +152,12 @@ public struct ContentView: View {
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)
+            .opacity(uiState.isCapturingScreen ? 0 : 1)
 
             // On-Screen Display (OSD) Overlay - Top Left, debug log badges stacked below
             let showsOSDEvent = engine.enableOSD && uiState.osd.isVisible && uiState.osd.currentEvent != nil
             let showsDebugOSD = uiState.osd.isDebugEnabled && !uiState.osd.debugMessages.isEmpty
-            if showsOSDEvent || showsDebugOSD {
+            if (showsOSDEvent || showsDebugOSD) && !uiState.isCapturingScreen {
                 VStack {
                     HStack {
                         VStack(alignment: .leading, spacing: 10) {
@@ -178,7 +179,7 @@ public struct ContentView: View {
             }
 
             // Performance Telemetry HUD
-            if engine.showDebugHUD {
+            if engine.showDebugHUD && !uiState.isCapturingScreen {
                 VStack {
                     HStack {
                         Spacer()
@@ -225,6 +226,7 @@ public struct ContentView: View {
                 isHovered: $isActionButtonHovered
             )
             .ignoresSafeArea()
+            .opacity(uiState.isCapturingScreen ? 0 : 1)
 
             // Jump to Time Dialog Overlay
             if uiState.isJumpToPresented {
@@ -401,7 +403,8 @@ public struct ContentView: View {
     }
 
     private var showsControls: Bool {
-        isControlsVisible || !engine.isLoaded || isInteracting
+        guard !uiState.isCapturingScreen else { return false }
+        return isControlsVisible || !engine.isLoaded || isInteracting
             || uiState.controlsConfig.isSettingsCustomizingControls
     }
 
