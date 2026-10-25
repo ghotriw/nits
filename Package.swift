@@ -48,6 +48,7 @@ let package = Package(
             resources: [
                 .process("Video/HDRToneMapping.metal"),
                 .process("Video/BT2390ToneMapping.metal"),
+                .process("Video/DisplayGamutFit.metal"),
                 .process("Video/Deinterlace.metal"),
             ],
             swiftSettings: defaultSwiftSettings

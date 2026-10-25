@@ -44,7 +44,7 @@ struct DolbyVisionReshaping {
 };
 
 struct ToneMapUniforms {
-    float targetNits;                    // 203.0
+    float targetNits;                    // reference white, nits (ToneMapController.referenceWhiteNits)
     float sourcePeakNits;                // 1000.0
     float outputExposure;                // 1.0
     float outputSaturation;              // 1.0
@@ -65,6 +65,7 @@ struct ToneMapUniforms {
     float doviTrimSaturation;            // L2 saturation gain
     float doviTrimTargetNits;            // L2 target display peak (~100 nits)
     DolbyVisionReshaping doviReshaping;  // Dolby Vision Profile 5 reshaping and colour matrices
+    float contrastRecovery;              // strength of the local contrast (applyContrastRecovery); 0: off
 };
 
 // PQ (SMPTE ST 2084) electro-optical transfer functions (EOTF / Inverse EOTF)
@@ -298,18 +299,11 @@ float3 nitsFromHLG(float y, float2 uv, constant ToneMapUniforms &uniforms) {
     return Lw * ootfScale * E;
 }
 
-// ITU-R BT.2390 EETF with mpv's desaturation; defined in BT2390ToneMapping.metal (LGPL-2.1-or-later).
+// ITU-R BT.2390 EETF on max(RGB) with mpv's desaturation; defined in BT2390ToneMapping.metal (LGPL-2.1-or-later).
 float3 mpvBT2390(float3 color, float sourcePeakNits, float sdrWhiteNits);
 
-// BT.2020 Linear to Display P3 Linear (Column-major in Metal)
-float3 bt2020_to_display_p3(float3 c) {
-    float3x3 m = float3x3(
-        float3( 1.343578, -0.065297,  0.002822), // Column 0
-        float3(-0.282180,  1.075788, -0.019598), // Column 1
-        float3(-0.061399, -0.010490,  1.016777)  // Column 2
-    );
-    return max(m * c, 0.0);
-}
+// Linear BT.2020 to linear Display P3 in [0, 1] at constant Oklab lightness and hue; defined in DisplayGamutFit.metal.
+float3 fitToDisplayP3(float3 rgb2020);
 
 // Exposure compensation
 float3 applyOutputExposure(float3 rgb, float exposure) {
@@ -323,6 +317,9 @@ constant float displayBlackToWhite = 0.0006;
 
 // ITU-R BT.2390 black level lift (EETF step 4): E + b (1 - E)^4 in PQ normalized to the source range [0, peak], b
 // the display black. It changes the shadows only, so it may go before the knee, below which the curve is linear.
+// Per channel, which takes chroma from dark colours (a weak channel rises more than a strong one) as the XDR
+// presentation does: lifting luminance instead and keeping the chromaticity left the shadows 1.2 to 1.7× more
+// saturated than the XDR stills of the same 45 frames, where per channel matches them within a few percent.
 float3 liftBlackLevel(float3 nits, float sourcePeakNits, float blackNits) {
     float peakPQ = nitsToPQ(float3(max(sourcePeakNits, 100.0))).x;
     float3 e = nitsToPQ(max(nits, 0.0)) / peakPQ;
@@ -414,19 +411,130 @@ float3 bt709ToLinear(float3 nonLinear) {
     );
 }
 
+// Linear BT.2020 nits of an HDR sample: Dolby Vision Profile 5, HLG or PQ.
+float3 hdrSourceNits(float y, float2 uv, constant ToneMapUniforms &uniforms) {
+    if (uniforms.colorSpaceMode == 2) {
+        return nitsFromIPT(y, uv, uniforms);
+    }
+    if (uniforms.transferFunction == 1) {
+        return nitsFromHLG(y, uv, uniforms);
+    }
+    return nitsFromYUV(y, uv, uniforms);
+}
+
+// The picture is SDR (BT.709 or an SDR transfer): drawn without tone mapping.
+bool isSDRPicture(constant ToneMapUniforms &uniforms) {
+    return uniforms.transferFunction == 2 || uniforms.colorPrimaries == 1;
+}
+
+// --- Local contrast (contrast recovery) ------------------------------------------------------------------------------
+//
+// The curve compresses highlights hard (at its peak BT.2390's slope is 0): a hazy sky whose source spans 250-340 nits
+// lands within a few percent of white. Base / detail decomposition (Durand & Dorsey 2002; libplacebo's
+// contrast_recovery is the same idea): the curve maps the low-pass of the intensity, and part of the detail above it
+// is added back unmapped, in PQ. The low-pass is a guided filter of the intensity by itself (He et al. 2010), which
+// keeps edges: a Gaussian left bright halos around mountains against a bright sky. Its coefficients (a, b) are
+// computed at a quarter of the frame's size (ContrastRecovery.swift) and applied at full resolution here, the "fast"
+// guided filter. Fitted on the XDR stills (.agents/xdrfit): strength 0.5 lowered the mean ΔE_ITP from 7.73 to 7.50 and
+// kept 73 % of the XDR picture's fine detail in highlights instead of 65 %.
+
+// Intensity the local contrast works on: PQ of BT.2020 luminance, before the black lift.
+float recoveryIntensity(float3 nits) {
+    return nitsToPQ(dot(max(nits, 0.0), float3(0.2627, 0.6780, 0.0593)));
+}
+
+// `mapped`: the curve's output (linear BT.2020, 1 = white) of a pixel `sourceNits` (before the black lift) of
+// intensity `intensity`, whose low-pass is `lowPass` (PQ). Its luminance moves to
+// mix(curve(I), curve(lowPass) + (I - lowPass), strength) in PQ. The low-pass is mapped in the pixel's own colour: as a
+// grey it came out brighter than the colour (the curve, on max(RGB), compresses a saturated colour more than a grey of
+// its luminance), which lifted whole hazy areas instead of their detail and washed far ridges out.
+float3 applyContrastRecovery(
+    float3 mapped, float3 sourceNits, float intensity, float lowPass, float sdrWhite,
+    constant ToneMapUniforms &uniforms
+) {
+    constexpr float3 luma = float3(0.2627, 0.6780, 0.0593);
+    float mappedY = dot(mapped, luma);
+    if (mappedY <= 1e-6) {
+        return mapped;
+    }
+    float lo = clamp(lowPass, 0.0, 1.0);
+    float3 source = max(sourceNits, 0.0);
+    float sourceY = dot(source, luma);
+    float3 lowPassColour = sourceY > 1e-6
+        ? source * (pqToNits(float3(lo)).x / sourceY)
+        : pqToNits(float3(lo));
+    float3 lowPassNits = liftBlackLevel(lowPassColour, uniforms.sourcePeakNits, sdrWhite * displayBlackToWhite) / sdrWhite;
+    float3 lowPassMapped = mpvBT2390(lowPassNits, uniforms.sourcePeakNits, sdrWhite);
+    float mappedPQ = nitsToPQ(mappedY * sdrWhite);
+    float lowPassMappedPQ = nitsToPQ(dot(lowPassMapped, luma) * sdrWhite);
+    float target = mix(mappedPQ, lowPassMappedPQ + (intensity - lo), uniforms.contrastRecovery);
+    float targetY = pqToNits(float3(clamp(target, 0.0, 1.0))).x / sdrWhite;
+    // Brightening stops where the brightest channel reaches white, so the colour keeps its hue and saturation:
+    // clipped per channel, an orange sun's red stopped at white while green and blue rose, turning it yellow-white.
+    float gain = targetY / mappedY;
+    if (gain > 1.0) {
+        float mappedMax = max(mapped.r, max(mapped.g, mapped.b));
+        gain = min(gain, max(1.0 / max(mappedMax, 1e-6), 1.0));
+    }
+    return clamp(mapped * gain, 0.0, 1.0);
+}
+
+// Per texel of the quarter-size statistics texture: the mean of the intensity and of its square over four samples
+// of the 4 × 4 block it covers.
+kernel void contrastRecoveryStatistics(
+    texture2d<float, access::sample> texY [[texture(0)]],
+    texture2d<float, access::sample> texUV [[texture(1)]],
+    texture2d<float, access::write> statistics [[texture(2)]],
+    constant ToneMapUniforms &uniforms [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= statistics.get_width() || gid.y >= statistics.get_height()) {
+        return;
+    }
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    float2 size = float2(statistics.get_width(), statistics.get_height());
+    float2 offsets[4] = { float2(0.25, 0.25), float2(0.75, 0.25), float2(0.25, 0.75), float2(0.75, 0.75) };
+    float sum = 0.0;
+    float sumSquares = 0.0;
+    for (uint i = 0; i < 4; ++i) {
+        float2 coords = (float2(gid) + offsets[i]) / size;
+        float i0 = recoveryIntensity(hdrSourceNits(texY.sample(s, coords).r, texUV.sample(s, coords).rg, uniforms));
+        sum += i0;
+        sumSquares += i0 * i0;
+    }
+    statistics.write(float4(sum / 4.0, sumSquares / 4.0, 0.0, 0.0), gid);
+}
+
+// The guided filter's coefficients from box means of the intensity and its square: a = var / (var + eps),
+// b = mean (1 - a). The low-pass of a pixel of intensity I is then box(a) I + box(b).
+kernel void contrastRecoveryCoefficients(
+    texture2d<float, access::read> boxedStatistics [[texture(0)]],
+    texture2d<float, access::write> coefficients [[texture(1)]],
+    constant float &epsilon [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= coefficients.get_width() || gid.y >= coefficients.get_height()) {
+        return;
+    }
+    float2 m = boxedStatistics.read(gid).rg;
+    float variance = max(m.y - m.x * m.x, 0.0);
+    float a = variance / (variance + epsilon);
+    coefficients.write(float4(a, m.x * (1.0 - a), 0.0, 0.0), gid);
+}
+
 // Helper to sample and tone map a single texture coordinate
 float3 sampleAndToneMap(
     float2 coords,
     texture2d<float, access::sample> texY,
     texture2d<float, access::sample> texUV,
+    texture2d<float, access::sample> recoveryCoefficients,
     sampler s,
     constant ToneMapUniforms &uniforms
 ) {
     float y = texY.sample(s, coords).r;
     float2 uv = texUV.sample(s, coords).rg;
 
-    // Check if SDR Rec.709 mode (transferFunction == 2, or colorPrimaries == 1)
-    if (uniforms.transferFunction == 2 || uniforms.colorPrimaries == 1) {
+    if (isSDRPicture(uniforms)) {
         float3 nonLinearBT709 = rgbFromBT709(y, uv, uniforms);
         float3 linearBT709 = bt709ToLinear(nonLinearBT709);
         float3 p3Linear = bt709_to_display_p3(linearBT709);
@@ -438,23 +546,19 @@ float3 sampleAndToneMap(
         return clamp(displayGamma, 0.0, 1.0);
     }
 
-    // HDR branch: determine linear BT.2020 source optical nits
-    float3 sourceNits;
-    if (uniforms.colorSpaceMode == 2) {
-        // Dolby Vision Profile 5 (IPTc2 / ICtCp)
-        sourceNits = nitsFromIPT(y, uv, uniforms);
-    } else if (uniforms.transferFunction == 1) {
-        // HLG (ARIB STD-B67 / ITU-R BT.2100)
-        sourceNits = nitsFromHLG(y, uv, uniforms);
-    } else {
-        // Standard PQ (SMPTE ST 2084) BT.2020
-        sourceNits = nitsFromYUV(y, uv, uniforms);
-    }
+    // HDR branch: linear BT.2020 source optical nits
+    float3 sourceNits = hdrSourceNits(y, uv, uniforms);
+    float intensity = recoveryIntensity(sourceNits);
 
     // Tone mapping to SDR display white: BT.2390, driven by the stream's (or Dolby Vision L1's) peak.
     float sdrWhite = max(uniforms.targetNits, 100.0);
-    sourceNits = liftBlackLevel(sourceNits, uniforms.sourcePeakNits, sdrWhite * displayBlackToWhite);
-    float3 mapped2020 = mpvBT2390(sourceNits / sdrWhite, uniforms.sourcePeakNits, sdrWhite);
+    float3 liftedNits = liftBlackLevel(sourceNits, uniforms.sourcePeakNits, sdrWhite * displayBlackToWhite);
+    float3 mapped2020 = mpvBT2390(liftedNits / sdrWhite, uniforms.sourcePeakNits, sdrWhite);
+    if (uniforms.contrastRecovery > 0.0) {
+        float2 ab = recoveryCoefficients.sample(s, coords).rg;
+        mapped2020 = applyContrastRecovery(
+            mapped2020, sourceNits, intensity, ab.x * intensity + ab.y, sdrWhite, uniforms);
+    }
 
     // A Dolby Vision L2 trim (SMPTE ST 2094-10 slope / offset / power) corrects the base display mapping, so it goes
     // on top of it, never in its place: the base output is taken as the signal of the trim's target display (white =
@@ -482,7 +586,7 @@ float3 sampleAndToneMap(
         mapped2020 = clamp(trimmed, 0.0, 1.0);
     }
 
-    float3 p3Linear = bt2020_to_display_p3(mapped2020);
+    float3 p3Linear = fitToDisplayP3(mapped2020);
     p3Linear = applyOutputExposure(p3Linear, uniforms.outputExposure);
     float3 displayGamma = linearToSDRDisplay(p3Linear);
     if (uniforms.outputShadowLift > 0.0) {
@@ -509,12 +613,13 @@ fragment float4 hdrToneMapFragmentShader(
     VertexOutput in [[stage_in]],
     texture2d<float, access::sample> textureY [[texture(0)]],
     texture2d<float, access::sample> textureUV [[texture(1)]],
+    texture2d<float, access::sample> recoveryCoefficients [[texture(2)]],
     constant ToneMapUniforms &uniforms [[buffer(0)]]
 ) {
     constexpr sampler s(address::clamp_to_edge, filter::linear);
 
     // Compute reference tone-mapping pipeline exactly once for the center fragment
-    float3 center = sampleAndToneMap(in.texCoords, textureY, textureUV, s, uniforms);
+    float3 center = sampleAndToneMap(in.texCoords, textureY, textureUV, recoveryCoefficients, s, uniforms);
 
     // Contrast Adaptive Sharpening (FidelityFX CAS)
     float strength = clamp(uniforms.outputSharpness, 0.0, 1.0);

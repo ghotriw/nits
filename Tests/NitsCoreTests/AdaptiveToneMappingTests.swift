@@ -90,16 +90,16 @@ struct AdaptiveToneMappingTests {
 
         // 1.0x default
         #expect(engine.toneMapping.targetNitsScale == 1.0)
-        #expect(engine.toneMapping.baseTargetNits == 203.0)
-        #expect(engine.toneMapping.targetNits == 203.0)
+        #expect(engine.toneMapping.baseTargetNits == ToneMapController.referenceWhiteNits)
+        #expect(engine.toneMapping.targetNits == ToneMapController.referenceWhiteNits)
 
         // Adjust scale knob to 0.8x (20% brighter midtones/shadows for all content)
         engine.toneMapping.targetNitsScale = 0.8
-        #expect(abs(engine.toneMapping.targetNits - (203.0 * 0.8)) < 0.01)
+        #expect(abs(engine.toneMapping.targetNits - (ToneMapController.referenceWhiteNits * 0.8)) < 0.01)
 
         // Adjust scale knob to 1.5x (higher contrast)
         engine.toneMapping.targetNitsScale = 1.5
-        #expect(abs(engine.toneMapping.targetNits - (203.0 * 1.5)) < 0.01)
+        #expect(abs(engine.toneMapping.targetNits - (ToneMapController.referenceWhiteNits * 1.5)) < 0.01)
     }
 
     @Test("DolbyVisionRPUParser correctly converts PQ to nits and handles 100-nit trim")
@@ -737,12 +737,12 @@ struct AdaptiveToneMappingTests {
     @MainActor
     func testPlayerEngineToneMappingReset() {
         let engine = PlayerEngine.makeForTesting()
-        #expect(engine.toneMapping.targetNits == 203.0)
+        #expect(engine.toneMapping.targetNits == ToneMapController.referenceWhiteNits)
         engine.toneMapping.adapt(toPeakNits: 451.0, fallNits: 68.0, hasStaticPeak: true)
-        #expect(engine.toneMapping.targetNits < 203.0)
+        #expect(engine.toneMapping.targetNits < ToneMapController.referenceWhiteNits)
         engine.stop()
-        #expect(engine.toneMapping.targetNits == 203.0)
-        #expect(engine.toneMapping.baseTargetNits == 203.0)
+        #expect(engine.toneMapping.targetNits == ToneMapController.referenceWhiteNits)
+        #expect(engine.toneMapping.baseTargetNits == ToneMapController.referenceWhiteNits)
     }
 
     @Test("Re-applying the configuration keeps the target white and the settings changed since")
@@ -779,8 +779,8 @@ struct AdaptiveToneMappingTests {
         toneMapping.apply(PlayerConfiguration(targetNitsScale: 1.5))
         toneMapping.adapt(toPeakNits: 1000.0, fallNits: 161.0, hasStaticPeak: true)
         toneMapping.reset()
-        #expect(abs(monitor.currentMetrics.targetNits - 203.0 * 1.5) < 0.01)
+        #expect(abs(monitor.currentMetrics.targetNits - ToneMapController.referenceWhiteNits * 1.5) < 0.01)
         toneMapping.renderModeDidChange(to: .metalToneMap)
-        #expect(abs(monitor.currentMetrics.targetNits - 203.0 * 1.5) < 0.01)
+        #expect(abs(monitor.currentMetrics.targetNits - ToneMapController.referenceWhiteNits * 1.5) < 0.01)
     }
 }

@@ -234,6 +234,7 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 | `--no-tone-mapping` | Disable SDR tone mapping |
 | `--sharpness=0.0–1.0` | Sharpening strength (default 0.5) |
 | `--dovi-trims` / `--no-dovi-trims` | Apply Dolby Vision L2 trims in SDR tone mapping (default off) |
+| `--local-contrast=0.0–1.0` | Texture brought back to SDR highlights by the tone mapping, 0 off (default 0.5) |
 | `--volume=0.0–1.0` | Initial volume |
 | `--start-time=<sec>` | Start at a given position, ignoring history (`0` starts from the beginning) |
 | `--no-resume` | Don't restore the saved position |

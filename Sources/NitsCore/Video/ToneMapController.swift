@@ -1,3 +1,4 @@
+import CoreVideo
 import Foundation
 import Observation
 import os
@@ -62,10 +63,30 @@ public final class ToneMapController {
         var lastHDR10PlusPeakNits: Float?
         /// Profile 5 reshaping and colour matrices, which RPUs update.
         var reshaper = DolbyVisionReshaper()
+        /// Measures the frames' average for the reference white; nil for SDR media.
+        var luminanceMeter: FrameLuminanceMeter?
+        /// The last RPU's reshaping as the meter evaluates it, for Profile 5 frames without curves of their own.
+        var pixelReshaping: DolbyVisionPixelReshaping?
+        /// The measured average in PQ, smoothed between frames but for cuts (`applyFrame`); nil until a frame is
+        /// measured.
+        var smoothedAveragePQ: Float?
+        /// The measured peak (`FrameLuminanceMeter.Measurement.peakPQ`), smoothed with the average.
+        var smoothedMeasuredPeakPQ: Float?
+        /// The peak the curve maps from: the scene's (L1, HDR10+, else static), or the frame's measured one where that
+        /// is higher. L1 max under the picture's own (a Dolby Vision 5 demo puts 316 nits on a frame whose sky reaches
+        /// 630) would clip all above it to white.
+        var curvePeakNits: Float {
+            max(smoothedPeakNits, smoothedMeasuredPeakPQ.map(ThumbnailToneMapper.pqToNits) ?? 0)
+        }
     }
 
-    /// ITU-R BT.2408 reference white: the target for high-peak HDR, which the adaptation lowers from.
-    public nonisolated static let referenceWhiteNits: Float = 203.0
+    /// The reference white for high-peak HDR, which the adaptation lowers from. Below ITU-R BT.2408's 203 nits: judged
+    /// against the XDR presentation of the same frames (Dolby Vision 8.1 scenes peaking at 300 and 641 nits), 203 left
+    /// the picture clearly darker, ~155 matched it; the XDR still of the 641-nit scene puts its midtones 1.55 to 1.7×
+    /// above ours at 203.
+    public nonisolated static let referenceWhiteNits: Float = 155.0
+    /// The local contrast's strength fitted on the XDR stills: half of the highlights' detail bypasses the curve.
+    public nonisolated static let defaultLocalContrast: Float = 0.5
 
     public var exposure: Float = 1.0 {
         didSet {
@@ -91,7 +112,7 @@ public final class ToneMapController {
             updateTargetNits(restartsScene: false)
         }
     }
-    /// Reference white adapted to the media's peak and MaxFALL (e.g. 203 for 1000-nit content, ~116 for a dim one).
+    /// Reference white adapted to the media's peak and MaxFALL (e.g. 155 for 1000-nit content, down to 100 for a dim one).
     public private(set) var baseTargetNits: Float = ToneMapController.referenceWhiteNits
     /// `baseTargetNits` scaled by `targetNitsScale`: the target of the static curve.
     public private(set) var targetNits: Float = ToneMapController.referenceWhiteNits
@@ -120,6 +141,22 @@ public final class ToneMapController {
         }
     }
 
+    /// Strength of the local contrast (`ContrastRecovery`), 0 ... 1, 0: off, which also skips its GPU passes. A paused
+    /// frame is re-rendered right away, so the change can be compared on the same frame.
+    public var localContrast: Float = ToneMapController.defaultLocalContrast {
+        didSet {
+            let clamped = max(0, min(1, localContrast))
+            if localContrast != clamped {
+                localContrast = clamped
+                return
+            }
+            guard clamped != oldValue else { return }
+            renderer?.updateUniforms { $0.contrastRecovery = clamped }
+            guard let host, !host.isPlaying, host.activeRenderMode == .metalToneMap else { return }
+            renderer?.redrawLastFrame()
+        }
+    }
+
     @ObservationIgnored weak var host: (any ToneMapHost)?
     @ObservationIgnored nonisolated let renderer: MetalVideoRenderer?
     @ObservationIgnored nonisolated let monitor: PlayerPerformanceMonitor
@@ -130,6 +167,8 @@ public final class ToneMapController {
     public init(renderer: MetalVideoRenderer?, monitor: PlayerPerformanceMonitor = .shared) {
         self.renderer = renderer
         self.monitor = monitor
+        let localContrast = localContrast
+        renderer?.updateUniforms { $0.contrastRecovery = localContrast }
     }
 
     /// Takes the tone-mapping settings of `configuration` that differ from `previous` (all without one): a setting
@@ -143,6 +182,9 @@ public final class ToneMapController {
         }
         if configuration.applyDolbyVisionTrims != previous?.applyDolbyVisionTrims {
             applyDolbyVisionTrims = configuration.applyDolbyVisionTrims
+        }
+        if configuration.localContrast != previous?.localContrast {
+            localContrast = configuration.localContrast
         }
     }
 
@@ -158,6 +200,10 @@ public final class ToneMapController {
             $0.lastHDRMetadata = nil
             $0.lastHDR10PlusPeakNits = nil
             $0.reshaper.reset()
+            $0.luminanceMeter = nil
+            $0.pixelReshaping = nil
+            $0.smoothedAveragePQ = nil
+            $0.smoothedMeasuredPeakPQ = nil
         }
         renderer?.updateUniforms { uniforms in
             uniforms.doviReshaping = ToneMapUniforms.DolbyVisionReshaping()
@@ -179,7 +225,14 @@ public final class ToneMapController {
             isDolbyVisionProfile5: isDolbyVisionProfile5)
         let bitDepth = UInt32(demuxer.bitDepth)
         let isFullRange = demuxer.isFullRange
-        frameState.withLock { $0.reshaper.reset(isProfile5: isDolbyVisionProfile5) }
+        let signal: FrameLuminanceMeter.Signal? =
+            isDolbyVisionProfile5
+            ? .dolbyVisionIPT : transferFunction == .pq ? .pq : transferFunction == .hlg ? .hlg : nil
+        let meter = signal.map { FrameLuminanceMeter(signal: $0, isBT709: primaries == .bt709) }
+        frameState.withLock {
+            $0.reshaper.reset(isProfile5: isDolbyVisionProfile5)
+            $0.luminanceMeter = meter
+        }
         renderer?.updateUniforms { uniforms in
             uniforms.colorPrimaries = primaries.shaderIndex
             uniforms.transferFunction = transferFunction.shaderIndex
@@ -231,6 +284,9 @@ public final class ToneMapController {
             $0.lastMode = Mode()
             $0.lastHDRMetadata = nil
             $0.lastHDR10PlusPeakNits = nil
+            $0.pixelReshaping = nil
+            $0.smoothedAveragePQ = nil
+            $0.smoothedMeasuredPeakPQ = nil
         }
         renderer?.updateUniforms { $0.sourcePeakNits = peakNits }
     }
@@ -246,8 +302,8 @@ public final class ToneMapController {
             state -> (PlayerPerformanceMonitor.ToneMapEngineMode, Float, Float) in
             let mode: PlayerPerformanceMonitor.ToneMapEngineMode =
                 state.lastMode.usesL2Trim
-                ? .doviL2Trim : Self.engineMode(of: state.lastMode, peakNits: state.smoothedPeakNits)
-            return (mode, state.smoothedPeakNits, state.targetNits)
+                ? .doviL2Trim : Self.engineMode(of: state.lastMode, peakNits: state.curvePeakNits)
+            return (mode, state.curvePeakNits, state.targetNits)
         }
         monitor.updateToneMapParams(
             PlayerPerformanceMonitor.ToneMapParams(mode: engineMode, peakNits: peak, targetNits: target))
@@ -274,10 +330,26 @@ public final class ToneMapController {
     /// values without), writes it to the renderer's uniforms and reports it. Returns how the frame was tone-mapped.
     /// Called by the display link and by direct renders (seek preview, frame steps), so paused frame-stepping over
     /// dynamic-metadata content keeps the curve of playback. `restartsSmoothing` takes the frame's L1 as is, as on a
-    /// scene refresh: for a frame drawn again with no playback before it to smooth from (after a render mode switch or
-    /// a seek).
-    nonisolated func applyFrame(hdrMetadata: FrameHDRMetadata?, restartsSmoothing: Bool = false) -> Mode {
+    /// scene refresh: for a frame drawn again with no playback before it to smooth from (after a render mode switch, a
+    /// seek or a step back).
+    /// `pixelBuffer` is the frame itself, whose average sets the reference white (`FrameLuminanceMeter`); without one
+    /// (a redraw of the last frame) the white holds.
+    nonisolated func applyFrame(
+        hdrMetadata: FrameHDRMetadata?, pixelBuffer: CVPixelBuffer? = nil, restartsSmoothing: Bool = false
+    ) -> Mode {
         let doviMetadata = hdrMetadata?.dolbyVision
+        // Measured outside the state's lock: the display link and direct renders don't wait on each other for it.
+        let meter = frameState.withLock { $0.luminanceMeter }
+        let measured: FrameLuminanceMeter.Measurement? = {
+            guard let meter, let pixelBuffer else { return nil }
+            guard meter.signal == .dolbyVisionIPT else { return meter.measure(pixelBuffer, reshaping: nil) }
+            let own = doviMetadata.flatMap(DolbyVisionPixelReshaping.init(metadata:))
+            let reshaping = frameState.withLock { state in
+                if let own { state.pixelReshaping = own }
+                return state.pixelReshaping
+            }
+            return meter.measure(pixelBuffer, reshaping: reshaping)
+        }()
         struct ResolvedParams {
             var trim: DolbyVisionFrameMetadata.Level2Trim?
             let peakNits: Float
@@ -311,10 +383,9 @@ public final class ToneMapController {
             // frame whose RPU failed to parse) the smoothed values hold: they start as the stream's static ones on
             // load and only the scene's peak moves them, so a lone frame without RPU in a Dolby Vision scene keeps its
             // brightness instead of flashing to the static mastering peak.
-            // The reference white follows the scene's peak between 100 nits and the static white: a scene that fits
-            // under 100 nits is shown as the XDR presentation shows it (PQ 100 nits on SDR white), a brighter one
-            // keeps the static white, which leaves room for its highlights an SDR display has no headroom above white
-            // for. Lowering the white for a scene that doesn't fit (as for its low average) overexposed it.
+            // Until a frame is measured (SDR media, or HDR before its first readable frame), the reference white follows
+            // the scene's peak between 100 nits and the static white. A frame the meter can't read keeps the smoothed
+            // average of the frames before it, as a frame without RPU keeps the smoothed L1: no flash of another white.
             let hdr10Plus = doviMetadata?.l1 == nil ? hdrMetadata?.hdr10Plus : nil
             var scene: (peakNits: Float, alpha: Float)?
             if let l1 = doviMetadata?.l1 {
@@ -334,12 +405,30 @@ public final class ToneMapController {
             if doviMetadata?.l1 != nil || doviMetadata?.sourceMaxPQ ?? 0 > 0 {
                 state.awaitsSourcePeak = false
             }
+            // The measured average sets the white in place of the scene's peak, for HDR media. Smoothed as L1 is, but
+            // taken as is on a scene refresh or a cut, which a jump of the average tells for media without one: as
+            // libplacebo's peak detection does, more than 3 % PQ is a cut, under 1 % is smoothed, in between faster.
+            // The measured peak is smoothed with it, so a cut moves both at once.
+            if let measured {
+                let previous = state.smoothedAveragePQ ?? measured.averagePQ
+                let jump = abs(measured.averagePQ - previous)
+                let alpha: Float =
+                    restartsSmoothing || doviMetadata?.sceneRefresh == true
+                    ? 1.0 : 0.15 + 0.85 * min(max((jump - 0.01) / 0.02, 0), 1)
+                state.smoothedAveragePQ = alpha * measured.averagePQ + (1 - alpha) * previous
+                let previousPeak = state.smoothedMeasuredPeakPQ ?? measured.peakPQ
+                state.smoothedMeasuredPeakPQ = alpha * measured.peakPQ + (1 - alpha) * previousPeak
+            }
+            if let averagePQ = state.smoothedAveragePQ {
+                state.sceneTargetNits = Self.measuredTargetNits(
+                    averageNits: ThumbnailToneMapper.pqToNits(averagePQ), staticPeakNits: state.basePeakNits)
+            }
             if hdr10Plus != nil {
                 state.lastMode = Mode(usesHDR10Plus: true)
             }
             guard let dovi = doviMetadata else {
                 return ResolvedParams(
-                    peakNits: state.smoothedPeakNits,
+                    peakNits: state.curvePeakNits,
                     targetNits: state.targetNits,
                     mode: state.lastMode,
                     reshaping: reshaping
@@ -355,7 +444,7 @@ public final class ToneMapController {
                 usesHDR10Plus: hdr10Plus != nil)
             return ResolvedParams(
                 trim: trim,
-                peakNits: state.smoothedPeakNits,
+                peakNits: state.curvePeakNits,
                 targetNits: state.targetNits,
                 mode: state.lastMode,
                 reshaping: reshaping
@@ -399,7 +488,7 @@ public final class ToneMapController {
         maxPeakNits: Float,
         maxFallNits: Float = 0.0
     ) -> Float {
-        // If content is high-peak mastering (>= 950 nits) and not extremely dark, keep ITU reference (203.0)
+        // If content is high-peak mastering (>= 950 nits) and not extremely dark, keep the reference white
         if maxPeakNits >= 950.0 && (maxFallNits == 0 || maxFallNits >= 120.0) {
             return baseTargetNits
         }
@@ -423,9 +512,23 @@ public final class ToneMapController {
         min(max(scenePeakNits, 100), max(staticTargetNits, 100))
     }
 
-    /// An adapted reference white scaled by the user's multiplier, within what an SDR display can take.
+    /// The reference white of a frame whose measured average (`FrameLuminanceMeter`) is `averageNits`, of media whose
+    /// static peak (MaxCLL, else the mastering or the RPU's source peak) is `staticPeakNits`. Fitted for the least mean
+    /// ΔE_ITP against the XDR presentation (both relative to SDR white) of 45 scenes of four titles: Dolby Vision 8.1
+    /// with MaxCLL 451 and 997, Dolby Vision 5, HDR10 with MaxCLL 8154. The presentation sets the white of a whole title
+    /// by its static peak, a dark scene's best white going from ~100 (MaxCLL 451) through ~115 (~1000) to ~150 (8154),
+    /// and a bright scene's average raises it (to 130–160 at averages of 20–76 nits). Mean ΔE 9.6, against 9.3 for the
+    /// best white of every scene, 11.9 for the average alone and 12.7 for a constant 115.
+    nonisolated static func measuredTargetNits(averageNits: Float, staticPeakNits: Float) -> Float {
+        let titleWhite = 100 + 17 * log(max(staticPeakNits, 1) / 451)
+        let sceneWhite = 80 + 65 * (1 - exp(-max(averageNits, 0) / 12))
+        return max(titleWhite, sceneWhite)
+    }
+
+    /// An adapted reference white scaled by the user's multiplier, within what an SDR display can take, and never below
+    /// 100 nits: a scene isn't shown brighter than the XDR presentation shows it (PQ 100 nits on SDR white).
     nonisolated static func scaledTargetNits(_ nits: Float, scale: Float) -> Float {
-        max(min(nits * scale, 500.0), 80.0)
+        max(min(nits * scale, 500.0), 100.0)
     }
 
     /// The monitor's curve for a frame tone-mapped as `mode` without an L2 trim.

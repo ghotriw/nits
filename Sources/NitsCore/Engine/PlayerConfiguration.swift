@@ -52,11 +52,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// User multiplier coefficient scaling the content-adaptive target white level (default 1.0, range 0.5 ... 2.0).
     public var targetNitsScale: Float
 
-    /// Target reference white level in nits for BT.2390 tone mapping (default 203.0).
-    /// For backward compatibility, setting `targetNits` adjusts `targetNitsScale` relative to 203.0.
+    /// Target reference white level in nits for BT.2390 tone mapping (default `ToneMapController.referenceWhiteNits`).
+    /// For backward compatibility, setting `targetNits` adjusts `targetNitsScale` relative to that.
     public var targetNits: Float {
-        get { 203.0 * targetNitsScale }
-        set { targetNitsScale = max(newValue / 203.0, 0.1) }
+        get { ToneMapController.referenceWhiteNits * targetNitsScale }
+        set { targetNitsScale = max(newValue / ToneMapController.referenceWhiteNits, 0.1) }
     }
 
     /// Default sharpness factor for FidelityFX CAS (0.0 ... 1.0).
@@ -66,6 +66,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// curve (default false). Off, Metal tone mapping uses L1 only, as mpv does: the trims correct Dolby's own base
     /// curve, which is not public, so on BT.2390 they are an approximation.
     public var applyDolbyVisionTrims: Bool
+
+    /// Strength of the local contrast in Metal tone mapping, 0 ... 1, 0: off (default
+    /// `ToneMapController.defaultLocalContrast`; see `ToneMapController.localContrast`).
+    public var localContrast: Float
 
     /// Default volume level (0.0 ... 1.0).
     public var initialVolume: Float
@@ -187,10 +191,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public init(
         enableToneMapping: Bool = true,
         defaultRenderMode: RenderMode = .auto,
-        targetNits: Float = 203.0,
+        targetNits: Float = ToneMapController.referenceWhiteNits,
         targetNitsScale: Float? = nil,
         sharpness: Float = 0.5,
         applyDolbyVisionTrims: Bool = false,
+        localContrast: Float = ToneMapController.defaultLocalContrast,
         initialVolume: Float = 1.0,
         httpHeaders: [String: String] = [:],
         resumePlayback: Bool = true,
@@ -235,10 +240,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if let scale = targetNitsScale {
             self.targetNitsScale = scale
         } else {
-            self.targetNitsScale = max(targetNits / 203.0, 0.1)
+            self.targetNitsScale = max(targetNits / ToneMapController.referenceWhiteNits, 0.1)
         }
         self.sharpness = sharpness
         self.applyDolbyVisionTrims = applyDolbyVisionTrims
+        self.localContrast = max(0, min(1, localContrast))
         self.initialVolume = initialVolume
         self.httpHeaders = httpHeaders
         self.resumePlayback = resumePlayback
@@ -284,6 +290,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyTargetNitsScale = "Nits.targetNitsScale"
     public static let keySharpness = "Nits.sharpness"
     public static let keyApplyDolbyVisionTrims = "Nits.applyDolbyVisionTrims"
+    public static let keyLocalContrast = "Nits.localContrast"
     public static let keyResumePlayback = "Nits.resumePlayback"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
     public static let keyResumeEndThresholdRatio = "Nits.resumeEndThresholdRatio"
@@ -338,6 +345,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if userDefaults.object(forKey: keyApplyDolbyVisionTrims) != nil {
             config.applyDolbyVisionTrims = userDefaults.bool(forKey: keyApplyDolbyVisionTrims)
+        }
+        if let localContrast = userDefaults.object(forKey: keyLocalContrast) as? NSNumber {
+            config.localContrast = max(0, min(1, localContrast.floatValue))
         }
         if userDefaults.object(forKey: keyResumePlayback) != nil {
             config.resumePlayback = userDefaults.bool(forKey: keyResumePlayback)
@@ -473,6 +483,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(targetNits, forKey: Self.keyTargetNits)
         userDefaults.set(sharpness, forKey: Self.keySharpness)
         userDefaults.set(applyDolbyVisionTrims, forKey: Self.keyApplyDolbyVisionTrims)
+        userDefaults.set(localContrast, forKey: Self.keyLocalContrast)
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
@@ -581,6 +592,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.applyDolbyVisionTrims = true
             } else if arg == "--no-dovi-trims" {
                 config.applyDolbyVisionTrims = false
+            } else if arg.starts(with: "--local-contrast=") {
+                if let val = Float(arg.dropFirst("--local-contrast=".count)) {
+                    config.localContrast = max(0, min(1, val))
+                }
             } else if arg.starts(with: "--volume=") {
                 if let val = Float(arg.dropFirst("--volume=".count)) {
                     config.initialVolume = max(0.0, min(1.0, val))

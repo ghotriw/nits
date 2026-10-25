@@ -113,7 +113,10 @@ struct HDR10PlusTests {
         // A bright scene keeps the static white; a night scene fitting under 100 nits takes white 100 at once.
         let mode = toneMapping.applyFrame(hdrMetadata: frame(maxNits: 405))
         #expect(mode == ToneMapController.Mode(usesHDR10Plus: true))
-        #expect(toneMapping.frameState.withLock { ($0.smoothedPeakNits, $0.targetNits) } == (405, 203))
+        #expect(
+            toneMapping.frameState.withLock { ($0.smoothedPeakNits, $0.targetNits) } == (
+                405, ToneMapController.referenceWhiteNits
+            ))
         _ = toneMapping.applyFrame(hdrMetadata: frame(maxNits: 90))
         #expect(toneMapping.frameState.withLock { ($0.smoothedPeakNits, $0.targetNits) } == (90, 100))
 
@@ -137,7 +140,7 @@ struct HDR10PlusTests {
         // Set on the main actor after the display link's frame.
         for _ in 0..<100 where toneMapping.appliedTargetNits != 100 { await Task.yield() }
         #expect(toneMapping.appliedTargetNits == 100)
-        #expect(toneMapping.targetNits == 203)
+        #expect(toneMapping.targetNits == ToneMapController.referenceWhiteNits)
     }
 
     @Test("A Dolby Vision RPU without L1 leaves the scene to HDR10+, and the mode says so")

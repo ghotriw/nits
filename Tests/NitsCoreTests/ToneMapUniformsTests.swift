@@ -6,10 +6,10 @@ import Testing
 
 @Suite("ToneMapUniforms & Renderer Concurrency Tests")
 struct ToneMapUniformsTests {
-    @Test("Default uniforms adhere to reference 203 nits ITU standard")
+    @Test("Default uniforms target the reference white")
     func testDefaultUniforms() {
         let uniforms = ToneMapUniforms()
-        #expect(uniforms.targetNits == 203.0)
+        #expect(uniforms.targetNits == ToneMapController.referenceWhiteNits)
         #expect(uniforms.outputSharpness == 0.5)
         #expect(uniforms.outputExposure == 1.0)
     }
@@ -22,7 +22,8 @@ struct ToneMapUniformsTests {
         descriptor.vertexFunction = library.makeFunction(name: "hdrVertexShader")
         descriptor.fragmentFunction = library.makeFunction(name: "hdrToneMapFragmentShader")
         descriptor.colorAttachments[0].pixelFormat = .bgr10a2Unorm
-        // Fails if mpvBT2390 (BT2390ToneMapping.metal) or the PQ helpers it uses don't resolve.
+        // Fails if mpvBT2390 (BT2390ToneMapping.metal), fitToDisplayP3 (DisplayGamutFit.metal) or the PQ helpers
+        // they use don't resolve.
         _ = try device.makeRenderPipelineState(descriptor: descriptor)
     }
 

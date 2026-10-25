@@ -12,7 +12,7 @@ struct PlayerConfigurationTests {
         let config = PlayerConfiguration()
         #expect(config.enableToneMapping == true)
         #expect(config.defaultRenderMode == .auto)
-        #expect(config.targetNits == 203.0)
+        #expect(config.targetNits == ToneMapController.referenceWhiteNits)
         #expect(config.sharpness == 0.5)
         #expect(config.initialVolume == 1.0)
         #expect(config.enableOSD == true)
@@ -161,6 +161,21 @@ struct PlayerConfigurationTests {
         #expect(
             !PlayerConfiguration.parse(arguments: ["Nits", "--no-dovi-trims"], base: config).configuration
                 .applyDolbyVisionTrims)
+    }
+
+    @Test("Local contrast defaults to the fitted strength, persists, and follows the CLI flag within 0 ... 1")
+    func testLocalContrastSetting() {
+        #expect(PlayerConfiguration().localContrast == ToneMapController.defaultLocalContrast)
+
+        let defaults = InMemoryUserDefaults()
+        var config = PlayerConfiguration()
+        config.localContrast = 0
+        config.saveToUserDefaults(userDefaults: defaults)
+        #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).localContrast == 0)
+
+        #expect(
+            PlayerConfiguration.parse(arguments: ["Nits", "--local-contrast=0.75"]).configuration.localContrast == 0.75)
+        #expect(PlayerConfiguration.parse(arguments: ["Nits", "--local-contrast=3"]).configuration.localContrast == 1)
     }
 
     @Test("CLI arguments correctly parse audio-track and subtitle-track flags")

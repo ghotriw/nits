@@ -1,3 +1,4 @@
+import CoreMedia
 import CoreVideo
 import Foundation
 import Metal
@@ -9,18 +10,6 @@ import Testing
 /// as applied: on top of BT.2390, not instead of it.
 @Suite("Dolby Vision L2 Trim Shader", .hostDependent)
 struct DolbyVisionTrimShaderTests {
-    /// Full-range 16-bit luma code of a grey at `nits` (PQ).
-    private static func pqCode(nits: Float) -> UInt16 {
-        let m1: Float = 2610.0 / 16384.0
-        let m2: Float = 2523.0 / 32.0
-        let c1: Float = 3424.0 / 4096.0
-        let c2: Float = 2413.0 / 128.0
-        let c3: Float = 2392.0 / 128.0
-        let powered = pow(nits / 10000.0, m1)
-        let pq = pow((c1 + c2 * powered) / (1.0 + c3 * powered), m2)
-        return UInt16((pq * 65535.0).rounded())
-    }
-
     private static func baseUniforms() -> ToneMapUniforms {
         var uniforms = ToneMapUniforms(targetNits: 203.0, sourcePeakNits: 4000.0, outputSharpness: 0.0)
         uniforms.isFullRange = 1
@@ -34,7 +23,8 @@ struct DolbyVisionTrimShaderTests {
 
     /// The packed `.bgr10a2Unorm` output of a flat frame with luma at `nits` and the given full-range Cb / Cr codes.
     private static func renderPixel(nits: Float, chroma: [UInt16], uniforms: ToneMapUniforms) throws -> UInt32? {
-        try renderRawTexels(luma: pqCode(nits: nits), chroma: chroma, uniforms: uniforms)
+        try ToneMapShaderRendering.renderRawTexels(
+            luma: ToneMapShaderRendering.pqCode(nits: nits), chroma: chroma, uniforms: uniforms)
     }
 
     private static func withTrim(slope: Float = 1.0, offset: Float = 0.0, power: Float = 1.0) -> ToneMapUniforms {
@@ -120,7 +110,7 @@ struct DolbyVisionTrimShaderTests {
     @Test("Dolby Vision Profile 5 RPU polynomial reshaping expands 10-bit P010 video-range IPT-PQ-c2 correctly")
     func profile5RPUReshapingMatchesStandardIPT() throws {
         // 10-bit P010 neutral grey at 100 nits in video range [64..940], shifted left by 6 for .r16Unorm / .rg16Unorm.
-        let pq100 = Float(Self.pqCode(nits: 100)) / 65535.0
+        let pq100 = Float(ToneMapShaderRendering.pqCode(nits: 100)) / 65535.0
         let code10BitVideoRange = UInt16((64.0 + pq100 * 876.0).rounded())
         let p010Luma = code10BitVideoRange << 6
         let p010Chroma: [UInt16] = [512 << 6, 512 << 6]
@@ -146,9 +136,9 @@ struct DolbyVisionTrimShaderTests {
         unreshapedVideoRange.isFullRange = 0
 
         guard
-            let reshapedPixel = try Self.renderRawTexels(
+            let reshapedPixel = try ToneMapShaderRendering.renderRawTexels(
                 luma: p010Luma, chroma: p010Chroma, uniforms: reshapedUniforms),
-            let directPixel = try Self.renderRawTexels(
+            let directPixel = try ToneMapShaderRendering.renderRawTexels(
                 luma: p010Luma, chroma: p010Chroma, uniforms: unreshapedVideoRange)
         else { return }
 
@@ -173,7 +163,8 @@ struct DolbyVisionTrimShaderTests {
         #expect(reshaping.offset(of: \.pivots) == 192)
         #expect(reshaping.offset(of: \.mmrCoeffs) == 672)
         #expect(reshaping.stride == 864)
-        #expect(MemoryLayout<ToneMapUniforms>.stride == 944)
+        #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.contrastRecovery) == 944)
+        #expect(MemoryLayout<ToneMapUniforms>.stride == 960)
     }
 
     @Test("Dolby Vision Profile 5 RPU MMR reshaping evaluates higher-order chroma regression")
@@ -192,7 +183,9 @@ struct DolbyVisionTrimShaderTests {
         #expect(uniforms.doviReshaping.pivotMax == SIMD3(repeating: 1), "an MMR component ends at its last pivot")
 
         // Chroma far off neutral: only the MMR constant can bring it back.
-        guard let pixel = try Self.renderRawTexels(luma: 32768, chroma: [8192, 57344], uniforms: uniforms)
+        guard
+            let pixel = try ToneMapShaderRendering.renderRawTexels(
+                luma: 32768, chroma: [8192, 57344], uniforms: uniforms)
         else { return }
         let (r, g, b) = (Int((pixel >> 20) & 0x3FF), Int((pixel >> 10) & 0x3FF), Int(pixel & 0x3FF))
         #expect(abs(r - g) <= 2 && abs(b - g) <= 2, "MMR chroma should be neutral: R=\(r) G=\(g) B=\(b)")
@@ -217,8 +210,10 @@ struct DolbyVisionTrimShaderTests {
         // At x = 0.75 (49152): falls into Piece 1 -> output = 2*(0.75) - 0.5 = 1.0
         let chroma: [UInt16] = [32768, 32768]
         guard
-            let piece0Pixel = try Self.renderRawTexels(luma: 16384, chroma: chroma, uniforms: uniforms),
-            let piece1Pixel = try Self.renderRawTexels(luma: 49152, chroma: chroma, uniforms: uniforms)
+            let piece0Pixel = try ToneMapShaderRendering.renderRawTexels(
+                luma: 16384, chroma: chroma, uniforms: uniforms),
+            let piece1Pixel = try ToneMapShaderRendering.renderRawTexels(
+                luma: 49152, chroma: chroma, uniforms: uniforms)
         else { return }
 
         let gPiece0 = Int((piece0Pixel >> 10) & 0x3FF)
@@ -230,65 +225,14 @@ struct DolbyVisionTrimShaderTests {
         // Also compare with an identity single-piece curve at x = 0.75 (where piece 0 would yield 0.75 instead of 1.0)
         var identityUniforms = uniforms
         identityUniforms.doviReshaping.setCurves([identity, identity, identity])
-        guard let identityPixel = try Self.renderRawTexels(luma: 49152, chroma: chroma, uniforms: identityUniforms)
+        guard
+            let identityPixel = try ToneMapShaderRendering.renderRawTexels(
+                luma: 49152, chroma: chroma, uniforms: identityUniforms)
         else { return }
         let gIdentity = Int((identityPixel >> 10) & 0x3FF)
         #expect(
             gPiece1 > gIdentity + 10,
             "piece 1 steep curve (\(gPiece1)) should exceed identity curve (\(gIdentity)) at x=0.75")
-    }
-
-    private static func renderRawTexels(luma: UInt16, chroma: [UInt16], uniforms: ToneMapUniforms) throws -> UInt32? {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
-        let library = try device.makeDefaultLibrary(bundle: .module)
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = library.makeFunction(name: "hdrVertexShader")
-        pipelineDescriptor.fragmentFunction = library.makeFunction(name: "hdrToneMapFragmentShader")
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgr10a2Unorm
-        let pipeline = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-
-        let size = 4
-        func texture(_ format: MTLPixelFormat, _ texel: [UInt16]) -> (any MTLTexture)? {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: format, width: size, height: size, mipmapped: false)
-            guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
-            let pixels = [UInt16]((0..<(size * size)).flatMap { _ in texel })
-            pixels.withUnsafeBytes {
-                texture.replace(
-                    region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0, withBytes: $0.baseAddress!,
-                    bytesPerRow: size * texel.count * 2)
-            }
-            return texture
-        }
-        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgr10a2Unorm, width: size, height: size, mipmapped: false)
-        outputDescriptor.usage = [.renderTarget, .shaderRead]
-        guard let lumaTexture = texture(.r16Unorm, [luma]),
-            let chromaTexture = texture(.rg16Unorm, chroma),
-            let output = device.makeTexture(descriptor: outputDescriptor),
-            let commandBuffer = queue.makeCommandBuffer()
-        else { return nil }
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = output
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setFragmentTexture(lumaTexture, index: 0)
-        encoder.setFragmentTexture(chromaTexture, index: 1)
-        var sourceRect = SIMD4<Float>(0, 0, 1, 1)
-        encoder.setVertexBytes(&sourceRect, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
-        var bytes = uniforms
-        encoder.setFragmentBytes(&bytes, length: MemoryLayout<ToneMapUniforms>.stride, index: 0)
-        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-
-        var pixel: UInt32 = 0
-        output.getBytes(&pixel, bytesPerRow: size * 4, from: MTLRegionMake2D(1, 1, 1, 1), mipmapLevel: 0)
-        return pixel
     }
 }
 
@@ -366,6 +310,47 @@ struct DolbyVisionToneMapResolutionTests {
         _ = engine.toneMapping.applyFrame(doviMetadata: nil)
         #expect(renderer.uniforms.sourcePeakNits == scenePeak)
         #expect(renderer.uniforms.targetNits == sceneTarget)
+    }
+
+    @Test("A step back takes the frame's L1 as is; a step forward smooths it as playback does")
+    func stepBackDoesNotSmoothFromTheNextScene() {
+        let engine = PlayerEngine.makeForTesting()
+        guard let renderer = engine.metalRenderer else { return }
+        engine.renderMode = .metalToneMap
+        var pixelBuffer: CVPixelBuffer?
+        let attributes =
+            [kCVPixelBufferIOSurfacePropertiesKey: [:], kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary
+        guard
+            CVPixelBufferCreate(
+                kCFAllocatorDefault, 64, 32, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, attributes, &pixelBuffer)
+                == kCVReturnSuccess, let pixelBuffer
+        else { return }
+        func entry(_ seconds: Double, maxPQ: UInt16, sceneRefresh: Bool) -> StepFrameCache.Entry {
+            let rpu = DolbyVisionFrameMetadata(
+                sceneRefresh: sceneRefresh, l1: DolbyVisionFrameMetadata.Level1(minPQ: 0, maxPQ: maxPQ, avgPQ: 1000),
+                l2Trims: [])
+            return StepFrameCache.Entry(
+                pixelBuffer: pixelBuffer, pts: CMTime(seconds: seconds, preferredTimescale: 24000),
+                hdrMetadata: FrameHDRMetadata(dolbyVision: rpu))
+        }
+        // The last frame of a ~210-nit scene, then the cut to a 100-nit one (scene refresh).
+        let lastOfScene = entry(15.422, maxPQ: 2400, sceneRefresh: false)
+        let cut = entry(15.464, maxPQ: 2081, sceneRefresh: true)
+        let afterCut = entry(15.506, maxPQ: 2400, sceneRefresh: false)
+
+        engine.presentSteppedFrame(cut, forward: true)
+        #expect(abs(renderer.uniforms.targetNits - 100) < 1)
+
+        // Back across the cut: the scene's own white, not 85 % of the next scene's.
+        engine.presentSteppedFrame(lastOfScene, forward: false)
+        #expect(renderer.uniforms.targetNits == ToneMapController.referenceWhiteNits)
+        #expect(abs(renderer.uniforms.sourcePeakNits - lastOfScene.hdrMetadata!.dolbyVision!.l1!.maxNits) < 0.01)
+
+        // Forward, an L1 change without scene refresh is smoothed from the frame before.
+        engine.presentSteppedFrame(cut, forward: true)
+        engine.presentSteppedFrame(afterCut, forward: true)
+        let smoothed: Float = 0.15 * ToneMapController.referenceWhiteNits + 0.85 * 100
+        #expect(abs(renderer.uniforms.targetNits - smoothed) < 1, "white \(renderer.uniforms.targetNits)")
     }
 
     @Test("The reference white follows the scene's L1 peak between 100 nits and the static white, not its average")

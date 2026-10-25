@@ -32,7 +32,7 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
         public var power: Float = 1.0
         public var saturation: Float = 0.0
         public var peakNits: Float = 0.0
-        public var targetNits: Float = 203.0
+        public var targetNits: Float = ToneMapController.referenceWhiteNits
 
         public init(
             mode: ToneMapEngineMode = .none,
@@ -41,7 +41,7 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
             power: Float = 1.0,
             saturation: Float = 0.0,
             peakNits: Float = 0.0,
-            targetNits: Float = 203.0
+            targetNits: Float = ToneMapController.referenceWhiteNits
         ) {
             self.mode = mode
             self.slope = slope
@@ -79,7 +79,7 @@ public final class PlayerPerformanceMonitor: @unchecked Sendable {
         public var colorPrimaries: String = ""
         public var transferFunction: String = ""
         public var sourcePeakNits: Float = 0
-        public var targetNits: Float = 203
+        public var targetNits: Float = ToneMapController.referenceWhiteNits
         public var avSyncDriftMs: Double = 0.0
 
         // Dolby Vision & Tone-Mapping details
