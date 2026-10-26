@@ -2,6 +2,8 @@
 
 A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 
+![Nits playing a video](docs/screenshot.webp)
+
 > [!NOTE]
 > Pre-1.0: the `NitsKit` / `NitsCore` API may change between minor versions.
 
