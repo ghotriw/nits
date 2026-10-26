@@ -10,6 +10,15 @@ struct YTDLPInfo: Decodable, Sendable {
         var acodec: String?
         var language: String?
         var formatNote: String?
+        var formatID: String?
+        /// An audio format's bitrate (kbit/s), its channels and sample rate.
+        var abr: Double?
+        var tbr: Double?
+        var width: Int?
+        var height: Int?
+        var fps: Double?
+        var audioChannels: Int?
+        var sampleRate: Int?
         /// The master playlist an HLS format is a variant of.
         var manifestURL: String?
         var httpHeaders: [String: String]?
@@ -18,6 +27,10 @@ struct YTDLPInfo: Decodable, Sendable {
         enum CodingKeys: String, CodingKey {
             case url, `protocol`, vcodec, acodec, language
             case formatNote = "format_note"
+            case formatID = "format_id"
+            case abr, tbr, width, height, fps
+            case audioChannels = "audio_channels"
+            case sampleRate = "asr"
             case manifestURL = "manifest_url"
             case httpHeaders = "http_headers"
             case downloaderOptions = "downloader_options"
@@ -66,6 +79,8 @@ struct YTDLPInfo: Decodable, Sendable {
     var downloaderOptions: DownloaderOptions?
     /// The formats chosen, when `-f` merged several (a picture and its audio).
     var requestedFormats: [Format]?
+    /// Every format the page has, from which the other audio languages are listed.
+    var formats: [Format]?
     var chapters: [Chapter]?
 
     enum CodingKeys: String, CodingKey {
@@ -76,6 +91,7 @@ struct YTDLPInfo: Decodable, Sendable {
         case httpHeaders = "http_headers"
         case downloaderOptions = "downloader_options"
         case requestedFormats = "requested_formats"
+        case formats
     }
 
     /// Protocols the demuxer reads: progressive HTTP and HLS. Not DASH manifests or fragments (FFmpeg's DASH demuxer
@@ -129,23 +145,120 @@ struct YTDLPInfo: Decodable, Sendable {
                 actionButtons: buttons)
         }
         let audio = formats.filter { $0.hasAudio && !$0.hasVideo && $0.url != nil }
+        let pictures = otherPictures(like: picture)
         return ResolvedMedia(
             path: path,
             headers: headers,
-            // The media's own sound: the picture has none.
-            audioFiles: audio.compactMap { format in
-                format.url.flatMap(URL.init(string:)).map {
-                    MediaLoadRequest.AudioFile(
-                        url: $0, title: Self.audioTitle(of: format), language: format.language,
-                        headers: format.httpHeaders, isRequired: true,
-                        httpRequestSize: format.downloaderOptions?.httpChunkSize)
-                }
-            },
+            // The media's own sound: the picture has none. The one `-f` chose is read with the media; the page's other
+            // languages are listed, and opened when one is selected.
+            audioFiles: audio.compactMap { Self.audioFile(of: $0, isRequired: true) }
+                + otherLanguages(than: audio).compactMap { Self.audioFile(of: $0, isRequired: false) },
             chapters: resolvedChapters,
             title: title,
             historyKey: historyKey,
             actionButtons: buttons,
-            httpRequestSize: main.downloaderOptions?.httpChunkSize)
+            httpRequestSize: main.downloaderOptions?.httpChunkSize,
+            videoFormats: pictures, selectedVideoFormatID: picture?.formatID)
+    }
+
+    /// The pictures the page offers as files, best first, to play instead of `chosen` (what `-f` picked): progressive
+    /// HTTP(S) ones of the same kind (with sound only if it has), the best bitrate for each size, frame rate and codec.
+    /// Empty when there is nothing to choose between.
+    func otherPictures(like chosen: Format?) -> [VideoFormat] {
+        guard let chosen, chosen.hasVideo, chosen.formatID != nil else { return [] }
+        let key = { (format: Format) in
+            "\(format.width ?? 0)x\(format.height ?? 0)@\(Int((format.fps ?? 0).rounded())) \(Self.pictureCodec(of: format.vcodec))"
+        }
+        // The chosen one is offered whatever else has its size and codec.
+        var best: [String: Format] = [key(chosen): chosen]
+        for format in (formats ?? []) where format.formatID != chosen.formatID {
+            guard format.hasVideo, format.vcodec != nil, format.hasAudio == chosen.hasAudio, format.url != nil,
+                format.protocol == "https" || format.protocol == "http", format.formatID != nil,
+                format.width ?? 0 > 0, format.height ?? 0 > 0
+            else { continue }
+            if let current = best[key(format)],
+                current.formatID == chosen.formatID || (current.tbr ?? 0) >= (format.tbr ?? 0)
+            {
+                continue
+            }
+            best[key(format)] = format
+        }
+        let pictures = best.values.compactMap { format -> VideoFormat? in
+            guard let url = format.url, let id = format.formatID else { return nil }
+            return VideoFormat(
+                id: id, url: url, width: format.width ?? 0, height: format.height ?? 0, frameRate: format.fps,
+                codec: Self.pictureCodec(of: format.vcodec), bitrate: Int((format.tbr ?? 0) * 1000),
+                httpRequestSize: format.downloaderOptions?.httpChunkSize, headers: format.httpHeaders)
+        }
+        .sorted {
+            let (lhs, rhs) = (($0.height, $0.frameRate ?? 0, $0.bitrate), ($1.height, $1.frameRate ?? 0, $1.bitrate))
+            return lhs != rhs ? lhs > rhs : $0.id < $1.id
+        }
+        return pictures.count > 1 ? pictures : []
+    }
+
+    /// A video codec string ("av01.0.13M.08") as shown.
+    static func pictureCodec(of codec: String?) -> String {
+        let family = codec.flatMap { $0.split(separator: ".").first.map { String($0).lowercased() } } ?? ""
+        switch family {
+        case "av01": return "AV1"
+        case "vp9", "vp09": return "VP9"
+        case "avc1", "avc3", "h264": return "H.264"
+        case "hev1", "hvc1", "hevc": return "HEVC"
+        case "vp8": return "VP8"
+        default: return family.uppercased()
+        }
+    }
+
+    /// The page's audio in the languages `chosen` (what `-f` picked) lacks: for each, the highest bitrate over
+    /// progressive HTTP in the codec of the chosen one, as `-f` picks. Not the dynamic-range-compressed copies.
+    func otherLanguages(than chosen: [Format]) -> [Format] {
+        guard let reference = chosen.first(where: { $0.language != nil }) ?? chosen.first else { return [] }
+        let codec = Self.codecFamily(of: reference.acodec)
+        let seen = Set(chosen.compactMap(\.language))
+        let chosenIDs = Set(chosen.compactMap(\.formatID))
+        var best: [String: Format] = [:]
+        var order: [String] = []
+        for format in formats ?? [] {
+            guard let language = format.language, !seen.contains(language), format.hasAudio, !format.hasVideo,
+                format.url != nil, !chosenIDs.contains(format.formatID ?? ""),
+                format.protocol == "https" || format.protocol == "http",
+                Self.codecFamily(of: format.acodec) == codec,
+                format.formatID?.contains("drc") != true, format.formatNote?.contains("DRC") != true
+            else { continue }
+            let bitrate = { (format: Format) in format.abr ?? format.tbr ?? 0 }
+            if let current = best[language] {
+                if bitrate(format) > bitrate(current) { best[language] = format }
+            } else {
+                best[language] = format
+                order.append(language)
+            }
+        }
+        return order.compactMap { best[$0] }
+    }
+
+    private static func codecFamily(of codec: String?) -> String {
+        codec.flatMap { $0.split(separator: ".").first.map { String($0).lowercased() } } ?? ""
+    }
+
+    private static func audioFile(of format: Format, isRequired: Bool) -> MediaLoadRequest.AudioFile? {
+        guard let url = format.url.flatMap(URL.init(string:)) else { return nil }
+        // FFmpeg's names for the codecs of the formats' codec strings.
+        let codecName =
+            switch codecFamily(of: format.acodec) {
+            case "mp4a": "aac"
+            case "ec-3": "eac3"
+            case "ac-3": "ac3"
+            case let name: name
+            }
+        return MediaLoadRequest.AudioFile(
+            url: url, title: audioTitle(of: format), language: format.language, headers: format.httpHeaders,
+            isRequired: isRequired, httpRequestSize: format.downloaderOptions?.httpChunkSize,
+            // The one read with the media is opened with it, and tells its streams itself.
+            declaredStream: isRequired
+                ? nil
+                : .init(
+                    codecName: codecName, channels: format.audioChannels ?? 2, sampleRate: format.sampleRate ?? 48000))
     }
 
     /// The title of an audio format's track: its codec, and whether it is the original among dubs (YouTube notes
@@ -162,6 +275,8 @@ struct YTDLPInfo: Decodable, Sendable {
         case "": name = "Audio"
         default: name = codec
         }
-        return format.formatNote?.contains("original") == true ? "\(name), original" : name
+        let note = format.formatNote ?? ""
+        if note.contains("original") { return "\(name), original" }
+        return note.contains("dubbed") ? "\(name), dubbed" : name
     }
 }

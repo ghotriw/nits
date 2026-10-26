@@ -10,6 +10,8 @@ extension PlayerEngine {
     /// new track up to a second ahead of the picture, further with every switch. An exact seek to the current frame
     /// re-reads both from there (as mpv does); the seek keeps playing or paused as it was.
     public func selectAudioTrack(id: Int) {
+        // Whatever is chosen now, even the track playing, replaces a choice still waiting for its file to open.
+        inputs?.awaitedAudioTrackId = nil
         if id == selectedAudioTrackId, let inputs, inputs.isAudioSelectionAutomatic {
             // Choosing the track picked on load keeps it for the file, whatever the language settings become.
             inputs.keepAudioSelection()
@@ -18,6 +20,29 @@ extension PlayerEngine {
         }
         // Checked before feeding stops: a track that isn't there must leave the one playing heard.
         guard let inputs, id != selectedAudioTrackId, inputs.audioTracks.contains(where: { $0.id == id }) else {
+            return
+        }
+        // A file only declared opens first, and the track playing stays heard meanwhile.
+        if let url = inputs.unopenedFile(ofTrack: id) {
+            inputs.awaitedAudioTrackId = id
+            AppLog.info(.audio, "Opening \(url.host ?? url.lastPathComponent) for audio track: \(id)")
+            Task { @MainActor [weak self] in
+                // Tried again briefly, as a network file of a load is.
+                var opened = await inputs.openExternalAudio(url: url)
+                if opened.isEmpty, inputs.awaitedAudioTrackId == id {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if inputs.awaitedAudioTrackId == id { opened = await inputs.openExternalAudio(url: url) }
+                }
+                guard let self, self.inputs === inputs, inputs.awaitedAudioTrackId == id else { return }
+                guard !opened.isEmpty else {
+                    // Offered no more, as on load: a track that never plays only invites the same click again.
+                    inputs.awaitedAudioTrackId = nil
+                    inputs.dropUnopenedFile(at: url)
+                    self.audioTracks = inputs.audioTracks
+                    return
+                }
+                self.selectAudioTrack(id: id)
+            }
             return
         }
         AppLog.info(.audio, "Switching to audio track: \(id)")
@@ -90,6 +115,26 @@ extension PlayerEngine {
         isVariantAutomatic = false
         if demuxer.readsAhead, readsAnother {
             seek(to: rereadPosition, exact: true)
+        }
+    }
+
+    /// Plays another picture of the page (`videoFormats`) from the current frame. A file of its own, not a variant of one
+    /// playlist: the media is loaded again from the streams already resolved, at the position, paused as it was and with
+    /// the audio track it played (opened again, as the media's own), so playback stops for the time they open.
+    public func selectVideoFormat(id: String) {
+        guard let source = resolvedSource else { return }
+        // A track chosen on load again is chosen by the settings again; the viewer's choice is kept.
+        let audioTrack = inputs.flatMap { $0.isAudioSelectionAutomatic ? nil : String($0.selectedAudioTrackId) }
+        guard
+            let (request, media) = source.switching(
+                to: id, startTime: rereadPosition, audioTrack: audioTrack, title: mediaTitle,
+                artworkData: artworkData, artworkURL: artworkURL)
+        else { return }
+        let wasPaused = playbackState == .paused
+        AppLog.info(.engine, "Switching to video format \(id)")
+        loadingTask?.cancel()
+        loadingTask = Task { @MainActor [weak self] in
+            await self?.loadAsyncKeepingHostState(request, preResolved: media, startsPaused: wasPaused)
         }
     }
 

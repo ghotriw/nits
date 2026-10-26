@@ -42,10 +42,30 @@ public struct MediaLoadRequest: Sendable, Equatable {
         /// with, as `headers` (the request's, or a resolved page's); 0 for the rest of the file in one request, whatever
         /// that is (a load gives the request's own files 0 when a page's size would otherwise apply).
         public var httpRequestSize: Int?
+        /// The one audio stream the file holds, when the host knows it. Its track is listed without opening the file,
+        /// which is opened when the track is selected (a file that is `isRequired` is opened with the media anyway):
+        /// a page with a dub in twenty languages doesn't open twenty files to list them.
+        public var declaredStream: DeclaredStream?
+
+        /// What the menu shows of a file's stream, and a decoder isn't made from: the file tells the rest once opened.
+        public struct DeclaredStream: Sendable, Equatable {
+            public var codecName: String
+            public var channels: Int
+            public var sampleRate: Int
+
+            public init(codecName: String, channels: Int = 2, sampleRate: Int = 48000) {
+                self.codecName = codecName
+                self.channels = channels
+                self.sampleRate = sampleRate
+            }
+        }
+
+        /// Listed without being opened (`declaredStream`), until its track is selected.
+        var isLazy: Bool { declaredStream != nil && !isRequired }
 
         public init(
             url: URL, title: String? = nil, language: String? = nil, headers: [String: String]? = nil,
-            isRequired: Bool = false, httpRequestSize: Int? = nil
+            isRequired: Bool = false, httpRequestSize: Int? = nil, declaredStream: DeclaredStream? = nil
         ) {
             self.url = url
             self.title = title
@@ -53,6 +73,7 @@ public struct MediaLoadRequest: Sendable, Equatable {
             self.headers = headers
             self.isRequired = isRequired
             self.httpRequestSize = httpRequestSize
+            self.declaredStream = declaredStream
         }
     }
 

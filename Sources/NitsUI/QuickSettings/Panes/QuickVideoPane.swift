@@ -65,6 +65,41 @@ public struct QuickVideoPane: View {
         }
     }
 
+    /// The pictures a page offers as files of their own: choosing one plays it from the current frame, after a pause
+    /// while it opens. What yt-dlp chose is the one playing until then.
+    private var videoFormatSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Quality", systemImage: "square.stack.3d.up")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+
+            Picker(
+                "Quality",
+                selection: Binding(
+                    get: { engine.selectedVideoFormatId },
+                    set: { id in
+                        if let id { engine.selectVideoFormat(id: id) }
+                    }
+                )
+            ) {
+                ForEach(engine.videoFormats) { format in
+                    Text(Self.videoFormatTitle(format)).tag(Optional(format.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+        }
+    }
+
+    /// "1920×1080 • 60 fps • AV1 • 0.9 Mbit/s"
+    static func videoFormatTitle(_ format: VideoFormat) -> String {
+        var parts = ["\(format.width)×\(format.height)"]
+        if let fps = format.frameRate, fps > 30 { parts.append("\(Int(fps.rounded())) fps") }
+        if !format.codec.isEmpty { parts.append(format.codec) }
+        if format.bitrate > 0 { parts.append(String(format: "%.1f Mbit/s", Double(format.bitrate) / 1_000_000)) }
+        return parts.joined(separator: " • ")
+    }
+
     /// "Auto", with the variant playing while it chooses.
     private var automaticTitle: String {
         guard engine.isVariantAutomatic,
@@ -271,12 +306,17 @@ public struct QuickVideoPane: View {
                 .foregroundStyle(.white.opacity(0.55))
             }
 
-            // HLS variants
+            // HLS variants, or the files a page offers
             if engine.variants.filter(\.isSwitchable).count > 1 {
                 Divider()
                     .overlay(Color.white.opacity(0.12))
 
                 qualitySection
+            } else if engine.videoFormats.count > 1 {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+
+                videoFormatSection
             }
 
             // Picture geometry: aspect ratio, crop, scaling, zoom

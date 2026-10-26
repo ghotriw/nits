@@ -69,6 +69,7 @@ extension PlayerEngine {
     private func resetMediaState(reportingTracks: Bool) {
         // First: it saves the selected tracks and a seek's target, both cleared below.
         saveCurrentPlaybackProgress()
+        resolvedSource = nil
         resetRelativeSeekBurst()
         let seekId = currentSeekId + 1
         currentSeekId = seekId
@@ -231,7 +232,13 @@ extension PlayerEngine {
 
     /// `loadAsync` for loads `load(_:)` started: it already applied the request's host state (`applyHostState`), and
     /// the host may have replaced it since.
-    private func loadAsyncKeepingHostState(_ request: MediaLoadRequest) async {
+    ///
+    /// - Parameters:
+    ///   - preResolved: The page's streams already found (`selectVideoFormat`): the resolver isn't asked again.
+    ///   - startsPaused: The load ends paused, on its first frame.
+    func loadAsyncKeepingHostState(
+        _ request: MediaLoadRequest, preResolved: ResolvedMedia? = nil, startsPaused: Bool = false
+    ) async {
         let path = request.path
         let (loadID, interruptContext) = resetPlaybackTrackingState(
             for: path,
@@ -239,6 +246,7 @@ extension PlayerEngine {
             artworkData: request.artworkData,
             artworkURL: request.artworkURL
         )
+        if startsPaused { playbackState = .paused }
         // However the load ends without new tracks (a failure, a cancel), the cleared ones are reported; unless
         // another load replaced it, which reports its own.
         defer {
@@ -278,15 +286,27 @@ extension PlayerEngine {
         var buttonsFromResolver: [PlaybackActionButton] = []
         let resolver = mediaResolver
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
-        let order = pageURL.flatMap { resolver?.order(for: $0) }
+        let order =
+            preResolved != nil ? MediaResolutionOrder.beforeOpening : pageURL.flatMap { resolver?.order(for: $0) }
+        // The streams given are used until they fail to open: they may have expired since they were found, and the
+        // resolver is then asked, for the picture that was chosen.
+        var known = preResolved
+        let wantedFormat = preResolved?.selectedVideoFormatID
 
         enum Resolution { case resolved, declined, ended }
         /// Asks the resolver for the page's streams; those open from here on. A resolver's error fails the load.
         func resolve() async -> Resolution {
-            guard let resolver, let pageURL else { return .declined }
+            if known == nil, resolver == nil || pageURL == nil { return .declined }
             let resolved: ResolvedMedia?
             do {
-                resolved = try await resolver.resolve(pageURL, headers: request.headers)
+                if let known {
+                    resolved = known
+                } else if let resolver, let pageURL {
+                    let found = try await resolver.resolve(pageURL, headers: request.headers)
+                    resolved = found.map { media in wantedFormat.flatMap(media.selecting(videoFormat:)) ?? media }
+                } else {
+                    resolved = nil
+                }
             } catch {
                 if endIfSuperseded() { return .ended }
                 // Asked once the URL failed to open, a resolver that only failed to read it as well (yt-dlp's generic
@@ -301,6 +321,7 @@ extension PlayerEngine {
             }
             if endIfSuperseded() { return .ended }
             guard let resolved else { return .declined }
+            resolvedSource = ResolvedSource(request: request, media: resolved)
             source.path = Self.normalizeMediaPath(resolved.path)
             source.headers = resolved.headers
             source.httpRequestSize = resolved.httpRequestSize
@@ -361,6 +382,19 @@ extension PlayerEngine {
         if order == .beforeOpening, await resolve() == .ended { return }
         var newDemuxer = await openSource()
         if endIfSuperseded() { return }
+        if newDemuxer == nil, known != nil, resolver != nil, pageURL != nil,
+            !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false)
+        {
+            AppLog.info(.engine, "The streams of '\(path)' found earlier didn't open: asking the resolver again")
+            known = nil
+            switch await resolve() {
+            case .ended: return
+            case .declined: break
+            case .resolved:
+                newDemuxer = await openSource()
+                if endIfSuperseded() { return }
+            }
+        }
         // Not when it couldn't even reach the host: the resolver couldn't either, and would only add its own timeout.
         if newDemuxer == nil, order == .afterOpeningFails,
             !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false)
@@ -397,7 +431,7 @@ extension PlayerEngine {
         // holds the load), as the media is.
         for attempt in 1...2 {
             let missing = lookup.requested.filter { file in
-                !file.url.isFileURL && !externalAudio.contains { $0.file.url == file.url }
+                !file.isLazy && !file.url.isFileURL && !externalAudio.contains { $0.file.url == file.url }
             }
             guard !missing.isEmpty else { break }
             AppLog.warning(.audio, "Opening \(missing.count) audio file(s) again in \(attempt * 250)ms")
@@ -426,9 +460,25 @@ extension PlayerEngine {
                 logging: "Failed to open the audio of '\(path)': \(lost.url.absoluteString)")
             return
         }
+        let inputs = Self.makeInputs(main: demuxer, requested: lookup.requested, opened: externalAudio)
+        // The track to start with may be in a file only declared: opened before the media starts, as it is the one heard.
+        let saved = historyStore.savedPreferences(for: historyKey)
+        if let url = inputs.unopenedFileToStartWith(
+            requested: request.audioTrack, saved: saved, languages: configuration.trackLanguages.audioLanguages)
+        {
+            // Aborted with the load (`interruptContext`), as the media's own opening is.
+            if await inputs.openExternalAudio(url: url, interrupt: interruptContext).isEmpty {
+                inputs.dropUnopenedFile(at: url)
+            }
+            if endIfSuperseded() {
+                inputs.cancel()
+                return
+            }
+        }
 
         applyLoadedDemuxer(
             demuxer,
+            inputs: inputs,
             path: path,
             sourcePath: source.path,
             historyKey: historyKey,
@@ -437,7 +487,6 @@ extension PlayerEngine {
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
-            externalAudio: externalAudio,
             resolvedTitle: resolvedTitle,
             resolvedChapters: chaptersFromResolver,
             resolvedActionButtons: buttonsFromResolver
@@ -490,8 +539,14 @@ extension PlayerEngine {
             return
         }
 
+        // Opened with the media: there is no waiting for a file in a synchronous load.
+        var lookup = externalAudioLookup(for: path, historyKey: path, source: request, demuxer: demuxer)
+        for index in lookup.requested.indices { lookup.requested[index].declaredStream = nil }
         applyLoadedDemuxer(
             demuxer,
+            inputs: Self.makeInputs(
+                main: demuxer, requested: lookup.requested,
+                opened: Self.openExternalAudio(lookup, interrupt: interruptContext)),
             path: path,
             sourcePath: path,
             historyKey: path,
@@ -499,10 +554,7 @@ extension PlayerEngine {
             httpRequestSize: request.httpRequestSize,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
-            requestedSubtitleTrack: request.subtitleTrack,
-            externalAudio: Self.openExternalAudio(
-                externalAudioLookup(for: path, historyKey: path, source: request, demuxer: demuxer),
-                interrupt: interruptContext)
+            requestedSubtitleTrack: request.subtitleTrack
         )
     }
 
@@ -677,7 +729,10 @@ extension PlayerEngine {
         _ lookup: ExternalAudioLookup, interrupt: MediaDemuxer.InterruptContext
     ) -> [OpenedAudioFile] {
         var files: [MediaLoadRequest.AudioFile] = []
-        for file in lookup.requested where !files.contains(where: { $0.url == file.url }) { files.append(file) }
+        // A file declared (`MediaLoadRequest.AudioFile.declaredStream`) opens when its track is selected.
+        for file in lookup.requested where !file.isLazy && !files.contains(where: { $0.url == file.url }) {
+            files.append(file)
+        }
         if let mediaPath = lookup.sidecarsOf {
             let mediaURL = URL(string: mediaPath).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: mediaPath)
             for url in SidecarAudio.urls(for: mediaURL).map(\.standardizedFileURL)
@@ -712,22 +767,40 @@ extension PlayerEngine {
         return files.indices.compactMap { index in demuxers[index].map { (files[index], $0) } }
     }
 
-    func applyLoadedDemuxer(
-        _ demuxer: MediaDemuxer, path: String, sourcePath: String, historyKey: String, headers: [String: String],
-        httpRequestSize: Int? = nil, requestedStartTime: Double?,
-        requestedAudioTrack: String?, requestedSubtitleTrack: String?,
-        externalAudio: [OpenedAudioFile] = [], resolvedTitle: String? = nil,
-        resolvedChapters: [MediaChapter] = [],
-        resolvedActionButtons: [PlaybackActionButton] = []
-    ) {
-        resetRelativeSeekBurst()
+    /// The inputs of a media just opened: the audio files in the order asked for (those declared listed, the rest
+    /// opened), then those found next to it.
+    static func makeInputs(
+        main demuxer: MediaDemuxer, requested: [MediaLoadRequest.AudioFile], opened: [OpenedAudioFile]
+    ) -> PlaybackInputs {
         let inputs = PlaybackInputs(main: demuxer)
-        self.inputs = inputs
-        for file in externalAudio {
+        var rest = opened
+        let attach = { (file: OpenedAudioFile) in
             let added = inputs.attachExternalAudio(
                 file.demuxer, url: file.file.url, title: file.file.title, language: file.file.language)
             AppLog.info(.audio, "Found \(added.count) audio track(s) in \(file.file.url.lastPathComponent)")
         }
+        for file in requested {
+            if file.isLazy {
+                inputs.declareExternalAudio(file)
+            } else if let index = rest.firstIndex(where: { $0.file.url == file.url }) {
+                attach(rest.remove(at: index))
+            }
+        }
+        rest.forEach(attach)
+        return inputs
+    }
+
+    func applyLoadedDemuxer(
+        _ demuxer: MediaDemuxer, inputs: PlaybackInputs, path: String, sourcePath: String, historyKey: String,
+        headers: [String: String],
+        httpRequestSize: Int? = nil, requestedStartTime: Double?,
+        requestedAudioTrack: String?, requestedSubtitleTrack: String?,
+        resolvedTitle: String? = nil,
+        resolvedChapters: [MediaChapter] = [],
+        resolvedActionButtons: [PlaybackActionButton] = []
+    ) {
+        resetRelativeSeekBurst()
+        self.inputs = inputs
         // In order (the main queue is FIFO; tasks aren't, at the different priorities of the reading thread and
         // `seekQueue`): a seek's change handled after the splice read past it would drop that splice.
         demuxer.onVariantChanged = { [weak self, weak demuxer] change in

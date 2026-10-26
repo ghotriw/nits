@@ -728,6 +728,17 @@ attached to it. `FFAudioDecoder` resamples via `swr_convert` using `extended_dat
 8 plane pointers) and re-creates its `SwrContext` whenever sample format, rate or channel layout
 changes mid-stream (e.g. 5.1 → stereo after a track switch).
 
+### Video formats of a page
+
+A resolved page (yt-dlp) may offer its pictures as files of their own (`ResolvedMedia.videoFormats`, the progressive
+HTTP(S) formats of the kind `-f` chose, the best bitrate per size, frame rate and codec). Unlike an HLS variant, a
+format is another input, not other streams of the one open, so switching (`PlayerEngine.selectVideoFormat`) loads the
+media again: `resolvedSource` keeps the page as resolved and the request that asked, and the load reruns from them
+(`loadAsyncKeepingHostState(preResolved:)`, the resolver not asked again: its answer is slow, the URLs live hours),
+at `rereadPosition`, paused if it was, with the audio track the viewer chose. The audio files open again with it,
+so playback stops for the time they and the picture take to open. There is no automatic choice: the network is not
+the bottleneck of progressive files read in chunks, and "default" is what yt-dlp chose.
+
 ### Audio from another input
 
 An audio track can come from a file of its own (a dub next to the video; a host's or a resolved page's separate audio,
@@ -741,6 +752,13 @@ plays, the media's demuxer has none selected (`selectAudioTrack(trackId: nil)`) 
 read-ahead thread and none is taken while another's is held, so a second input adds no lock order; a file starts
 reading ahead on its first selection and reads nothing while none of its tracks is selected.
 
+- **Declared files**: a file that holds one stream the host knows (`AudioFile.declaredStream`, which yt-dlp's
+  formats give for each language of a dubbed video) isn't opened with the media: `declareExternalAudio` lists its track
+  from the declaration and the demuxer is `nil` until the track is selected. The engine opens it then
+  (`PlaybackInputs.openExternalAudio`, with the headers and request size declared) and switches when it is open,
+  meanwhile the track playing stays heard (`awaitedAudioTrackId` drops the switch if another track is chosen). The track
+  to start with is decided before the media is applied (`unopenedFileToStartWith`, the same choice as
+  `selectAudioTrackOnLoad`), and its file opened first. A file that is `isRequired` is opened with the media regardless.
 - **Seeks** position the file's input on `seekQueue` after the seek preview: where the picture landed (a keyframe seek
   lands seconds off the target), minus the audio delay. Interleaved in one file, audio is read from the keyframe on and
   trimmed (`setTargetAudioPts`); a separate input would have skipped what lies before the target.

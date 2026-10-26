@@ -136,6 +136,12 @@ public protocol PlayerTrackControlling: AnyObject, Sendable {
     @MainActor var isVariantAutomatic: Bool { get }
     @MainActor func selectAutomaticVariant()
 
+    /// The pictures a resolved page offers as files of its own (yt-dlp's), best first; empty for anything else.
+    @MainActor var videoFormats: [VideoFormat] { get }
+    @MainActor var selectedVideoFormatId: String? { get }
+    /// Plays a picture of `videoFormats` instead, from the current frame; the audio and the rest stay.
+    @MainActor func selectVideoFormat(id: String)
+
     /// Seconds audio is shifted against the picture: positive plays it later, negative earlier.
     @MainActor var audioDelay: Double { get }
     @MainActor func setAudioDelay(_ seconds: Double)

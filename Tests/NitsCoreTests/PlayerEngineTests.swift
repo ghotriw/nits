@@ -789,6 +789,9 @@ struct PlayerEngineTests {
             func captureFrame() async -> CapturedFrame? { nil }
             func selectAudioTrack(id: Int) {}
             func selectVariant(id: Int) {}
+            var videoFormats: [VideoFormat] = []
+            var selectedVideoFormatId: String? = nil
+            func selectVideoFormat(id: String) {}
             func selectAutomaticVariant() {}
             func seekToChapter(_ chapter: MediaChapter) {}
             func nextChapter() -> MediaChapter? { nil }

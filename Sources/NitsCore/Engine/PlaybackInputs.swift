@@ -12,7 +12,11 @@ final class PlaybackInputs {
     /// An audio file added to the media.
     struct ExternalAudio {
         let url: URL
-        let demuxer: MediaDemuxer
+        /// `nil` for a file declared (`declareExternalAudio`) and not opened yet.
+        var demuxer: MediaDemuxer?
+        /// What a declared file is opened with once its track is selected.
+        let headers: [String: String]
+        let httpRequestSize: Int?
         /// Its tracks are numbered from here in `audioTracks` (`externalTrackIdBase` apart for each file).
         let firstTrackId: Int
         /// Its tracks as `audioTracks` lists them (`listedTracks`): renumbered, marked as the file's.
@@ -65,13 +69,23 @@ final class PlaybackInputs {
     /// Opens an audio file for its audio alone, off the main actor (it may be on a network), and adds it
     /// (`attachExternalAudio`). Returns its tracks: none when it can't be read or the inputs were cancelled meanwhile;
     /// `cancel()` aborts an opening stuck on a server.
-    func openExternalAudio(url: URL, headers: [String: String] = [:]) async -> [MediaDemuxer.AudioTrack] {
+    ///
+    /// A load still applying its inputs passes its own `interrupt`, which aborts the opening with the load: these inputs
+    /// aren't the engine's yet, so `PlayerEngine.stop()` doesn't `cancel()` them.
+    func openExternalAudio(
+        url: URL, headers: [String: String] = [:], interrupt: MediaDemuxer.InterruptContext? = nil
+    ) async -> [MediaDemuxer.AudioTrack] {
         let url = url.isFileURL ? url.standardizedFileURL : url
-        // A file added again is the one added before, or being opened.
-        if let added = externalAudio.first(where: { $0.url == url }) { return added.tracks }
+        let declared = externalAudio.first { $0.url == url }
+        // A file added again is the one added before, or being opened; one declared is opened with what it declared.
+        if let declared, declared.demuxer != nil { return declared.tracks }
         if let opening = pendingOpenings[url] { return await opening.value }
         guard !isCancelled else { return [] }
-        let opening = Task { await open(url: url, headers: headers) }
+        let opening = Task {
+            await open(
+                url: url, headers: declared?.headers ?? headers, httpRequestSize: declared?.httpRequestSize,
+                isDeclared: declared != nil, interrupt: interrupt)
+        }
         pendingOpenings[url] = opening
         defer { pendingOpenings[url] = nil }
         return await opening.value
@@ -80,16 +94,20 @@ final class PlaybackInputs {
     /// Files being opened (`openExternalAudio`), by URL.
     private var pendingOpenings: [URL: Task<[MediaDemuxer.AudioTrack], Never>] = [:]
 
-    private func open(url: URL, headers: [String: String]) async -> [MediaDemuxer.AudioTrack] {
-        let interrupt = MediaDemuxer.InterruptContext()
+    private func open(
+        url: URL, headers: [String: String], httpRequestSize: Int?, isDeclared: Bool,
+        interrupt parent: MediaDemuxer.InterruptContext?
+    ) async -> [MediaDemuxer.AudioTrack] {
+        let interrupt = parent ?? MediaDemuxer.InterruptContext()
         openings.append(interrupt)
         defer { openings.removeAll { $0 === interrupt } }
         let opened = await Task.detached(priority: .userInitiated) {
-            Self.openAudioFile(url, headers: headers, interrupt: interrupt)
+            Self.openAudioFile(url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt)
         }.value
-        guard let opened, !isCancelled else {
+        // A declared file without the stream it declared (listed as the file's first) isn't the track listed.
+        guard let opened, !isCancelled, !isDeclared || opened.audioTracks.contains(where: { $0.id == 0 }) else {
             opened?.cancel()
-            if opened == nil, !isCancelled { AppLog.warning(.audio, "Can't read audio file \(url)") }
+            if !isCancelled { AppLog.warning(.audio, "Can't read audio file \(url)") }
             return []
         }
         let added = attachExternalAudio(opened, url: url)
@@ -117,13 +135,60 @@ final class PlaybackInputs {
         let url = url.isFileURL ? url.standardizedFileURL : url
         // Nothing of it is read until one of its tracks is selected.
         demuxer.selectAudioTrack(trackId: nil)
-        let firstTrackId = Self.firstExternalTrackId + externalAudio.count * Self.externalTrackIdBase
+        // Opened after being declared: it keeps the tracks listed.
+        if let index = externalAudio.firstIndex(where: { $0.url == url }) {
+            externalAudio[index].demuxer = demuxer
+            return externalAudio[index].tracks
+        }
+        let firstTrackId = nextFirstTrackId
         let file = ExternalAudio(
-            url: url, demuxer: demuxer, firstTrackId: firstTrackId,
+            url: url, demuxer: demuxer, headers: [:], httpRequestSize: nil, firstTrackId: firstTrackId,
             tracks: Self.listedTracks(
                 of: demuxer.audioTracks, from: url, firstId: firstTrackId, title: title, language: language))
         externalAudio.append(file)
         return file.tracks
+    }
+
+    /// Adds an audio file of one stream known beforehand (`MediaLoadRequest.AudioFile.declaredStream`) without opening
+    /// it: its track is listed, and the file opens when the track is selected (`openExternalAudio`). Returns the track.
+    @discardableResult
+    func declareExternalAudio(_ file: MediaLoadRequest.AudioFile) -> MediaDemuxer.AudioTrack? {
+        guard let stream = file.declaredStream else { return nil }
+        let url = file.url.isFileURL ? file.url.standardizedFileURL : file.url
+        if let added = externalAudio.first(where: { $0.url == url }) { return added.tracks.first }
+        let firstTrackId = nextFirstTrackId
+        let track = MediaDemuxer.AudioTrack(
+            id: 0, streamIndex: 0, title: "", language: "", codecName: stream.codecName, channels: stream.channels,
+            sampleRate: stream.sampleRate, isDefault: false)
+        let file = ExternalAudio(
+            url: url, demuxer: nil, headers: file.headers ?? [:], httpRequestSize: file.httpRequestSize,
+            firstTrackId: firstTrackId,
+            tracks: Self.listedTracks(
+                of: [track], from: url, firstId: firstTrackId, title: file.title, language: file.language))
+        externalAudio.append(file)
+        return file.tracks.first
+    }
+
+    /// Where the next file's tracks are numbered from: past those of the files listed. The ids of a dropped last file
+    /// (`dropUnopenedFile`) are free again; nothing lists them.
+    private var nextFirstTrackId: Int {
+        (externalAudio.map(\.firstTrackId).max()).map { $0 + Self.externalTrackIdBase } ?? Self.firstExternalTrackId
+    }
+
+    /// Takes a declared file out of the list, when it can't be opened and its track isn't to be offered.
+    func dropUnopenedFile(at url: URL) {
+        externalAudio.removeAll { $0.demuxer == nil && $0.url == url }
+    }
+
+    /// The file of track `id` when it is declared and not opened yet.
+    func unopenedFile(ofTrack id: Int) -> URL? {
+        externalAudio.first { $0.demuxer == nil && $0.tracks.contains { $0.id == id } }?.url
+    }
+
+    /// The track selected on load is in a file declared and not opened (`unopenedFile`): the file to open before the
+    /// media starts, which `selectAudioTrackOnLoad` then selects from.
+    func unopenedFileToStartWith(requested: String?, saved: PlaybackPreferences?, languages: [String]) -> URL? {
+        loadChoice(requested: requested, saved: saved, languages: languages).flatMap { unopenedFile(ofTrack: $0.id) }
     }
 
     /// A file's tracks as listed with the media's: marked "(External)" after the stream's own title ("Director's
@@ -168,18 +233,21 @@ final class PlaybackInputs {
             id >= $0.firstTrackId && id < $0.firstTrackId + Self.externalTrackIdBase
         }) {
             let trackId = id - file.firstTrackId
-            guard file.demuxer.audioTracks.contains(where: { $0.id == trackId }) else { return false }
-            main.selectAudioTrack(trackId: nil)
-            for other in externalAudio where other.demuxer !== file.demuxer {
-                other.demuxer.selectAudioTrack(trackId: nil)
+            // A declared file is opened first (`openExternalAudio`).
+            guard let demuxer = file.demuxer, demuxer.audioTracks.contains(where: { $0.id == trackId }) else {
+                return false
             }
-            file.demuxer.selectAudioTrack(trackId: trackId)
+            main.selectAudioTrack(trackId: nil)
+            for other in externalAudio where other.demuxer !== demuxer {
+                other.demuxer?.selectAudioTrack(trackId: nil)
+            }
+            demuxer.selectAudioTrack(trackId: trackId)
             // Read ahead as the media is (a network file), from its first selection on: unselected, it reads nothing.
-            if main.readsAhead || file.demuxer.isNetworkSource { file.demuxer.startReadAhead() }
-            selectedExternal = file.demuxer
+            if main.readsAhead || demuxer.isNetworkSource { demuxer.startReadAhead() }
+            selectedExternal = demuxer
         } else {
             guard main.readingDescription({ $0.audioTracks.contains { $0.id == id } }) else { return false }
-            for file in externalAudio { file.demuxer.selectAudioTrack(trackId: nil) }
+            for file in externalAudio { file.demuxer?.selectAudioTrack(trackId: nil) }
             main.selectAudioTrack(trackId: id)
             selectedExternal = nil
         }
@@ -187,6 +255,9 @@ final class PlaybackInputs {
         isAudioSelectionAutomatic = false
         return true
     }
+
+    /// The track the viewer chose in a file still opening: selected once it is, unless another is chosen meanwhile.
+    var awaitedAudioTrackId: Int?
 
     /// The selected track was chosen on load by `TrackAutoSelection`: it isn't saved for the media, until it is chosen
     /// (`keepAudioSelection`) or another one is.
@@ -203,25 +274,32 @@ final class PlaybackInputs {
     /// `PlayerEngine.resolveAudioTrackId`), else the one saved for it (a file's by its path), else by
     /// `TrackAutoSelection` and the `languages`, marked automatic. None fitting leaves the demuxer's.
     func selectAudioTrackOnLoad(requested: String?, saved: PlaybackPreferences?, languages: [String]) {
+        guard let choice = loadChoice(requested: requested, saved: saved, languages: languages) else { return }
+        // The track the demuxer already has selected needs no switch, when it is the automatic choice.
+        if !choice.isAutomatic || choice.id != selectedAudioTrackId {
+            selectAudioTrack(id: choice.id)
+            AppLog.info(.audio, choice.reason)
+        }
+        isAudioSelectionAutomatic = choice.isAutomatic
+    }
+
+    /// The track `selectAudioTrackOnLoad` starts with, and why.
+    private func loadChoice(requested: String?, saved: PlaybackPreferences?, languages: [String]) -> (
+        id: Int, reason: String, isAutomatic: Bool
+    )? {
         let tracks = audioTracks
         if let spec = requested, let id = PlayerEngine.resolveAudioTrackId(spec, in: tracks) {
-            selectAudioTrack(id: id)
-            AppLog.info(.audio, "Using explicit audio track: \(id)")
+            return (id, "Using explicit audio track: \(id)", false)
         } else if saved?.audioTrackId == PlaybackRecord.externalAudio, let path = saved?.externalAudioPath,
             let id = audioTrackId(inFileAt: path, streamIndex: saved?.externalAudioStreamIndex)
         {
-            selectAudioTrack(id: id)
-            AppLog.info(.audio, "Restored external audio file from saved history: \(path)")
+            return (id, "Restored external audio file from saved history: \(path)", false)
         } else if let id = saved?.audioTrackId, tracks.contains(where: { $0.id == id }) {
-            selectAudioTrack(id: id)
-            AppLog.info(.audio, "Restored audio track from saved history: \(id)")
+            return (id, "Restored audio track from saved history: \(id)", false)
         } else if let id = TrackAutoSelection.audioTrackId(in: tracks, languages: languages) {
-            if id != selectedAudioTrackId {
-                selectAudioTrack(id: id)
-                AppLog.info(.audio, "Selected audio track \(id) by language and default flag")
-            }
-            isAudioSelectionAutomatic = true
+            return (id, "Selected audio track \(id) by language and default flag", true)
         }
+        return nil
     }
 
     /// Writes the selected track to persist; one chosen on load by `TrackAutoSelection` isn't. A file's track is saved
@@ -267,7 +345,7 @@ final class PlaybackInputs {
     func cancel() {
         isCancelled = true
         main.cancel()
-        for file in externalAudio { file.demuxer.cancel() }
+        for file in externalAudio { file.demuxer?.cancel() }
         for opening in openings { opening.cancel() }
     }
 }

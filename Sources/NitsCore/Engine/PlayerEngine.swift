@@ -277,6 +277,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// local files only. Set by `NITS_READ_AHEAD_LOCAL=1`.
     nonisolated static let readsAheadLocalFiles = ProcessInfo.processInfo.environment["NITS_READ_AHEAD_LOCAL"] == "1"
 
+    /// What the resolver found for the page playing, with the request that asked (`selectVideoFormat`); `nil` for media
+    /// that wasn't resolved. Cleared by `resetMediaState`.
+    public internal(set) var resolvedSource: ResolvedSource?
+
+    /// The pictures the page offers as files of their own, best first; empty for anything else.
+    public var videoFormats: [VideoFormat] { resolvedSource?.media.videoFormats ?? [] }
+    /// The one playing, when it is one of `videoFormats`.
+    public var selectedVideoFormatId: String? { resolvedSource?.media.selectedVideoFormatID }
+
     /// The variants of an HLS master playlist, highest bandwidth first; empty for anything else.
     public var variants: [MediaDemuxer.StreamVariant] = [] {
         didSet {

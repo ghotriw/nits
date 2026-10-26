@@ -145,6 +145,244 @@ struct MediaResolverTests {
         #expect(lengths("dub").contains { $0 == nil }, "The host's file was read in the page's requests")
     }
 
+    @Test("An audio file declared with its stream is listed unopened and opened when its track is selected")
+    func opensDeclaredAudioWhenSelected() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: URL(fileURLWithPath: audio))
+        server.setResponder(forPath: "dub") { audioContents }
+        server.setResponder(forPath: "original") { audioContents }
+        let dub = try #require(URL(string: server.url("dub")))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+
+        engine.load(
+            MediaLoadRequest(
+                path: server.url(videoURL.lastPathComponent),
+                audioFiles: [
+                    .init(url: try #require(URL(string: server.url("original"))), language: "uk", isRequired: true),
+                    .init(
+                        url: dub, title: "FLAC, dubbed", language: "en",
+                        declaredStream: .init(codecName: "flac", channels: 2, sampleRate: 48000)),
+                ]))
+        await engine.waitForPendingLoad()
+        let track = try #require(engine.audioTracks.first { $0.externalURL == dub })
+        #expect(track.language == "en" && track.title == "FLAC, dubbed")
+        #expect(server.requests.filter { $0.path == "dub" }.isEmpty, "The file was opened to list its track")
+
+        engine.selectAudioTrack(id: track.id)
+        for _ in 0..<100 where engine.selectedAudioTrackId != track.id {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(engine.selectedAudioTrackId == track.id)
+        #expect(!server.requests.filter { $0.path == "dub" }.isEmpty)
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+    }
+
+    @Test("A declared file in the preferred language is opened before the media starts")
+    func opensDeclaredAudioInPreferredLanguage() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: URL(fileURLWithPath: audio))
+        server.setResponder(forPath: "dub") { audioContents }
+        server.setResponder(forPath: "original") { audioContents }
+        let engine = PlayerEngine.makeForTesting(
+            configuration: PlayerConfiguration(
+                resumePlayback: false, trackLanguages: TrackLanguagePreferences(audioLanguages: ["en"])))
+        defer { engine.stop() }
+
+        engine.load(
+            MediaLoadRequest(
+                path: server.url(videoURL.lastPathComponent),
+                audioFiles: [
+                    .init(url: try #require(URL(string: server.url("original"))), language: "uk", isRequired: true),
+                    .init(
+                        url: try #require(URL(string: server.url("dub"))), language: "en",
+                        declaredStream: .init(codecName: "flac")),
+                ]))
+        await engine.waitForPendingLoad()
+        let selected = try #require(engine.audioTracks.first { $0.id == engine.selectedAudioTrackId })
+        #expect(selected.language == "en")
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+    }
+
+    @Test(
+        "Another picture of the page plays from the position it was left at, its audio kept, without asking the resolver again"
+    )
+    func switchesVideoFormat() async throws {
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let second = SyntheticTestMediaFactory.ensureMedia(preset: .vp9SDR),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let (firstURL, secondURL) = (URL(fileURLWithPath: first), URL(fileURLWithPath: second))
+        try #require(firstURL.deletingLastPathComponent() == secondURL.deletingLastPathComponent())
+        let server = try TestHTTPServer(root: firstURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: URL(fileURLWithPath: audio))
+        server.setResponder(forPath: "audio") { audioContents }
+        let (firstPath, secondPath) = (server.url(firstURL.lastPathComponent), server.url(secondURL.lastPathComponent))
+        let resolver = StubResolver(
+            .success(
+                ResolvedMedia(
+                    path: firstPath,
+                    audioFiles: [.init(url: try #require(URL(string: server.url("audio"))), isRequired: true)],
+                    videoFormats: [
+                        VideoFormat(id: "a", url: firstPath, width: 640, height: 360, codec: "H.264"),
+                        VideoFormat(id: "b", url: secondPath, width: 320, height: 180, codec: "VP9"),
+                    ], selectedVideoFormatID: "a")))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=nits"))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        #expect(engine.videoFormats.map(\.id) == ["a", "b"] && engine.selectedVideoFormatId == "a")
+        let audioFile = try #require(engine.audioTracks.first { $0.externalURL != nil }).externalURL
+
+        engine.selectVideoFormat(id: "b")
+        await engine.waitForPendingLoad()
+        #expect(engine.selectedVideoFormatId == "b")
+        #expect(engine.currentSourcePath == secondPath)
+        #expect(engine.currentPath == "https://video.example/watch?v=nits")
+        #expect(engine.audioTracks.contains { $0.externalURL == audioFile }, "The page's audio was lost")
+        #expect(resolver.pages.count == 1, "The page was resolved again")
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+    }
+
+    /// Asked for a page again, tells `answers` in turn (the last one for any later).
+    final class SequenceResolver: MediaResolver {
+        private let answers: [ResolvedMedia]
+        private let asked = OSAllocatedUnfairLock(initialState: 0)
+
+        init(_ answers: [ResolvedMedia]) { self.answers = answers }
+
+        var count: Int { asked.withLock { $0 } }
+
+        func order(for url: URL) -> MediaResolutionOrder? { url.path == "/watch" ? .beforeOpening : nil }
+
+        func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
+            let index = asked.withLock { count -> Int in
+                defer { count += 1 }
+                return count
+            }
+            return answers[min(index, answers.count - 1)]
+        }
+    }
+
+    @Test("Streams found earlier that no longer open are found again for the picture chosen")
+    func asksResolverAgainWhenFormatExpired() async throws {
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let second = SyntheticTestMediaFactory.ensureMedia(preset: .vp9SDR)
+        else { return }
+        let (firstURL, secondURL) = (URL(fileURLWithPath: first), URL(fileURLWithPath: second))
+        try #require(firstURL.deletingLastPathComponent() == secondURL.deletingLastPathComponent())
+        let server = try TestHTTPServer(root: firstURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let (firstPath, secondPath) = (server.url(firstURL.lastPathComponent), server.url(secondURL.lastPathComponent))
+        let expired = server.url("expired.mp4")
+        let formats = { (secondURL: String) in
+            [
+                VideoFormat(id: "a", url: firstPath, width: 640, height: 360, codec: "H.264"),
+                VideoFormat(id: "b", url: secondURL, width: 320, height: 180, codec: "VP9"),
+            ]
+        }
+        // Its own links have expired by the time the second is chosen: the first answer's, as the engine kept them.
+        let resolver = SequenceResolver([
+            ResolvedMedia(path: firstPath, videoFormats: formats(expired), selectedVideoFormatID: "a"),
+            ResolvedMedia(path: firstPath, videoFormats: formats(secondPath), selectedVideoFormatID: "a"),
+        ])
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.mediaResolver = resolver
+
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=nits"))
+        await engine.waitForPendingLoad()
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+
+        engine.selectVideoFormat(id: "b")
+        await engine.waitForPendingLoad()
+        #expect(resolver.count == 2, "The resolver was asked \(resolver.count) time(s)")
+        #expect(engine.selectedVideoFormatId == "b" && engine.currentSourcePath == secondPath)
+        #expect(engine.playbackState != .failed(engine.loadError ?? ""))
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+    }
+
+    @Test("A declared audio file that can't be opened is dropped from the tracks, the one playing staying")
+    func dropsDeclaredAudioThatWontOpen() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: URL(fileURLWithPath: audio))
+        server.setResponder(forPath: "original") { audioContents }
+        let gone = try #require(URL(string: server.url("gone.mka")))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+
+        engine.load(
+            MediaLoadRequest(
+                path: server.url(videoURL.lastPathComponent),
+                audioFiles: [
+                    .init(url: try #require(URL(string: server.url("original"))), language: "uk", isRequired: true),
+                    .init(url: gone, language: "en", declaredStream: .init(codecName: "flac")),
+                ]))
+        await engine.waitForPendingLoad()
+        let playing = engine.selectedAudioTrackId
+        let declared = try #require(engine.audioTracks.first { $0.externalURL == gone })
+
+        engine.selectAudioTrack(id: declared.id)
+        for _ in 0..<100 where engine.audioTracks.contains(where: { $0.externalURL == gone }) {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(!engine.audioTracks.contains { $0.externalURL == gone }, "The track stayed offered")
+        #expect(engine.selectedAudioTrackId == playing)
+    }
+
+    @Test("Choosing the track playing while another's file opens cancels that choice")
+    func laterChoiceCancelsAwaitedTrack() async throws {
+        guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let audio = SyntheticTestMediaFactory.ensureMedia(preset: .audioOnlyFLAC)
+        else { return }
+        let videoURL = URL(fileURLWithPath: video)
+        let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
+        defer { server.stop() }
+        let audioContents = try Data(contentsOf: URL(fileURLWithPath: audio))
+        server.setResponder(forPath: "original") { audioContents }
+        server.setResponder(forPath: "dub") { audioContents }
+        server.setBehavior(TestHTTPServer.Behavior(delay: .seconds(1)), forPaths: { $0 == "dub" })
+        let dub = try #require(URL(string: server.url("dub")))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+
+        engine.load(
+            MediaLoadRequest(
+                path: server.url(videoURL.lastPathComponent),
+                audioFiles: [
+                    .init(url: try #require(URL(string: server.url("original"))), language: "uk", isRequired: true),
+                    .init(url: dub, language: "en", declaredStream: .init(codecName: "flac")),
+                ]))
+        await engine.waitForPendingLoad()
+        let playing = engine.selectedAudioTrackId
+        let declared = try #require(engine.audioTracks.first { $0.externalURL == dub })
+
+        engine.selectAudioTrack(id: declared.id)
+        engine.selectAudioTrack(id: playing)
+        try await Task.sleep(for: .seconds(2.5))
+        #expect(
+            engine.selectedAudioTrackId == playing, "The file's opening switched the sound after the choice was undone")
+    }
+
     @Test("A page with nothing to play fails the load with the resolver's reason; other URLs aren't resolved")
     func failsWithReason() async throws {
         guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }

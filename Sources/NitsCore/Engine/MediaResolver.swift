@@ -22,6 +22,40 @@ public enum MediaResolutionOrder: Sendable, Equatable {
     case afterOpeningFails
 }
 
+/// A picture a page offers as a file of its own (yt-dlp's progressive formats), which the viewer may play instead of the
+/// one chosen. Switching opens it as the media, the audio files and the position staying.
+public struct VideoFormat: Sendable, Equatable, Identifiable {
+    /// Names it among the page's (yt-dlp's `format_id`).
+    public var id: String
+    public var url: String
+    public var width: Int
+    public var height: Int
+    public var frameRate: Double?
+    /// As shown ("AV1", "VP9", "H.264").
+    public var codec: String
+    /// Bits per second; 0 when unknown.
+    public var bitrate: Int
+    /// What its requests ask for (`MediaLoadRequest.httpRequestSize`) and are read with, in place of the page's.
+    public var httpRequestSize: Int?
+    public var headers: [String: String]?
+
+    public init(
+        id: String, url: String, width: Int, height: Int, frameRate: Double? = nil, codec: String = "",
+        bitrate: Int = 0,
+        httpRequestSize: Int? = nil, headers: [String: String]? = nil
+    ) {
+        self.id = id
+        self.url = url
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.codec = codec
+        self.bitrate = bitrate
+        self.httpRequestSize = httpRequestSize
+        self.headers = headers
+    }
+}
+
 /// The streams a `MediaResolver` found for a page.
 public struct ResolvedMedia: Sendable, Equatable {
     /// The stream with the picture (or the only one), opened as the media.
@@ -43,12 +77,19 @@ public struct ResolvedMedia: Sendable, Equatable {
     public var historyKey: String?
     /// Action buttons for spans of the timeline (e.g. SponsorBlock "Skip Sponsor" / "Skip Intro").
     public var actionButtons: [PlaybackActionButton]
+    /// The pictures the page offers, best first, and which of them `path` is (`nil` when it is none of them); empty
+    /// when there is nothing to choose from.
+    public var videoFormats: [VideoFormat]
+    public var selectedVideoFormatID: String?
 
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],
         chapters: [MediaChapter] = [], title: String? = nil, historyKey: String? = nil,
-        actionButtons: [PlaybackActionButton] = [], httpRequestSize: Int? = nil
+        actionButtons: [PlaybackActionButton] = [], httpRequestSize: Int? = nil, videoFormats: [VideoFormat] = [],
+        selectedVideoFormatID: String? = nil
     ) {
+        self.videoFormats = videoFormats
+        self.selectedVideoFormatID = selectedVideoFormatID
         self.path = path
         self.headers = headers
         self.httpRequestSize = httpRequestSize
@@ -74,4 +115,18 @@ public struct MediaResolutionError: Error, Sendable, Equatable, CustomStringConv
     }
 
     public var description: String { message }
+}
+
+extension ResolvedMedia {
+    /// The streams with the picture `id` of `videoFormats` as the media, read with its headers and request size;
+    /// `nil` when the page has no such picture.
+    public func selecting(videoFormat id: String) -> ResolvedMedia? {
+        guard let format = videoFormats.first(where: { $0.id == id }) else { return nil }
+        var media = self
+        media.path = format.url
+        media.selectedVideoFormatID = id
+        if let headers = format.headers { media.headers = headers }
+        media.httpRequestSize = format.httpRequestSize
+        return media
+    }
 }

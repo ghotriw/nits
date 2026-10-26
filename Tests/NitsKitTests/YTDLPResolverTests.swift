@@ -48,6 +48,75 @@ struct YTDLPResolverTests {
         #expect(resolved.actionButtons.isEmpty)
     }
 
+    @Test(
+        "The page's other audio languages are listed after the one chosen, each its best progressive stream in the chosen codec, to open when selected"
+    )
+    func listsOtherAudioLanguages() throws {
+        let json = """
+            {"_type": "video", "id": "dub", "title": "Dubbed", "extractor_key": "Youtube",
+             "requested_formats": [
+               {"url": "https://media.example/video", "protocol": "https", "vcodec": "av01", "acodec": "none"},
+               {"url": "https://media.example/uk", "protocol": "https", "vcodec": "none", "acodec": "opus",
+                "language": "uk", "format_note": "Ukrainian original (default), medium"}
+             ],
+             "formats": [
+               {"format_id": "251-0", "url": "https://media.example/en-low", "protocol": "https", "vcodec": "none",
+                "acodec": "opus", "language": "en-US", "format_note": "English (US) dubbed-auto, low", "abr": 40},
+               {"format_id": "251-0", "url": "https://media.example/en", "protocol": "https", "vcodec": "none",
+                "acodec": "opus", "language": "en-US", "format_note": "English (US) dubbed-auto, medium",
+                "abr": 130, "audio_channels": 2, "asr": 48000},
+               {"format_id": "251-drc", "url": "https://media.example/en-drc", "protocol": "https", "vcodec": "none",
+                "acodec": "opus", "language": "en-US", "abr": 200},
+               {"format_id": "140-0", "url": "https://media.example/en-aac", "protocol": "https", "vcodec": "none",
+                "acodec": "mp4a.40.2", "language": "en-US", "abr": 130},
+               {"format_id": "251", "url": "https://media.example/uk-again", "protocol": "https", "vcodec": "none",
+                "acodec": "opus", "language": "uk", "abr": 130},
+               {"format_id": "hls-de", "url": "https://media.example/de.m3u8", "protocol": "m3u8_native",
+                "vcodec": "none", "acodec": "opus", "language": "de", "abr": 130}
+             ]}
+            """
+        let resolved = try #require(try info(json).resolvedMedia(for: Self.page))
+        #expect(
+            resolved.audioFiles.map(\.url.absoluteString) == ["https://media.example/uk", "https://media.example/en"])
+        #expect(resolved.audioFiles.map(\.isRequired) == [true, false])
+        #expect(resolved.audioFiles.map(\.title) == ["Opus, original", "Opus, dubbed"])
+        #expect(resolved.audioFiles[0].declaredStream == nil)
+        #expect(resolved.audioFiles[1].declaredStream == .init(codecName: "opus", channels: 2, sampleRate: 48000))
+    }
+
+    @Test(
+        "The page's other pictures of the kind chosen are offered, the best bitrate of each size and codec, best first")
+    func listsOtherPictures() throws {
+        let json = """
+            {"_type": "video", "id": "pic", "extractor_key": "Youtube",
+             "requested_formats": [
+               {"format_id": "399", "url": "https://media.example/v399", "protocol": "https", "vcodec": "av01.0.13M.08",
+                "acodec": "none", "width": 1920, "height": 1080, "fps": 30, "tbr": 2000},
+               {"url": "https://media.example/audio", "protocol": "https", "vcodec": "none", "acodec": "opus"}
+             ],
+             "formats": [
+               {"format_id": "399", "url": "https://media.example/v399", "protocol": "https", "vcodec": "av01.0.13M.08",
+                "acodec": "none", "width": 1920, "height": 1080, "fps": 30, "tbr": 2000},
+               {"format_id": "399p", "url": "https://media.example/v399p", "protocol": "https", "vcodec": "av01.0.13M.08",
+                "acodec": "none", "width": 1920, "height": 1080, "fps": 30, "tbr": 3000},
+               {"format_id": "248", "url": "https://media.example/v248", "protocol": "https", "vcodec": "vp9",
+                "acodec": "none", "width": 1920, "height": 1080, "fps": 30, "tbr": 2500},
+               {"format_id": "134", "url": "https://media.example/v134", "protocol": "https", "vcodec": "avc1.4d401e",
+                "acodec": "none", "width": 640, "height": 360, "fps": 30, "tbr": 600},
+               {"format_id": "18", "url": "https://media.example/v18", "protocol": "https", "vcodec": "avc1.42001E",
+                "acodec": "mp4a.40.2", "width": 640, "height": 360, "fps": 30, "tbr": 500},
+               {"format_id": "dash", "url": "https://media.example/dash", "protocol": "http_dash_segments",
+                "vcodec": "vp9", "acodec": "none", "width": 3840, "height": 2160, "fps": 30, "tbr": 9000},
+               {"format_id": "sb0", "url": "https://media.example/sb", "protocol": "mhtml", "vcodec": "none",
+                "acodec": "none", "width": 48, "height": 27}
+             ]}
+            """
+        let resolved = try #require(try info(json).resolvedMedia(for: Self.page))
+        #expect(resolved.selectedVideoFormatID == "399")
+        #expect(resolved.videoFormats.map(\.id) == ["248", "399", "134"], "\(resolved.videoFormats.map(\.id))")
+        #expect(resolved.videoFormats.map(\.codec) == ["VP9", "AV1", "H.264"])
+    }
+
     @Test("Reads author chapters from yt-dlp JSON into normalized MediaChapter markers")
     func readsAuthorChapters() throws {
         let json = """
