@@ -9,12 +9,15 @@ struct ChapterListView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
+                let showsThumbnails =
+                    !engine.thumbnailManager.thumbnails.isEmpty || engine.thumbnailManager.isGenerating
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(engine.media.chapters) { chapter in
                             ChapterRowView(
                                 chapter: chapter,
                                 thumbnail: engine.thumbnailManager.thumbnail(at: chapter.start),
+                                showsThumbnail: showsThumbnails,
                                 isCurrent: engine.currentChapterIndex == chapter.id,
                                 onSelect: {
                                     // Picking a chapter means "watch from here", like picking a playlist item.
@@ -81,10 +84,11 @@ struct ChapterListView: View {
     }
 }
 
-/// One chapter: preview frame, number, title, start time and length.
+/// One chapter: preview frame (when thumbnails exist or are generating), number, title, start time and length.
 private struct ChapterRowView: View {
     let chapter: MediaChapter
     let thumbnail: ThumbnailItem?
+    let showsThumbnail: Bool
     let isCurrent: Bool
     let onSelect: () -> Void
 
@@ -99,7 +103,9 @@ private struct ChapterRowView: View {
                 .foregroundStyle(isCurrent ? .primary : .secondary)
                 .frame(minWidth: 17, alignment: .trailing)
 
-            thumbnailView
+            if showsThumbnail {
+                thumbnailView
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(chapter.displayTitle)
