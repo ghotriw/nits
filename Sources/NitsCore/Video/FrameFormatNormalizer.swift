@@ -16,6 +16,8 @@ final class FrameFormatNormalizer: @unchecked Sendable {
         /// YCbCr matrix an RGB source was encoded with, which the pixel buffer must be tagged with; `nil` when
         /// the source already was YCbCr and keeps its own.
         let yCbCrMatrix: CFString?
+        /// Where libswscale put the chroma, which replaces the source's: centred, its default for both ends.
+        let chromaLocation: CFString = kCVImageBufferChromaLocation_Center
     }
 
     private struct Configuration: Equatable {

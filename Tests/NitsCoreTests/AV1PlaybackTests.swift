@@ -176,11 +176,18 @@ struct AV1PlaybackTests {
         guard let decoder = FFmpegVideoDecoder(codecParameters: codecParams, timebase: demuxer.timebase) else { return }
 
         let colorPrimariesObserved = LockIsolated<String?>(nil)
+        let hasColorSpace = LockIsolated(false)
+        let chromaLocation = LockIsolated<String?>(nil)
         decoder.setOutputHandler { frame in
             if let prim = CVBufferCopyAttachment(frame.pixelBuffer, kCVImageBufferColorPrimariesKey, nil) {
                 let primDesc = String(describing: prim)
                 colorPrimariesObserved.withValue { $0 = primDesc }
             }
+            let colorSpaced = CVBufferCopyAttachment(frame.pixelBuffer, kCVImageBufferCGColorSpaceKey, nil) != nil
+            hasColorSpace.withValue { $0 = colorSpaced }
+            let location =
+                CVBufferCopyAttachment(frame.pixelBuffer, kCVImageBufferChromaLocationTopFieldKey, nil) as? String
+            chromaLocation.withValue { $0 = location }
         }
 
         // Decode 5 frames, then trigger drain()
@@ -191,6 +198,9 @@ struct AV1PlaybackTests {
         }
         decoder.drain()
         #expect(colorPrimariesObserved.value != nil)
+        // The native display layer colour-manages by the CGColorSpace; without it some SDR AV1 showed too dark.
+        #expect(hasColorSpace.value)
+        #expect(chromaLocation.value == kCVImageBufferChromaLocation_Left as String)
     }
 
     @Test("FFmpegVideoDecoder flush does not block or deadlock during concurrent decode")

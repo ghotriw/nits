@@ -341,6 +341,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     public internal(set) var transferFunction: CFString = kCVImageBufferTransferFunction_ITU_R_709_2
     public internal(set) var yCbCrMatrix: CFString = kCVImageBufferYCbCrMatrix_ITU_R_709_2
     public internal(set) var isFullRange: Bool = false
+    public internal(set) var chromaLocation: CFString = kCVImageBufferChromaLocation_Left
     public internal(set) var bitDepth: Int = 8
     public internal(set) var isDolbyVisionProfile5: Bool = false
     public internal(set) var dolbyVisionProfile: Int? = nil

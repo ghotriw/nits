@@ -47,6 +47,7 @@ struct FrameFormatNormalizerTests {
             let width: Int
             let height: Int
             let matrix: String?
+            let chromaLocation: String?
         }
         let first = LockIsolated<Observed?>(nil)
         decoder.setOutputHandler { frame in
@@ -55,7 +56,9 @@ struct FrameFormatNormalizerTests {
                 pixelFormat: CVPixelBufferGetPixelFormatType(buffer),
                 width: CVPixelBufferGetWidth(buffer),
                 height: CVPixelBufferGetHeight(buffer),
-                matrix: CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String)
+                matrix: CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String,
+                chromaLocation: CVBufferCopyAttachment(buffer, kCVImageBufferChromaLocationTopFieldKey, nil)
+                    as? String)
             first.withValue { if $0 == nil { $0 = observed } }
         }
         for _ in 0..<8 {
@@ -69,6 +72,8 @@ struct FrameFormatNormalizerTests {
         #expect(observed.width == demuxer.width)
         #expect(observed.height == demuxer.height)
         #expect(observed.matrix == testCase.matrix)
+        // libswscale centres the chroma it resamples, whatever the source's siting.
+        #expect(observed.chromaLocation == kCVImageBufferChromaLocation_Center as String)
     }
 
     /// Pure red has a distinct luma per matrix (limited range): BT.709 ≈ 63, BT.601 ≈ 81. The converter must

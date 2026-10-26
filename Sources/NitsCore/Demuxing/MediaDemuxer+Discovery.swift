@@ -63,6 +63,7 @@ extension MediaDemuxer {
         self.transferFunction = colorimetry.transferFunction
         self.yCbCrMatrix = colorimetry.yCbCrMatrix
         self.isFullRange = colorimetry.isFullRange
+        self.chromaLocation = colorimetry.chromaLocation
         self.bitDepth = colorimetry.bitDepth
 
         // Dolby Vision Detection (Profiles 5, 8.1, 8.4):
@@ -435,6 +436,7 @@ extension MediaDemuxer {
             transferFunction: transferFunction,
             yCbCrMatrix: yCbCrMatrix,
             isFullRange: isFullRange,
+            chromaLocation: chromaLocation,
             bitDepth: bitDepth,
             sampleAspectRatio: sampleAspectRatio,
             masteringDisplay: masteringDisplay,

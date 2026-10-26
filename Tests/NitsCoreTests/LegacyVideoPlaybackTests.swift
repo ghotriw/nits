@@ -83,6 +83,14 @@ struct LegacyVideoPlaybackTests {
         #expect(decoder is FFmpegVideoDecoder)
     }
 
+    @Test("Chroma location follows the stream, left when unsignalled")
+    func chromaLocation() {
+        #expect(StreamColorimetry.chromaLocation(AVCHROMA_LOC_CENTER) == kCVImageBufferChromaLocation_Center)
+        #expect(StreamColorimetry.chromaLocation(AVCHROMA_LOC_TOPLEFT) == kCVImageBufferChromaLocation_TopLeft)
+        #expect(StreamColorimetry.chromaLocation(AVCHROMA_LOC_BOTTOM) == kCVImageBufferChromaLocation_Bottom)
+        #expect(StreamColorimetry.chromaLocation(AVCHROMA_LOC_UNSPECIFIED) == kCVImageBufferChromaLocation_Left)
+    }
+
     @Test("Untagged streams default to BT.601 at SD and BT.709 at HD")
     func standardDefinitionPrimaries() {
         #expect(

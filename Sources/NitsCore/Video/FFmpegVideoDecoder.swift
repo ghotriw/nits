@@ -54,6 +54,9 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
     // Cached color metadata dictionary to preserve attributes across drain() / EOF
     private var cachedColorAttachments: [CFString: CFTypeRef] = [:]
+    /// The format description `cachedColorAttachments` were read from (behind `poolLock`): they are read again only
+    /// when it changes.
+    private var colorMetadataDescription: CMFormatDescription?
     /// The format description the decoder last took parameter sets from, and its `avcC` / `hvcC` (behind
     /// `codecLock`): an HLS variant switch brings another.
     private var lastFormatDescription: CMFormatDescription?
@@ -455,6 +458,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         poolHeight = 0
         poolPixelFormat = 0
         cachedColorAttachments.removeAll()
+        colorMetadataDescription = nil
         poolLock.unlock()
     }
 
@@ -705,9 +709,12 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
         var normalizedFrame: UnsafeMutablePointer<AVFrame>? = normalized.frame
         defer { av_frame_free(&normalizedFrame) }
-        let pixelBuffer = copyPlanar420(normalized.frame)
-        if let pixelBuffer, let matrix = normalized.yCbCrMatrix {
+        guard let pixelBuffer = copyPlanar420(normalized.frame) else { return nil }
+        if let matrix = normalized.yCbCrMatrix {
             CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, matrix, .shouldPropagate)
+        }
+        for key in [kCVImageBufferChromaLocationTopFieldKey, kCVImageBufferChromaLocationBottomFieldKey] {
+            CVBufferSetAttachment(pixelBuffer, key, normalized.chromaLocation, .shouldPropagate)
         }
         return pixelBuffer
     }
@@ -822,6 +829,11 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
 
     private func updateCachedColorMetadata(from sampleBuffer: CMSampleBuffer) {
         let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer)
+        poolLock.lock()
+        let unchanged = formatDesc != nil && formatDesc === colorMetadataDescription
+        poolLock.unlock()
+        if unchanged { return }
+
         let extensions = formatDesc.flatMap { CMFormatDescriptionGetExtensions($0) as? [CFString: Any] }
 
         func cacheAttachment(key: CFString) {
@@ -834,12 +846,25 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         }
 
         poolLock.lock()
+        colorMetadataDescription = formatDesc
+        // Read afresh: a description without HDR metadata (an HLS switch to an SDR variant) must not keep the last one's.
+        cachedColorAttachments.removeAll()
         cacheAttachment(key: kCVImageBufferColorPrimariesKey)
         cacheAttachment(key: kCVImageBufferTransferFunctionKey)
         cacheAttachment(key: kCVImageBufferYCbCrMatrixKey)
         cacheAttachment(key: kCVImageBufferPixelAspectRatioKey)
         cacheAttachment(key: kCVImageBufferMasteringDisplayColorVolumeKey)
         cacheAttachment(key: kCVImageBufferContentLightLevelInfoKey)
+        cacheAttachment(key: kCVImageBufferChromaLocationTopFieldKey)
+        cacheAttachment(key: kCVImageBufferChromaLocationBottomFieldKey)
+        cacheAttachment(key: kCVImageBufferCGColorSpaceKey)
+
+        if cachedColorAttachments[kCVImageBufferCGColorSpaceKey] == nil,
+            let colorSpace = CVImageBufferCreateColorSpaceFromAttachments(cachedColorAttachments as CFDictionary)?
+                .takeRetainedValue()
+        {
+            cachedColorAttachments[kCVImageBufferCGColorSpaceKey] = colorSpace
+        }
         poolLock.unlock()
     }
 
@@ -875,6 +900,7 @@ public final class FFmpegVideoDecoder: VideoDecoderProtocol, @unchecked Sendable
         poolHeight = 0
         poolPixelFormat = 0
         cachedColorAttachments.removeAll()
+        colorMetadataDescription = nil
         poolLock.unlock()
     }
 

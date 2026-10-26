@@ -9,6 +9,8 @@ struct StreamColorimetry {
     var transferFunction: CFString
     var yCbCrMatrix: CFString
     var isFullRange: Bool
+    /// Where the subsampled chroma sits relative to luma; left (MPEG-2 onwards, H.264, HEVC, AV1) when unsignalled.
+    var chromaLocation: CFString
     /// 10 for 10-bit pixel formats and for PQ / HLG HEVC, AV1 and VP9, otherwise 8.
     var bitDepth: Int
 
@@ -84,6 +86,7 @@ struct StreamColorimetry {
         }
 
         self.isFullRange = codecpar.pointee.color_range == AVCOL_RANGE_JPEG
+        self.chromaLocation = Self.chromaLocation(codecpar.pointee.chroma_location)
 
         // Bit depth detection
         let pixFmt = codecpar.pointee.format
@@ -125,6 +128,17 @@ struct StreamColorimetry {
     private static func known(_ value: Unmanaged<CFString>?, in constants: Set<String>) -> CFString? {
         guard let value = value?.takeUnretainedValue(), constants.contains(value as String) else { return nil }
         return value
+    }
+
+    static func chromaLocation(_ location: AVChromaLocation) -> CFString {
+        switch location {
+        case AVCHROMA_LOC_CENTER: kCVImageBufferChromaLocation_Center
+        case AVCHROMA_LOC_TOPLEFT: kCVImageBufferChromaLocation_TopLeft
+        case AVCHROMA_LOC_TOP: kCVImageBufferChromaLocation_Top
+        case AVCHROMA_LOC_BOTTOMLEFT: kCVImageBufferChromaLocation_BottomLeft
+        case AVCHROMA_LOC_BOTTOM: kCVImageBufferChromaLocation_Bottom
+        default: kCVImageBufferChromaLocation_Left
+        }
     }
 
     /// Primaries assumed for a stream that doesn't signal its colorimetry, or `nil` for HD (BT.709). Standard
