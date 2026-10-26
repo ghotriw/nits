@@ -11,27 +11,16 @@ public struct QuickMediaInfoPane: View {
     public var body: some View {
         let metrics = engine.currentMetrics
 
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             // General Info
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Media File", systemImage: "doc.text")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-
+            QuickSettingsSection("Media File", systemImage: "doc.text") {
                 infoRow(label: "Title", value: engine.mediaTitle.isEmpty ? "—" : engine.mediaTitle)
                 infoRow(label: "Duration", value: formatDuration(engine.media.duration))
             }
 
-            Divider()
-                .overlay(Color.white.opacity(0.12))
-
             if engine.media.hasVideo {
                 // Video Stream
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Video Stream", systemImage: "film")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-
+                QuickSettingsSection("Video Stream", systemImage: "film") {
                     infoRow(label: "Resolution", value: "\(engine.media.video.width) × \(engine.media.video.height)")
                     let sourceAspect = String(format: "%.2f:1", engine.media.video.displayAspectRatio)
                     let sar = engine.media.video.sampleAspectRatio
@@ -71,19 +60,12 @@ public struct QuickMediaInfoPane: View {
                         infoRow(label: "Source Peak", value: "\(Int(peak)) nits")
                     }
                 }
-
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
             } else if !engine.audioTracks.isEmpty,
                 let currentTrack = engine.audioTracks.first(where: { $0.id == engine.selectedAudioTrackId })
                     ?? engine.audioTracks.first
             {
                 // Audio Stream Info (Audio-only file)
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Audio Stream", systemImage: "waveform")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-
+                QuickSettingsSection("Audio Stream", systemImage: "waveform") {
                     infoRow(label: "Codec", value: currentTrack.codecName.uppercased())
                     let kHz = Double(currentTrack.sampleRate) / 1000.0
                     let formattedRate =

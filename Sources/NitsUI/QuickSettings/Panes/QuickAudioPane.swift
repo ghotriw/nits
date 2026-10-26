@@ -9,13 +9,9 @@ public struct QuickAudioPane: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 12) {
             // Volume & Mute Section
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Volume Control", systemImage: "speaker.wave.2.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-
+            QuickSettingsSection("Volume Control", systemImage: "speaker.wave.2.fill") {
                 HStack(spacing: 12) {
                     Button {
                         engine.isMuted.toggle()
@@ -30,7 +26,7 @@ public struct QuickAudioPane: View {
                     }
                     .buttonStyle(.plain)
 
-                    Slider(value: $engine.volume, in: 0.0...1.0)
+                    QuickSettingsSlider(value: $engine.volume, in: 0.0...1.0)
 
                     Text("\(Int(engine.volume * 100))%")
                         .font(.system(size: 11, design: .monospaced))
@@ -39,26 +35,17 @@ public struct QuickAudioPane: View {
                 }
             }
 
-            Divider()
-                .overlay(Color.white.opacity(0.12))
-
             // Audio Tracks Section
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Audio Tracks", systemImage: "waveform")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Spacer()
-                    if engine.isLoaded {
-                        Button("Load External…") {
-                            loadExternalAudio()
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+            QuickSettingsSection("Audio Tracks", systemImage: "waveform") {
+                if engine.isLoaded {
+                    Button("Load External…") {
+                        loadExternalAudio()
                     }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
                 }
-
+            } content: {
                 if engine.audioTracks.isEmpty {
                     Text("No audio tracks available")
                         .font(.system(size: 12))
@@ -112,54 +99,38 @@ public struct QuickAudioPane: View {
             }
 
             if !engine.audioTracks.isEmpty {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
                 syncSection
             }
         }
     }
 
     private var syncSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Sync", systemImage: "clock.arrow.circlepath")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                Spacer()
-                if engine.audioDelay != 0 {
-                    Button("Reset") {
-                        engine.resetAudioDelay()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+        QuickSettingsSection("Sync", systemImage: "clock.arrow.circlepath") {
+            if engine.audioDelay != 0 {
+                Button("Reset") {
+                    engine.resetAudioDelay()
                 }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.accentColor)
             }
-
+        } content: {
             HStack(spacing: 8) {
                 Text("Delay")
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.8))
                 Spacer()
-                delayStepButton(systemImage: "minus", delta: -0.05)
-                TextField(
+                QuickSettingsStepper(
                     "Delay",
                     value: Binding(
                         get: { Int((engine.audioDelay * 1000).rounded()) },
                         set: { engine.setAudioDelay(Double($0) / 1000) }
                     ),
-                    format: .number
+                    format: .number,
+                    unit: "ms",
+                    onDecrement: { engine.stepAudioDelay(by: -0.05) },
+                    onIncrement: { engine.stepAudioDelay(by: 0.05) }
                 )
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .font(.system(size: 12, design: .monospaced))
-                .frame(width: 70)
-                Text("ms")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.6))
-                delayStepButton(systemImage: "plus", delta: 0.05)
             }
 
             Text("Positive plays audio later. J / K shift by 50 ms while playing.")
@@ -173,18 +144,5 @@ public struct QuickAudioPane: View {
         AudioFilePicker.pick { [engine] url in
             Task { await engine.loadExternalAudio(urls: [url]) }
         }
-    }
-
-    private func delayStepButton(systemImage: String, delta: Double) -> some View {
-        Button {
-            engine.stepAudioDelay(by: delta)
-        } label: {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.1)))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white.opacity(0.9))
     }
 }

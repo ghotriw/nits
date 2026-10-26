@@ -34,14 +34,21 @@ public struct QuickVideoPane: View {
 
     /// The variants playback can switch to; the others need decoders of their own.
     private var qualitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Quality", systemImage: "square.stack.3d.up")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
+        QuickSettingsSection("Quality", systemImage: "square.stack.3d.up") {
+            let selectedLabel: String = {
+                if engine.isVariantAutomatic {
+                    return automaticTitle
+                }
+                if let variant = engine.variants.first(where: { $0.id == engine.selectedVariantId }) {
+                    return Self.variantTitle(variant)
+                }
+                return automaticTitle
+            }()
 
             // `nil` is adaptive bitrate, offered while reading ahead (network sources).
-            Picker(
+            QuickSettingsPicker(
                 "Quality",
+                valueLabel: selectedLabel,
                 selection: Binding(
                     get: { engine.isVariantAutomatic ? nil : engine.selectedVariantId },
                     set: { id in
@@ -60,21 +67,20 @@ public struct QuickVideoPane: View {
                     Text(Self.variantTitle(variant)).tag(Optional(variant.id))
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
         }
     }
 
     /// The pictures a page offers as files of their own: choosing one plays it from the current frame, after a pause
     /// while it opens. What yt-dlp chose is the one playing until then.
     private var videoFormatSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Quality", systemImage: "square.stack.3d.up")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
+        QuickSettingsSection("Quality", systemImage: "square.stack.3d.up") {
+            let selectedLabel =
+                engine.videoFormats.first(where: { $0.id == engine.selectedVideoFormatId })
+                .map(Self.videoFormatTitle) ?? "—"
 
-            Picker(
+            QuickSettingsPicker(
                 "Quality",
+                valueLabel: selectedLabel,
                 selection: Binding(
                     get: { engine.selectedVideoFormatId },
                     set: { id in
@@ -86,8 +92,6 @@ public struct QuickVideoPane: View {
                     Text(Self.videoFormatTitle(format)).tag(Optional(format.id))
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
         }
     }
 
@@ -114,29 +118,25 @@ public struct QuickVideoPane: View {
     }
 
     private var pictureSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Picture", systemImage: "aspectratio")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                Spacer()
-                if isPictureAdjusted {
-                    Button("Reset") {
-                        engine.setVideoAspectRatio(nil)
-                        engine.setVideoCrop(nil)
-                        engine.resetVideoZoom()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+        QuickSettingsSection("Picture", systemImage: "aspectratio") {
+            if isPictureAdjusted {
+                Button("Reset") {
+                    engine.setVideoAspectRatio(nil)
+                    engine.setVideoCrop(nil)
+                    engine.resetVideoZoom()
                 }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.accentColor)
             }
-
+        } content: {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     pictureLabel("Aspect Ratio")
-                    Picker(
+                    QuickSettingsPicker(
                         "Aspect Ratio",
+                        valueLabel: engine.videoGeometry.aspectRatio?.displayName
+                            ?? "Default (\(formattedRatio(engine.media.video.displayAspectRatio)))",
                         selection: Binding(
                             get: { engine.videoGeometry.aspectRatio },
                             set: { engine.setVideoAspectRatio($0) }
@@ -148,12 +148,12 @@ public struct QuickVideoPane: View {
                             Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
                         }
                     }
-                    .labelsHidden()
                 }
                 GridRow {
                     pictureLabel("Crop")
-                    Picker(
+                    QuickSettingsPicker(
                         "Crop",
+                        valueLabel: engine.videoGeometry.crop?.displayName ?? "None",
                         selection: Binding(
                             get: { engine.videoGeometry.crop },
                             set: { engine.setVideoCrop($0) }
@@ -164,12 +164,12 @@ public struct QuickVideoPane: View {
                             Text(ratio.displayName).tag(RationalAspectRatio?.some(ratio))
                         }
                     }
-                    .labelsHidden()
                 }
                 GridRow {
                     pictureLabel("Scaling")
-                    Picker(
+                    QuickSettingsPicker(
                         "Scaling",
+                        valueLabel: engine.videoGeometry.scaling.title,
                         selection: Binding(
                             get: { engine.videoGeometry.scaling },
                             set: { engine.setVideoScaling($0) }
@@ -179,31 +179,24 @@ public struct QuickVideoPane: View {
                             Text(scaling.title).tag(scaling)
                         }
                     }
-                    .labelsHidden()
                 }
                 GridRow {
                     pictureLabel("Zoom")
-                    HStack(spacing: 6) {
-                        Button {
-                            engine.stepVideoZoom(by: -1)
-                        } label: {
-                            Image(systemName: "minus.magnifyingglass")
-                        }
-                        .disabled(engine.videoGeometry.zoom <= VideoGeometrySettings.zoomRange.lowerBound)
-                        Text("\(Int((engine.videoGeometry.zoom * 100).rounded()))%")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(engine.videoGeometry.zoom == 1.0 ? .white.opacity(0.7) : Color.accentColor)
-                            .frame(minWidth: 44)
-                        Button {
-                            engine.stepVideoZoom(by: 1)
-                        } label: {
-                            Image(systemName: "plus.magnifyingglass")
-                        }
-                        .disabled(engine.videoGeometry.zoom >= VideoGeometrySettings.zoomRange.upperBound)
-                    }
+                    QuickSettingsStepper(
+                        "Zoom",
+                        value: Binding(
+                            get: { Int((engine.videoGeometry.zoom * 100).rounded()) },
+                            set: { engine.setVideoZoom(Double($0) / 100.0) }
+                        ),
+                        format: .number,
+                        unit: "%",
+                        canDecrement: engine.videoGeometry.zoom > VideoGeometrySettings.zoomRange.lowerBound,
+                        canIncrement: engine.videoGeometry.zoom < VideoGeometrySettings.zoomRange.upperBound,
+                        onDecrement: { engine.stepVideoZoom(by: -1) },
+                        onIncrement: { engine.stepVideoZoom(by: 1) }
+                    )
                 }
             }
-            .pickerStyle(.menu)
 
             Text("Aspect ratio and crop are remembered for this file. Drag the picture to move it while it is zoomed.")
                 .font(.system(size: 11))
@@ -222,41 +215,36 @@ public struct QuickVideoPane: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 12) {
             // Playback Speed Section (First Item)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("Playback Speed", systemImage: "gauge.with.dots.needle.bottom.50percent")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Spacer()
-                    if engine.playbackRate != 1.0 {
-                        Button("Reset") {
-                            withAnimation {
-                                engine.resetPlaybackRate()
-                            }
+            QuickSettingsSection("Playback Speed", systemImage: "gauge.with.dots.needle.bottom.50percent") {
+                if engine.playbackRate != 1.0 {
+                    Button("Reset") {
+                        withAnimation {
+                            engine.resetPlaybackRate()
                         }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
                     }
-                    let formattedRate: String = {
-                        let rate = engine.playbackRate
-                        let isTenth = abs((rate * 10).rounded() - (rate * 10)) < 1e-4
-                        return isTenth ? String(format: "%.1f×", rate) : String(format: "%.2f×", rate)
-                    }()
-                    Text(formattedRate)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(engine.playbackRate == 1.0 ? .white.opacity(0.7) : Color.accentColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
                 }
+                let formattedRate: String = {
+                    let rate = engine.playbackRate
+                    let isTenth = abs((rate * 10).rounded() - (rate * 10)) < 1e-4
+                    return isTenth ? String(format: "%.1f×", rate) : String(format: "%.2f×", rate)
+                }()
+                Text(formattedRate)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(engine.playbackRate == 1.0 ? .white.opacity(0.7) : Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+            } content: {
 
-                Slider(
+                QuickSettingsSlider(
                     value: Binding(
                         get: { engine.playbackRate },
                         set: { engine.setPlaybackRate($0) }
@@ -282,22 +270,48 @@ public struct QuickVideoPane: View {
                 .padding(.horizontal, 2)
             }
 
-            Divider()
-                .overlay(Color.white.opacity(0.12))
+            // HLS variants, or the files a page offers
+            if engine.variants.filter(\.isSwitchable).count > 1 {
+                qualitySection
+            } else if engine.videoFormats.count > 1 {
+                videoFormatSection
+            }
+
+            // Picture geometry: aspect ratio, crop, scaling, zoom
+            if engine.media.hasVideo {
+                pictureSection
+            }
+
+            // Deinterlacing - only for interlaced video
+            if engine.media.video.isInterlaced {
+                QuickSettingsSection("Deinterlacing", systemImage: "line.3.horizontal") {
+                    QuickSettingsPicker(
+                        "Deinterlacing",
+                        valueLabel: engine.deinterlaceMode.rawValue,
+                        selection: $engine.deinterlaceMode
+                    ) {
+                        ForEach(DeinterlaceMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+
+                    Text(deinterlaceDescription)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+            }
 
             // Render Mode Section
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Render Mode", systemImage: "display")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-
-                Picker("Render Mode", selection: $engine.renderMode) {
+            QuickSettingsSection("Render Mode", systemImage: "display") {
+                QuickSettingsPicker(
+                    "Render Mode",
+                    valueLabel: engine.renderMode.rawValue,
+                    selection: $engine.renderMode
+                ) {
                     ForEach(RenderMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
 
                 Text(
                     "Display: \(engine.isHDRDisplay ? "HDR / EDR Capable" : "Standard SDR") • Active: \(engine.activeRenderMode.rawValue)"
@@ -306,76 +320,22 @@ public struct QuickVideoPane: View {
                 .foregroundStyle(.white.opacity(0.55))
             }
 
-            // HLS variants, or the files a page offers
-            if engine.variants.filter(\.isSwitchable).count > 1 {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
-                qualitySection
-            } else if engine.videoFormats.count > 1 {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
-                videoFormatSection
-            }
-
-            // Picture geometry: aspect ratio, crop, scaling, zoom
-            if engine.media.hasVideo {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
-                pictureSection
-            }
-
-            // Deinterlacing - only for interlaced video
-            if engine.media.video.isInterlaced {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Deinterlacing", systemImage: "line.3.horizontal")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-
-                    Picker("Deinterlacing", selection: $engine.deinterlaceMode) {
-                        ForEach(DeinterlaceMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-
-                    Text(deinterlaceDescription)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
-            }
-
             // Tone Mapping Parameters (BT.2390 EETF) - only shown when Metal Tone Mapping is active
             if isMetalActive {
-                Divider()
-                    .overlay(Color.white.opacity(0.12))
-
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Label("Tone Mapping Controls", systemImage: "slider.horizontal.3")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9))
-                        Spacer()
-                        Button("Reset") {
-                            withAnimation {
-                                engine.toneMapping.sharpness = 0.5
-                                engine.toneMapping.exposure = 1.0
-                                engine.toneMapping.shadowLift = 0
-                                engine.toneMapping.targetNitsScale = 1.0
-                                engine.toneMapping.localContrast = ToneMapController.defaultLocalContrast
-                            }
+                QuickSettingsSection("Tone Mapping Controls", systemImage: "slider.horizontal.3") {
+                    Button("Reset") {
+                        withAnimation {
+                            engine.toneMapping.sharpness = 0.5
+                            engine.toneMapping.exposure = 1.0
+                            engine.toneMapping.shadowLift = 0
+                            engine.toneMapping.targetNitsScale = 1.0
+                            engine.toneMapping.localContrast = ToneMapController.defaultLocalContrast
                         }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
                     }
-
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                } content: {
                     // Sharpness (CAS)
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -387,7 +347,7 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: toneMapping.sharpness, in: 0.0...1.0)
+                        QuickSettingsSlider(value: toneMapping.sharpness, in: 0.0...1.0)
                     }
 
                     // Target Nits Scale
@@ -403,7 +363,7 @@ public struct QuickVideoPane: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: toneMapping.targetNitsScale, in: 0.5...2.0)
+                        QuickSettingsSlider(value: toneMapping.targetNitsScale, in: 0.5...2.0)
                     }
 
                     // Exposure
@@ -417,7 +377,7 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: toneMapping.exposure, in: 0.5...2.0)
+                        QuickSettingsSlider(value: toneMapping.exposure, in: 0.5...2.0)
                     }
 
                     // Shadow Lift
@@ -431,7 +391,7 @@ public struct QuickVideoPane: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: toneMapping.shadowLift, in: 0.0...0.1)
+                        QuickSettingsSlider(value: toneMapping.shadowLift, in: 0.0...0.1)
                     }
 
                     // Local contrast (ContrastRecovery)
@@ -448,7 +408,7 @@ public struct QuickVideoPane: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.6))
                         }
-                        Slider(value: toneMapping.localContrast, in: 0.0...1.0)
+                        QuickSettingsSlider(value: toneMapping.localContrast, in: 0.0...1.0)
                     }
 
                     if engine.media.video.dolbyVisionProfile != nil {
