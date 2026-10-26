@@ -103,13 +103,7 @@ public struct ContentView: View {
                 .allowsHitTesting(false)
             }
 
-            // Subtle loading indicator while engine is parsing/decoding first frame or buffering stream
-            if (engine.isLoading || !engine.isLoaded) && engine.loadError == nil {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                    .shadow(radius: 8)
-            }
+            LoadingOverlayView(engine: engine)
 
             // Error display banner if stream/file fails to load
             if let error = engine.loadError {
@@ -493,5 +487,51 @@ public struct ContentView: View {
         onFileLoaded?(firstURL)
         scheduleControlsHide()
         return filePath
+    }
+}
+
+/// Shows a spinner while the media loads, buffers, or waits on a slow seek, isolated in its own view so seek and
+/// buffering state changes do not re-evaluate `ContentView`.
+private struct LoadingOverlayView: View {
+    let engine: PlayerEngine
+
+    @State private var isSeekSpinnerVisible = false
+
+    private var isSeekInFlight: Bool {
+        engine.isSeeking || (isSeekSpinnerVisible && engine.isAwaitingClockStart)
+    }
+
+    var body: some View {
+        ZStack {
+            if (engine.isLoading || !engine.isLoaded || engine.isBuffering || isSeekSpinnerVisible)
+                && engine.loadError == nil
+            {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                    .padding(16)
+                    .background(.black.opacity(0.40), in: Circle())
+                    .environment(\.colorScheme, .dark)
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: isSeekInFlight) {
+            if isSeekInFlight {
+                guard !isSeekSpinnerVisible else { return }
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, engine.isSeeking else { return }
+                isSeekSpinnerVisible = true
+            } else if isSeekSpinnerVisible {
+                if engine.isPlaying {
+                    // Covers two 50 ms ticks of the periodic time observer for `checkForStarvation()` to set `isBuffering`.
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard !Task.isCancelled, !isSeekInFlight else { return }
+                }
+                isSeekSpinnerVisible = false
+            }
+        }
+        .onChange(of: engine.isLoading || engine.loadError != nil) { _, reset in
+            if reset { isSeekSpinnerVisible = false }
+        }
     }
 }

@@ -458,13 +458,17 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let activeSeekId = OSAllocatedUnfairLock(initialState: 0)
     @ObservationIgnored
     let lastSyncDriftSpikeInstant = OSAllocatedUnfairLock<ContinuousClock.Instant>(initialState: .now - .seconds(10))
-    @ObservationIgnored
     public package(set) var isSeeking: Bool = false {
         didSet { reportSeekingChange() }
     }
+    /// True while playback is waiting for the chase-settle debounce or preroll before starting the clock.
+    package internal(set) var isAwaitingClockStart: Bool = false
     @ObservationIgnored
     var chaseTargetTime: Double? = nil {
-        didSet { reportSeekingChange() }
+        didSet {
+            reportSeekingChange()
+            updateAwaitingClockStart()
+        }
     }
     /// Called when a seek starts and when it settles: `isSeeking || pendingSeekTime != nil` changes. A burst of seeks
     /// (and the chase to its latest target) reports once each way; a playing seek settles just before the clock

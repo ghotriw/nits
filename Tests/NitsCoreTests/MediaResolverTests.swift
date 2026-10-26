@@ -278,7 +278,7 @@ struct MediaResolverTests {
         }
     }
 
-    @Test("Streams found earlier that no longer open are found again for the picture chosen")
+    @Test("Resolved streams that don't open are asked for once more, on the first load and when switching formats")
     func asksResolverAgainWhenFormatExpired() async throws {
         guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
             let second = SyntheticTestMediaFactory.ensureMedia(preset: .vp9SDR)
@@ -295,10 +295,14 @@ struct MediaResolverTests {
                 VideoFormat(id: "b", url: secondURL, width: 320, height: 180, codec: "VP9"),
             ]
         }
-        // Its own links have expired by the time the second is chosen: the first answer's, as the engine kept them.
+        // The first resolution's stream doesn't open, so the load asks again; the second's link for format "b" has
+        // expired by the time it is chosen, so switching formats asks again too. After that, only expired links are
+        // returned: the next load asks once more (2 calls for that load) and fails without looping.
         let resolver = SequenceResolver([
+            ResolvedMedia(path: expired, videoFormats: formats(expired), selectedVideoFormatID: "a"),
             ResolvedMedia(path: firstPath, videoFormats: formats(expired), selectedVideoFormatID: "a"),
             ResolvedMedia(path: firstPath, videoFormats: formats(secondPath), selectedVideoFormatID: "a"),
+            ResolvedMedia(path: expired, videoFormats: formats(expired), selectedVideoFormatID: "a"),
         ])
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         defer { engine.stop() }
@@ -306,14 +310,21 @@ struct MediaResolverTests {
 
         engine.load(MediaLoadRequest(path: "https://video.example/watch?v=nits"))
         await engine.waitForPendingLoad()
+        #expect(resolver.count == 2, "The resolver was asked \(resolver.count) time(s) on the first load")
+        #expect(engine.currentSourcePath == firstPath)
         try #require(await engine.waitForPlayback(advancingBy: 0.3))
 
         engine.selectVideoFormat(id: "b")
         await engine.waitForPendingLoad()
-        #expect(resolver.count == 2, "The resolver was asked \(resolver.count) time(s)")
+        #expect(resolver.count == 3, "The resolver was asked \(resolver.count) time(s)")
         #expect(engine.selectedVideoFormatId == "b" && engine.currentSourcePath == secondPath)
         #expect(engine.playbackState != .failed(engine.loadError ?? ""))
         try #require(await engine.waitForPlayback(advancingBy: 0.3))
+
+        engine.load(MediaLoadRequest(path: "https://video.example/watch?v=nits"))
+        await engine.waitForPendingLoad()
+        #expect(resolver.count == 5, "The resolver was asked \(resolver.count - 3) time(s) when both answers failed")
+        #expect(engine.loadError != nil && engine.playbackState == .failed(engine.loadError ?? ""))
     }
 
     @Test("A declared audio file that can't be opened is dropped from the tracks, the one playing staying")

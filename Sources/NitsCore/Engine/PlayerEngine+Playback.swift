@@ -153,6 +153,13 @@ extension PlayerEngine {
         pendingClockStartLock.withLock { $0 != nil }
     }
 
+    func updateAwaitingClockStart() {
+        let awaiting = chaseTargetTime != nil || isPrerolling
+        if isAwaitingClockStart != awaiting {
+            isAwaitingClockStart = awaiting
+        }
+    }
+
     /// Starts the master clock at `targetTime` once video has prerolled.
     ///
     /// Starting the clock right after `startFeeding()` lets it run while the first (slow, e.g. 4K Dolby Vision)
@@ -194,6 +201,7 @@ extension PlayerEngine {
         let pending = PendingClockStart(
             targetTime: targetTime, rate: playbackRate, requestHostTime: CACurrentMediaTime())
         pendingClockStartLock.withLock { $0 = pending }
+        updateAwaitingClockStart()
         prerollTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.prerollTimeout)
             guard !Task.isCancelled, let self else { return }
@@ -204,6 +212,7 @@ extension PlayerEngine {
                     return state
                 })
             else { return }
+            self.updateAwaitingClockStart()
             AppLog.warning(
                 .engine,
                 "Preroll timed out after \(Self.prerollTimeout); starting clock anyway. \(self.prerollDiagnostics(pending))"
@@ -225,6 +234,7 @@ extension PlayerEngine {
         else { return }
 
         startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
+        DispatchQueue.main.async { [weak self] in self?.updateAwaitingClockStart() }
         let elapsedMs = (CACurrentMediaTime() - pending.requestHostTime) * 1000.0
         AppLog.debug(
             .engine,
@@ -270,6 +280,7 @@ extension PlayerEngine {
             synchronizer.setRate(0, time: head)
         case .start(let pending):
             startSynchronizerClock(at: pending.targetTime, rate: pending.rate)
+            DispatchQueue.main.async { [weak self] in self?.updateAwaitingClockStart() }
             AppLog.debug(
                 .engine,
                 "Preroll: video starts at \(String(format: "%.3f", head.seconds))s; starting clock at \(String(format: "%.3f", pending.targetTime.seconds))s"
@@ -297,6 +308,7 @@ extension PlayerEngine {
         pendingClockStartLock.withLock { $0 = nil }
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
+        updateAwaitingClockStart()
         cancelBuffering()
         audioLagDetector.clockRestarted()
         audioOutputInterruptionLock.withLock { $0.clockStopped() }

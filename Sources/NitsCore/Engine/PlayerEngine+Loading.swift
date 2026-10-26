@@ -382,10 +382,12 @@ extension PlayerEngine {
         if order == .beforeOpening, await resolve() == .ended { return }
         var newDemuxer = await openSource()
         if endIfSuperseded() { return }
-        if newDemuxer == nil, known != nil, resolver != nil, pageURL != nil,
+        // A stream the resolver gave that didn't open (expired since `preResolved`, or a CDN session that didn't
+        // answer on the first resolution) is asked for once more.
+        if newDemuxer == nil, resolvedSource != nil, resolver != nil, pageURL != nil,
             !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false)
         {
-            AppLog.info(.engine, "The streams of '\(path)' found earlier didn't open: asking the resolver again")
+            AppLog.info(.engine, "The streams of '\(path)' didn't open: asking the resolver again")
             known = nil
             switch await resolve() {
             case .ended: return
