@@ -467,7 +467,7 @@ public struct ContentView: View {
             guard !subtitleURLs.isEmpty else { return }
             // A file on a network volume loads in the background; attach once it is in, unless another took its place.
             await engine.waitForPendingLoad()
-            guard engine.isLoaded, engine.currentPath == PlayerEngine.normalizeMediaPath(path) else {
+            guard engine.isLoaded, engine.currentPath == MediaURL.normalizeMediaPath(path) else {
                 AppLog.info(.subtitles, "Dropped subtitles not attached: '\(path)' isn't what is loaded")
                 return
             }

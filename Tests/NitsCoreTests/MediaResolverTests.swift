@@ -85,9 +85,13 @@ struct MediaResolverTests {
         // Saved under the resolver's name, not the page's URL (whose query the history drops) or the stream's.
         engine.setAudioDelay(0.1)
         engine.saveCurrentPlaybackProgress()
-        #expect(engine.historyStore.savedPreferences(for: "video.example:nits")?.audioDelay == 0.1)
-        #expect(engine.historyStore.savedPreferences(for: page) == nil)
-        #expect(engine.historyStore.savedPreferences(for: server.url(videoURL.lastPathComponent)) == nil)
+        #expect(
+            engine.historyStore.savedPreferences(for: MediaHistoryIdentity(historyKey: "video.example:nits"))?
+                .audioDelay == 0.1)
+        #expect(engine.historyStore.savedPreferences(for: MediaHistoryIdentity(historyKey: page)) == nil)
+        #expect(
+            engine.historyStore.savedPreferences(
+                for: MediaHistoryIdentity(historyKey: server.url(videoURL.lastPathComponent))) == nil)
 
         engine.load(MediaLoadRequest(path: page))
         await engine.waitForPendingLoad()

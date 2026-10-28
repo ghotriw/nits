@@ -9,7 +9,19 @@ public enum MediaURL {
         return scheme == "http" || scheme == "https"
     }
 
-    /// A saved HLS manifest whose media is on the network (`path` a file path, as `PlayerEngine.normalizeMediaPath`
+    /// Normalizes an input path: a `file://` URL becomes its decoded path; a plain path is already one and stays as is
+    /// (a file may be named `a%41.mkv`).
+    public static func normalizeMediaPath(_ path: String) -> String {
+        if isNetworkURL(path) {
+            return path
+        }
+        if path.lowercased().hasPrefix("file://") {
+            return URL(string: path)?.path(percentEncoded: false) ?? String(path.dropFirst("file://".count))
+        }
+        return path
+    }
+
+    /// A saved HLS manifest whose media is on the network (`path` a file path, as `normalizeMediaPath`
     /// leaves it). FFmpeg opens its segments with the I/O options of the manifest's own input, so it is opened with the
     /// network options too, and read ahead as a network source. Only the file's own text is looked at: a master
     /// playlist of saved media playlists, whose segments are on the network, isn't recognised.

@@ -20,6 +20,15 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyResumePlayback)
     private var resumePlayback: Bool = true
 
+    @AppStorage(PlayerConfiguration.keyRememberRecentMedia)
+    private var rememberRecentMedia: Bool = true
+
+    @AppStorage(PlayerConfiguration.keyHistoryExcludedFolders)
+    private var rawHistoryExcludedFolders: String = "[]"
+
+    @AppStorage(PlayerConfiguration.keyHistoryExcludedDomains)
+    private var rawHistoryExcludedDomains: String = "[]"
+
     @AppStorage(PlayerConfiguration.keyResumeStartThreshold)
     private var resumeStartThreshold: Double = 15.0
 
@@ -76,8 +85,54 @@ public struct SettingsView: View {
     private static let osdDurations: [Double] = [0.8, 1.3, 2.0, 3.0, 5.0]
     private static let debugOSDDurations: [Double] = [2.0, 4.0, 6.0, 10.0, 15.0, 30.0]
 
-    @State private var showHistoryClearedAlert: Bool = false
+    @State private var showClearPositionsConfirmation: Bool = false
+    @State private var showClearRecentConfirmation: Bool = false
     @State private var selectedTab: SettingsTab = .general
+    @State private var hasSavedPositions: Bool = PlaybackHistoryStore.shared.hasSavedPositions
+
+    private var currentExcludedFolders: [ExcludedFolder] {
+        HistoryExclusionPolicy.decodeFolders(from: rawHistoryExcludedFolders)
+    }
+
+    private var currentExcludedDomains: [String] {
+        HistoryExclusionPolicy.decodeList(from: rawHistoryExcludedDomains)
+    }
+
+    private func handleAddFolder(_ folder: ExcludedFolder) {
+        var folders = currentExcludedFolders
+        guard !folders.contains(where: { $0.overlaps(folder) }) else { return }
+        folders.append(folder)
+        rawHistoryExcludedFolders = HistoryExclusionPolicy.encodeFolders(folders)
+        let domains = currentExcludedDomains
+        RecentMediaStore.shared.purge(matching: HistoryExclusionPolicy(excludedFolders: [folder]))
+        notifyChange(folders: folders, domains: domains)
+    }
+
+    private func handleRemoveFolder(_ folder: ExcludedFolder) {
+        var folders = currentExcludedFolders
+        folders.removeAll { $0.path.caseInsensitiveCompare(folder.path) == .orderedSame }
+        rawHistoryExcludedFolders = HistoryExclusionPolicy.encodeFolders(folders)
+        let domains = currentExcludedDomains
+        notifyChange(folders: folders, domains: domains)
+    }
+
+    private func handleAddDomain(_ domain: String) {
+        var domains = currentExcludedDomains
+        guard !domains.contains(domain) else { return }
+        domains.append(domain)
+        rawHistoryExcludedDomains = HistoryExclusionPolicy.encodeList(domains)
+        let folders = currentExcludedFolders
+        RecentMediaStore.shared.purge(matching: HistoryExclusionPolicy(excludedDomains: [domain]))
+        notifyChange(folders: folders, domains: domains)
+    }
+
+    private func handleRemoveDomain(_ domain: String) {
+        var domains = currentExcludedDomains
+        domains.removeAll { $0 == domain }
+        rawHistoryExcludedDomains = HistoryExclusionPolicy.encodeList(domains)
+        let folders = currentExcludedFolders
+        notifyChange(folders: folders, domains: domains)
+    }
 
     var onConfigurationChanged: ((PlayerConfiguration) -> Void)?
 
@@ -134,16 +189,54 @@ public struct SettingsView: View {
                 .tag(SettingsTab.controls)
         }
         .frame(width: 580, height: 460)
+        .onAppear {
+            hasSavedPositions = PlaybackHistoryStore.shared.hasSavedPositions
+        }
+        .onReceive(NotificationCenter.default.publisher(for: PlaybackHistoryStore.didChangeNotification)) { _ in
+            hasSavedPositions = PlaybackHistoryStore.shared.hasSavedPositions
+        }
     }
 
     // MARK: - General Tab
     private var generalTab: some View {
         Form {
             Section {
-                Toggle("Remember playback position", isOn: $resumePlayback)
-                    .onChange(of: resumePlayback) { _, _ in
-                        notifyChange()
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Remember playback position", isOn: $resumePlayback)
+                        .onChange(of: resumePlayback) { _, _ in
+                            notifyChange()
+                        }
+
+                    HStack(alignment: .center, spacing: 12) {
+                        Text(
+                            "Resumes videos from where you left off."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 8)
+
+                        Button("Clear Saved Positions…") {
+                            showClearPositionsConfirmation = true
+                        }
+                        .disabled(!hasSavedPositions)
+                        .confirmationDialog(
+                            "Clear Saved Playback Positions?",
+                            isPresented: $showClearPositionsConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Clear Saved Positions", role: .destructive) {
+                                PlaybackHistoryStore.shared.clearAll()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text(
+                                "Saved resume positions for all videos will be reset."
+                            )
+                        }
                     }
+                }
 
                 if resumePlayback {
                     VStack(alignment: .leading, spacing: 6) {
@@ -176,20 +269,66 @@ public struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
 
-                    HStack {
-                        Spacer()
-                        Button("Clear Playback History", role: .destructive) {
-                            PlaybackHistoryStore.shared.clearAll()
-                            showHistoryClearedAlert = true
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Keep recent media list", isOn: $rememberRecentMedia)
+                        .onChange(of: rememberRecentMedia) { _, isEnabled in
+                            if !isEnabled {
+                                RecentMediaActions.clearAll()
+                            }
+                            notifyChange()
                         }
-                        .alert("Playback History Cleared", isPresented: $showHistoryClearedAlert) {
-                            Button("OK", role: .cancel) {}
+
+                    HStack(alignment: .center, spacing: 12) {
+                        Text(
+                            "Shows recently opened videos in the Welcome window, the File → Open Recent menu, and the Dock. Turning this off clears the recent media list."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 8)
+
+                        Button("Clear Recent Media…") {
+                            showClearRecentConfirmation = true
+                        }
+                        .disabled(RecentMediaStore.shared.items.isEmpty)
+                        .confirmationDialog(
+                            "Clear Recent Media List?",
+                            isPresented: $showClearRecentConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Clear Recent Media", role: .destructive) {
+                                RecentMediaActions.clearAll()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text(
+                                "Removes all recently opened videos from the Welcome window, the File → Open Recent menu, and the Dock. Saved playback positions will not be affected."
+                            )
                         }
                     }
                 }
             } header: {
-                Text("Playback Resume")
+                Text("Playback Resume & History")
+            }
+
+            Section {
+                HistoryExclusionsView(
+                    excludedFolders: currentExcludedFolders,
+                    excludedDomains: currentExcludedDomains,
+                    onAddFolder: handleAddFolder,
+                    onRemoveFolder: handleRemoveFolder,
+                    onAddDomain: handleAddDomain,
+                    onRemoveDomain: handleRemoveDomain
+                )
+            } header: {
+                Text("History Exclusions")
+            } footer: {
+                Text(
+                    "Media inside untracked folders and streams from untracked domains will not appear in recent media and will not save playback positions."
+                )
             }
 
             Section {
@@ -498,7 +637,13 @@ public struct SettingsView: View {
     }
 
     private func notifyChange() {
+        notifyChange(folders: nil, domains: nil)
+    }
+
+    private func notifyChange(folders: [ExcludedFolder]?, domains: [String]?) {
         let savedConfig = PlayerConfiguration.loadFromUserDefaults()
+        let resolvedFolders = folders ?? currentExcludedFolders
+        let resolvedDomains = domains ?? currentExcludedDomains
         let current = PlayerConfiguration(
             enableToneMapping: enableToneMapping,
             defaultRenderMode: .auto,
@@ -507,6 +652,7 @@ public struct SettingsView: View {
             applyDolbyVisionTrims: applyDolbyVisionTrims,
             localContrast: Float(localContrast),
             resumePlayback: resumePlayback,
+            rememberRecentMedia: rememberRecentMedia,
             resumeStartThreshold: resumeStartThreshold,
             resumeEndThresholdRatio: resumeEndThresholdRatio,
             subtitleFontSize: savedConfig.subtitleFontSize,
@@ -536,7 +682,9 @@ public struct SettingsView: View {
             actionButtonDisplayDuration: actionButtonDisplayDuration,
             actionButtonAutoPress: actionButtonAutoPress,
             trackLanguages: savedConfig.trackLanguages,
-            subtitleEncoding: savedConfig.subtitleEncoding
+            subtitleEncoding: savedConfig.subtitleEncoding,
+            historyExcludedFolders: resolvedFolders,
+            historyExcludedDomains: resolvedDomains
         )
         onConfigurationChanged?(current)
     }

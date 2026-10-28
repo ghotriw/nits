@@ -25,6 +25,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     private var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide
     private var pausesOnPictureInPicture = false
     private var entersPictureInPictureOnMinimize = false
+    private var rememberRecentMedia = true
+    private let recentMediaStore: RecentMediaStore?
     /// The window was ordered out by PiP and must come back when PiP ends.
     private var isWindowHiddenForPictureInPicture = false
     /// PiP was started by minimizing the window, so restoring the window from the Dock ends it.
@@ -61,6 +63,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     }
 
     public func applyConfiguration(_ config: PlayerConfiguration) {
+        rememberRecentMedia = config.rememberRecentMedia
         engine.applyConfiguration(config)
         applyOSDConfiguration(config)
         applyPictureInPictureConfiguration(config)
@@ -103,11 +106,18 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
     }
 
-    /// - Parameter engine: An engine built with the same `configuration` and the host's own stores (tests pass
-    ///   in-memory ones); `nil` creates one that uses the app's.
-    public init(configuration: PlayerConfiguration = PlayerConfiguration(), engine: PlayerEngine? = nil) {
+    /// - Parameters:
+    ///   - engine: An engine built with the same `configuration` and the host's own stores (tests pass
+    ///     in-memory ones); `nil` creates one that uses the app's.
+    ///   - recentMediaStore: Where loaded media is recorded for Recent Media; `nil` for hosts and tests.
+    public init(
+        configuration: PlayerConfiguration = PlayerConfiguration(),
+        engine: PlayerEngine? = nil,
+        recentMediaStore: RecentMediaStore? = nil
+    ) {
         let engine = engine ?? PlayerEngine(configuration: configuration)
         self.engine = engine
+        self.recentMediaStore = recentMediaStore
         self.nowPlayingController = NowPlayingControllerFactory.makeController(engine: engine)
         let window = PlayerWindow(
             contentRect: NSRect(x: 100, y: 100, width: 960, height: 540),
@@ -124,6 +134,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
         // Created now, not on first toggle: it follows the engine from here on and prepares AVKit for the first video.
         _ = pictureInPicture
+        rememberRecentMedia = configuration.rememberRecentMedia
         applyOSDConfiguration(configuration)
         applyPictureInPictureConfiguration(configuration)
         applyActionButtonConfiguration(configuration)
@@ -161,6 +172,21 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         let hostingView = NSHostingView(rootView: contentView)
         window.contentView = hostingView
         window.initialFirstResponder = hostingView
+        engine.onMediaLoaded = { [weak self] request, historyKey, title, duration in
+            guard let self, self.rememberRecentMedia, let recentMediaStore = self.recentMediaStore else {
+                return
+            }
+            let isNetwork = MediaURL.isNetworkURL(request.path)
+            guard let url = isNetwork ? URL(string: request.path) : URL(fileURLWithPath: request.path) else { return }
+            recentMediaStore.record(
+                url: url,
+                title: title,
+                historyKey: historyKey,
+                sourcePath: self.engine.currentSourcePath,
+                duration: duration,
+                headers: request.headers
+            )
+        }
         engine.onTimeUpdate = { [weak self] current, dur in
             guard let self else { return }
 
@@ -289,11 +315,11 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         trackNavigation: TrackNavigation = TrackNavigation()
     ) {
         let isNetwork = MediaURL.isNetworkURL(url.absoluteString)
-        let pathString = isNetwork ? url.absoluteString : url.standardizedFileURL.path
+        let rawPath = isNetwork ? url.absoluteString : url.standardizedFileURL.path(percentEncoded: false)
 
         engine.load(
             MediaLoadRequest(
-                path: pathString,
+                path: rawPath,
                 title: title,
                 artworkData: artworkData,
                 artworkURL: artworkURL,

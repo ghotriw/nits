@@ -79,7 +79,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             MediaURL.applyNetworkOptions(&avOptions, headers: headers, httpRequestSize: httpRequestSize)
         }
 
-        let cleanPath = PlayerEngine.normalizeMediaPath(path)
+        let cleanPath = MediaURL.normalizeMediaPath(path)
 
         var ret = avformat_open_input(&formatCtx, cleanPath, nil, &avOptions)
         guard ret >= 0, let activeFormatCtx = formatCtx else {

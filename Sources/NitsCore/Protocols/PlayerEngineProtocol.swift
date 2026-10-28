@@ -43,6 +43,10 @@ public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
     @MainActor var playbackState: PlaybackState { get }
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
+    /// Called once when a requested media or playlist finishes loading: `(request, historyKey, title, duration)`.
+    @MainActor var onMediaLoaded:
+        ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?
+    { get set }
     @MainActor var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)? { get set }
     /// Called when `isBuffering` changes.
     @MainActor var onBufferingChanged: ((_ isBuffering: Bool) -> Void)? { get set }
@@ -212,6 +216,14 @@ public protocol PlayerEngineProtocol:
 // MARK: - Default Implementations & Convenience Extensions
 
 extension PlayerPlaybackControlling {
+    @MainActor
+    public var onMediaLoaded:
+        ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?
+    {
+        get { nil }
+        set {}
+    }
+
     @MainActor
     public func seek(to seconds: Double) {
         seek(to: seconds, exact: true)

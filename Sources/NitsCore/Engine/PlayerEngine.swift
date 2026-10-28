@@ -102,6 +102,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)?
     /// State change callback for external clients
     public var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)?
+    /// Called once when a requested media or playlist finishes loading: `(request, historyKey, title, duration)`.
+    public var onMediaLoaded:
+        ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?
     /// Callback fired when an in-flight relative seek settles onto its final keyframe or exact PTS
     public var onRelativeSeekResolved: ((_ offset: Double, _ currentTime: Double) -> Void)?
 
@@ -204,6 +207,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let previous = configuration
         let previousVideoScaling = previous.videoScaling
         self.configuration = config
+        self.historyStore.exclusionPolicy = config.historyExclusionPolicy
         self.isToneMappingPermitted = config.enableToneMapping
         toneMapping.apply(config, previous: previous)
         subtitles.apply(config)
@@ -405,6 +409,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
         fn(renderer, flushRemovingImageSelector, true, {})
     }
 
+    @available(*, deprecated, renamed: "MediaURL.normalizeMediaPath")
+    nonisolated public static func normalizeMediaPath(_ path: String) -> String {
+        MediaURL.normalizeMediaPath(path)
+    }
+
     nonisolated(unsafe) public let displayLayer = AVSampleBufferDisplayLayer()
     nonisolated(unsafe) let sampleBufferRenderer: AVSampleBufferVideoRenderer
     /// Serializes enqueues and flushes: the display-link tick enqueues on its own thread
@@ -580,11 +589,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
     var configuration: PlayerConfiguration
-    /// Path or URL of the media loaded or loading, as normalized by `normalizeMediaPath`.
+    /// Path or URL of the media loaded or loading, as normalized by `MediaURL.normalizeMediaPath`.
     public internal(set) var currentPath: String?
     /// Path or URL of the stream the demuxer opened, which `currentHeaders` go with: `currentPath`, or the stream a
     /// `mediaResolver` found for it. What reads the media again (thumbnails, embedded subtitles) opens this one.
-    var currentSourcePath: String?
+    public internal(set) var currentSourcePath: String?
     /// What the media loaded is saved as in the history: `currentPath`, or a resolver's name for the page's media
     /// (`ResolvedMedia.historyKey`).
     var currentHistoryKey: String?
@@ -683,13 +692,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
     ///   - durationCache: Where playlist durations are cached (`.shared` persists them under Caches).
     ///
     /// A host embedding the engine, or a test, passes its own stores to keep these out of the app's.
+    /// With `.standard`, `historyStore` is `PlaybackHistoryStore.shared`, whose exclusion policy only
+    /// `applyConfiguration` changes; other `userDefaults` get a store of their own with `configuration`'s
+    /// policy.
     public init(
         configuration: PlayerConfiguration, userDefaults: UserDefaults = .standard,
         durationCache: MediaDurationCache = .shared
     ) {
         self.configuration = configuration
-        self.historyStore =
-            userDefaults === UserDefaults.standard ? .shared : PlaybackHistoryStore(userDefaults: userDefaults)
+        if userDefaults === UserDefaults.standard {
+            self.historyStore = .shared
+        } else {
+            self.historyStore = PlaybackHistoryStore(
+                userDefaults: userDefaults,
+                exclusionPolicy: configuration.historyExclusionPolicy
+            )
+        }
         self.renderMode = configuration.defaultRenderMode
         self.isToneMappingPermitted = configuration.enableToneMapping
         let metalRenderer = MetalVideoRenderer()

@@ -8,16 +8,22 @@ import UniformTypeIdentifiers
 final class WelcomeWindowController: NSWindowController {
     private let onOpenURLs: ([URL]) -> Void
     private let onPromptOpenURL: (() -> Void)?
+    private let onOpenRecentItem: ((RecentMediaItem) -> Void)?
+    private let isRecentMediaEnabled: () -> Bool
 
     init(
         onOpenURLs: @escaping ([URL]) -> Void,
-        onPromptOpenURL: (() -> Void)? = nil
+        onPromptOpenURL: (() -> Void)? = nil,
+        onOpenRecentItem: ((RecentMediaItem) -> Void)? = nil,
+        isRecentMediaEnabled: @escaping () -> Bool = { true }
     ) {
         self.onOpenURLs = onOpenURLs
         self.onPromptOpenURL = onPromptOpenURL
+        self.onOpenRecentItem = onOpenRecentItem
+        self.isRecentMediaEnabled = isRecentMediaEnabled
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 350),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -30,7 +36,9 @@ final class WelcomeWindowController: NSWindowController {
 
     convenience init(
         onOpenURL: @escaping (URL) -> Void,
-        onPromptOpenURL: (() -> Void)? = nil
+        onPromptOpenURL: (() -> Void)? = nil,
+        onOpenRecentItem: ((RecentMediaItem) -> Void)? = nil,
+        isRecentMediaEnabled: @escaping () -> Bool = { true }
     ) {
         self.init(
             onOpenURLs: { urls in
@@ -38,7 +46,9 @@ final class WelcomeWindowController: NSWindowController {
                     onOpenURL(first)
                 }
             },
-            onPromptOpenURL: onPromptOpenURL
+            onPromptOpenURL: onPromptOpenURL,
+            onOpenRecentItem: onOpenRecentItem,
+            isRecentMediaEnabled: isRecentMediaEnabled
         )
     }
 
@@ -69,7 +79,14 @@ final class WelcomeWindowController: NSWindowController {
             },
             onFilesDropped: { [weak self] urls in
                 self?.onOpenURLs(urls)
-            }
+            },
+            onOpenRecentItem: { [weak self] item in
+                self?.onOpenRecentItem?(item)
+            },
+            onClearRecent: {
+                RecentMediaActions.clearAll()
+            },
+            isRecentMediaEnabled: isRecentMediaEnabled
         )
 
         let hostingView = NSHostingView(rootView: welcomeView)
@@ -78,6 +95,7 @@ final class WelcomeWindowController: NSWindowController {
 
         visualEffectView.addSubview(hostingView)
         window.contentView = visualEffectView
+        window.initialFirstResponder = hostingView
     }
 
     func promptOpenFile() {

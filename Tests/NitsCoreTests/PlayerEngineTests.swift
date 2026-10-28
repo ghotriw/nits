@@ -416,6 +416,20 @@ struct PlayerEngineTests {
 
         // 3. Local file path fallback to filename
         #expect(PlayerEngine.resolveTitle(from: "/Users/alice/Movies/Inception.2010.mkv") == "Inception.2010.mkv")
+
+        // 4. Percent signs in names are decoded once, never twice
+        #expect(PlayerEngine.resolveTitle(from: "/media/a%41.mkv") == "a%41.mkv")
+        #expect(PlayerEngine.resolveTitle(from: "file:///media/a%2541.mkv") == "a%41.mkv")
+        #expect(PlayerEngine.resolveTitle(from: "https://example.com/a%2541.mkv") == "a%41.mkv")
+    }
+
+    @Test("MediaURL.normalizeMediaPath decodes file URLs once and keeps plain paths as they are")
+    func testNormalizeMediaPathPercentSigns() {
+        #expect(MediaURL.normalizeMediaPath("/media/a%41.mkv") == "/media/a%41.mkv")
+        #expect(MediaURL.normalizeMediaPath("/media/My Film.mkv") == "/media/My Film.mkv")
+        #expect(MediaURL.normalizeMediaPath("file:///media/a%2541.mkv") == "/media/a%41.mkv")
+        #expect(MediaURL.normalizeMediaPath("file:///media/My%20Film.mkv") == "/media/My Film.mkv")
+        #expect(MediaURL.normalizeMediaPath("https://example.com/a%2541.mkv") == "https://example.com/a%2541.mkv")
     }
 
     @Test("PlayerEngine load updates mediaTitle and stop clears it")
@@ -662,7 +676,7 @@ struct PlayerEngineTests {
         #expect(engine.currentTime == 0.0)
 
         // Verify history was saved for file 1
-        let saved1 = historyStore.savedPosition(for: path1)
+        let saved1 = historyStore.savedPosition(for: MediaHistoryIdentity(historyKey: path1))
         #expect(saved1 != nil)
         #expect(abs((saved1 ?? 0.0) - 25.0) < 1.0)
 
@@ -721,6 +735,7 @@ struct PlayerEngineTests {
             var playbackState: PlaybackState = .idle
             var onTimeUpdate: ((Double, Double) -> Void)? = nil
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
+            var onMediaLoaded: ((MediaLoadRequest, String, String, Double) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
             var onBufferingChanged: ((Bool) -> Void)? = nil
             var onSeekingChanged: ((Bool) -> Void)? = nil
@@ -830,6 +845,7 @@ struct PlayerEngineTests {
             var playbackState: PlaybackState = .idle
             var onTimeUpdate: ((Double, Double) -> Void)? = nil
             var onPlaybackStateChanged: ((PlaybackState) -> Void)? = nil
+            var onMediaLoaded: ((MediaLoadRequest, String, String, Double) -> Void)? = nil
             var onRelativeSeekResolved: ((Double, Double) -> Void)? = nil
             var onBufferingChanged: ((Bool) -> Void)? = nil
             var onSeekingChanged: ((Bool) -> Void)? = nil

@@ -4,6 +4,12 @@ import Foundation
 import os
 
 extension PlayerEngine {
+    /// Reporting format passed down the loading pipeline to notify `onMediaLoaded`.
+    enum LoadReporting: Sendable {
+        case media(MediaLoadRequest)
+        case playlist(MediaLoadRequest)
+    }
+
     /// Resolves the user-facing media title from a file/stream path, falling back to
     /// URL host or file name if no explicit title is provided.
     nonisolated public static func resolveTitle(from path: String, explicitTitle: String? = nil) -> String {
@@ -15,30 +21,10 @@ extension PlayerEngine {
             if last.isEmpty || last == "/" {
                 return url.host ?? path
             }
-            return last.removingPercentEncoding ?? last
+            // `lastPathComponent` is already decoded: decoding again turns a literal `%41` into `A`.
+            return last
         }
-        let localPath: String
-        if path.lowercased().hasPrefix("file://") {
-            localPath = URL(string: path)?.path ?? String(path.dropFirst("file://".count))
-        } else {
-            localPath = path
-        }
-        let decoded = localPath.removingPercentEncoding ?? localPath
-        return URL(fileURLWithPath: decoded).lastPathComponent
-    }
-
-    /// Normalizes an input path: strips file:// scheme if present and decodes percent-encoded characters for local files.
-    nonisolated public static func normalizeMediaPath(_ path: String) -> String {
-        if MediaURL.isNetworkURL(path) {
-            return path
-        }
-        let localPath: String
-        if path.lowercased().hasPrefix("file://") {
-            localPath = URL(string: path)?.path ?? String(path.dropFirst("file://".count))
-        } else {
-            localPath = path
-        }
-        return localPath.removingPercentEncoding ?? localPath
+        return URL(fileURLWithPath: MediaURL.normalizeMediaPath(path)).lastPathComponent
     }
 
     /// Resets all internal playback, demuxing, feeding and clock tracking state before loading new media.
@@ -139,9 +125,18 @@ extension PlayerEngine {
     }
 
     public func load(_ request: MediaLoadRequest) {
+        var normalizedRequest = request
+        normalizedRequest.path = MediaURL.normalizeMediaPath(request.path)
+        load(normalizedRequest, reporting: .media(normalizedRequest))
+    }
+
+    func load(
+        _ request: MediaLoadRequest,
+        reporting: LoadReporting?
+    ) {
         // Now, not in the reset: a load in the background sets `isLoading` first, and nothing is saved while loading.
         saveCurrentPlaybackProgress()
-        let normalizedPath = Self.normalizeMediaPath(request.path)
+        let normalizedPath = MediaURL.normalizeMediaPath(request.path)
         let isNetwork = MediaURL.isNetworkURL(normalizedPath)
         // A network audio file of the request is opened with the media: off the main actor too.
         let isRemoteOrMounted =
@@ -174,18 +169,31 @@ extension PlayerEngine {
                     )
                     self.playlist.replaceAll(items: parsedItems)
                     if let firstItem = self.playlist.currentItem {
-                        self.load(item: firstItem)
+                        let playlistRequest: MediaLoadRequest? =
+                            switch reporting {
+                            case .media(let req), .playlist(let req): req
+                            case nil: nil
+                            }
+                        self.load(item: firstItem, reportingPlaylistRequest: playlistRequest)
                     } else {
                         self.isLoading = false
+                        if !self.isLoaded {
+                            self.playbackState = .idle
+                        }
                     }
                 } else if isNetwork {
                     // Fallback to loading via demuxer as HLS/stream if parsing yielded no separate items
-                    await self.loadAsyncKeepingHostState(normalizedRequest)
+                    await self.loadAsyncKeepingHostState(
+                        normalizedRequest, reporting: reporting)
                 } else if await PlaylistParser.isHLSManifest(fileAt: playlistURL), !Task.isCancelled {
                     // A saved HLS manifest lists no tracks either: the demuxer plays it. An empty playlist doesn't.
-                    await self.loadAsyncKeepingHostState(normalizedRequest)
+                    await self.loadAsyncKeepingHostState(
+                        normalizedRequest, reporting: reporting)
                 } else {
                     self.isLoading = false
+                    if !self.isLoaded {
+                        self.playbackState = .idle
+                    }
                 }
             }
             return
@@ -201,10 +209,11 @@ extension PlayerEngine {
             self.playbackState = .loading
             loadingTask?.cancel()
             loadingTask = Task { @MainActor [weak self] in
-                await self?.loadAsyncKeepingHostState(normalizedRequest)
+                await self?.loadAsyncKeepingHostState(
+                    normalizedRequest, reporting: reporting)
             }
         } else {
-            loadSync(normalizedRequest)
+            loadSync(normalizedRequest, reporting: reporting)
         }
     }
 
@@ -218,8 +227,10 @@ extension PlayerEngine {
     }
 
     public func loadAsync(_ request: MediaLoadRequest) async {
-        applyHostState(of: request)
-        await loadAsyncKeepingHostState(request)
+        var normalizedRequest = request
+        normalizedRequest.path = MediaURL.normalizeMediaPath(request.path)
+        applyHostState(of: normalizedRequest)
+        await loadAsyncKeepingHostState(normalizedRequest, reporting: .media(normalizedRequest))
     }
 
     /// Takes the request's action buttons and track navigation. Now, not when a background load resets the rest
@@ -236,8 +247,12 @@ extension PlayerEngine {
     /// - Parameters:
     ///   - preResolved: The page's streams already found (`selectVideoFormat`): the resolver isn't asked again.
     ///   - startsPaused: The load ends paused, on its first frame.
+    ///   - reporting: Top-level request reported to `onMediaLoaded` once the demuxer is applied.
     func loadAsyncKeepingHostState(
-        _ request: MediaLoadRequest, preResolved: ResolvedMedia? = nil, startsPaused: Bool = false
+        _ request: MediaLoadRequest,
+        preResolved: ResolvedMedia? = nil,
+        startsPaused: Bool = false,
+        reporting: LoadReporting? = nil
     ) async {
         let path = request.path
         let (loadID, interruptContext) = resetPlaybackTrackingState(
@@ -322,7 +337,7 @@ extension PlayerEngine {
             if endIfSuperseded() { return .ended }
             guard let resolved else { return .declined }
             resolvedSource = ResolvedSource(request: request, media: resolved)
-            source.path = Self.normalizeMediaPath(resolved.path)
+            source.path = MediaURL.normalizeMediaPath(resolved.path)
             source.headers = resolved.headers
             source.httpRequestSize = resolved.httpRequestSize
             // The request's own files are read with its headers and request size, not the page's streams' (0: the
@@ -464,7 +479,8 @@ extension PlayerEngine {
         }
         let inputs = Self.makeInputs(main: demuxer, requested: lookup.requested, opened: externalAudio)
         // The track to start with may be in a file only declared: opened before the media starts, as it is the one heard.
-        let saved = historyStore.savedPreferences(for: historyKey)
+        let saved = historyStore.savedPreferences(
+            for: MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: source.path))
         if let url = inputs.unopenedFileToStartWith(
             requested: request.audioTrack, saved: saved, languages: configuration.trackLanguages.audioLanguages)
         {
@@ -491,7 +507,8 @@ extension PlayerEngine {
             requestedSubtitleTrack: request.subtitleTrack,
             resolvedTitle: resolvedTitle,
             resolvedChapters: chaptersFromResolver,
-            resolvedActionButtons: buttonsFromResolver
+            resolvedActionButtons: buttonsFromResolver,
+            reporting: reporting
         )
     }
 
@@ -504,7 +521,10 @@ extension PlayerEngine {
         [-65, -61, -51, -60, -64, -54, -50].contains(code)
     }
 
-    func loadSync(_ request: MediaLoadRequest) {
+    func loadSync(
+        _ request: MediaLoadRequest,
+        reporting: LoadReporting? = nil
+    ) {
         loadingTask?.cancel()
         loadingTask = nil
 
@@ -556,7 +576,8 @@ extension PlayerEngine {
             httpRequestSize: request.httpRequestSize,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
-            requestedSubtitleTrack: request.subtitleTrack
+            requestedSubtitleTrack: request.subtitleTrack,
+            reporting: reporting
         )
     }
 
@@ -575,11 +596,13 @@ extension PlayerEngine {
 
     public func saveCurrentPlaybackProgress() {
         guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 else { return }
+
+        let identity = MediaHistoryIdentity(historyKey: path, path: currentPath, sourcePath: currentSourcePath)
         let progressTime = chaseTargetTime ?? currentTime
         AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(media.duration)s")
         if progressTime > 0 {
             historyStore.savePosition(
-                for: path,
+                for: identity,
                 position: progressTime,
                 duration: media.duration,
                 startThreshold: configuration.resumeStartThreshold,
@@ -587,7 +610,11 @@ extension PlayerEngine {
                 preferences: preferencesForHistory
             )
         } else {
-            historyStore.savePreferences(for: path, duration: media.duration, preferencesForHistory)
+            historyStore.savePreferences(
+                for: identity,
+                duration: media.duration,
+                preferencesForHistory
+            )
         }
     }
 
@@ -710,7 +737,8 @@ extension PlayerEngine {
     private func externalAudioLookup(
         for path: String, historyKey: String, source: MediaLoadRequest, demuxer: MediaDemuxer
     ) -> ExternalAudioLookup {
-        let saved = historyStore.savedPreferences(for: historyKey)
+        let saved = historyStore.savedPreferences(
+            for: MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: source.path))
         return ExternalAudioLookup(
             requested: source.audioFiles.map { file in
                 var file = file
@@ -799,7 +827,8 @@ extension PlayerEngine {
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
         resolvedTitle: String? = nil,
         resolvedChapters: [MediaChapter] = [],
-        resolvedActionButtons: [PlaybackActionButton] = []
+        resolvedActionButtons: [PlaybackActionButton] = [],
+        reporting: LoadReporting? = nil
     ) {
         resetRelativeSeekBurst()
         self.inputs = inputs
@@ -872,11 +901,12 @@ extension PlayerEngine {
         if !demuxer.chapters.isEmpty {
             AppLog.info(.demuxer, "Loaded \(demuxer.chapters.count) chapter(s)")
         }
+        let mediaIdentity = MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: sourcePath)
         // Track selection priority chain (per kind):
         // 1. Explicit request (CLI, host app, deep link)
         // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
         // 3. `TrackAutoSelection` by the language settings and the tracks' flags
-        let savedTracks = historyStore.savedPreferences(for: historyKey)
+        let savedTracks = historyStore.savedPreferences(for: mediaIdentity)
         inputs.selectAudioTrackOnLoad(
             requested: requestedAudioTrack, saved: savedTracks, languages: configuration.trackLanguages.audioLanguages)
 
@@ -970,7 +1000,7 @@ extension PlayerEngine {
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")
         } else if configuration.resumePlayback,
             let saved = historyStore.savedPosition(
-                for: historyKey,
+                for: mediaIdentity,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio
             )
@@ -1062,6 +1092,16 @@ extension PlayerEngine {
                     self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
                 }
             }
+        }
+
+        switch reporting {
+        case .playlist(let request):
+            let playlistTitle = Self.resolveTitle(from: request.path, explicitTitle: request.title)
+            onMediaLoaded?(request, request.path, playlistTitle, 0)
+        case .media(let request):
+            onMediaLoaded?(request, historyKey, self.mediaTitle, self.media.duration)
+        case nil:
+            break
         }
     }
 }

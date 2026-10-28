@@ -513,9 +513,13 @@ flowchart TD
   - Cursor autohide (`NSCursor.setHiddenUntilMouseMoves`) and controls overlay fading after 2.5s of user inactivity.
   - Borderless fullscreen mode with double-click toggles and `F` / `⌃⌘F` shortcuts.
   - Low-level layout-independent ANSI keycode handling in `PlayerWindow`.
-- [x] **5.7. Playback History & Resume:**
+- [x] **5.7. Playback History, Resume & Recent Media:**
   - Thread-safe storage manager (`PlaybackHistoryStore`) using SHA-256 normalized storage keys.
   - Automatic recording and restoring of media timestamps, audio track selections, and subtitle preferences.
+  - Persistent recent media list (`RecentMediaStore`) tracking explicitly opened local files and network streams.
+  - Start screen integration (`WelcomeView`): scrollable recent media list with saved progress/timestamps, progress bars, keyboard navigation, and context menus.
+  - Application menu integration: native `File → Open Recent` menu with quick clear action, plus Dock menu recent documents via `NSDocumentController`.
+  - User-configurable toggle in Settings → General to disable the recent list and clear recorded media independently of resume timestamps.
 - [x] **5.8. Logging Architecture & Diagnostics:**
   - Structured, categorized logging via `AppLog` (`.engine`, `.video`, `.audio`, `.demuxer`, `.subtitles`, `.playlist`).
   - In-memory ring buffer log store and live viewer window (`LogViewerWindowController`, `⌥⌘L`).
@@ -741,7 +745,7 @@ flowchart TD
 | **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Completed ✓ | Subtitle delay offset (`±30s`), file drag-and-drop, sidecar discovery |
 | **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | In Progress ⏳ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 captions |
 | **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
-| **Playback History & Resume** | `NitsCore` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), track state restore |
+| **Playback History & Recent Media** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), `RecentMediaStore`, Welcome window recent list, `Open Recent` menu, Dock items |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
 | **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
 | **Host Action Buttons & Queue** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans and Up Next cards from the host, timed display, auto-press; host-driven Next / Previous; hiding controls |

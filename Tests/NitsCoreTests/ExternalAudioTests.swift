@@ -86,7 +86,7 @@ struct ExternalAudioTests {
         try #require(await engine.waitForSeekToSettle())
         engine.saveCurrentPlaybackProgress()
         // Its id numbers the files added this time; opened again, the file's tracks may number otherwise.
-        let saved = try #require(engine.historyStore.savedPreferences(for: path))
+        let saved = try #require(engine.historyStore.savedPreferences(for: MediaHistoryIdentity(historyKey: path)))
         #expect(saved.audioTrackId == PlaybackRecord.externalAudio)
         #expect(saved.externalAudioPath == URL(fileURLWithPath: path).standardizedFileURL.path)
         #expect(saved.externalAudioStreamIndex == external.streamIndex)
@@ -230,7 +230,9 @@ struct ExternalAudioTests {
         #expect(!engine.isBuffering)
         // The track names no file to open again: not saved.
         engine.saveCurrentPlaybackProgress()
-        #expect(engine.historyStore.savedPreferences(for: media)?.externalAudioPath == nil)
+        #expect(
+            engine.historyStore.savedPreferences(for: MediaHistoryIdentity(historyKey: media))?.externalAudioPath == nil
+        )
     }
 
     @Test("A request's audio over HTTP opens with the media, with the request's headers, and plays with the picture")

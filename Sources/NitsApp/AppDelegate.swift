@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var welcomeWindowController: WelcomeWindowController?
     private(set) var playerWindowController: PlayerWindowController?
     private var configuration: PlayerConfiguration
+    var rememberRecentMedia: Bool {
+        configuration.rememberRecentMedia
+    }
     private var initialMediaPath: String?
     private var hasOpenedInitialMedia: Bool = false
 
@@ -62,6 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onPromptOpenURL: { [weak self] in
                     self?.promptOpenURL()
+                },
+                onOpenRecentItem: { [weak self] item in
+                    self?.openRecentItem(item)
+                },
+                isRecentMediaEnabled: { [weak self] in
+                    self?.rememberRecentMedia ?? true
                 }
             )
         }
@@ -116,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let controller = playerWindowController {
             return controller
         }
-        let controller = PlayerWindowController(configuration: configuration)
+        let controller = PlayerWindowController(configuration: configuration, recentMediaStore: .shared)
         controller.onClose = { [weak self] _, _ in
             guard let self else { return }
             self.isPlayerActive = false
@@ -150,6 +159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             url: url, headers: headers, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
         isPlayerActive = true
         activePlayer = playerWindowController
+    }
+
+    func openRecentItem(_ item: RecentMediaItem) {
+        if item.isNetwork {
+            if let url = URL(string: item.urlString) {
+                openStream(url: url, headers: item.headers ?? [:])
+            }
+        } else {
+            openMediaFile(at: URL(fileURLWithPath: item.urlString))
+        }
+    }
+
+    func clearRecentMedia() {
+        RecentMediaActions.clearAll()
     }
 
     func promptOpenFile() {
@@ -198,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateConfiguration(_ newConfig: PlayerConfiguration) {
         self.configuration = newConfig
+        PlaybackHistoryStore.shared.exclusionPolicy = newConfig.historyExclusionPolicy
         self.playerWindowController?.applyConfiguration(self.configuration)
     }
 

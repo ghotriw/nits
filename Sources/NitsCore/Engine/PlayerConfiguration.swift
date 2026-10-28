@@ -80,6 +80,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether to automatically resume playback from previously saved position (default true).
     public var resumePlayback: Bool
 
+    /// Whether to record and display recently opened media in the Welcome window and Open Recent menu (default true).
+    public var rememberRecentMedia: Bool
+
     /// Minimum seconds played before a position is saved / resumed (default 15.0).
     public var resumeStartThreshold: Double
 
@@ -195,6 +198,25 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// it (default).
     public var subtitleEncoding: String.Encoding?
 
+    /// Folders whose media files should never be saved to recent media or playback history.
+    public var historyExcludedFolders: [ExcludedFolder] {
+        didSet {
+            historyExclusionPolicy = HistoryExclusionPolicy(
+                excludedFolders: historyExcludedFolders, excludedDomains: historyExcludedDomains)
+        }
+    }
+
+    /// Network domains whose streams should never be saved to recent media or playback history.
+    public var historyExcludedDomains: [String] {
+        didSet {
+            historyExclusionPolicy = HistoryExclusionPolicy(
+                excludedFolders: historyExcludedFolders, excludedDomains: historyExcludedDomains)
+        }
+    }
+
+    /// Cached exclusion policy derived from `historyExcludedFolders` and `historyExcludedDomains`.
+    public private(set) var historyExclusionPolicy: HistoryExclusionPolicy
+
     public init(
         enableToneMapping: Bool = true,
         defaultRenderMode: RenderMode = .auto,
@@ -206,6 +228,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         initialVolume: Float = 1.0,
         httpHeaders: [String: String] = [:],
         resumePlayback: Bool = true,
+        rememberRecentMedia: Bool = true,
         resumeStartThreshold: Double = 15.0,
         resumeEndThresholdRatio: Double = 0.95,
         subtitleFontSize: Double = 24.0,
@@ -243,7 +266,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         actionButtonDisplayDuration: Double = 8.0,
         actionButtonAutoPress: Bool = false,
         trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences(),
-        subtitleEncoding: String.Encoding? = nil
+        subtitleEncoding: String.Encoding? = nil,
+        historyExcludedFolders: [ExcludedFolder] = [],
+        historyExcludedDomains: [String] = []
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -258,6 +283,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.initialVolume = initialVolume
         self.httpHeaders = httpHeaders
         self.resumePlayback = resumePlayback
+        self.rememberRecentMedia = rememberRecentMedia
         self.resumeStartThreshold = resumeStartThreshold
         self.resumeEndThresholdRatio = resumeEndThresholdRatio
         self.subtitleFontSize = subtitleFontSize
@@ -296,6 +322,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.actionButtonAutoPress = actionButtonAutoPress
         self.trackLanguages = trackLanguages
         self.subtitleEncoding = subtitleEncoding
+        self.historyExcludedFolders = historyExcludedFolders
+        self.historyExcludedDomains = historyExcludedDomains
+        self.historyExclusionPolicy = HistoryExclusionPolicy(
+            excludedFolders: historyExcludedFolders, excludedDomains: historyExcludedDomains)
     }
 
     public static let keyEnableToneMapping = "Nits.enableToneMapping"
@@ -305,6 +335,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyApplyDolbyVisionTrims = "Nits.applyDolbyVisionTrims"
     public static let keyLocalContrast = "Nits.localContrast"
     public static let keyResumePlayback = "Nits.resumePlayback"
+    public static let keyRememberRecentMedia = "Nits.rememberRecentMedia"
+    public static let keyHistoryExcludedFolders = "Nits.historyExcludedFolders"
+    public static let keyHistoryExcludedDomains = "Nits.historyExcludedDomains"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
     public static let keyResumeEndThresholdRatio = "Nits.resumeEndThresholdRatio"
     public static let keySubtitleFontSize = "Nits.subtitleFontSize"
@@ -368,6 +401,12 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if userDefaults.object(forKey: keyResumePlayback) != nil {
             config.resumePlayback = userDefaults.bool(forKey: keyResumePlayback)
         }
+        if userDefaults.object(forKey: keyRememberRecentMedia) != nil {
+            config.rememberRecentMedia = userDefaults.bool(forKey: keyRememberRecentMedia)
+        }
+        let exclusionPolicy = loadHistoryExclusionPolicy(from: userDefaults)
+        config.historyExcludedFolders = exclusionPolicy.excludedFolders
+        config.historyExcludedDomains = exclusionPolicy.excludedDomains
         if let startThreshold = userDefaults.object(forKey: keyResumeStartThreshold) as? NSNumber {
             config.resumeStartThreshold = startThreshold.doubleValue
         }
@@ -501,6 +540,16 @@ public struct PlayerConfiguration: Sendable, Equatable {
         return config
     }
 
+    /// Loads only the history exclusion policy from UserDefaults without parsing the entire configuration.
+    public static func loadHistoryExclusionPolicy(from userDefaults: UserDefaults = .standard) -> HistoryExclusionPolicy
+    {
+        let folders =
+            userDefaults.string(forKey: keyHistoryExcludedFolders).map(HistoryExclusionPolicy.decodeFolders) ?? []
+        let domains =
+            userDefaults.string(forKey: keyHistoryExcludedDomains).map(HistoryExclusionPolicy.decodeList) ?? []
+        return HistoryExclusionPolicy(excludedFolders: folders, excludedDomains: domains)
+    }
+
     /// Saves configuration properties to UserDefaults.
     public func saveToUserDefaults(userDefaults: UserDefaults = .standard) {
         userDefaults.set(enableToneMapping, forKey: Self.keyEnableToneMapping)
@@ -510,6 +559,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(applyDolbyVisionTrims, forKey: Self.keyApplyDolbyVisionTrims)
         userDefaults.set(localContrast, forKey: Self.keyLocalContrast)
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
+        userDefaults.set(rememberRecentMedia, forKey: Self.keyRememberRecentMedia)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
         userDefaults.set(subtitleFontSize, forKey: Self.keySubtitleFontSize)
@@ -552,6 +602,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(trackLanguages.subtitlesWithKnownAudio.rawValue, forKey: Self.keySubtitlesWithKnownAudio)
         userDefaults.set(
             subtitleEncoding.flatMap(TextFileEncoding.name(of:)) ?? "", forKey: Self.keySubtitleEncoding)
+        userDefaults.set(
+            HistoryExclusionPolicy.encodeFolders(historyExcludedFolders), forKey: Self.keyHistoryExcludedFolders)
+        userDefaults.set(
+            HistoryExclusionPolicy.encodeList(historyExcludedDomains), forKey: Self.keyHistoryExcludedDomains)
     }
 
     /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).
@@ -651,6 +705,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
                 config.resumePlayback = false
             } else if arg == "--resume" || arg == "--enable-resume" {
                 config.resumePlayback = true
+            } else if arg == "--no-recent-media" || arg == "--disable-recent-media" {
+                config.rememberRecentMedia = false
+            } else if arg == "--recent-media" || arg == "--enable-recent-media" {
+                config.rememberRecentMedia = true
             } else if arg == "--no-osd" || arg == "--disable-osd" {
                 config.enableOSD = false
             } else if arg == "--enable-osd" || arg == "--osd" {

@@ -39,7 +39,7 @@ public final class ThumbnailDiskCache: Sendable {
             return digest.compactMap { String(format: "%02x", $0) }.joined()
         }
 
-        let cleanPath = PlayerEngine.normalizeMediaPath(path)
+        let cleanPath = MediaURL.normalizeMediaPath(path)
 
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: cleanPath) else {
             return nil

@@ -29,6 +29,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let videoAspectRatio: RationalAspectRatio?
     /// Crop aspect ratio; see `PlaybackPreferences.videoCrop`.
     public let videoCrop: RationalAspectRatio?
+    /// Standardized local path or network URL recorded for this entry; used for exclusion matching.
+    public let mediaPath: String?
 
     /// Sentinel value for `subtitleTrackId` meaning the user explicitly disabled subtitles.
     public static let subtitlesOff = -1
@@ -41,7 +43,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         position: Double,
         duration: Double,
         lastUpdated: Date = Date(),
-        preferences: PlaybackPreferences = PlaybackPreferences()
+        preferences: PlaybackPreferences = PlaybackPreferences(),
+        mediaPath: String? = nil
     ) {
         self.position = position
         self.duration = duration
@@ -56,6 +59,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.externalAudioStreamIndex = preferences.externalAudioStreamIndex
         self.videoAspectRatio = preferences.videoAspectRatio
         self.videoCrop = preferences.videoCrop
+        self.mediaPath = mediaPath
     }
 
     public var preferences: PlaybackPreferences {
@@ -155,17 +159,72 @@ public struct PlaybackPreferences: Sendable, Equatable {
     }
 }
 
+/// Identifies a media resource for history storage and exclusion checks: its storage key (`historyKey`),
+/// the requested path or URL (`path`), and the stream URL opened by the demuxer (`sourcePath`).
+public struct MediaHistoryIdentity: Sendable, Equatable {
+    public let historyKey: String
+    public let path: String?
+    public let sourcePath: String?
+
+    public init(historyKey: String, path: String? = nil, sourcePath: String? = nil) {
+        self.historyKey = historyKey
+        self.path = path
+        self.sourcePath = sourcePath
+    }
+
+    /// Path stored in the record for later exclusion purges.
+    public var resolvedMediaPath: String {
+        path ?? sourcePath ?? historyKey
+    }
+}
+
 /// Thread-safe storage manager for recording and restoring media playback positions (Watch Later / Resume Playback).
 public final class PlaybackHistoryStore: Sendable {
-    public static let shared = PlaybackHistoryStore()
+    public static let shared = PlaybackHistoryStore(
+        exclusionPolicy: PlayerConfiguration.loadHistoryExclusionPolicy()
+    )
+    public static let didChangeNotification = Notification.Name("Nits.PlaybackHistoryStore.didChange")
+
+    private struct State: Sendable {
+        var exclusionPolicy: HistoryExclusionPolicy
+        var cachedHasSavedPositions: Bool?
+        var cachedRecordsCount: Int?
+    }
 
     nonisolated(unsafe) private let userDefaults: UserDefaults
     private let keyPrefix = "Nits.PlaybackHistory."
-    private let lock = OSAllocatedUnfairLock()
+    private let lock: OSAllocatedUnfairLock<State>
     public let maxRecordsLimit = 10_000
 
-    public init(userDefaults: UserDefaults = .standard) {
+    /// Policy governing which folders and domains are excluded from reading and writing playback history.
+    public var exclusionPolicy: HistoryExclusionPolicy {
+        get { lock.withLock { $0.exclusionPolicy } }
+        set { lock.withLock { $0.exclusionPolicy = newValue } }
+    }
+
+    public init(
+        userDefaults: UserDefaults = .standard,
+        exclusionPolicy: HistoryExclusionPolicy = HistoryExclusionPolicy()
+    ) {
         self.userDefaults = userDefaults
+        self.lock = OSAllocatedUnfairLock(initialState: State(exclusionPolicy: exclusionPolicy))
+    }
+
+    /// Checks whether `media` matches the store's current `exclusionPolicy`.
+    public func isExcluded(_ media: MediaHistoryIdentity) -> Bool {
+        lock.withLock { state in
+            Self.isExcluded(media, recordMediaPath: nil, policy: state.exclusionPolicy)
+        }
+    }
+
+    private static func isExcluded(
+        _ media: MediaHistoryIdentity,
+        recordMediaPath: String?,
+        policy: HistoryExclusionPolicy
+    ) -> Bool {
+        if policy.isExcluded(media: media) { return true }
+        if let recordMediaPath, policy.isExcluded(pathOrURL: recordMediaPath) { return true }
+        return false
     }
 
     /// Normalizes a media path or URL into a persistent storage key using SHA-256.
@@ -191,11 +250,12 @@ public final class PlaybackHistoryStore: Sendable {
         return keyPrefix + hexString
     }
 
-    /// Saves the current playback position for a media resource, respecting start and end thresholds, along with
-    /// `preferences` (`nil` fields keep the saved value). A position under `startThreshold` or past completion is
-    /// stored as 0, so a finished file keeps its preferences; a record with neither is removed.
+    /// Saves the current playback position for a media resource identified by `media`, respecting start and end
+    /// thresholds, along with `preferences` (`nil` fields keep the saved value), unless excluded by `exclusionPolicy`.
+    /// A position under `startThreshold` or past completion is stored as 0, so a finished file keeps its preferences;
+    /// a record with neither is removed.
     public func savePosition(
-        for path: String,
+        for media: MediaHistoryIdentity,
         position: Double,
         duration: Double,
         startThreshold: Double = 15.0,
@@ -209,47 +269,100 @@ public final class PlaybackHistoryStore: Sendable {
         let isPastCompletion = position >= endThresholdSeconds || (duration > 60.0 && (duration - position) <= 30.0)
         let effectivePosition = position < startThreshold || isPastCompletion ? 0.0 : position
 
-        let key = storageKey(for: path)
+        let key = storageKey(for: media.historyKey)
 
-        lock.withLock {
-            let merged = preferences.merged(over: record(forKey: key)?.preferences)
-            guard effectivePosition > 0 || !merged.isEmpty else {
-                userDefaults.removeObject(forKey: key)
-                return
+        let didMutate = lock.withLock { state -> Bool in
+            let existingRecord = record(forKey: key)
+            let resolvedPath = media.path ?? media.sourcePath ?? existingRecord?.mediaPath ?? media.historyKey
+            guard !Self.isExcluded(media, recordMediaPath: resolvedPath, policy: state.exclusionPolicy) else {
+                return false
             }
-            store(PlaybackRecord(position: effectivePosition, duration: duration, preferences: merged), forKey: key)
+            let merged = preferences.merged(over: existingRecord?.preferences)
+            guard effectivePosition > 0 || !merged.isEmpty else {
+                if existingRecord != nil {
+                    userDefaults.removeObject(forKey: key)
+                    if let count = state.cachedRecordsCount {
+                        state.cachedRecordsCount = max(0, count - 1)
+                    }
+                    if (existingRecord?.position ?? 0) > 0 {
+                        state.cachedHasSavedPositions = nil
+                    }
+                    return true
+                }
+                return false
+            }
+            store(
+                PlaybackRecord(
+                    position: effectivePosition,
+                    duration: duration,
+                    preferences: merged,
+                    mediaPath: resolvedPath
+                ),
+                forKey: key,
+                isNewRecord: existingRecord == nil,
+                state: &state
+            )
+            if effectivePosition > 0 {
+                state.cachedHasSavedPositions = true
+            } else if (existingRecord?.position ?? 0) > 0 {
+                state.cachedHasSavedPositions = nil
+            }
+            return true
+        }
+        if didMutate {
+            notifyChanged()
         }
     }
 
-    /// Saves `preferences` (`nil` fields keep the saved value) for a media resource, keeping its saved position.
-    public func savePreferences(for path: String, duration: Double, _ preferences: PlaybackPreferences) {
-        let key = storageKey(for: path)
+    /// Saves `preferences` (`nil` fields keep the saved value) for a media resource identified by `media`,
+    /// keeping its saved position, unless excluded by `exclusionPolicy`.
+    public func savePreferences(
+        for media: MediaHistoryIdentity,
+        duration: Double,
+        _ preferences: PlaybackPreferences
+    ) {
+        let key = storageKey(for: media.historyKey)
 
-        lock.withLock {
+        let didMutate = lock.withLock { state -> Bool in
             let existingRecord = record(forKey: key)
+            let resolvedPath = media.path ?? media.sourcePath ?? existingRecord?.mediaPath ?? media.historyKey
+            guard !Self.isExcluded(media, recordMediaPath: resolvedPath, policy: state.exclusionPolicy) else {
+                return false
+            }
             let record = PlaybackRecord(
                 position: existingRecord?.position ?? 0.0,
                 duration: duration > 0 ? duration : (existingRecord?.duration ?? 0.0),
-                preferences: preferences.merged(over: existingRecord?.preferences)
+                preferences: preferences.merged(over: existingRecord?.preferences),
+                mediaPath: resolvedPath
             )
-            store(record, forKey: key)
+            store(record, forKey: key, isNewRecord: existingRecord == nil, state: &state)
+            return true
+        }
+        if didMutate {
+            notifyChanged()
         }
     }
 
-    /// Retrieves the saved playback position for a media resource, or `nil` if not eligible.
+    /// Retrieves the saved playback position for a media resource identified by `media`, or `nil` if not eligible or excluded.
     public func savedPosition(
-        for path: String,
+        for media: MediaHistoryIdentity,
         startThreshold: Double = 15.0,
         endThresholdRatio: Double = 0.95
     ) -> Double? {
-        savedRecord(for: path, startThreshold: startThreshold, endThresholdRatio: endThresholdRatio)?.position
+        savedRecord(for: media, startThreshold: startThreshold, endThresholdRatio: endThresholdRatio)?.position
     }
 
-    /// Retrieves the saved preferences (tracks, subtitle delay) for a media resource if present.
+    /// Retrieves the saved preferences (tracks, subtitle delay) for a media resource identified by `media` if present and not excluded.
     /// Does not require playback position to be past `startThreshold`.
-    public func savedPreferences(for path: String) -> PlaybackPreferences? {
-        let key = storageKey(for: path)
-        return lock.withLock { record(forKey: key)?.preferences }
+    public func savedPreferences(for media: MediaHistoryIdentity) -> PlaybackPreferences? {
+        let key = storageKey(for: media.historyKey)
+        return lock.withLock { state in
+            guard let existing = record(forKey: key) else { return nil }
+            guard !Self.isExcluded(media, recordMediaPath: existing.mediaPath, policy: state.exclusionPolicy) else {
+                return nil
+            }
+            return existing.preferences
+        }
     }
 
     /// Reads a record; the caller holds `lock`.
@@ -259,22 +372,30 @@ public final class PlaybackHistoryStore: Sendable {
     }
 
     /// Writes a record and prunes the oldest ones over the limit; the caller holds `lock`.
-    private func store(_ record: PlaybackRecord, forKey key: String) {
+    private func store(_ record: PlaybackRecord, forKey key: String, isNewRecord: Bool, state: inout State) {
         if let encoded = try? JSONEncoder().encode(record) {
             userDefaults.set(encoded, forKey: key)
         }
-        pruneExcessRecordsIfNeeded()
+        if isNewRecord {
+            if let count = state.cachedRecordsCount {
+                state.cachedRecordsCount = count + 1
+            }
+            pruneExcessRecordsIfNeeded(state: &state)
+        }
     }
 
     private func savedRecord(
-        for path: String,
+        for media: MediaHistoryIdentity,
         startThreshold: Double,
         endThresholdRatio: Double
     ) -> PlaybackRecord? {
-        let key = storageKey(for: path)
+        let key = storageKey(for: media.historyKey)
 
-        return lock.withLock {
+        return lock.withLock { state in
             guard let record = record(forKey: key) else { return nil }
+            guard !Self.isExcluded(media, recordMediaPath: record.mediaPath, policy: state.exclusionPolicy) else {
+                return nil
+            }
 
             guard record.duration > 0 else { return nil }
             guard record.position >= startThreshold else { return nil }
@@ -291,28 +412,108 @@ public final class PlaybackHistoryStore: Sendable {
         }
     }
 
-    /// Removes the saved playback position for a specific media path.
-    public func clearPosition(for path: String) {
-        let key = storageKey(for: path)
-        lock.withLock {
-            userDefaults.removeObject(forKey: key)
+    /// Whether any stored record currently has a non-zero playback position.
+    public var hasSavedPositions: Bool {
+        lock.withLock { state in
+            if let cached = state.cachedHasSavedPositions {
+                return cached
+            }
+            let dict = userDefaults.dictionaryRepresentation()
+            for key in dict.keys where key.hasPrefix(keyPrefix) {
+                if let existing = record(forKey: key), existing.position > 0 {
+                    state.cachedHasSavedPositions = true
+                    return true
+                }
+            }
+            state.cachedHasSavedPositions = false
+            return false
         }
     }
 
-    /// Clears all stored playback positions.
+    /// Removes the saved playback position for a specific media path, keeping per-file preferences if any.
+    public func clearPosition(for path: String) {
+        let key = storageKey(for: path)
+        lock.withLock { state in
+            clearPositionLocked(forKey: key, state: &state)
+            state.cachedHasSavedPositions = nil
+        }
+        notifyChanged()
+    }
+
+    /// Clears all stored playback positions, keeping per-file preferences if any.
     public func clearAll() {
-        lock.withLock {
+        lock.withLock { state in
             let dict = userDefaults.dictionaryRepresentation()
             for key in dict.keys where key.hasPrefix(keyPrefix) {
-                userDefaults.removeObject(forKey: key)
+                clearPositionLocked(forKey: key, state: &state)
             }
+            state.cachedHasSavedPositions = false
         }
+        notifyChanged()
+    }
+
+    /// Resets the position of `key` to 0 when the record has preferences worth keeping, or removes the record;
+    /// the caller holds `lock`.
+    private func clearPositionLocked(forKey key: String, state: inout State) {
+        if let existing = record(forKey: key), !existing.preferences.isEmpty {
+            if existing.position != 0,
+                let encoded = try? JSONEncoder().encode(
+                    PlaybackRecord(
+                        position: 0.0,
+                        duration: existing.duration,
+                        lastUpdated: existing.lastUpdated,
+                        preferences: existing.preferences,
+                        mediaPath: existing.mediaPath
+                    )
+                )
+            {
+                userDefaults.set(encoded, forKey: key)
+            }
+        } else {
+            userDefaults.removeObject(forKey: key)
+            state.cachedRecordsCount = nil
+        }
+    }
+
+    /// Purges all stored playback positions and preferences that match the given exclusion policy,
+    /// as well as records for any explicit keys and paths provided.
+    public func purge(
+        matching policy: HistoryExclusionPolicy,
+        knownKeysAndPaths: [(key: String, path: String)] = []
+    ) {
+        lock.withLock { state in
+            let dict = userDefaults.dictionaryRepresentation()
+            for key in dict.keys where key.hasPrefix(keyPrefix) {
+                if let record = record(forKey: key), let mediaPath = record.mediaPath,
+                    policy.isExcluded(pathOrURL: mediaPath)
+                {
+                    userDefaults.removeObject(forKey: key)
+                }
+            }
+            for (key, path) in knownKeysAndPaths {
+                if policy.isExcluded(pathOrURL: path) || policy.isExcluded(pathOrURL: key) {
+                    userDefaults.removeObject(forKey: storageKey(for: key))
+                    userDefaults.removeObject(forKey: storageKey(for: path))
+                }
+            }
+            state.cachedHasSavedPositions = nil
+            state.cachedRecordsCount = nil
+        }
+        notifyChanged()
+    }
+
+    private func notifyChanged() {
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     /// Ensures the stored records count does not exceed `maxRecordsLimit` (removes oldest by `lastUpdated`).
-    private func pruneExcessRecordsIfNeeded() {
+    private func pruneExcessRecordsIfNeeded(state: inout State) {
+        if let count = state.cachedRecordsCount, count <= maxRecordsLimit {
+            return
+        }
         let dict = userDefaults.dictionaryRepresentation()
         let matchingKeys = dict.keys.filter { $0.hasPrefix(keyPrefix) }
+        state.cachedRecordsCount = matchingKeys.count
 
         guard matchingKeys.count > maxRecordsLimit else { return }
 
@@ -337,6 +538,8 @@ public final class PlaybackHistoryStore: Sendable {
             for i in 0..<excessCount {
                 userDefaults.removeObject(forKey: recordsWithKeys[i].key)
             }
+            state.cachedHasSavedPositions = nil
         }
+        state.cachedRecordsCount = min(recordsWithKeys.count, maxRecordsLimit)
     }
 }

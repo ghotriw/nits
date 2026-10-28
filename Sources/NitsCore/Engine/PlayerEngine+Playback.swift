@@ -353,6 +353,10 @@ extension PlayerEngine {
 
     /// Loads and begins playback of a playlist item.
     public func load(item: PlaylistItem) {
+        load(item: item, reportingPlaylistRequest: nil)
+    }
+
+    func load(item: PlaylistItem, reportingPlaylistRequest: MediaLoadRequest?) {
         let pathString = item.url.isFileURL ? item.url.standardizedFileURL.path : item.url.absoluteString
         self.load(
             MediaLoadRequest(
@@ -360,7 +364,9 @@ extension PlayerEngine {
                 title: item.title,
                 headers: item.customHeaders,
                 startTime: item.startTime
-            ))
+            ),
+            reporting: reportingPlaylistRequest.map { .playlist($0) }
+        )
     }
 
     /// Played past this many seconds, Previous restarts the media instead of moving to the previous item.
