@@ -118,9 +118,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let controller = PlayerWindowController(configuration: configuration)
         controller.onClose = { [weak self] _, _ in
-            self?.isPlayerActive = false
-            self?.activePlayer = nil
-            self?.playerWindowController = nil
+            guard let self else { return }
+            self.isPlayerActive = false
+            self.activePlayer = nil
+            self.playerWindowController = nil
+            // Closing the video goes back to the Welcome window, with its recent media.
+            self.showWelcomeWindow()
         }
         controller.onKeyStatusChanged = { [weak self] isKey in
             if isKey {
