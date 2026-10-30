@@ -38,8 +38,15 @@ extension MediaChapter {
         }
     }
 
+    /// A last chapter shorter than this is dropped by `normalized`.
+    static let minimumTrailingDuration: Double = 0.5
+
+    /// Starts (and an end meeting a start) this close count as the same position.
+    static let positionTolerance: Double = 0.001
+
     /// Sorts raw chapters, fills missing ends from the next chapter (or `duration`), clamps them to
-    /// `duration` when it is known and drops duplicates and chapters that start past the end.
+    /// `duration` when it is known, drops duplicates and chapters that start past the end and folds a trailing
+    /// sliver shorter than `minimumTrailingDuration` into the chapter before it.
     public static func normalized(_ raw: [Raw], duration: Double) -> [MediaChapter] {
         let hasDuration = duration > 0
         let sorted =
@@ -51,9 +58,21 @@ extension MediaChapter {
         for entry in sorted {
             let start = max(entry.start, 0)
             // Two chapters at the same position can't both be jumped to; keep the first.
-            if let last = starts.last, abs(last.start - start) < 0.001 { continue }
+            if let last = starts.last, abs(last.start - start) < positionTolerance { continue }
             let title = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             starts.append((title?.isEmpty == false ? title : nil, start, entry.end))
+        }
+
+        // A last chapter lasting a fraction of a second is a muxer leftover: nothing to play or seek to.
+        if starts.count > 1, let last = starts.last {
+            let lastEnd = min(last.end ?? .infinity, hasDuration ? duration : .infinity)
+            if lastEnd.isFinite, lastEnd - last.start < minimumTrailingDuration {
+                starts.removeLast()
+                // Only a chapter that runs into the sliver takes over its span; a gap before it stays a gap.
+                if (starts[starts.count - 1].end ?? last.start) >= last.start - positionTolerance {
+                    starts[starts.count - 1].end = lastEnd
+                }
+            }
         }
 
         return starts.enumerated().map { index, entry in

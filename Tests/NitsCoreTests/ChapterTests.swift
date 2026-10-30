@@ -43,6 +43,41 @@ struct ChapterTests {
         #expect(MediaChapter.normalized(raw, duration: 0).map(\.end) == [8, 50])
     }
 
+    @Test(
+        "Normalization drops a trailing chapter shorter than half a second and folds it into the one before when they touch"
+    )
+    func testNormalizationDropsTrailingSliver() {
+        let raw: [MediaChapter.Raw] = [
+            .init(title: "Credits", start: 20, end: 29.996),
+            .init(title: "Sliver", start: 29.996, end: 30),
+        ]
+        let chapters = MediaChapter.normalized(raw, duration: 30)
+        #expect(chapters.map(\.title) == ["Credits"])
+        #expect(chapters.map(\.end) == [30])
+
+        // Without a known duration the previous chapter still takes over the sliver's span.
+        let live = MediaChapter.normalized(raw, duration: 0)
+        #expect(live.map(\.title) == ["Credits"])
+        #expect(live.map(\.end) == [30])
+
+        // A gap before the sliver stays a gap.
+        let gap: [MediaChapter.Raw] = [
+            .init(title: "Intro", start: 0, end: 10),
+            .init(title: "End", start: 29.7, end: nil),
+        ]
+        let gapped = MediaChapter.normalized(gap, duration: 30)
+        #expect(gapped.map(\.title) == ["Intro"])
+        #expect(gapped.map(\.end) == [10])
+
+        // Short chapters elsewhere, and a lone short chapter, stay.
+        let middle: [MediaChapter.Raw] = [
+            .init(title: nil, start: 0, end: 0.2),
+            .init(title: nil, start: 0.2, end: nil),
+        ]
+        #expect(MediaChapter.normalized(middle, duration: 30).count == 2)
+        #expect(MediaChapter.normalized([.init(title: nil, start: 29.9, end: nil)], duration: 30).count == 1)
+    }
+
     // MARK: - Navigation
 
     @Test("Chapter lookup finds the chapter at a time, tolerating positions just before a start")
