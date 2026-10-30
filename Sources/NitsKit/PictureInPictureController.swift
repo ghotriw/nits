@@ -48,7 +48,8 @@ struct PictureInPicturePlaybackSnapshot: Sendable, Equatable {
 /// Follows the engine on its own (through observation): PiP's timeline and play / pause button track playback, and
 /// AVKit is prepared once there is video. A host only toggles it and handles its window: `onActiveChanged` (hide or
 /// keep the window while PiP runs), `onRestoreUserInterface` (bring it back) and `onPossibleChanged` (enable the
-/// toggle). The window behaviour in `PlayerConfiguration` is `PlayerWindowController`'s; other hosts apply their own.
+/// toggle). `PlayerWindowController` handles its window as `AppSettings` asks (hides it, pauses, enters PiP on
+/// minimize and leaves it when the window is restored from the Dock); other hosts apply their own.
 /// Subtitles drawn above the video are not part of the display layer, so PiP shows none.
 @MainActor
 public final class PictureInPictureController: NSObject {
