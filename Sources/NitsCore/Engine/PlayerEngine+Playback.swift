@@ -15,13 +15,13 @@ extension PlayerEngine {
         // After frame-stepping the demuxer/decoder sit ahead of the cursor and audio before the seek
         // baseline was purged, so resuming feeding as-is would freeze video and drop/desync audio. Reseek
         // to currentTime first; the chase-settle machinery then resumes playback cleanly at the cursor.
-        if media.hasVideo, !isSeeking, chaseTargetTime == nil, didStepSincePause {
-            didStepSincePause = false
+        if media.hasVideo, !isSeeking, chase == nil, frameStep.didStepSincePause {
+            frameStep.didStepSincePause = false
             seek(to: currentTime)
         }
 
         // If a chase seek is currently in flight or queued, record intent to play once seeking finishes
-        if isSeeking || chaseTargetTime != nil {
+        if isSeeking || chase != nil {
             resumePlaybackAfterChase = true
             return
         }
@@ -45,7 +45,7 @@ extension PlayerEngine {
 
     public func pause() {
         resetRelativeSeekBurst()
-        if isSeeking || chaseTargetTime != nil {
+        if isSeeking || chase != nil {
             resumePlaybackAfterChase = false
         }
         stopPlaybackPipeline()
@@ -61,12 +61,10 @@ extension PlayerEngine {
         isFeeding.withLock { $0 = false }
         stopFeedingVideo()
         stopFeedingAudio()
-        seekTask?.cancel()
-        seekTask = nil
         // A seek that has decoded its target and only waits to resume settles here, at its target; left pending,
         // it would keep reporting a seek and make `play()` wait for it forever.
-        if chaseSettleTask != nil, !isSeeking, let settledSeconds = chaseTargetTime {
-            chaseTargetTime = nil
+        if chaseSettleTask != nil, !isSeeking, let settledSeconds = chase?.seconds {
+            chase = nil
             synchronizer.setRate(0.0, time: CMTime(seconds: settledSeconds, preferredTimescale: 1000))
         }
         chaseSettleTask?.cancel()
@@ -154,7 +152,7 @@ extension PlayerEngine {
     }
 
     func updateAwaitingClockStart() {
-        let awaiting = chaseTargetTime != nil || isPrerolling
+        let awaiting = chase != nil || isPrerolling
         if isAwaitingClockStart != awaiting {
             isAwaitingClockStart = awaiting
         }

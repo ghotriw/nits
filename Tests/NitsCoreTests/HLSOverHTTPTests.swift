@@ -337,8 +337,8 @@ struct HLSOverHTTPPlaybackTests {
         engine.pause()
 
         // As a seek to 1 s would see them: an adaptive switch read 12 s on, then the seek's own report.
-        engine.chaseTargetTime = 1
-        defer { engine.chaseTargetTime = nil }
+        engine.chase = ChaseTarget(seconds: 1, exact: true, forward: false)
+        defer { engine.chase = nil }
         let lowAt = { (seconds: Double) in
             MediaDemuxer.VariantChange(
                 variant: low, seconds: seconds, width: 320, height: 180, sampleAspectRatio: .square,

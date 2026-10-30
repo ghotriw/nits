@@ -32,8 +32,8 @@ struct BackwardFrameSteppingTests {
 
         // The seek must seed a real backward window, not just the handful of forward over-read frames.
         #expect(
-            engine.stepFrameCache.count > 10,
-            "Step cache holds \(engine.stepFrameCache.count) frames (playing: \(engine.isPlaying), frame \(engine.currentFramePTS)s)"
+            engine.frameStep.cache.count > 10,
+            "Step cache holds \(engine.frameStep.cache.count) frames (playing: \(engine.isPlaying), frame \(engine.currentFramePTS)s)"
         )
 
         // Each backward step from the window updates currentFramePTS synchronously (cache hit). A full

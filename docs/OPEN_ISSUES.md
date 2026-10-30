@@ -64,7 +64,7 @@ on our side (`max tick`, `max clock read`) and an empty frame queue apart.
 
 ## Flaky tests to watch
 
-- **`BackwardFrameSteppingTests`** failed once locally with `engine.stepFrameCache.count → 0` after a paused
+- **`BackwardFrameSteppingTests`** failed once locally with `engine.frameStep.cache.count → 0` after a paused
   exact seek. Suspected: the pause did not hold (the seek ran as a resuming seek, which does not seed the cache) or
   feeding restarted after it (`startFeeding()` clears the cache). The failure message reports cache size, play
   state and current frame to tell these apart.

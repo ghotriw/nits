@@ -155,7 +155,7 @@ struct LegacyVideoPlaybackTests {
         let target = 1.5
 
         demuxer.seek(to: target, exact: true)
-        let preview = PlayerEngine.seekPreview(
+        let preview = SeekPreview.decode(
             demuxer: demuxer, decoder: decoder, frameQueue: FrameQueue(), seconds: target, exact: true,
             isCurrent: { true })
         #expect(abs((preview?.pts ?? -1) - target) <= frameDuration / 2 + 0.001)

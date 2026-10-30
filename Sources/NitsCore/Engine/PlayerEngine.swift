@@ -52,7 +52,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     /// Index into `media.chapters` of the chapter at `currentTime`; `nil` before the first one or without chapters.
     public internal(set) var currentChapterIndex: Int?
-    public var pendingSeekTime: Double? { chaseTargetTime }
+    public var pendingSeekTime: Double? { chase?.seconds }
     public var isPlaying: Bool = false {
         didSet {
             displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
@@ -398,7 +398,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let audioSink: DelayedAudioSink
     var videoFeedingTask: Task<Void, Never>?
     var audioFeedingTask: Task<Void, Never>?
-    var seekTask: Task<Void, Never>?
 
     var decoder: any VideoDecoderProtocol = VTVideoDecoder()
     /// Stalled decoders replaced for the current media; after the first, replacements decode in software.
@@ -433,9 +432,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let feedQueue = DispatchQueue(label: "com.nativeplayer.feed", qos: .userInteractive)
     let audioFeedQueue = DispatchQueue(label: "com.nativeplayer.audiofeed", qos: .userInteractive)
     let seekQueue = DispatchQueue(label: "com.nativeplayer.seek", qos: .userInteractive)
-    var currentSeekId: Int = 0
     @ObservationIgnored
-    let activeSeekId = OSAllocatedUnfairLock(initialState: 0)
+    let seekGeneration = SeekGeneration()
     @ObservationIgnored
     let lastSyncDriftSpikeInstant = OSAllocatedUnfairLock<ContinuousClock.Instant>(initialState: .now - .seconds(10))
     public package(set) var isSeeking: Bool = false {
@@ -443,8 +441,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     /// True while playback is waiting for the chase-settle debounce or preroll before starting the clock.
     package internal(set) var isAwaitingClockStart: Bool = false
+    /// The position seeks are chasing, until the last of them settles. See `PlayerEngine+Seeking`.
     @ObservationIgnored
-    var chaseTargetTime: Double? = nil {
+    var chase: ChaseTarget? = nil {
         didSet {
             reportSeekingChange()
             updateAwaitingClockStart()
@@ -458,20 +457,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// The seek state last reported through `onSeekingChanged`.
     @ObservationIgnored
     var reportedSeeking = false
-    @ObservationIgnored
-    var chaseExactSeek: Bool = true
-    /// Minimum allowed PTS for step-frame seeking to guarantee advancing forward
-    @ObservationIgnored
-    var minStepFramePTS: Double? = nil
-    /// True when the decoder and demuxer are positioned contiguously just past the current frame, so a
-    /// forward frame step can decode incrementally (or serve an over-read frame) instead of re-seeking to
-    /// the keyframe and re-decoding the whole GOP. Set after an exact seek settles paused; cleared whenever
-    /// playback feeding resumes or a new demuxer seek repositions the pipeline.
-    @ObservationIgnored
-    var stepDecodeContiguous: Bool = false
-    /// Keyframe-seek direction: forward seeks land on the next keyframe at/after the target.
-    @ObservationIgnored
-    var chaseForwardSeek: Bool = false
     @ObservationIgnored
     var resumePlaybackAfterChase: Bool = false
     @ObservationIgnored
@@ -547,15 +532,11 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let frameCadenceLock = OSAllocatedUnfairLock(initialState: FrameCadenceStats())
 
-    /// Tracks whether a rapid relative seek burst sequence is currently active.
     @ObservationIgnored
-    var isRelativeSeekBurstActive: Bool = false
-    @ObservationIgnored
-    var isRelativeSeekInFlight: Bool = false
+    var relativeSeekBurst = RelativeSeekBurst()
+    /// Ends `relativeSeekBurst` once its seeks have stopped coming.
     @ObservationIgnored
     var relativeSeekBurstResetTask: Task<Void, Never>? = nil
-    @ObservationIgnored
-    var relativeSeekSessionStartTime: Double? = nil
     let audioOutputRoute = PlatformAudioOutputRoute()
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
@@ -613,19 +594,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var metricsTimer: (any DispatchSourceTimer)?
 
     let frameQueue = FrameQueue()
-    /// Lazily-populated window of decoded frames around the current position for cheap paused frame-stepping
-    /// in both directions. Empty during normal playback; populated while paused-stepping and held until
-    /// playback resumes or a seek repositions the pipeline (cleared on resume, reseek, reload, or stop).
-    let stepFrameCache = StepFrameCache(capacity: 32)
-    /// True while a forward step pump is decoding on `seekQueue`. Guards against key-repeat presses falling
-    /// through to a heavy keyframe re-seek mid-pump; extra presses are ignored until the pump completes.
     @ObservationIgnored
-    var isStepPumping: Bool = false
-    /// True once the playback cursor has drifted from the last seek baseline via frame-stepping. On resume
-    /// the demuxer/decoder sit ahead of the cursor and audio before the baseline was purged, so `play()`
-    /// reseeks to `currentTime` to restore clean A/V alignment. Cleared by any seek, load, or resume.
-    @ObservationIgnored
-    var didStepSincePause: Bool = false
+    let frameStep = FrameStepState()
     public var currentFramePTS: Double {
         frameQueue.getLastRenderedPTS()
     }
@@ -725,12 +695,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displayLayer.videoGravity = .resizeAspect
         videoGeometry.scaling = configuration.videoScaling
 
-        let queue = self.frameQueue
-        decoder.setOutputHandler { frame in
-            if !frame.doNotDisplay {
-                queue.push(frame)
-            }
-        }
+        decoder.outputDisplayableFrames(to: frameQueue)
 
         subtitles.host = self
         toneMapping.host = self
@@ -746,7 +711,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             MainActor.assumeIsolated {
                 // Do not overwrite currentTime while a seek is in flight, chasing a target, or before playback starts
                 guard
-                    self.chaseTargetTime == nil && !self.isSeeking && self.isLoaded && !self.isLoading
+                    self.chase == nil && !self.isSeeking && self.isLoaded && !self.isLoading
                         && self.isPlaying
                 else { return }
                 // Re-read the clock NOW: the callback's `time` argument may be stale (captured before a
@@ -848,8 +813,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     isolated deinit {
         stop()
         displaySleepManager.enableDisplaySleep()
-        seekTask?.cancel()
-        seekTask = nil
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
         if let observer = timeObserver {

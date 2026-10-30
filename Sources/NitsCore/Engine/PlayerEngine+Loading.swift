@@ -57,18 +57,12 @@ extension PlayerEngine {
         saveCurrentPlaybackProgress()
         resolvedSource = nil
         resetRelativeSeekBurst()
-        let seekId = currentSeekId + 1
-        currentSeekId = seekId
-        activeSeekId.withLock { $0 = seekId }
+        seekGeneration.advance()
         isSeeking = false
-        chaseTargetTime = nil
+        chase = nil
         resumePlaybackAfterChase = false
-        minStepFramePTS = nil
         decoderStallRecoveries = 0
-        stepDecodeContiguous = false
-        isStepPumping = false
-        didStepSincePause = false
-        stepFrameCache.clear()
+        frameStep.reset()
 
         currentInterruptContext?.cancel()
         currentInterruptContext = nil
@@ -611,7 +605,7 @@ extension PlayerEngine {
         guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 else { return }
 
         let identity = MediaHistoryIdentity(historyKey: path, path: currentPath, sourcePath: currentSourcePath)
-        let progressTime = chaseTargetTime ?? currentTime
+        let progressTime = chase?.seconds ?? currentTime
         AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(media.duration)s")
         if progressTime > 0 {
             historyStore.savePosition(
@@ -1057,7 +1051,7 @@ extension PlayerEngine {
         let decoder = self.stallGuardedDecoder(for: "the post-load flush")
         let hasVideo = demuxer.hasVideo
         let loadID = self.currentLoadID
-        let seekId = self.currentSeekId
+        let seekId = self.seekGeneration.current
         // On the seek queue so this flush is ordered with seeks: a seek issued right after load would
         // otherwise have its preview decode flushed from under it.
         self.seekQueue.async { [weak self] in
@@ -1070,15 +1064,15 @@ extension PlayerEngine {
                 // Paused since the load (a host's "load, then pause"): it stays paused, on its first frame. Starting
                 // here would play from under the pause.
                 if self.playbackState == .paused {
-                    if self.currentSeekId == seekId { self.seek(to: effectiveStartTime, exact: true) }
+                    if self.seekGeneration.isCurrent(seekId) { self.seek(to: effectiveStartTime, exact: true) }
                     return
                 }
                 // A seek issued right after load (e.g. a host's "load, then seek") owns the pipeline: its
                 // preview is reading the demuxer on `seekQueue`, and starting the feeders here would race it
                 // for packets, leaving the seek on a keyframe. Hand it the autoplay intent instead; the
                 // chase-settle path starts feeding and the clock at the seek target.
-                if self.currentSeekId != seekId {
-                    if self.isSeeking || self.chaseTargetTime != nil {
+                if !self.seekGeneration.isCurrent(seekId) {
+                    if self.isSeeking || self.chase != nil {
                         self.resumePlaybackAfterChase = true
                     } else {
                         self.play()
@@ -1089,7 +1083,7 @@ extension PlayerEngine {
                 if !alreadyStarted {
                     self.frameQueue.clear(resetDroppedFrames: true)
                     self.startFeeding()
-                    if self.currentSeekId == seekId && self.chaseTargetTime == nil {
+                    if self.seekGeneration.isCurrent(seekId) && self.chase == nil {
                         let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
                         self.currentTime = effectiveStartTime
                         let currentRate = self.playbackRate

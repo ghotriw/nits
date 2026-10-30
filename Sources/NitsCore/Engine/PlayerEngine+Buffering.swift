@@ -56,7 +56,7 @@ extension PlayerEngine {
     /// Starts buffering when media has run out (see the extension's comment). Called by the periodic time
     /// observer, which fires only while the clock runs.
     func checkForStarvation() {
-        guard isPlaying, !isBuffering, !isSeeking, chaseTargetTime == nil, !isPrerolling,
+        guard isPlaying, !isBuffering, !isSeeking, chase == nil, !isPrerolling,
             let inputs, !inputs.isEOF, synchronizer.rate > 0
         else { return }
         let clock = synchronizer.currentTime()

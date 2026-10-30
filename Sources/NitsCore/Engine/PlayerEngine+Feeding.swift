@@ -35,10 +35,7 @@ extension PlayerEngine {
         guard let demuxer = self.demuxer else { return }
         // Feeding will consume packets forward from the current position, so the standalone-step
         // contiguity invariant no longer holds once playback resumes; release the step window too.
-        stepDecodeContiguous = false
-        isStepPumping = false
-        didStepSincePause = false
-        stepFrameCache.clear()
+        frameStep.reset()
         isFeeding.withLock { $0 = true }
         isVideoDrainPaused.withLock { $0 = false }
 
@@ -145,7 +142,7 @@ extension PlayerEngine {
         let codec = demuxer.map { "\($0.codec)" } ?? "?"
         let layer = "display layer \(layerStatus), requires flush: \(renderer.requiresFlushToResumeDecoding)"
         let position = "frame \(currentFramePTS)s, clock \(synchronizer.currentTime().seconds)s"
-        let state = "playing \(isPlaying), seeking \(isSeeking), stepping \(isStepPumping)"
+        let state = "playing \(isPlaying), seeking \(isSeeking), stepping \(frameStep.isPumping)"
         AppLog.error(
             .video,
             "Video decoder stalled: \(what). Decoder: \(decoderDescription), codec \(codec); \(layer); queue "
@@ -157,12 +154,7 @@ extension PlayerEngine {
     func installVideoDecoder(_ newDecoder: any VideoDecoderProtocol) {
         decoder = newDecoder
         applyDeinterlaceMode(refresh: false)
-        let queue = frameQueue
-        decoder.setOutputHandler { frame in
-            if !frame.doNotDisplay {
-                queue.push(frame)
-            }
-        }
+        decoder.outputDisplayableFrames(to: frameQueue)
     }
 
     private nonisolated static func runVideoFeeding(

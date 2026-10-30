@@ -95,7 +95,7 @@ extension PlayerEngine {
     /// Where a seek that re-reads the media from the current frame goes (a track switch, a new decoder). A seek still
     /// in flight keeps its target: the re-read must not pull playback back to the frame before it.
     var rereadPosition: Double {
-        chaseTargetTime
+        chase?.seconds
             ?? (media.hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
     }
 
@@ -159,7 +159,7 @@ extension PlayerEngine {
         pendingVariantChanges.append(change)
         // During a seek, what is due by its target: a seek reports the variant it reads from there, while a switch
         // the read-ahead thread made further on still waits for playback.
-        applyDueVariantChanges(at: (chaseTargetTime ?? currentTime) + 0.1)
+        applyDueVariantChanges(at: (chase?.seconds ?? currentTime) + 0.1)
     }
 
     /// Applies the variant changes due by timeline second `seconds`.
@@ -280,7 +280,7 @@ extension PlayerEngine: SubtitleHost {
     }
 
     var isPresentingContinuously: Bool {
-        isPlaying && isLoaded && !isLoading && !isSeeking && chaseTargetTime == nil
+        isPlaying && isLoaded && !isLoading && !isSeeking && chase == nil
     }
 
     func rereadFromCurrentFrame() {

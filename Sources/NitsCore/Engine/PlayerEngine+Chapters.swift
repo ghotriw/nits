@@ -28,7 +28,7 @@ extension PlayerEngine {
 
     /// Steps from the pending seek target so rapid presses chain instead of resolving to the same chapter.
     private var chapterNavigationTime: Double {
-        chaseTargetTime ?? currentTime
+        chase?.seconds ?? currentTime
     }
 
     func updateCurrentChapterIndex() {
@@ -46,7 +46,7 @@ extension PlayerEngine {
         if index != currentChapterIndex {
             AppLog.debug(
                 .engine,
-                "Current chapter \(String(describing: currentChapterIndex)) -> \(String(describing: index)) at \(currentTime)s (pending \(String(describing: chaseTargetTime)), seeking \(isSeeking))"
+                "Current chapter \(String(describing: currentChapterIndex)) -> \(String(describing: index)) at \(currentTime)s (pending \(String(describing: chase?.seconds)), seeking \(isSeeking))"
             )
             currentChapterIndex = index
         }

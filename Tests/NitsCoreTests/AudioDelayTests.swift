@@ -204,7 +204,7 @@ struct AudioDelayPlaybackTests {
         engine.load(path: path)
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
         #expect(audioAhead(of: engine) != nil)
-        let seekId = engine.currentSeekId
+        let seekId = engine.seekGeneration.current
         let clockBefore = engine.synchronizer.currentTime().seconds
 
         engine.setAudioDelay(0.5)
@@ -216,7 +216,7 @@ struct AudioDelayPlaybackTests {
         // decoded audio instead would start as far past the clock as the renderer held audio.
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
         #expect(firstFed + 0.5 < clockBefore + 0.2, "Audio resumed from \(firstFed)s of the media at \(clockBefore)s")
-        #expect(engine.currentSeekId == seekId, "The delay change seeked")
+        #expect(engine.seekGeneration.current == seekId, "The delay change seeked")
         #expect(!engine.isBuffering)
         #expect(engine.synchronizer.currentTime().seconds > clockBefore, "The clock stopped")
         #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
@@ -230,7 +230,7 @@ struct AudioDelayPlaybackTests {
         engine.load(path: path)
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
         engine.pause()
-        let seekId = engine.currentSeekId
+        let seekId = engine.seekGeneration.current
         let pausedAt = engine.synchronizer.currentTime().seconds
 
         engine.setAudioDelay(0.5)
@@ -240,7 +240,7 @@ struct AudioDelayPlaybackTests {
         // Heard at the clock, the audio is from half a second earlier in the media (see `changeWhilePlaying`).
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
         #expect(firstFed + 0.5 < pausedAt + 0.2, "Audio resumed from \(firstFed)s of the media at \(pausedAt)s")
-        #expect(engine.currentSeekId == seekId, "The delay change seeked")
+        #expect(engine.seekGeneration.current == seekId, "The delay change seeked")
         #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
     }
 

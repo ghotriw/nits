@@ -112,7 +112,7 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   from the raw projection. Links fire on
   `DisplayLinkThread`, never the main run loop (UI stalls there dropped frames); the tick may only touch
   lock-guarded state, and display-layer enqueues / flushes go through `displayLayerLock`.
-- **Seeks** run on the serial `seekQueue` with a `currentSeekId` generation token; stale seeks are
+- **Seeks** run on the serial `seekQueue` with a `SeekGeneration` token; stale seeks are
   dropped. Seek and render-mode switches clear `FrameQueue` and flush decoder and renderer.
 - **Don't tear down `VTDecompressionSession` on seek** — flush it. Before any invalidate/reset,
   call `VTDecompressionSessionWaitForAsynchronousFrames`; session, format description and output

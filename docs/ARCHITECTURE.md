@@ -174,11 +174,19 @@ to avoid the deprecation warning — the runtime behaviour is identical to `enqu
 
 ### Seeking
 
-Seeks run on the serial `seekQueue` and carry a generation token (`currentSeekId`); stale seeks are
+Seeks run on the serial `seekQueue` and carry a generation token (`SeekGeneration`); stale seeks are
 dropped, so rapid scrubbing never runs concurrent demuxer seeks. A seek clears `FrameQueue`,
 flushes the decoder and the renderer, but keeps the `VTDecompressionSession` alive. Before any
 session invalidate/reset, `VTVideoDecoder` waits for in-flight frames
 (`VTDecompressionSessionWaitForAsynchronousFrames`) so output callbacks can't race the replacement.
+
+A burst of seeks chases its latest target (`ChaseTarget`): seeks that come while one runs only move the target, and
+the running one goes on to it when it finishes. Seeking stays orchestrated on `PlayerEngine` (it stops the clock, the
+feeders and the display link and restarts them), while the parts that need none of that are types of their own:
+`SeekPreview` decodes the frame a seek lands on and picks it (`SeekPreview.FrameChoice`), `RelativeSeekBurst` follows a
+held arrow key's run of seeks, and `FrameStepState` with `StepFrameCache` and `FrameStepPump` serve paused frame
+steps without a keyframe re-seek. A forward step that seeks carries the frame it steps from (`minFramePTS`) so it lands
+past it.
 
 On the demuxer side, an exact seek flags every sample before the target `DoNotDisplay` and keeps
 doing so for a second past it: in decode order the first sample past the target is often a P-frame,

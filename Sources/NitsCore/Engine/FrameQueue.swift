@@ -443,3 +443,15 @@ public final class FrameQueue: @unchecked Sendable {
         }
     }
 }
+
+extension VideoDecoderProtocol {
+    /// Sends the decoder's displayable frames to `frameQueue`, as playback takes them. What seek previews and step pumps
+    /// put back once they have taken the decoder's output for themselves.
+    func outputDisplayableFrames(to frameQueue: FrameQueue) {
+        setOutputHandler { [weak frameQueue] frame in
+            if !frame.doNotDisplay {
+                frameQueue?.push(frame)
+            }
+        }
+    }
+}
