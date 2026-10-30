@@ -367,14 +367,16 @@ extension PlayerEngine {
 
     func load(item: PlaylistItem, reportingPlaylistRequest: MediaLoadRequest?) {
         let pathString = item.url.isFileURL ? item.url.standardizedFileURL.path : item.url.absoluteString
+        let request = MediaLoadRequest(
+            path: pathString,
+            title: item.title,
+            headers: item.customHeaders,
+            startTime: item.startTime
+        )
+        // Every item played is reported as loaded (`onMediaLoaded`), the playlist file it came from with it.
         self.load(
-            MediaLoadRequest(
-                path: pathString,
-                title: item.title,
-                headers: item.customHeaders,
-                startTime: item.startTime
-            ),
-            reporting: reportingPlaylistRequest.map { .playlist($0) }
+            request,
+            reporting: reportingPlaylistRequest.map { .playlist($0, item: request) } ?? .media(request)
         )
     }
 

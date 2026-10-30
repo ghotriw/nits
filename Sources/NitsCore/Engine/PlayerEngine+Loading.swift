@@ -7,7 +7,8 @@ extension PlayerEngine {
     /// Reporting format passed down the loading pipeline to notify `onMediaLoaded`.
     enum LoadReporting: Sendable {
         case media(MediaLoadRequest)
-        case playlist(MediaLoadRequest)
+        /// A playlist file and the item of it played.
+        case playlist(MediaLoadRequest, item: MediaLoadRequest)
     }
 
     /// Resolves the user-facing media title from a file/stream path, falling back to
@@ -166,7 +167,7 @@ extension PlayerEngine {
                     if let firstItem = self.playlist.currentItem {
                         let playlistRequest: MediaLoadRequest? =
                             switch reporting {
-                            case .media(let req), .playlist(let req): req
+                            case .media(let req), .playlist(let req, _): req
                             case nil: nil
                             }
                         self.load(item: firstItem, reportingPlaylistRequest: playlistRequest)
@@ -1117,7 +1118,9 @@ extension PlayerEngine {
         }
 
         switch reporting {
-        case .playlist(let request):
+        case .playlist(let request, let item):
+            // The item, then the playlist file: the host hears of the file last.
+            onMediaLoaded?(item, historyKey, self.mediaTitle, self.media.duration)
             let playlistTitle = Self.resolveTitle(from: request.path, explicitTitle: request.title)
             onMediaLoaded?(request, request.path, playlistTitle, 0)
         case .media(let request):

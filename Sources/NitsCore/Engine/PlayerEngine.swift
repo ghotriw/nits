@@ -77,7 +77,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)?
     /// State change callback for external clients
     public var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)?
-    /// Called once when a requested media or playlist finishes loading: `(request, historyKey, title, duration)`.
+    /// Called when a media finishes loading, a playlist item included: `(request, historyKey, title, duration)`; for
+    /// the first item of a playlist file, then again for the file, with its path as `historyKey` and no duration.
     public var onMediaLoaded:
         ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?
     /// Callback fired when an in-flight relative seek settles onto its final keyframe or exact PTS

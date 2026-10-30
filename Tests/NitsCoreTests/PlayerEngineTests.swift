@@ -688,6 +688,41 @@ struct PlayerEngineTests {
         #expect(engine.playbackRate == (carriesPlaybackRate ? 1.25 : 1.0))
     }
 
+    @Test("Every playlist item played is reported as loaded, a playlist file after its first item")
+    @MainActor
+    func testReportsPlaylistItemsAsLoaded() async throws {
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264),
+            let second = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264)
+        else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        var reported: [String] = []
+        engine.onMediaLoaded = { request, _, _, _ in reported.append(request.path) }
+
+        engine.playlist.replaceAll(items: [
+            PlaylistItem(url: URL(fileURLWithPath: first)), PlaylistItem(url: URL(fileURLWithPath: second)),
+        ])
+        let firstItem = try #require(engine.playlist.currentItem)
+        engine.load(item: firstItem)
+        try #require(engine.isLoaded)
+        engine.playNext()
+        try #require(engine.isLoaded)
+        engine.playPlaylistItem(id: firstItem.id)
+        try #require(engine.isLoaded)
+        #expect(reported == [first, second, first])
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let playlistURL = folder.appendingPathComponent("list.m3u")
+        try "#EXTM3U\n\(second)\n\(first)\n".write(to: playlistURL, atomically: true, encoding: .utf8)
+        reported = []
+        engine.load(path: playlistURL.path)
+        await engine.waitForPendingLoad()
+        try #require(engine.isLoaded)
+        #expect(reported == [second, playlistURL.path])
+    }
+
     @Test("Choosing the speed kept from the previous media, 1× included, saves it with the media")
     @MainActor
     func testChoosingTheKeptSpeedSavesIt() throws {

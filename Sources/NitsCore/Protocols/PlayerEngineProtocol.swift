@@ -43,7 +43,8 @@ public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
     @MainActor var playbackState: PlaybackState { get }
     @MainActor var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? { get set }
     @MainActor var onPlaybackStateChanged: ((_ state: PlaybackState) -> Void)? { get set }
-    /// Called once when a requested media or playlist finishes loading: `(request, historyKey, title, duration)`.
+    /// Called when a media finishes loading, a playlist item included: `(request, historyKey, title, duration)`; for
+    /// the first item of a playlist file, then again for the file, with its path as `historyKey` and no duration.
     @MainActor var onMediaLoaded:
         ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?
     { get set }
