@@ -13,9 +13,9 @@ The goal is to evolve the Apple Silicon dual-engine video rendering core into a 
 - **Framework Stack:** Metal, QuartzCore (`CADisplayLink`), AVFoundation (`AVSampleBufferAudioRenderer`, `AVSampleBufferRenderSynchronizer`, `AVSampleBufferDisplayLayer`), VideoToolbox, CoreAudio, FFmpeg (`libavformat`, `libavcodec`, `libswresample`, `libdav1d`), Swift Observation (`@Observable`).
 - **Modular SPM Decomposition:**
   - `NitsCore`: Headless engine core with zero SwiftUI dependencies (demuxing, decoding, ring buffers, Metal BT.2390 shaders, A/V synchronization, IOKit display sleep assertions, playback history, playlists, subtitle parsing).
-  - `NitsKit`: Windowing, lifecycle, and macOS AppKit integration layer (`PlayerWindow`, `PlayerWindowController`, `PlayerCommands`, `NowPlayingController`, `LogViewerWindowController`).
-  - `NitsUI`: Pure declarative SwiftUI presentation layer (controls overlay, telemetry HUD, OSD notifications, Metal-outlined subtitles, shared side panel hosting playlist and quick settings, Jump to Time dialog, Open URL sheet).
-  - `NitsApp`: Application lifecycle entry point (`NSApplicationDelegate`, LaunchServices document types, CLI arguments parsing).
+  - `NitsKit`: Windowing, lifecycle, and macOS AppKit integration layer (`PlayerWindow`, `PlayerWindowController`, `PlayerCommands`, `NowPlayingController`, `LogViewerWindowController`, command-line arguments in `LaunchArguments`).
+  - `NitsUI`: Pure declarative SwiftUI presentation layer (controls overlay, telemetry HUD, OSD notifications, Metal-outlined subtitles, shared side panel hosting playlist and quick settings, Jump to Time dialog, Open URL sheet, the app's settings in `AppSettings`).
+  - `NitsApp`: Application lifecycle entry point (`NSApplicationDelegate`, LaunchServices document types).
 
 ---
 
@@ -214,7 +214,7 @@ flowchart TD
   - Immediate network cancellation via `AVIOInterruptCB` (`InterruptContext`) on window close or media switch without thread hangs.
   - Playback loading state tracking (`isLoading`) and error presentation with dedicated banners.
   - "Open URL…" modal sheet with preset authentication headers and `⌘U` shortcut.
-  - Command-line argument parsing for `--header="Key: Value"` in `PlayerConfiguration`.
+  - Command-line argument parsing for `--header="Key: Value"` (`LaunchArguments.headers`).
 - [ ] **3.3. Fast Stream Start:**
   - Measure `avformat_open_input` / `avformat_find_stream_info` time on live MPEG-TS / IPTV sources; probing currently runs with FFmpeg defaults (`probesize` 5 MB, `analyzeduration` 5 s).
   - Tune `probesize` / `analyzeduration` for network streams without missing late-appearing audio streams (e.g. AC-3 in TS).
@@ -473,6 +473,8 @@ flowchart TD
 - [x] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - Dropping a subtitle file (`.srt`, `.vtt`, `.ass`, `.ssa`, `.sup`, `.idx` or a VobSub `.sub`) on the video or the playlist drawer attaches the file to the media playing and selects
     it, with an OSD confirmation (`SubtitleFileDrop`); dropped together with a video, it attaches to that video.
+  - Opened together with a video from anywhere — the player, the Welcome window, the Open panel, Finder — the
+    subtitle file attaches to it the same way (`MediaOpenRequest`).
   - `MediaURLResolver` never takes a subtitle file for media, `.ass` / `.ssa` / `.sub` / `.idx` / `.sup` / `.smi` /
     `.sami` included; a `.sub` with no `.idx` loads as MicroDVD or SubViewer text.
 - [x] **4.6.3. Sidecar Subtitle Discovery:**
@@ -703,6 +705,15 @@ flowchart TD
     (`AssScript.eventFormat`) for embedded tracks and `.ass` / `.ssa` files alike, timed on the media timeline;
     `assHeader` is the script without events (ending in that `Format:`) and `assFonts` the attached
     fonts. Header plus lines draw in libass as in the player.
+- [x] **6.6. Engine Configuration Without the App's Settings:**
+  - `PlayerConfiguration` holds only what the engine reads; the app's settings (OSD, action buttons, recent media,
+    yt-dlp, Picture in Picture's window) are `AppSettings` (`NitsUI`), applied by
+    `PlayerWindowController.applySettings(_:)`, and the command line is `LaunchArguments` (`NitsKit`).
+  - `PlayerEngineProtocol` lost `enableOSD`, `showDebugHUD` and `toggleDebugHUD`: OSD and HUD visibility are the
+    host's (`OSDManager.isEnabled`, `PlayerUIState.isDebugHUDVisible`). The engine collects metrics only while asked
+    (`isCollectingMetrics`, `PlayerMetricsCollecting`).
+  - Repeat and shuffle belong to `PlaylistManager` alone, restored from its `UserDefaults`; applying a configuration
+    no longer resets them.
 
 ---
 

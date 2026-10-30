@@ -31,10 +31,29 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
   `NativeVideoHostView` canvas. Builds only for macOS today but is kept portable to iOS / tvOS
   (see "Platform layer").
 - **NitsKit** — `@MainActor` window lifecycle (`PlayerWindowController`, `PlayerWindow`), menu
-  commands (`PlayerCommands`), system media integration (`NowPlayingController`).
+  commands (`PlayerCommands`), system media integration (`NowPlayingController`), the app's command
+  line (`LaunchArguments`).
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
   `SettingsView`, `PerformanceHUDView`, `SubtitleOverlayView`). Transient UI state (fullscreen
-  transitions, auto-hide) lives in `PlayerUIState`.
+  transitions, auto-hide, OSD, HUD visibility) lives in `PlayerUIState`.
+
+Settings come in three parts, so that the engine sees only its own:
+
+- **`PlayerConfiguration`** (`NitsCore`) holds only what the engine reads: tone mapping, resume, subtitle style,
+  track languages, seeking, history exclusions.
+- **`AppSettings`** (`NitsUI`) holds the app's: the OSD, action buttons, recent media, yt-dlp and the player window in
+  Picture in Picture. `NitsKit` uses most of them, but the type sits in `NitsUI` for `SettingsView` and `OSDManager`
+  to reach; `PlayerWindowController.applySettings(_:)` applies them. Both types save in the same `UserDefaults`,
+  under the keys `SettingsView` writes through `@AppStorage`; a change only tells `AppDelegate` to load them again.
+- **`LaunchArguments`** (`NitsKit`) lays the command line's flags over both, each until the user changes that setting
+  in Settings (`dropOverrides(changedFrom:to:)`). The media to open, its headers, start time and tracks are its own
+  properties, not settings.
+
+Files opened from anywhere — a drop on the player or the Welcome window, the Open panel, Finder, a
+local Recent Media item — go through one path, `MediaOpenRequest` (`NitsUI`): subtitle files come apart
+from the media and attach to the video they came with (or to the one playing), the rest resolve through
+`MediaURLResolver` and fill the playlist. `PlayerWindowController` hands it its own `openStream`; a
+network URL (Open URL…, a network Recent Media item) opens through `openStream` directly.
 
 ### Platform layer
 
@@ -78,6 +97,9 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   (`onTimeUpdate`, `onPlaybackStateChanged`, `onTracksChanged`, `onBufferingChanged`, `onSeekingChanged`) are shaped for JSON
   bridging to `window.webkit.messageHandlers`. The bridge itself belongs to the host: its message schema is the
   web client's, not Nits'. Nits keeps the protocol complete enough that a bridge needs no engine internals.
+- The engine has no notion of an OSD or a HUD: what is shown is the host's (`OSDManager.isEnabled`,
+  `PlayerUIState.isDebugHUDVisible` in `NitsUI`). It only refreshes `currentMetrics` twice a second while asked
+  (`isCollectingMetrics`, `PlayerMetricsCollecting`); no timer runs otherwise.
 - `bufferedTime` is the furthest timestamp the demuxer has read (`MediaDemuxer.readAheadSeconds`, behind its own
   lock because the demuxer lock is held through blocking network reads): for a network source, up to the
   read-ahead limit (see "Network read-ahead"); for a local file, the few seconds the feeders asked for.
@@ -465,7 +487,7 @@ hurts (measured with and without it); at an 8.3 ms tick the resulting one-tick e
 own PiP. The controller is public for hosts with their own window: it follows the engine through
 observation (the engine's callbacks have one slot each, which the host uses), so a host only
 toggles it and moves its window aside and back (`onActiveChanged`, `onRestoreUserInterface`). The
-window settings in `PlayerConfiguration` are applied by `PlayerWindowController`. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
+window settings in `AppSettings` are applied by `PlayerWindowController`. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
 included), but a broken private API means no PiP at all, while AVKit's bugs below are cosmetic.
 
 - **Render mode and pacing.** PiP only sees the display layer, so `.metalToneMap` falls back to
