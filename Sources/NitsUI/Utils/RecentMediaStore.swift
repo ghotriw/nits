@@ -97,7 +97,15 @@ public final class RecentMediaStore: Sendable {
     )
     public static let userDefaultsKey = "Nits.RecentMedia.v1"
 
-    public let maxItemsLimit: Int
+    /// How many items the list keeps (`AppSettings.recentMediaLimit`); lowering it drops the oldest at once.
+    public var maxItemsLimit: Int {
+        didSet {
+            guard items.count > maxItemsLimit else { return }
+            items = Array(items.prefix(maxItemsLimit))
+            save()
+            syncRecentDocuments()
+        }
+    }
 
     @ObservationIgnored
     private let userDefaults: UserDefaults

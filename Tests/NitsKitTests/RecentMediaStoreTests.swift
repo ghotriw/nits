@@ -56,6 +56,15 @@ struct RecentMediaStoreTests {
         #expect(store.items[0].title == "Video 5")
         #expect(store.items[1].title == "Video 4")
         #expect(store.items[2].title == "Video 3")
+
+        // Lowering the limit drops the oldest at once and saves the list; raising it keeps what is left.
+        store.maxItemsLimit = 2
+        #expect(store.items.map(\.title) == ["Video 5", "Video 4"])
+        store.maxItemsLimit = 10
+        #expect(store.items.count == 2)
+        let reloaded = RecentMediaStore(
+            userDefaults: defaults, historyStore: PlaybackHistoryStore(userDefaults: defaults))
+        #expect(reloaded.items.map(\.title) == ["Video 5", "Video 4"])
     }
 
     @Test("RecentMediaStore removes item and clears all")

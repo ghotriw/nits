@@ -23,6 +23,9 @@ public struct SettingsView: View {
     @AppStorage(AppSettings.keyRememberRecentMedia)
     private var rememberRecentMedia: Bool = true
 
+    @AppStorage(AppSettings.keyRecentMediaLimit)
+    private var recentMediaLimit: Int = 20
+
     @AppStorage(PlayerConfiguration.keyHistoryExcludedFolders)
     private var rawHistoryExcludedFolders: String = "[]"
 
@@ -320,6 +323,17 @@ public struct SettingsView: View {
                                 "Removes all recently opened videos from the Welcome window, the File → Open Recent menu, and the Dock. Saved playback positions will not be affected."
                             )
                         }
+                    }
+                }
+
+                if rememberRecentMedia {
+                    Picker("Recent media to keep", selection: $recentMediaLimit) {
+                        ForEach(AppSettings.recentMediaLimits, id: \.self) { limit in
+                            Text("\(limit)").tag(limit)
+                        }
+                    }
+                    .onChange(of: recentMediaLimit) { _, _ in
+                        notifyChange()
                     }
                 }
             } header: {

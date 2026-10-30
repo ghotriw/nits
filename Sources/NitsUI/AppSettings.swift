@@ -39,6 +39,8 @@ public struct AppSettings: Sendable, Equatable {
     public var actionButtonAutoPress: Bool
     /// Whether to record and display recently opened media in the Welcome window and Open Recent menu (default true).
     public var rememberRecentMedia: Bool
+    /// How many recently opened media the list keeps (`recentMediaLimits`, default 20); lowering it drops the oldest.
+    public var recentMediaLimit: Int
     /// Whether the pages of video sites play, resolved by yt-dlp found on the system (default true).
     public var resolvesWithYTDLP: Bool
     /// The yt-dlp to run in place of the one found on the system (empty: search for it).
@@ -62,6 +64,7 @@ public struct AppSettings: Sendable, Equatable {
         actionButtonDisplayDuration: Double = 8.0,
         actionButtonAutoPress: Bool = false,
         rememberRecentMedia: Bool = true,
+        recentMediaLimit: Int = 20,
         resolvesWithYTDLP: Bool = true,
         ytdlpPath: String = "",
         sponsorBlock: Bool = true,
@@ -77,6 +80,7 @@ public struct AppSettings: Sendable, Equatable {
         self.actionButtonDisplayDuration = Self.clampActionButtonDisplayDuration(actionButtonDisplayDuration)
         self.actionButtonAutoPress = actionButtonAutoPress
         self.rememberRecentMedia = rememberRecentMedia
+        self.recentMediaLimit = Self.clampRecentMediaLimit(recentMediaLimit)
         self.resolvesWithYTDLP = resolvesWithYTDLP
         self.ytdlpPath = ytdlpPath
         self.sponsorBlock = sponsorBlock
@@ -93,6 +97,7 @@ public struct AppSettings: Sendable, Equatable {
     public static let keyActionButtonDisplayDuration = "Nits.actionButtonDisplayDuration"
     public static let keyActionButtonAutoPress = "Nits.actionButtonAutoPress"
     public static let keyRememberRecentMedia = "Nits.rememberRecentMedia"
+    public static let keyRecentMediaLimit = "Nits.recentMediaLimit"
     public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
     public static let keyYTDLPPath = "Nits.ytdlpPath"
     public static let keySponsorBlock = "Nits.sponsorBlock"
@@ -127,6 +132,9 @@ public struct AppSettings: Sendable, Equatable {
         if userDefaults.object(forKey: keyRememberRecentMedia) != nil {
             settings.rememberRecentMedia = userDefaults.bool(forKey: keyRememberRecentMedia)
         }
+        if let limit = userDefaults.object(forKey: keyRecentMediaLimit) as? NSNumber {
+            settings.recentMediaLimit = clampRecentMediaLimit(limit.intValue)
+        }
         if userDefaults.object(forKey: keyResolvesWithYTDLP) != nil {
             settings.resolvesWithYTDLP = userDefaults.bool(forKey: keyResolvesWithYTDLP)
         }
@@ -160,6 +168,7 @@ public struct AppSettings: Sendable, Equatable {
         userDefaults.set(actionButtonDisplayDuration, forKey: Self.keyActionButtonDisplayDuration)
         userDefaults.set(actionButtonAutoPress, forKey: Self.keyActionButtonAutoPress)
         userDefaults.set(rememberRecentMedia, forKey: Self.keyRememberRecentMedia)
+        userDefaults.set(recentMediaLimit, forKey: Self.keyRecentMediaLimit)
         userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
         userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
         userDefaults.set(sponsorBlock, forKey: Self.keySponsorBlock)
@@ -184,5 +193,13 @@ public struct AppSettings: Sendable, Equatable {
     public static func clampActionButtonDisplayDuration(_ value: Double) -> Double {
         guard value.isFinite else { return 8.0 }
         return max(3.0, min(60.0, value))
+    }
+
+    /// The lengths of the recent media list Settings offers.
+    public static let recentMediaLimits = [10, 20, 50, 100]
+
+    /// Clamps the length of the recent media list to the range Settings offers (10...100).
+    public static func clampRecentMediaLimit(_ value: Int) -> Int {
+        max(recentMediaLimits[0], min(recentMediaLimits[recentMediaLimits.count - 1], value))
     }
 }

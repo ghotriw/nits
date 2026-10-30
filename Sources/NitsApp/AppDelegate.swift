@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        RecentMediaStore.shared.maxItemsLimit = settings.recentMediaLimit
         setupAppIcon()
 
         if let mediaPath = launchArguments.mediaPath {
@@ -220,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         savedSettings = newSettings
         settings = launchArguments.applied(to: newSettings)
         PlaybackHistoryStore.shared.exclusionPolicy = configuration.historyExclusionPolicy
+        RecentMediaStore.shared.maxItemsLimit = settings.recentMediaLimit
         playerWindowController?.applyConfiguration(configuration)
         playerWindowController?.applySettings(settings)
     }

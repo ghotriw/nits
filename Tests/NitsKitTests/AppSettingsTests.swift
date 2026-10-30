@@ -17,6 +17,7 @@ struct AppSettingsTests {
         #expect(settings.actionButtonDisplayDuration == 8.0)
         #expect(settings.actionButtonAutoPress == false)
         #expect(settings.rememberRecentMedia == true)
+        #expect(settings.recentMediaLimit == 20)
         #expect(settings.resolvesWithYTDLP == true)
         #expect(settings.ytdlpPath.isEmpty)
         #expect(settings.sponsorBlock == true)
@@ -31,7 +32,8 @@ struct AppSettingsTests {
         let settings = AppSettings(
             enableOSD: false, osdDuration: 3.0, enableDebugOSD: true, debugOSDMinimumLevel: .debug,
             debugOSDDuration: 10.0, actionButtonDisplayDuration: 15, actionButtonAutoPress: true,
-            rememberRecentMedia: false, resolvesWithYTDLP: false, ytdlpPath: "/opt/yt-dlp", sponsorBlock: false,
+            rememberRecentMedia: false, recentMediaLimit: 50, resolvesWithYTDLP: false, ytdlpPath: "/opt/yt-dlp",
+            sponsorBlock: false,
             pictureInPictureWindowBehavior: .doNothing, pausesOnPictureInPicture: true,
             entersPictureInPictureOnMinimize: true)
         settings.saveToUserDefaults(userDefaults: defaults)
@@ -57,5 +59,13 @@ struct AppSettingsTests {
         defaults.set(Double.infinity, forKey: AppSettings.keyActionButtonDisplayDuration)
         loaded = AppSettings.loadFromUserDefaults(userDefaults: defaults)
         #expect(loaded.actionButtonDisplayDuration == 8)
+    }
+
+    @Test("The recent media list's length is clamped to what Settings offers, given or saved")
+    func testClampedRecentMediaLimit() {
+        #expect(AppSettings(recentMediaLimit: 0).recentMediaLimit == 10)
+        let defaults = InMemoryUserDefaults()
+        defaults.set(1000, forKey: AppSettings.keyRecentMediaLimit)
+        #expect(AppSettings.loadFromUserDefaults(userDefaults: defaults).recentMediaLimit == 100)
     }
 }
