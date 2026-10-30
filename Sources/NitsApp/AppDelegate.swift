@@ -13,38 +13,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var welcomeWindowController: WelcomeWindowController?
     private(set) var playerWindowController: PlayerWindowController?
     private var configuration: PlayerConfiguration
+    private var settings: AppSettings
     private var launchArguments: LaunchArguments
-    /// The saved settings `configuration` was made from, to tell which ones Settings changes.
+    /// The saved settings `configuration` and `settings` were made from, to tell which ones Settings changes.
     private var savedConfiguration: PlayerConfiguration
+    private var savedSettings: AppSettings
     var rememberRecentMedia: Bool {
-        configuration.rememberRecentMedia
+        settings.rememberRecentMedia
     }
-    private var initialMediaPath: String?
     private var hasOpenedInitialMedia: Bool = false
 
     override init() {
         let launchArguments = LaunchArguments()
-        let saved = PlayerConfiguration.loadFromUserDefaults()
+        let savedConfiguration = PlayerConfiguration.loadFromUserDefaults()
+        let savedSettings = AppSettings.loadFromUserDefaults()
         self.launchArguments = launchArguments
-        self.savedConfiguration = saved
-        self.configuration = launchArguments.applied(to: saved)
-        self.initialMediaPath = launchArguments.mediaPath
+        self.savedConfiguration = savedConfiguration
+        self.savedSettings = savedSettings
+        self.configuration = launchArguments.applied(to: savedConfiguration)
+        self.settings = launchArguments.applied(to: savedSettings)
         super.init()
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         setupAppIcon()
 
-        if let mediaPath = initialMediaPath {
+        if let mediaPath = launchArguments.mediaPath {
             hasOpenedInitialMedia = true
             if MediaURL.isNetworkURL(mediaPath), let url = URL(string: mediaPath) {
                 openStream(
-                    url: url, headers: configuration.httpHeaders, startTime: configuration.startTime,
-                    audioTrack: configuration.audioTrack, subtitleTrack: configuration.subtitleTrack)
+                    url: url, headers: launchArguments.headers, startTime: launchArguments.startTime,
+                    audioTrack: launchArguments.audioTrack, subtitleTrack: launchArguments.subtitleTrack)
             } else if FileManager.default.fileExists(atPath: mediaPath) {
                 openMediaFile(
-                    at: URL(fileURLWithPath: mediaPath), startTime: configuration.startTime,
-                    audioTrack: configuration.audioTrack, subtitleTrack: configuration.subtitleTrack)
+                    at: URL(fileURLWithPath: mediaPath), startTime: launchArguments.startTime,
+                    audioTrack: launchArguments.audioTrack, subtitleTrack: launchArguments.subtitleTrack)
             }
         }
     }
@@ -109,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let controller = playerWindowController {
             return controller
         }
-        let controller = PlayerWindowController(configuration: configuration, recentMediaStore: .shared)
+        let controller = PlayerWindowController(
+            configuration: configuration, settings: settings, recentMediaStore: .shared)
         controller.onClose = { [weak self] _, _ in
             guard let self else { return }
             self.isPlayerActive = false
@@ -207,12 +211,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settings are saved, so they come back from `UserDefaults`, with the command line's flags on top, except those
     /// whose setting was just changed.
     func settingsDidChange() {
-        let saved = PlayerConfiguration.loadFromUserDefaults()
-        launchArguments.dropOverrides(changedFrom: savedConfiguration, to: saved)
-        savedConfiguration = saved
-        configuration = launchArguments.applied(to: saved)
+        let newConfiguration = PlayerConfiguration.loadFromUserDefaults()
+        launchArguments.dropOverrides(changedFrom: savedConfiguration, to: newConfiguration)
+        savedConfiguration = newConfiguration
+        configuration = launchArguments.applied(to: newConfiguration)
+        let newSettings = AppSettings.loadFromUserDefaults()
+        launchArguments.dropOverrides(changedFrom: savedSettings, to: newSettings)
+        savedSettings = newSettings
+        settings = launchArguments.applied(to: newSettings)
         PlaybackHistoryStore.shared.exclusionPolicy = configuration.historyExclusionPolicy
         playerWindowController?.applyConfiguration(configuration)
+        playerWindowController?.applySettings(settings)
     }
 
     private func setupAppIcon() {

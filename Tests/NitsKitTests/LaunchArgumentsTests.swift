@@ -2,6 +2,7 @@ import Foundation
 import NitsCore
 import NitsKit
 import NitsTestSupport
+import NitsUI
 import Testing
 
 @Suite("Launch arguments")
@@ -11,6 +12,10 @@ struct LaunchArgumentsTests {
     ) {
         let launch = LaunchArguments(arguments)
         return (launch.applied(to: base), launch.mediaPath)
+    }
+
+    private func settings(_ arguments: [String], base: AppSettings = AppSettings()) -> AppSettings {
+        LaunchArguments(arguments).applied(to: base)
     }
 
     @Test("Tone mapping flags and the media path")
@@ -44,46 +49,48 @@ struct LaunchArgumentsTests {
 
     @Test("HTTP headers in both spellings and a network URL")
     func testParseHTTPHeadersAndURL() {
-        let (config, mediaPath) = parse([
+        let launch = LaunchArguments([
             "Nits",
             "--header=X-Api-Key: test-api-key-12345",
             "--header",
             "Authorization: Bearer token-xyz",
             "https://stream.example.com/videos/123/stream.mkv",
         ])
-        #expect(mediaPath == "https://stream.example.com/videos/123/stream.mkv")
-        #expect(config.httpHeaders["X-Api-Key"] == "test-api-key-12345")
-        #expect(config.httpHeaders["Authorization"] == "Bearer token-xyz")
+        #expect(launch.mediaPath == "https://stream.example.com/videos/123/stream.mkv")
+        #expect(launch.headers["X-Api-Key"] == "test-api-key-12345")
+        #expect(launch.headers["Authorization"] == "Bearer token-xyz")
     }
 
     @Test("Recent media flags")
     func testParseRecentMedia() {
-        #expect(parse(["nits", "--no-recent-media"]).configuration.rememberRecentMedia == false)
-        #expect(
-            parse(["nits", "--recent-media"], base: PlayerConfiguration(rememberRecentMedia: false)).configuration
-                .rememberRecentMedia)
+        #expect(settings(["nits", "--no-recent-media"]).rememberRecentMedia == false)
+        let disabled = AppSettings(rememberRecentMedia: false)
+        #expect(settings(["nits", "--recent-media"], base: disabled).rememberRecentMedia)
     }
 
     @Test("A `-Key value` default for the session is no media path, and the media after it still is")
     func testArgumentDomainPairs() {
-        let (config, mediaPath) = parse([
+        let arguments = [
             "Nits", "-NSDocumentRevisionsDebugMode", "YES", "-AppleLanguages", "(uk)", "--no-osd", "/tmp/movie.mkv",
-        ])
-        #expect(mediaPath == "/tmp/movie.mkv")
-        #expect(config.enableOSD == false)
-        #expect(parse(["Nits", "-AppleLanguages", "(uk)"]).mediaPath == nil)
+        ]
+        #expect(LaunchArguments(arguments).mediaPath == "/tmp/movie.mkv")
+        #expect(settings(arguments).enableOSD == false)
+        #expect(LaunchArguments(["Nits", "-AppleLanguages", "(uk)"]).mediaPath == nil)
     }
 
     @Test("Start time, resume, and the audio and subtitle tracks")
     func testParseStartTimeResumeAndTracks() {
-        let (config, mediaPath) = parse([
+        let arguments = [
             "Nits", "--start-time=124.5", "--no-resume", "--audio-track=jpn", "--subtitle-track", "off", "movie.mkv",
-        ])
-        #expect(mediaPath == "movie.mkv")
-        #expect(config.startTime == 124.5)
-        #expect(config.resumePlayback == false)
-        #expect(config.audioTrack == "jpn")
-        #expect(config.subtitleTrack == "off")
+        ]
+        let launch = LaunchArguments(arguments)
+        #expect(launch.mediaPath == "movie.mkv")
+        #expect(launch.startTime == 124.5)
+        #expect(launch.audioTrack == "jpn")
+        #expect(launch.subtitleTrack == "off")
+        #expect(parse(arguments).configuration.resumePlayback == false)
+        #expect(LaunchArguments(["Nits", "--start-time", "-3"]).startTime == 0)
+        #expect(LaunchArguments(["Nits", "--audio-track= "]).audioTrack == nil)
     }
 
     @Test("Subtitle font name and weight")
@@ -95,25 +102,22 @@ struct LaunchArgumentsTests {
 
     @Test("OSD flags and a clamped OSD duration")
     func testParseOSD() {
-        #expect(parse(["Nits", "--no-osd", "movie.mkv"]).configuration.enableOSD == false)
-        #expect(parse(["Nits", "--enable-osd"], base: PlayerConfiguration(enableOSD: false)).configuration.enableOSD)
-        #expect(parse(["Nits", "--osd-duration=2.5"]).configuration.osdDuration == 2.5)
-        #expect(parse(["Nits", "--osd-duration=99"]).configuration.osdDuration == 10.0)
-        #expect(parse(["Nits", "--osd-duration=0"]).configuration.osdDuration == 0.5)
+        #expect(settings(["Nits", "--no-osd", "movie.mkv"]).enableOSD == false)
+        #expect(settings(["Nits", "--enable-osd"], base: AppSettings(enableOSD: false)).enableOSD)
+        #expect(settings(["Nits", "--osd-duration=2.5"]).osdDuration == 2.5)
+        #expect(settings(["Nits", "--osd-duration=99"]).osdDuration == 10.0)
+        #expect(settings(["Nits", "--osd-duration=0"]).osdDuration == 0.5)
     }
 
     @Test("Debug OSD flags; an unknown level is ignored and the duration clamped")
     func testParseDebugOSD() {
-        let (config, mediaPath) = parse([
-            "Nits", "--debug-osd", "--debug-osd-level=info", "--debug-osd-duration=500", "movie.mkv",
-        ])
-        #expect(config.enableDebugOSD == true)
-        #expect(config.debugOSDMinimumLevel == .info)
-        #expect(config.debugOSDDuration == 60.0)
-        #expect(mediaPath == "movie.mkv")
+        let enabled = settings(["Nits", "--debug-osd", "--debug-osd-level=info", "--debug-osd-duration=500"])
+        #expect(enabled.enableDebugOSD == true)
+        #expect(enabled.debugOSDMinimumLevel == .info)
+        #expect(enabled.debugOSDDuration == 60.0)
 
-        let (disabled, _) = parse(
-            ["Nits", "--no-debug-osd", "--debug-osd-level=bogus"], base: PlayerConfiguration(enableDebugOSD: true))
+        let disabled = settings(
+            ["Nits", "--no-debug-osd", "--debug-osd-level=bogus"], base: AppSettings(enableDebugOSD: true))
         #expect(disabled.enableDebugOSD == false)
         #expect(disabled.debugOSDMinimumLevel == .warning)
     }
@@ -129,49 +133,51 @@ struct LaunchArgumentsTests {
 
     @Test("yt-dlp and SponsorBlock flags")
     func testParseYTDLP() {
-        let (config, _) = parse(["Nits", "--no-ytdl", "--ytdl-path=/opt/yt-dlp", "--no-sponsorblock"])
-        #expect(config.resolvesWithYTDLP == false)
-        #expect(config.ytdlpPath == "/opt/yt-dlp")
-        #expect(config.sponsorBlock == false)
-        #expect(
-            parse(["Nits", "--sponsorblock"], base: PlayerConfiguration(sponsorBlock: false)).configuration.sponsorBlock
-        )
+        let parsed = settings(["Nits", "--no-ytdl", "--ytdl-path=/opt/yt-dlp", "--no-sponsorblock"])
+        #expect(parsed.resolvesWithYTDLP == false)
+        #expect(parsed.ytdlpPath == "/opt/yt-dlp")
+        #expect(parsed.sponsorBlock == false)
+        #expect(settings(["Nits", "--sponsorblock"], base: AppSettings(sponsorBlock: false)).sponsorBlock)
     }
 
     @Test("A later flag for the same setting wins")
     func testLaterFlagWins() {
-        #expect(parse(["Nits", "--no-osd", "--osd"]).configuration.enableOSD == true)
+        #expect(settings(["Nits", "--no-osd", "--osd"]).enableOSD == true)
         #expect(parse(["Nits", "--target-nits=300", "--target-nits-scale=2"]).configuration.targetNitsScale == 2)
     }
 
     @Test("Flags stay over the saved settings until the user changes the same setting")
     func testOverridesDropWhenTheSettingChanges() {
-        let arguments = ["Nits", "--no-osd", "--no-tone-mapping", "--no-ytdl", "--header=Referer: https://example.com"]
+        let arguments = ["Nits", "--no-osd", "--no-tone-mapping", "--no-ytdl"]
         var launch = LaunchArguments(arguments)
-        let atLaunch = PlayerConfiguration(ytdlpPath: "/opt/yt-dlp")
+        let configurationAtLaunch = PlayerConfiguration()
+        let settingsAtLaunch = AppSettings(ytdlpPath: "/opt/yt-dlp")
 
-        // Another setting changes: every flag still applies.
-        var saved = atLaunch
-        saved.seekStepSeconds = 10
-        launch.dropOverrides(changedFrom: atLaunch, to: saved)
-        var configuration = launch.applied(to: saved)
-        #expect(configuration.seekStepSeconds == 10)
-        #expect(configuration.enableOSD == false)
-        #expect(configuration.enableToneMapping == false)
-        #expect(configuration.resolvesWithYTDLP == false)
-        #expect(configuration.ytdlpPath == "/opt/yt-dlp")
-        #expect(configuration.httpHeaders["Referer"] == "https://example.com")
+        // Other settings change: every flag still applies.
+        var savedConfiguration = configurationAtLaunch
+        savedConfiguration.seekStepSeconds = 10
+        launch.dropOverrides(changedFrom: configurationAtLaunch, to: savedConfiguration)
+        var savedSettings = settingsAtLaunch
+        savedSettings.osdDuration = 3
+        launch.dropOverrides(changedFrom: settingsAtLaunch, to: savedSettings)
+        #expect(launch.applied(to: savedConfiguration).seekStepSeconds == 10)
+        #expect(launch.applied(to: savedConfiguration).enableToneMapping == false)
+        var settings = launch.applied(to: savedSettings)
+        #expect(settings.osdDuration == 3)
+        #expect(settings.enableOSD == false)
+        #expect(settings.resolvesWithYTDLP == false)
+        #expect(settings.ytdlpPath == "/opt/yt-dlp")
 
         // The user turns the OSD off and on again in Settings: their choice wins from the first change on.
-        var turnedOff = saved
+        var turnedOff = savedSettings
         turnedOff.enableOSD = false
-        launch.dropOverrides(changedFrom: saved, to: turnedOff)
+        launch.dropOverrides(changedFrom: savedSettings, to: turnedOff)
         var turnedOn = turnedOff
         turnedOn.enableOSD = true
         launch.dropOverrides(changedFrom: turnedOff, to: turnedOn)
-        configuration = launch.applied(to: turnedOn)
-        #expect(configuration.enableOSD == true)
-        #expect(configuration.enableToneMapping == false)
-        #expect(configuration.httpHeaders["Referer"] == "https://example.com")
+        settings = launch.applied(to: turnedOn)
+        #expect(settings.enableOSD == true)
+        #expect(settings.resolvesWithYTDLP == false)
+        #expect(launch.applied(to: savedConfiguration).enableToneMapping == false)
     }
 }

@@ -7,7 +7,7 @@ struct YTDLPLocator: Sendable {
     /// Names yt-dlp is installed under: Homebrew's, pip's and pipx's script, the standalone macOS build.
     static let names = ["yt-dlp", "yt-dlp_macos"]
 
-    /// The user's yt-dlp (`PlayerConfiguration.ytdlpPath`), the only one tried when set.
+    /// The user's yt-dlp (`AppSettings.ytdlpPath`), the only one tried when set.
     var customPath: String = ""
     /// The process's `PATH`, searched first.
     var environmentPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""

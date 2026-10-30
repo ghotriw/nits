@@ -187,19 +187,6 @@ struct RecentMediaStoreTests {
         #expect(store.progressRevision > revAfterSave)
     }
 
-    @Test("PlayerConfiguration persists rememberRecentMedia")
-    func testPlayerConfigurationRecentMedia() {
-        let defaults = InMemoryUserDefaults()
-        var config = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
-        #expect(config.rememberRecentMedia == true)
-
-        config.rememberRecentMedia = false
-        config.saveToUserDefaults(userDefaults: defaults)
-
-        let reloaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
-        #expect(reloaded.rememberRecentMedia == false)
-    }
-
     @Test(
         "RecentMediaStore correctly looks up resume position saved via raw path or resolver history key (no double hashing)"
     )

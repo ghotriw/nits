@@ -1,15 +1,17 @@
 import Foundation
 import NitsCore
+import NitsUI
 
-/// The command line of the app: the settings its flags give (`--no-osd`, `--header=…`) and the media to open. The
-/// flags stand over the saved settings for the session, each until the user changes that setting.
+/// The command line of the app: the media to open and how (`--start-time=…`, `--header=…`), and the settings its
+/// flags give (`--no-osd`), for the engine (`PlayerConfiguration`) and the app (`AppSettings`). The flags stand over
+/// the saved settings for the session, each until the user changes that setting.
 public struct LaunchArguments {
     /// One flag's setting: the value it sets, and how to tell the user changed that setting since.
-    private struct Override {
-        let apply: (inout PlayerConfiguration) -> Void
-        let differs: (PlayerConfiguration, PlayerConfiguration) -> Bool
+    private struct Override<Settings> {
+        let apply: (inout Settings) -> Void
+        let differs: (Settings, Settings) -> Bool
 
-        init<Value: Equatable>(_ keyPath: WritableKeyPath<PlayerConfiguration, Value>, _ value: Value) {
+        init<Value: Equatable>(_ keyPath: WritableKeyPath<Settings, Value>, _ value: Value) {
             apply = { $0[keyPath: keyPath] = value }
             differs = { $0[keyPath: keyPath] != $1[keyPath: keyPath] }
         }
@@ -17,8 +19,18 @@ public struct LaunchArguments {
 
     /// The first argument that isn't a flag: a path or a URL.
     public private(set) var mediaPath: String?
+    /// HTTP headers to open `mediaPath` with, when it is a URL.
+    public private(set) var headers: [String: String] = [:]
+    /// Where `mediaPath` starts, in seconds; given, even `0`, it overrides the position saved in the history.
+    public private(set) var startTime: Double?
+    /// The audio track `mediaPath` starts with: a track id (`0, 1…`), a container stream index (`stream:N` / `s:N`),
+    /// or a language code or title fragment; given, it overrides the track saved in the history.
+    public private(set) var audioTrack: String?
+    /// The subtitle track `mediaPath` starts with, named as `audioTrack` is, or `off`.
+    public private(set) var subtitleTrack: String?
     /// In the order given: a later flag for the same setting wins.
-    private var overrides: [Override] = []
+    private var configurationOverrides: [Override<PlayerConfiguration>] = []
+    private var settingsOverrides: [Override<AppSettings>] = []
 
     public init(_ arguments: [String] = CommandLine.arguments) {
         var i = 1
@@ -64,23 +76,23 @@ public struct LaunchArguments {
                 }
             } else if arg.starts(with: "--start-time=") {
                 if let val = Double(arg.dropFirst("--start-time=".count)) {
-                    set(\.startTime, max(0.0, val))
+                    startTime = max(0.0, val)
                 }
             } else if arg == "--start-time" && i + 1 < arguments.count {
                 i += 1
                 if let val = Double(arguments[i]) {
-                    set(\.startTime, max(0.0, val))
+                    startTime = max(0.0, val)
                 }
             } else if arg.starts(with: "--audio-track=") {
-                set(\.audioTrack, Self.nonEmpty(String(arg.dropFirst("--audio-track=".count))))
+                audioTrack = Self.nonEmpty(String(arg.dropFirst("--audio-track=".count)))
             } else if arg == "--audio-track" && i + 1 < arguments.count {
                 i += 1
-                set(\.audioTrack, Self.nonEmpty(arguments[i]))
+                audioTrack = Self.nonEmpty(arguments[i])
             } else if arg.starts(with: "--subtitle-track=") {
-                set(\.subtitleTrack, Self.nonEmpty(String(arg.dropFirst("--subtitle-track=".count))))
+                subtitleTrack = Self.nonEmpty(String(arg.dropFirst("--subtitle-track=".count)))
             } else if arg == "--subtitle-track" && i + 1 < arguments.count {
                 i += 1
-                set(\.subtitleTrack, Self.nonEmpty(arguments[i]))
+                subtitleTrack = Self.nonEmpty(arguments[i])
             } else if arg == "--no-resume" || arg == "--disable-resume" {
                 set(\.resumePlayback, false)
             } else if arg == "--resume" || arg == "--enable-resume" {
@@ -95,7 +107,7 @@ public struct LaunchArguments {
                 set(\.enableOSD, true)
             } else if arg.starts(with: "--osd-duration=") {
                 if let val = Double(arg.dropFirst("--osd-duration=".count)) {
-                    set(\.osdDuration, PlayerConfiguration.clampOSDDuration(val))
+                    set(\.osdDuration, AppSettings.clampOSDDuration(val))
                 }
             } else if arg == "--debug-osd" {
                 set(\.enableDebugOSD, true)
@@ -108,7 +120,7 @@ public struct LaunchArguments {
                 }
             } else if arg.starts(with: "--debug-osd-duration=") {
                 if let val = Double(arg.dropFirst("--debug-osd-duration=".count)) {
-                    set(\.debugOSDDuration, PlayerConfiguration.clampDebugOSDDuration(val))
+                    set(\.debugOSDDuration, AppSettings.clampDebugOSDDuration(val))
                 }
             } else if arg == "--auto-load-folder" {
                 set(\.autoLoadFolderMedia, true)
@@ -163,22 +175,40 @@ public struct LaunchArguments {
 
     /// `saved` with the flags on top.
     public func applied(to saved: PlayerConfiguration) -> PlayerConfiguration {
-        var configuration = saved
-        for override in overrides {
-            override.apply(&configuration)
-        }
-        return configuration
+        Self.apply(configurationOverrides, to: saved)
+    }
+
+    /// `saved` with the flags on top.
+    public func applied(to saved: AppSettings) -> AppSettings {
+        Self.apply(settingsOverrides, to: saved)
     }
 
     /// Drops the flags of the settings that differ between `previous` and `saved`: the user has changed them since,
     /// so their choice wins for the rest of the session.
     public mutating func dropOverrides(changedFrom previous: PlayerConfiguration, to saved: PlayerConfiguration) {
-        overrides.removeAll { $0.differs(previous, saved) }
+        configurationOverrides.removeAll { $0.differs(previous, saved) }
+    }
+
+    /// Drops the flags of the settings that differ between `previous` and `saved`; see the `PlayerConfiguration` one.
+    public mutating func dropOverrides(changedFrom previous: AppSettings, to saved: AppSettings) {
+        settingsOverrides.removeAll { $0.differs(previous, saved) }
+    }
+
+    private static func apply<Settings>(_ overrides: [Override<Settings>], to saved: Settings) -> Settings {
+        var settings = saved
+        for override in overrides {
+            override.apply(&settings)
+        }
+        return settings
     }
 
     private mutating func set<Value: Equatable>(_ keyPath: WritableKeyPath<PlayerConfiguration, Value>, _ value: Value)
     {
-        overrides.append(Override(keyPath, value))
+        configurationOverrides.append(Override(keyPath, value))
+    }
+
+    private mutating func set<Value: Equatable>(_ keyPath: WritableKeyPath<AppSettings, Value>, _ value: Value) {
+        settingsOverrides.append(Override(keyPath, value))
     }
 
     /// `Name: value`; a header without a name is ignored.
@@ -187,7 +217,7 @@ public struct LaunchArguments {
         let key = header[..<colonIdx].trimmingCharacters(in: .whitespaces)
         let val = header[header.index(after: colonIdx)...].trimmingCharacters(in: .whitespaces)
         if !key.isEmpty {
-            set(\.httpHeaders[key], val)
+            headers[key] = val
         }
     }
 

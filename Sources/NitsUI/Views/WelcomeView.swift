@@ -13,7 +13,7 @@ public struct WelcomeView: View {
     private let isRecentMediaEnabled: (() -> Bool)?
 
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage(PlayerConfiguration.keyRememberRecentMedia) private var rememberRecentMedia: Bool = true
+    @AppStorage(AppSettings.keyRememberRecentMedia) private var rememberRecentMedia: Bool = true
     @AppStorage(PlayerConfiguration.keyResumePlayback) private var resumePlayback: Bool = true
     @AppStorage(PlayerConfiguration.keyResumeStartThreshold) private var resumeStartThreshold: Double = 15.0
     @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio) private var resumeEndThresholdRatio: Double = 0.95

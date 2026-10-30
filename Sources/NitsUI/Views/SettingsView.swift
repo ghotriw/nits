@@ -20,7 +20,7 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyResumePlayback)
     private var resumePlayback: Bool = true
 
-    @AppStorage(PlayerConfiguration.keyRememberRecentMedia)
+    @AppStorage(AppSettings.keyRememberRecentMedia)
     private var rememberRecentMedia: Bool = true
 
     @AppStorage(PlayerConfiguration.keyHistoryExcludedFolders)
@@ -35,19 +35,19 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio)
     private var resumeEndThresholdRatio: Double = 0.95
 
-    @AppStorage(PlayerConfiguration.keyEnableOSD)
+    @AppStorage(AppSettings.keyEnableOSD)
     private var enableOSD: Bool = true
 
-    @AppStorage(PlayerConfiguration.keyOSDDuration)
+    @AppStorage(AppSettings.keyOSDDuration)
     private var osdDuration: Double = 1.3
 
-    @AppStorage(PlayerConfiguration.keyEnableDebugOSD)
+    @AppStorage(AppSettings.keyEnableDebugOSD)
     private var enableDebugOSD: Bool = false
 
-    @AppStorage(PlayerConfiguration.keyDebugOSDMinimumLevel)
+    @AppStorage(AppSettings.keyDebugOSDMinimumLevel)
     private var debugOSDMinimumLevel: LogLevel = .warning
 
-    @AppStorage(PlayerConfiguration.keyDebugOSDDuration)
+    @AppStorage(AppSettings.keyDebugOSDDuration)
     private var debugOSDDuration: Double = 4.0
 
     @AppStorage(PlayerConfiguration.keyAutoLoadFolderMedia)
@@ -65,19 +65,19 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyNetworkThumbnailPolicy)
     private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
 
-    @AppStorage(PlayerConfiguration.keyPictureInPictureWindowBehavior)
+    @AppStorage(AppSettings.keyPictureInPictureWindowBehavior)
     private var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide
 
-    @AppStorage(PlayerConfiguration.keyPausesOnPictureInPicture)
+    @AppStorage(AppSettings.keyPausesOnPictureInPicture)
     private var pausesOnPictureInPicture: Bool = false
 
-    @AppStorage(PlayerConfiguration.keyEntersPictureInPictureOnMinimize)
+    @AppStorage(AppSettings.keyEntersPictureInPictureOnMinimize)
     private var entersPictureInPictureOnMinimize: Bool = false
 
-    @AppStorage(PlayerConfiguration.keyActionButtonDisplayDuration)
+    @AppStorage(AppSettings.keyActionButtonDisplayDuration)
     private var actionButtonDisplayDuration: Double = 8.0
 
-    @AppStorage(PlayerConfiguration.keyActionButtonAutoPress)
+    @AppStorage(AppSettings.keyActionButtonAutoPress)
     private var actionButtonAutoPress: Bool = false
 
     private static let actionButtonDurations: [Double] = [5.0, 8.0, 10.0, 15.0]

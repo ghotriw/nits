@@ -23,22 +23,6 @@ public enum NetworkThumbnailPolicy: String, Sendable, Codable, CaseIterable, Ide
     }
 }
 
-/// What happens to the player window while its video plays in Picture in Picture. Fullscreen and minimized windows
-/// are always left as they are.
-public enum PictureInPictureWindowBehavior: String, Sendable, Codable, CaseIterable, Identifiable {
-    case hide
-    case doNothing
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .hide: "Hide"
-        case .doNothing: "Keep Open"
-        }
-    }
-}
-
 /// Global configuration for playback behavior, rendering engines, and hardware options.
 public struct PlayerConfiguration: Sendable, Equatable {
     /// Whether automatic tone mapping and custom Metal SDR rendering are permitted.
@@ -74,14 +58,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Default volume level (0.0 ... 1.0).
     public var initialVolume: Float
 
-    /// Custom HTTP headers to pass when streaming over HTTP/HTTPS (e.g. for custom authentication tokens).
-    public var httpHeaders: [String: String]
-
     /// Whether to automatically resume playback from previously saved position (default true).
     public var resumePlayback: Bool
-
-    /// Whether to record and display recently opened media in the Welcome window and Open Recent menu (default true).
-    public var rememberRecentMedia: Bool
 
     /// Minimum seconds played before a position is saved / resumed (default 15.0).
     public var resumeStartThreshold: Double
@@ -123,21 +101,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Subtitle font weight (e.g. "Regular", "Medium", "Semibold", "Bold", "Heavy", default "Semibold").
     public var subtitleFontWeight: String
 
-    /// Whether On-Screen Display (OSD) notifications are enabled (default true).
-    public var enableOSD: Bool
-
-    /// How long regular OSD notifications stay on screen, in seconds (default 1.3).
-    public var osdDuration: Double
-
-    /// Whether log messages are mirrored to the On-Screen Display as debug badges (default false).
-    public var enableDebugOSD: Bool
-
-    /// Minimum log level mirrored to the debug OSD (default .warning).
-    public var debugOSDMinimumLevel: LogLevel
-
-    /// How long each debug OSD message stays on screen, in seconds (default 4.0).
-    public var debugOSDDuration: Double
-
     /// Whether to automatically discover and add sibling media files in the folder to the playlist (default true).
     public var autoLoadFolderMedia: Bool
 
@@ -151,40 +114,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// How the picture is sized to the window (default `.fit`); a change from the Video menu lasts the session.
     public var videoScaling: VideoScaling
 
-    /// Explicit start time in seconds requested on launch (if provided, including `0`, overrides resume history).
-    public var startTime: Double?
-
-    /// Explicit audio track requested on launch: internal track id (`0, 1...`), explicit stream index
-    /// via `stream:N` / `s:N` (container stream index), or language code / title fragment
-    /// (if provided, overrides the track saved in resume history).
-    public var audioTrack: String?
-
-    /// Explicit subtitle track requested on launch: internal track id (`0, 1...`), explicit stream index
-    /// via `stream:N` / `s:N`, language code / title fragment, or `off` to disable subtitles
-    /// (if provided, overrides the track saved in resume history).
-    public var subtitleTrack: String?
-
     /// Policy for timeline hover thumbnail generation on network streams (default .localNetworkOnly).
     public var networkThumbnailPolicy: NetworkThumbnailPolicy
-    /// Whether the pages of video sites play, resolved by yt-dlp found on the system (default true).
-    public var resolvesWithYTDLP: Bool
-    /// The yt-dlp to run in place of the one found on the system (empty: search for it).
-    public var ytdlpPath: String
-    /// Skip buttons for a YouTube video's SponsorBlock segments (sponsors, intros, …), and its community chapters
-    /// when the author gave none (default true).
-    public var sponsorBlock: Bool
-    /// What happens to the player window while its video plays in Picture in Picture.
-    public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
-    /// Pause playback when Picture in Picture starts.
-    public var pausesOnPictureInPicture: Bool
-    /// Enter Picture in Picture when the player window is minimized during playback, and leave it on restore.
-    public var entersPictureInPictureOnMinimize: Bool
-    /// Seconds of playback an action button ("Skip Intro") stays up on its own before it hides with the controls
-    /// (default 8).
-    public var actionButtonDisplayDuration: Double
-    /// Press an action button by itself once `actionButtonDisplayDuration` runs out, unless the button opts out
-    /// (default false).
-    public var actionButtonAutoPress: Bool
     /// Languages that choose the audio and subtitle tracks a media starts with, when neither a request nor its saved
     /// history names them.
     public var trackLanguages: TrackLanguagePreferences
@@ -220,9 +151,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         applyDolbyVisionTrims: Bool = false,
         localContrast: Float = ToneMapController.defaultLocalContrast,
         initialVolume: Float = 1.0,
-        httpHeaders: [String: String] = [:],
         resumePlayback: Bool = true,
-        rememberRecentMedia: Bool = true,
         resumeStartThreshold: Double = 15.0,
         resumeEndThresholdRatio: Double = 0.95,
         subtitleFontSize: Double = 24.0,
@@ -236,27 +165,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         assStyleOverride: AssStyleOverride = .none,
         subtitleScale: Double = 1.0,
         subtitlePosition: Double = 100,
-        enableOSD: Bool = true,
-        osdDuration: Double = 1.3,
-        enableDebugOSD: Bool = false,
-        debugOSDMinimumLevel: LogLevel = .warning,
-        debugOSDDuration: Double = 4.0,
         autoLoadFolderMedia: Bool = true,
         seekStepSeconds: Double = 5.0,
         exactSeekOnSinglePress: Bool = true,
         videoScaling: VideoScaling = .fit,
-        startTime: Double? = nil,
-        audioTrack: String? = nil,
-        subtitleTrack: String? = nil,
         networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
-        resolvesWithYTDLP: Bool = true,
-        ytdlpPath: String = "",
-        sponsorBlock: Bool = true,
-        pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
-        pausesOnPictureInPicture: Bool = false,
-        entersPictureInPictureOnMinimize: Bool = false,
-        actionButtonDisplayDuration: Double = 8.0,
-        actionButtonAutoPress: Bool = false,
         trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences(),
         subtitleEncoding: String.Encoding? = nil,
         historyExcludedFolders: [ExcludedFolder] = [],
@@ -273,9 +186,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.applyDolbyVisionTrims = applyDolbyVisionTrims
         self.localContrast = max(0, min(1, localContrast))
         self.initialVolume = initialVolume
-        self.httpHeaders = httpHeaders
         self.resumePlayback = resumePlayback
-        self.rememberRecentMedia = rememberRecentMedia
         self.resumeStartThreshold = resumeStartThreshold
         self.resumeEndThresholdRatio = resumeEndThresholdRatio
         self.subtitleFontSize = subtitleFontSize
@@ -289,27 +200,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.assStyleOverride = assStyleOverride
         self.subtitleScale = subtitleScale
         self.subtitlePosition = subtitlePosition
-        self.enableOSD = enableOSD
-        self.osdDuration = osdDuration
-        self.enableDebugOSD = enableDebugOSD
-        self.debugOSDMinimumLevel = debugOSDMinimumLevel
-        self.debugOSDDuration = debugOSDDuration
         self.autoLoadFolderMedia = autoLoadFolderMedia
         self.seekStepSeconds = seekStepSeconds
         self.exactSeekOnSinglePress = exactSeekOnSinglePress
         self.videoScaling = videoScaling
-        self.startTime = startTime
-        self.audioTrack = audioTrack
-        self.subtitleTrack = subtitleTrack
         self.networkThumbnailPolicy = networkThumbnailPolicy
-        self.resolvesWithYTDLP = resolvesWithYTDLP
-        self.ytdlpPath = ytdlpPath
-        self.sponsorBlock = sponsorBlock
-        self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
-        self.pausesOnPictureInPicture = pausesOnPictureInPicture
-        self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
-        self.actionButtonDisplayDuration = Self.clampActionButtonDisplayDuration(actionButtonDisplayDuration)
-        self.actionButtonAutoPress = actionButtonAutoPress
         self.trackLanguages = trackLanguages
         self.subtitleEncoding = subtitleEncoding
         self.historyExcludedFolders = historyExcludedFolders
@@ -325,7 +220,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyApplyDolbyVisionTrims = "Nits.applyDolbyVisionTrims"
     public static let keyLocalContrast = "Nits.localContrast"
     public static let keyResumePlayback = "Nits.resumePlayback"
-    public static let keyRememberRecentMedia = "Nits.rememberRecentMedia"
     public static let keyHistoryExcludedFolders = "Nits.historyExcludedFolders"
     public static let keyHistoryExcludedDomains = "Nits.historyExcludedDomains"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
@@ -341,24 +235,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyAssStyleOverride = "Nits.subtitleAssStyleOverride"
     public static let keySubtitleScale = "Nits.subtitleScale"
     public static let keySubtitlePosition = "Nits.subtitlePosition"
-    public static let keyEnableOSD = "Nits.enableOSD"
-    public static let keyOSDDuration = "Nits.osdDuration"
-    public static let keyEnableDebugOSD = "Nits.enableDebugOSD"
-    public static let keyDebugOSDMinimumLevel = "Nits.debugOSDMinimumLevel"
-    public static let keyDebugOSDDuration = "Nits.debugOSDDuration"
     public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
     public static let keySeekStepSeconds = "Nits.seekStepSeconds"
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
     public static let keyVideoScaling = "Nits.videoScaling"
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
-    public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
-    public static let keyYTDLPPath = "Nits.ytdlpPath"
-    public static let keySponsorBlock = "Nits.sponsorBlock"
-    public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
-    public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
-    public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
-    public static let keyActionButtonDisplayDuration = "Nits.actionButtonDisplayDuration"
-    public static let keyActionButtonAutoPress = "Nits.actionButtonAutoPress"
     public static let keyAudioLanguages = "Nits.audioLanguages"
     public static let keySubtitleLanguages = "Nits.subtitleLanguages"
     public static let keyForcedSubtitleSelection = "Nits.forcedSubtitleSelection"
@@ -388,9 +269,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if userDefaults.object(forKey: keyResumePlayback) != nil {
             config.resumePlayback = userDefaults.bool(forKey: keyResumePlayback)
-        }
-        if userDefaults.object(forKey: keyRememberRecentMedia) != nil {
-            config.rememberRecentMedia = userDefaults.bool(forKey: keyRememberRecentMedia)
         }
         let exclusionPolicy = loadHistoryExclusionPolicy(from: userDefaults)
         config.historyExcludedFolders = exclusionPolicy.excludedFolders
@@ -434,23 +312,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if let bgOpacity = userDefaults.object(forKey: keySubtitleBgOpacity) as? NSNumber {
             config.subtitleBgOpacity = bgOpacity.doubleValue
         }
-        if userDefaults.object(forKey: keyEnableOSD) != nil {
-            config.enableOSD = userDefaults.bool(forKey: keyEnableOSD)
-        }
-        if let duration = userDefaults.object(forKey: keyOSDDuration) as? NSNumber {
-            config.osdDuration = clampOSDDuration(duration.doubleValue)
-        }
-        if userDefaults.object(forKey: keyEnableDebugOSD) != nil {
-            config.enableDebugOSD = userDefaults.bool(forKey: keyEnableDebugOSD)
-        }
-        if let levelRaw = userDefaults.string(forKey: keyDebugOSDMinimumLevel),
-            let level = LogLevel(rawValue: levelRaw)
-        {
-            config.debugOSDMinimumLevel = level
-        }
-        if let duration = userDefaults.object(forKey: keyDebugOSDDuration) as? NSNumber {
-            config.debugOSDDuration = clampDebugOSDDuration(duration.doubleValue)
-        }
         if userDefaults.object(forKey: keyAutoLoadFolderMedia) != nil {
             config.autoLoadFolderMedia = userDefaults.bool(forKey: keyAutoLoadFolderMedia)
         }
@@ -472,32 +333,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
             let policy = NetworkThumbnailPolicy(rawValue: networkThumbnailsRaw)
         {
             config.networkThumbnailPolicy = policy
-        }
-        if userDefaults.object(forKey: keyResolvesWithYTDLP) != nil {
-            config.resolvesWithYTDLP = userDefaults.bool(forKey: keyResolvesWithYTDLP)
-        }
-        if let path = userDefaults.string(forKey: keyYTDLPPath) {
-            config.ytdlpPath = path
-        }
-        if userDefaults.object(forKey: keySponsorBlock) != nil {
-            config.sponsorBlock = userDefaults.bool(forKey: keySponsorBlock)
-        }
-        if let pipWindowRaw = userDefaults.string(forKey: keyPictureInPictureWindowBehavior),
-            let behavior = PictureInPictureWindowBehavior(rawValue: pipWindowRaw)
-        {
-            config.pictureInPictureWindowBehavior = behavior
-        }
-        if userDefaults.object(forKey: keyPausesOnPictureInPicture) != nil {
-            config.pausesOnPictureInPicture = userDefaults.bool(forKey: keyPausesOnPictureInPicture)
-        }
-        if userDefaults.object(forKey: keyEntersPictureInPictureOnMinimize) != nil {
-            config.entersPictureInPictureOnMinimize = userDefaults.bool(forKey: keyEntersPictureInPictureOnMinimize)
-        }
-        if let duration = userDefaults.object(forKey: keyActionButtonDisplayDuration) as? NSNumber {
-            config.actionButtonDisplayDuration = clampActionButtonDisplayDuration(duration.doubleValue)
-        }
-        if userDefaults.object(forKey: keyActionButtonAutoPress) != nil {
-            config.actionButtonAutoPress = userDefaults.bool(forKey: keyActionButtonAutoPress)
         }
         if let languages = userDefaults.string(forKey: keyAudioLanguages) {
             config.trackLanguages.audioLanguages = TrackLanguagePreferences.languages(fromStored: languages)
@@ -539,7 +374,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(applyDolbyVisionTrims, forKey: Self.keyApplyDolbyVisionTrims)
         userDefaults.set(localContrast, forKey: Self.keyLocalContrast)
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
-        userDefaults.set(rememberRecentMedia, forKey: Self.keyRememberRecentMedia)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
         userDefaults.set(subtitleFontSize, forKey: Self.keySubtitleFontSize)
@@ -553,24 +387,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(assStyleOverride.rawValue, forKey: Self.keyAssStyleOverride)
         userDefaults.set(subtitleScale, forKey: Self.keySubtitleScale)
         userDefaults.set(subtitlePosition, forKey: Self.keySubtitlePosition)
-        userDefaults.set(enableOSD, forKey: Self.keyEnableOSD)
-        userDefaults.set(osdDuration, forKey: Self.keyOSDDuration)
-        userDefaults.set(enableDebugOSD, forKey: Self.keyEnableDebugOSD)
-        userDefaults.set(debugOSDMinimumLevel.rawValue, forKey: Self.keyDebugOSDMinimumLevel)
-        userDefaults.set(debugOSDDuration, forKey: Self.keyDebugOSDDuration)
         userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
         userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
         userDefaults.set(videoScaling.rawValue, forKey: Self.keyVideoScaling)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
-        userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
-        userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
-        userDefaults.set(sponsorBlock, forKey: Self.keySponsorBlock)
-        userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
-        userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
-        userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)
-        userDefaults.set(actionButtonDisplayDuration, forKey: Self.keyActionButtonDisplayDuration)
-        userDefaults.set(actionButtonAutoPress, forKey: Self.keyActionButtonAutoPress)
         userDefaults.set(
             TrackLanguagePreferences.storedValue(of: trackLanguages.audioLanguages), forKey: Self.keyAudioLanguages)
         userDefaults.set(
@@ -584,23 +405,5 @@ public struct PlayerConfiguration: Sendable, Equatable {
             HistoryExclusionPolicy.encodeFolders(historyExcludedFolders), forKey: Self.keyHistoryExcludedFolders)
         userDefaults.set(
             HistoryExclusionPolicy.encodeList(historyExcludedDomains), forKey: Self.keyHistoryExcludedDomains)
-    }
-
-    /// Clamps a regular OSD notification duration to a sane on-screen range (0.5...10 s).
-    public static func clampOSDDuration(_ value: Double) -> Double {
-        guard value.isFinite else { return 1.3 }
-        return max(0.5, min(10.0, value))
-    }
-
-    /// Clamps a debug OSD message duration to a sane on-screen range (1...60 s).
-    public static func clampDebugOSDDuration(_ value: Double) -> Double {
-        guard value.isFinite else { return 4.0 }
-        return max(1.0, min(60.0, value))
-    }
-
-    /// Clamps how long an action button stays up on its own to a usable range (3...60 s).
-    public static func clampActionButtonDisplayDuration(_ value: Double) -> Double {
-        guard value.isFinite else { return 8.0 }
-        return max(3.0, min(60.0, value))
     }
 }

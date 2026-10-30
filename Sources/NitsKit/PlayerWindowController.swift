@@ -62,42 +62,47 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         engine.trackNavigation = navigation
     }
 
+    /// Applies the engine's settings (`PlayerEngine.applyConfiguration(_:)`).
     public func applyConfiguration(_ config: PlayerConfiguration) {
-        rememberRecentMedia = config.rememberRecentMedia
         engine.applyConfiguration(config)
-        applyOSDConfiguration(config)
-        applyPictureInPictureConfiguration(config)
-        applyActionButtonConfiguration(config)
-        applyMediaResolverConfiguration(config)
     }
 
-    private func applyActionButtonConfiguration(_ config: PlayerConfiguration) {
-        uiState.actionButton.displayDuration = config.actionButtonDisplayDuration
-        uiState.actionButton.autoPress = config.actionButtonAutoPress
+    /// Applies the app's settings: the OSD, action buttons, recent media, yt-dlp and Picture in Picture's window.
+    public func applySettings(_ settings: AppSettings) {
+        rememberRecentMedia = settings.rememberRecentMedia
+        applyOSDSettings(settings)
+        applyPictureInPictureSettings(settings)
+        applyActionButtonSettings(settings)
+        applyMediaResolverSettings(settings)
     }
 
-    /// Resolves the pages of video sites with yt-dlp (`PlayerConfiguration.resolvesWithYTDLP`), unless the host gave
+    private func applyActionButtonSettings(_ settings: AppSettings) {
+        uiState.actionButton.displayDuration = settings.actionButtonDisplayDuration
+        uiState.actionButton.autoPress = settings.actionButtonAutoPress
+    }
+
+    /// Resolves the pages of video sites with yt-dlp (`AppSettings.resolvesWithYTDLP`), unless the host gave
     /// the engine a resolver of its own.
-    private func applyMediaResolverConfiguration(_ config: PlayerConfiguration) {
+    private func applyMediaResolverSettings(_ settings: AppSettings) {
         guard engine.mediaResolver == nil || engine.mediaResolver is YTDLPResolver else { return }
         engine.mediaResolver =
-            config.resolvesWithYTDLP
-            ? YTDLPResolver(customPath: config.ytdlpPath, sponsorBlock: config.sponsorBlock) : nil
+            settings.resolvesWithYTDLP
+            ? YTDLPResolver(customPath: settings.ytdlpPath, sponsorBlock: settings.sponsorBlock) : nil
     }
 
-    private func applyPictureInPictureConfiguration(_ config: PlayerConfiguration) {
-        pictureInPictureWindowBehavior = config.pictureInPictureWindowBehavior
-        pausesOnPictureInPicture = config.pausesOnPictureInPicture
-        entersPictureInPictureOnMinimize = config.entersPictureInPictureOnMinimize
+    private func applyPictureInPictureSettings(_ settings: AppSettings) {
+        pictureInPictureWindowBehavior = settings.pictureInPictureWindowBehavior
+        pausesOnPictureInPicture = settings.pausesOnPictureInPicture
+        entersPictureInPictureOnMinimize = settings.entersPictureInPictureOnMinimize
     }
 
-    private func applyOSDConfiguration(_ config: PlayerConfiguration) {
-        uiState.osd.isEnabled = config.enableOSD
-        uiState.osd.eventDuration = config.osdDuration
+    private func applyOSDSettings(_ settings: AppSettings) {
+        uiState.osd.isEnabled = settings.enableOSD
+        uiState.osd.eventDuration = settings.osdDuration
         uiState.osd.configureDebug(
-            enabled: config.enableDebugOSD,
-            minimumLevel: config.debugOSDMinimumLevel,
-            duration: config.debugOSDDuration
+            enabled: settings.enableDebugOSD,
+            minimumLevel: settings.debugOSDMinimumLevel,
+            duration: settings.debugOSDDuration
         )
     }
 
@@ -108,11 +113,13 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     }
 
     /// - Parameters:
+    ///   - settings: The app's settings (`applySettings(_:)`).
     ///   - engine: An engine built with the same `configuration` and the host's own stores (tests pass
     ///     in-memory ones); `nil` creates one that uses the app's.
     ///   - recentMediaStore: Where loaded media is recorded for Recent Media; `nil` for hosts and tests.
     public init(
         configuration: PlayerConfiguration = PlayerConfiguration(),
+        settings: AppSettings = AppSettings(),
         engine: PlayerEngine? = nil,
         recentMediaStore: RecentMediaStore? = nil
     ) {
@@ -138,11 +145,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
         // Created now, not on first toggle: it follows the engine from here on and prepares AVKit for the first video.
         _ = pictureInPicture
-        rememberRecentMedia = configuration.rememberRecentMedia
-        applyOSDConfiguration(configuration)
-        applyPictureInPictureConfiguration(configuration)
-        applyActionButtonConfiguration(configuration)
-        applyMediaResolverConfiguration(configuration)
+        applySettings(settings)
 
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden

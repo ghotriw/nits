@@ -85,7 +85,7 @@ public final class OSDManager {
         logStore: LogStore = .shared
     ) {
         debugMinimumLevel = minimumLevel
-        debugDuration = PlayerConfiguration.clampDebugOSDDuration(duration)
+        debugDuration = AppSettings.clampDebugOSDDuration(duration)
         debugLevelGate.withLock { $0 = minimumLevel }
 
         if enabled {
