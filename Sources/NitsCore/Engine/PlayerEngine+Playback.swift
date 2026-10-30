@@ -347,10 +347,6 @@ extension PlayerEngine {
         setPlaybackRate(1.0)
     }
 
-    public func toggleDebugHUD() {
-        showDebugHUD.toggle()
-    }
-
     /// Loads and begins playback of a playlist item.
     public func load(item: PlaylistItem) {
         load(item: item, reportingPlaylistRequest: nil)

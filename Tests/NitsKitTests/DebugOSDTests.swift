@@ -133,3 +133,27 @@ struct OSDDurationTests {
         #expect(await waitUntil { !osd.isVisible })
     }
 }
+
+@Suite("OSD Enable Tests")
+@MainActor
+struct OSDEnableTests {
+    @Test("Turned off, the OSD drops the event on screen and ignores new ones; the debug OSD stays")
+    func testDisabledOSDIgnoresEvents() {
+        let osd = OSDManager()
+        osd.configureDebug(enabled: true, minimumLevel: .warning, duration: 4, logStore: LogStore(writeToDisk: false))
+        osd.show(.play)
+        #expect(osd.isVisible)
+
+        osd.isEnabled = false
+        #expect(!osd.isVisible)
+        #expect(osd.currentEvent == nil)
+        osd.show(.pause)
+        #expect(!osd.isVisible)
+        #expect(osd.currentEvent == nil)
+        #expect(osd.isDebugEnabled)
+
+        osd.isEnabled = true
+        osd.show(.pause)
+        #expect(osd.isVisible)
+    }
+}

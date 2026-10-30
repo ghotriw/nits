@@ -150,7 +150,7 @@ public struct ContentView: View {
             .opacity(uiState.isCapturingScreen ? 0 : 1)
 
             // On-Screen Display (OSD) Overlay - Top Left, debug log badges stacked below
-            let showsOSDEvent = engine.enableOSD && uiState.osd.isVisible && uiState.osd.currentEvent != nil
+            let showsOSDEvent = uiState.osd.isVisible && uiState.osd.currentEvent != nil
             let showsDebugOSD = uiState.osd.isDebugEnabled && !uiState.osd.debugMessages.isEmpty
             if (showsOSDEvent || showsDebugOSD) && !uiState.isCapturingScreen {
                 VStack {
@@ -174,7 +174,7 @@ public struct ContentView: View {
             }
 
             // Performance Telemetry HUD
-            if engine.showDebugHUD && !uiState.isCapturingScreen {
+            if uiState.isDebugHUDVisible && !uiState.isCapturingScreen {
                 VStack {
                     HStack {
                         Spacer()
@@ -244,12 +244,10 @@ public struct ContentView: View {
                         onJump: { targetTime in
                             let offset = targetTime - engine.currentTime
                             engine.seek(to: targetTime)
-                            if engine.enableOSD {
-                                uiState.osd.show(
-                                    .seek(
-                                        offsetSeconds: offset, currentTime: targetTime, duration: engine.media.duration)
-                                )
-                            }
+                            uiState.osd.show(
+                                .seek(
+                                    offsetSeconds: offset, currentTime: targetTime, duration: engine.media.duration)
+                            )
                             let shouldResume = uiState.dismissJumpTo()
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 uiState.isJumpToPresented = false
@@ -334,6 +332,10 @@ public struct ContentView: View {
         }
         .onChange(of: uiState.controlsVisibilityTrigger) { _, _ in
             showControlsTemporarily()
+        }
+        // From the state, not the HUD's appear / disappear, which a fade out can deliver after the next appear.
+        .onChange(of: uiState.isDebugHUDVisible, initial: true) { _, visible in
+            engine.isCollectingMetrics = visible
         }
         .focusable()
         .focusEffectDisabled()

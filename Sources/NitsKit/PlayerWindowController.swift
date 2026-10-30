@@ -92,6 +92,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private func applyOSDConfiguration(_ config: PlayerConfiguration) {
+        uiState.osd.isEnabled = config.enableOSD
         uiState.osd.eventDuration = config.osdDuration
         uiState.osd.configureDebug(
             enabled: config.enableDebugOSD,
@@ -269,7 +270,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             self?.nowPlayingController.updateTrackCommands()
         }
         engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
-            guard let self, self.engine.enableOSD, self.uiState.osd.isVisible else { return }
+            guard let self, self.uiState.osd.isVisible else { return }
             self.uiState.osd.show(
                 .seek(offsetSeconds: actualOffset, currentTime: completedTime, duration: self.engine.media.duration)
             )
@@ -481,9 +482,7 @@ extension PlayerWindowController: PlayerActions {
         set {
             engine.renderMode = newValue
             // uiState.showControlsTemporarily()
-            if engine.enableOSD {
-                uiState.osd.show(.renderMode(modeName: newValue.rawValue))
-            }
+            uiState.osd.show(.renderMode(modeName: newValue.rawValue))
         }
     }
 
@@ -491,9 +490,7 @@ extension PlayerWindowController: PlayerActions {
         get { engine.toneMapping.sharpness }
         set {
             engine.toneMapping.sharpness = newValue
-            if engine.enableOSD {
-                uiState.osd.show(.sharpness(value: newValue))
-            }
+            uiState.osd.show(.sharpness(value: newValue))
         }
     }
 
@@ -502,7 +499,7 @@ extension PlayerWindowController: PlayerActions {
     }
 
     public var showDebugHUD: Bool {
-        engine.showDebugHUD
+        uiState.isDebugHUDVisible
     }
 
     public var seekStepSeconds: Double {
@@ -512,69 +509,51 @@ extension PlayerWindowController: PlayerActions {
     public func togglePlayPause() {
         engine.togglePlayPause()
         // uiState.showControlsTemporarily()
-        if engine.enableOSD {
-            uiState.osd.show(engine.isPlaying ? .play : .pause)
-        }
+        uiState.osd.show(engine.isPlaying ? .play : .pause)
     }
 
     public func play() {
         engine.play()
-        if engine.enableOSD {
-            uiState.osd.show(.play)
-        }
+        uiState.osd.show(.play)
     }
 
     public func pause() {
         engine.pause()
-        if engine.enableOSD {
-            uiState.osd.show(.pause)
-        }
+        uiState.osd.show(.pause)
     }
 
     public func seek(to seconds: Double) {
         let offset = seconds - engine.currentTime
         engine.seek(to: seconds)
-        if engine.enableOSD {
-            uiState.osd.show(.seek(offsetSeconds: offset, currentTime: seconds, duration: engine.media.duration))
-        }
+        uiState.osd.show(.seek(offsetSeconds: offset, currentTime: seconds, duration: engine.media.duration))
     }
 
     public func stepFrameForward() {
         engine.stepFrameForward()
-        if engine.enableOSD {
-            uiState.osd.show(.frameStep(forward: true))
-        }
+        uiState.osd.show(.frameStep(forward: true))
     }
 
     public func stepFrameBackward() {
         engine.stepFrameBackward()
-        if engine.enableOSD {
-            uiState.osd.show(.frameStep(forward: false))
-        }
+        uiState.osd.show(.frameStep(forward: false))
     }
 
     public func seekRelative(by seconds: Double) {
         let honestOffset = engine.seekRelative(by: seconds)
-        if engine.enableOSD {
-            let targetPos = engine.pendingSeekTime ?? engine.currentTime
-            uiState.osd.show(
-                .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.media.duration)
-            )
-        }
+        let targetPos = engine.pendingSeekTime ?? engine.currentTime
+        uiState.osd.show(
+            .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.media.duration)
+        )
     }
 
     public func stepVolume(by delta: Float) {
         engine.stepVolume(by: delta)
-        if engine.enableOSD {
-            uiState.osd.show(.volume(level: engine.volume, isMuted: engine.isMuted))
-        }
+        uiState.osd.show(.volume(level: engine.volume, isMuted: engine.isMuted))
     }
 
     public func toggleMute() {
         engine.toggleMute()
-        if engine.enableOSD {
-            uiState.osd.show(.volume(level: engine.volume, isMuted: engine.isMuted))
-        }
+        uiState.osd.show(.volume(level: engine.volume, isMuted: engine.isMuted))
     }
 
     public var playbackRate: Double {
@@ -584,39 +563,29 @@ extension PlayerWindowController: PlayerActions {
 
     public func setPlaybackRate(_ rate: Double) {
         engine.setPlaybackRate(rate)
-        if engine.enableOSD {
-            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
-        }
+        uiState.osd.show(.playbackRate(rate: engine.playbackRate))
     }
 
     public func stepPlaybackRate(by delta: Double) {
         engine.stepPlaybackRate(by: delta)
-        if engine.enableOSD {
-            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
-        }
+        uiState.osd.show(.playbackRate(rate: engine.playbackRate))
     }
 
     public func resetPlaybackRate() {
         engine.resetPlaybackRate()
-        if engine.enableOSD {
-            uiState.osd.show(.playbackRate(rate: engine.playbackRate))
-        }
+        uiState.osd.show(.playbackRate(rate: engine.playbackRate))
     }
 
     public func stepSubtitleDelay(by delta: Double) {
         guard engine.isLoaded else { return }
         engine.subtitles.stepDelay(by: delta)
-        if engine.enableOSD {
-            uiState.osd.show(.subtitleDelay(seconds: engine.subtitles.delay))
-        }
+        uiState.osd.show(.subtitleDelay(seconds: engine.subtitles.delay))
     }
 
     public func stepAudioDelay(by delta: Double) {
         guard engine.isLoaded, !engine.audioTracks.isEmpty else { return }
         engine.stepAudioDelay(by: delta)
-        if engine.enableOSD {
-            uiState.osd.show(.audioDelay(seconds: engine.audioDelay))
-        }
+        uiState.osd.show(.audioDelay(seconds: engine.audioDelay))
     }
 
     public var hasVideo: Bool {
@@ -694,12 +663,10 @@ extension PlayerWindowController: PlayerActions {
                 let url = try await Task.detached(priority: .userInitiated) {
                     try FrameStillWriter.write(frame, title: title)
                 }.value
-                if engine.enableOSD {
-                    uiState.osd.show(
-                        .custom(
-                            symbol: "camera", text: frame.isHDR ? "HDR Screenshot Saved" : "Screenshot Saved",
-                            subtext: url.lastPathComponent))
-                }
+                uiState.osd.show(
+                    .custom(
+                        symbol: "camera", text: frame.isHDR ? "HDR Screenshot Saved" : "Screenshot Saved",
+                        subtext: url.lastPathComponent))
             } catch {
                 AppLog.error(.ui, "Saving the screenshot failed: \(error)")
                 showGeometryOSD(symbol: "exclamationmark.triangle", "Can't save the screenshot")
@@ -734,10 +701,8 @@ extension PlayerWindowController: PlayerActions {
             let url = try await Task.detached(priority: .userInitiated) {
                 try FrameStillWriter.write(still, title: title)
             }.value
-            if engine.enableOSD {
-                uiState.osd.show(
-                    .custom(symbol: "camera", text: "Screen Capture Saved", subtext: url.lastPathComponent))
-            }
+            uiState.osd.show(
+                .custom(symbol: "camera", text: "Screen Capture Saved", subtext: url.lastPathComponent))
         } catch {
             AppLog.error(.ui, "Saving the screen capture failed: \(error)")
             showGeometryOSD(symbol: "exclamationmark.triangle", "Can't save the screenshot")
@@ -755,14 +720,12 @@ extension PlayerWindowController: PlayerActions {
     }
 
     private func showGeometryOSD(symbol: String, _ text: String) {
-        if engine.enableOSD {
-            uiState.osd.show(.custom(symbol: symbol, text: text))
-        }
+        uiState.osd.show(.custom(symbol: symbol, text: text))
     }
 
     public func toggleDebugHUD() {
         withAnimation {
-            engine.toggleDebugHUD()
+            uiState.isDebugHUDVisible.toggle()
         }
     }
 
@@ -960,7 +923,6 @@ extension PlayerWindowController: PlayerActions {
     }
 
     private func showChapterOSD(symbol: String, text: String, subtext: String? = nil) {
-        guard engine.enableOSD else { return }
         uiState.osd.show(.custom(symbol: symbol, text: text, subtext: subtext))
     }
 

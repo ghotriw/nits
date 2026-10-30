@@ -161,9 +161,7 @@ public struct ControlAudioTrackButton: View {
             item.state = (track.id == engine.selectedAudioTrackId) ? NSControl.StateValue.on : NSControl.StateValue.off
             let target = ControlMenuHelper { [weak engine, weak uiState] in
                 engine?.selectAudioTrack(id: track.id)
-                if engine?.enableOSD == true {
-                    uiState?.osd.show(.audioTrack(title: label))
-                }
+                uiState?.osd.show(.audioTrack(title: label))
             }
             item.target = target
             item.representedObject = target
@@ -180,7 +178,7 @@ public struct ControlAudioTrackButton: View {
             AudioFilePicker.pick { url in
                 Task {
                     // The track chosen once the file opened, not the file asked for: it may not be read.
-                    guard let track = await engine?.loadExternalAudio(urls: [url]), engine?.enableOSD == true else {
+                    guard let track = await engine?.loadExternalAudio(urls: [url]) else {
                         return
                     }
                     let label = TrackTitleFormatter.format(
@@ -242,9 +240,7 @@ public struct ControlSubtitleTrackButton: View {
         offItem.state = (engine.subtitles.selectedTrackId == nil) ? NSControl.StateValue.on : NSControl.StateValue.off
         let offTarget = ControlMenuHelper { [weak engine, weak uiState] in
             engine?.subtitles.select(trackId: nil)
-            if engine?.enableOSD == true {
-                uiState?.osd.show(.subtitleTrack(title: "Subtitles Off"))
-            }
+            uiState?.osd.show(.subtitleTrack(title: "Subtitles Off"))
         }
         offItem.target = offTarget
         offItem.representedObject = offTarget
@@ -264,9 +260,7 @@ public struct ControlSubtitleTrackButton: View {
                     (track.id == engine.subtitles.selectedTrackId) ? NSControl.StateValue.on : NSControl.StateValue.off
                 let target = ControlMenuHelper { [weak engine, weak uiState] in
                     engine?.subtitles.select(trackId: track.id)
-                    if engine?.enableOSD == true {
-                        uiState?.osd.show(.subtitleTrack(title: label))
-                    }
+                    uiState?.osd.show(.subtitleTrack(title: label))
                 }
                 item.target = target
                 item.representedObject = target
@@ -293,9 +287,7 @@ public struct ControlSubtitleTrackButton: View {
             let handleSelection: (NSApplication.ModalResponse) -> Void = { response in
                 if response == .OK, let url = panel.url {
                     engine?.subtitles.addExternal(url: url)
-                    if engine?.enableOSD == true {
-                        uiState?.osd.show(.subtitleTrack(title: url.lastPathComponent))
-                    }
+                    uiState?.osd.show(.subtitleTrack(title: url.lastPathComponent))
                 }
             }
 

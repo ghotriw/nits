@@ -211,7 +211,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.isToneMappingPermitted = config.enableToneMapping
         toneMapping.apply(config, previous: previous)
         subtitles.apply(config)
-        self.enableOSD = config.enableOSD
         self.seekStepSeconds = config.seekStepSeconds
         self.exactSeekOnSinglePress = config.exactSeekOnSinglePress
         // Only a new default replaces the scaling chosen for the session.
@@ -220,7 +219,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
     }
 
-    public var enableOSD: Bool = true
     public var seekStepSeconds: Double = 5.0
     public var exactSeekOnSinglePress: Bool = true
 
@@ -621,15 +619,22 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let pendingClockStartLock = OSAllocatedUnfairLock<PendingClockStart?>(initialState: nil)
     @ObservationIgnored
     var prerollTimeoutTask: Task<Void, Never>? = nil
-    public var showDebugHUD: Bool = false {
+    /// Refreshes `currentMetrics` twice a second, with the process's CPU and memory, for a view showing them (the
+    /// performance HUD); off, they change only when media loads, and no timer runs.
+    public var isCollectingMetrics: Bool = false {
         didSet {
-            if showDebugHUD {
-                currentMetrics = performanceMonitor.currentMetrics
+            guard isCollectingMetrics != oldValue else { return }
+            if isCollectingMetrics {
+                startMetricsTimer()
+            } else {
+                metricsTimer?.cancel()
+                metricsTimer = nil
             }
         }
     }
     public var currentMetrics: PlayerPerformanceMonitor.Metrics = PlayerPerformanceMonitor.Metrics()
     public let performanceMonitor = PlayerPerformanceMonitor.shared
+    @ObservationIgnored
     var metricsTimer: (any DispatchSourceTimer)?
 
     let frameQueue = FrameQueue()
@@ -717,7 +722,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let subtitles = SubtitleController()
         subtitles.apply(configuration)
         self.subtitles = subtitles
-        self.enableOSD = configuration.enableOSD
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress
         self.playlist = PlaylistManager(
@@ -758,7 +762,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         setupDisplayLink()
         setupAudioObservers()
         updateEffectiveRenderMode()
-        setupMetricsMonitoring()
 
         // Update playback position at 10 Hz (every 100ms, matching IINA AppData.syncTimeInterval = 0.1s)
         timeObserver = synchronizer.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20), queue: .main)
@@ -842,11 +845,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
     }
 
-    func setupMetricsMonitoring() {
+    /// Ticks at once, so the process metrics shown first are current, then every 0.5 s.
+    private func startMetricsTimer() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
+        timer.schedule(deadline: .now(), repeating: 0.5)
         timer.setEventHandler { [weak self] in
-            guard let self, self.showDebugHUD else { return }
+            guard let self, self.isCollectingMetrics else { return }
             let statusDesc = self.isPlaying ? "Rendering" : "Paused"
             self.performanceMonitor.updateNativeLayerStatus(statusDesc)
 
@@ -856,7 +860,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 self.performanceMonitor.updateProcessMetrics()
                 let metrics = self.performanceMonitor.currentMetrics
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.showDebugHUD else { return }
+                    guard let self, self.isCollectingMetrics else { return }
                     self.currentMetrics = metrics
                 }
             }

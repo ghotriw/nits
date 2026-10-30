@@ -186,7 +186,7 @@ extension PlayerEngine {
             }
         }
 
-        if showDebugHUD {
+        if isCollectingMetrics {
             currentMetrics = performanceMonitor.currentMetrics
         }
     }

@@ -192,11 +192,9 @@ public protocol PlayerPlaylistControlling: AnyObject, Sendable {
     @MainActor func removePlaylistItem(id: UUID)
 }
 
-/// UI diagnostic overlays and HUD display options.
-public protocol PlayerUIOverlayControlling: AnyObject, Sendable {
-    @MainActor var enableOSD: Bool { get set }
-    @MainActor var showDebugHUD: Bool { get set }
-    @MainActor func toggleDebugHUD()
+/// Diagnostics a host shows (`currentMetrics`), collected only while asked for.
+public protocol PlayerMetricsCollecting: AnyObject, Sendable {
+    @MainActor var isCollectingMetrics: Bool { get set }
 }
 
 // MARK: - Unified Engine Protocol
@@ -210,7 +208,7 @@ public protocol PlayerEngineProtocol:
     PlayerActionButtonControlling,
     PlayerSubtitleControlling,
     PlayerPlaylistControlling,
-    PlayerUIOverlayControlling
+    PlayerMetricsCollecting
 {}
 
 // MARK: - Default Implementations & Convenience Extensions

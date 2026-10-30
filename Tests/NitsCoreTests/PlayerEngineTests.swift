@@ -765,8 +765,7 @@ struct PlayerEngineTests {
             var playbackRate: Double = 1.0
             var seekStepSeconds: Double = 5.0
             var exactSeekOnSinglePress: Bool = false
-            var enableOSD: Bool = true
-            var showDebugHUD: Bool = false
+            var isCollectingMetrics: Bool = false
             var droppedFramesCount: Int = 0
             var pipelineDroppedFramesCount: Int = 0
             var speedSkippedFramesCount: Int = 0
@@ -799,7 +798,6 @@ struct PlayerEngineTests {
             func stepFrameBackward() {}
             func stepVolume(by delta: Float) {}
             func toggleMute() {}
-            func toggleDebugHUD() {}
             func renderCurrentFrame() {}
             func captureFrame() async -> CapturedFrame? { nil }
             func selectAudioTrack(id: Int) {}

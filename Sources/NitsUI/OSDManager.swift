@@ -11,6 +11,14 @@ public final class OSDManager {
     public private(set) var isVisible: Bool = false
     /// How long `show(_:)` keeps an event on screen when no explicit duration is passed.
     @ObservationIgnored public var eventDuration: Double = 1.3
+    /// Off, `show(_:)` ignores events and the one on screen goes; the debug OSD is apart (`configureDebug`).
+    @ObservationIgnored public var isEnabled: Bool = true {
+        didSet {
+            if !isEnabled, oldValue {
+                hide()
+            }
+        }
+    }
 
     /// Log messages currently mirrored to the debug OSD, oldest first.
     public private(set) var debugMessages: [DebugOSDMessage] = []
@@ -31,8 +39,10 @@ public final class OSDManager {
 
     public init() {}
 
-    /// Presents an OSD event and schedules auto-hiding after `duration` seconds (defaults to `eventDuration`).
+    /// Presents an OSD event and schedules auto-hiding after `duration` seconds (defaults to `eventDuration`), unless
+    /// the OSD is off (`isEnabled`).
     public func show(_ event: OSDEvent, duration: Double? = nil) {
+        guard isEnabled else { return }
         let duration = duration ?? eventDuration
         hideTask?.cancel()
 
