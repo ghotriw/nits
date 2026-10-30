@@ -548,31 +548,33 @@ public struct ControlTimelineSection: View {
                 let progress = min(max(current / total, 0), 1)
 
                 ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(0.25))
-                        .frame(height: 6)
-
-                    // What a network source has read ahead of playback (half a minute at most); a local file's few
-                    // seconds would only flicker. `bufferedTime` isn't observable, and grows while paused or
-                    // buffering, when the time stands: read twice a second.
-                    if engine.media.isNetworkSource {
-                        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                            let buffered = min(max(engine.bufferedTime / total, 0), 1)
-                            Capsule()
-                                .fill(.white.opacity(0.25))
-                                .frame(width: geo.size.width * max(buffered, progress), height: 6)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(height: 6)
-                    }
-
-                    Capsule()
-                        .fill(.tint)
-                        .frame(width: geo.size.width * progress, height: 6)
-
-                    if !engine.media.chapters.isEmpty {
-                        ChapterTickMarks(chapters: engine.media.chapters, duration: engine.media.duration)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(.white.opacity(0.25))
                             .frame(height: 6)
+
+                        // What a network source has read ahead of playback (half a minute at most); a local file's few
+                        // seconds would only flicker. `bufferedTime` isn't observable, and grows while paused or
+                        // buffering, when the time stands: read twice a second.
+                        if engine.media.isNetworkSource {
+                            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                                let buffered = min(max(engine.bufferedTime / total, 0), 1)
+                                Capsule()
+                                    .fill(.white.opacity(0.25))
+                                    .frame(width: geo.size.width * max(buffered, progress), height: 6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(height: 6)
+                        }
+
+                        Capsule()
+                            .fill(.tint)
+                            .frame(width: geo.size.width * progress, height: 6)
+
+                    }
+                    .frame(height: 6)
+                    .mask {
+                        ChapterGapMask(chapters: engine.media.chapters, duration: engine.media.duration)
                     }
 
                     Circle()
@@ -672,9 +674,10 @@ public struct ControlTimelineSection: View {
     }
 }
 
-// MARK: - Chapter Tick Marks
-/// Chapter boundaries drawn as thin dark gaps across the timeline track (none at the very start).
-struct ChapterTickMarks: View {
+// MARK: - Chapter Gap Mask
+/// Mask for the timeline track: opaque everywhere except thin gaps at chapter boundaries (none at the very start),
+/// so the gaps show whatever is behind the bar instead of a painted colour.
+struct ChapterGapMask: View {
     let chapters: [MediaChapter]
     let duration: Double
 
@@ -682,11 +685,13 @@ struct ChapterTickMarks: View {
 
     var body: some View {
         Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
             guard duration > 0 else { return }
+            context.blendMode = .destinationOut
             for chapter in chapters where chapter.start > 0 && chapter.start < duration {
                 let x = size.width * chapter.start / duration
                 let rect = CGRect(x: x - Self.gapWidth / 2, y: 0, width: Self.gapWidth, height: size.height)
-                context.fill(Path(rect), with: .color(.black.opacity(0.55)))
+                context.fill(Path(rect), with: .color(.black))
             }
         }
         .allowsHitTesting(false)
