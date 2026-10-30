@@ -181,8 +181,10 @@ session invalidate/reset, `VTVideoDecoder` waits for in-flight frames
 (`VTDecompressionSessionWaitForAsynchronousFrames`) so output callbacks can't race the replacement.
 
 A burst of seeks chases its latest target (`ChaseTarget`): seeks that come while one runs only move the target, and
-the running one goes on to it when it finishes. One asking for the very target the running one has changes nothing, so
-key repeats clamped to the same position (the end) don't start its decoding over. Seeking stays orchestrated on `PlayerEngine` (it stops the clock, the
+the running one goes on to it when it finishes. A press (an arrow key's, a skip button's) asking for the very target the
+running one has changes nothing, so repeats clamped to the same position (the end or the start, where an exact and a
+keyframe seek land on the same frame) don't start its decoding over. Any other seek there supersedes it: a track or
+variant switch re-reads from the target of the seek in flight, which has read the media as it was selected before. Seeking stays orchestrated on `PlayerEngine` (it stops the clock, the
 feeders and the display link and restarts them), while the parts that need none of that are types of their own:
 `SeekPreview` decodes the frame a seek lands on and picks it (`SeekPreview.FrameChoice`), `RelativeSeekBurst` follows a
 held arrow key's run of seeks, and `FrameStepState` with `StepFrameCache` and `FrameStepPump` serve paused frame

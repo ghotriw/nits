@@ -58,21 +58,32 @@ struct EndOfMediaTests {
         #expect(engine.playbackState == .completed)
     }
 
-    @Test("A seek to the target of the seek in flight leaves that one running")
-    func sameTargetDoesNotSupersede() async throws {
+    @Test(
+        "A press to the target of the seek in flight leaves it running; a seek there supersedes it",
+        arguments: [false, true])
+    func sameTargetPressDoesNotSupersede(exactFirstPress: Bool) async throws {
         guard let engine = try await loadPausedWideGOP(at: 30) else { return }
         defer { engine.stop() }
+        engine.exactSeekOnSinglePress = exactFirstPress
 
         // The seek is in flight from the call on: its work on `seekQueue` reports back on the main actor, after.
-        engine.seek(to: 58)
+        engine.seekRelative(by: 100)
         #expect(engine.isSeeking)
         let seekId = engine.seekGeneration.current
-        engine.seek(to: 58)
-        #expect(engine.seekGeneration.current == seekId, "The same target superseded the seek")
-        engine.seek(to: 59)
-        #expect(engine.seekGeneration.current != seekId, "A new target did not supersede the seek")
+        // Clamped to the end too, a keyframe seek even after an exact first press: it lands on the same last frame.
+        engine.seekRelative(by: 100)
+        #expect(engine.seekGeneration.current == seekId, "A repeat to the same target superseded the seek")
+        // A skip button's press.
+        engine.seekRelative(by: 100, exact: false)
+        #expect(engine.seekGeneration.current == seekId, "A skip to the same target superseded the seek")
+
+        // A re-read (a track switch's) seeks to the target of the seek in flight to read the media again.
+        engine.seek(to: 40)
+        let rereadId = engine.seekGeneration.current
+        engine.seek(to: 40)
+        #expect(engine.seekGeneration.current != rereadId, "A seek to the same target did not supersede the seek")
         #expect(await engine.waitForSeekToSettle())
-        #expect(abs(engine.currentTime - 59) < 0.05, "Landed at \(engine.currentTime)s")
+        #expect(abs(engine.currentTime - 40) < 0.05, "Landed at \(engine.currentTime)s")
     }
 
     @Test("Seeking forward past the end while paused stays on the last frame")

@@ -37,13 +37,9 @@ extension PlayerEngine {
 
     /// - Parameter minFramePTS: For a forward frame step, the earliest frame it may land on (see `ChaseTarget`).
     func seek(to seconds: Double, exact: Bool, forward: Bool, minFramePTS: Double? = nil) {
-        let target = max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
+        let target = clampedSeekTarget(seconds)
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
-        let next = ChaseTarget(seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS)
-        // The seek in flight goes there already: superseding it would only start it over. Key repeats clamped to the
-        // end would otherwise restart its exact seek, decoding the last GOP from its keyframe, before it ever lands.
-        if isSeeking, chase == next { return }
 
         // Cancel any pending settle debounce from an earlier seek in the burst
         chaseSettleTask?.cancel()
@@ -62,7 +58,7 @@ extension PlayerEngine {
         }
 
         // 2. Immediate responsive UI update (0ms latency for exact seek)
-        chase = next
+        chase = ChaseTarget(seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS)
         if exact {
             currentTime = target
             subtitles.timeDidChange(to: target, .tick)
@@ -343,11 +339,21 @@ extension PlayerEngine {
         let isExact = !media.hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
         let isForward = seconds > 0 && !isExact
 
+        let target = ChaseTarget(seconds: clampedSeekTarget(baseTime + seconds), exact: isExact, forward: isForward)
+        if isSeekInFlight(toPressed: target) {
+            return relativeSeekBurst.offset(landingAt: target.seconds) ?? 0
+        }
+
         // In burst mode (keyframe seek), always step from the latest targeted or settled frame
         // so every press advances past the current GOP to the next/prev keyframe without freezing.
         seek(to: baseTime + seconds, exact: isExact, forward: isForward)
 
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
+    }
+
+    /// Where a seek to `seconds` goes: within the media.
+    func clampedSeekTarget(_ seconds: Double) -> Double {
+        max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
     }
 
     /// The picture shows the media's last frame, where a seek to the end lands: within a frame and a half of the end
@@ -362,7 +368,23 @@ extension PlayerEngine {
         let baseTime = chase?.seconds ?? currentTime
         // Forward keyframe steps must land on the next keyframe; a backward search on sparse-GOP
         // streams (AV1) would snap back to the current keyframe and the position would never advance.
-        seek(to: baseTime + seconds, exact: exact, forward: seconds > 0 && !exact)
+        let forward = seconds > 0 && !exact
+        let target = ChaseTarget(seconds: clampedSeekTarget(baseTime + seconds), exact: exact, forward: forward)
+        if isSeekInFlight(toPressed: target) { return }
+        seek(to: baseTime + seconds, exact: exact, forward: forward)
+    }
+
+    /// Whether a press (an arrow key's, a skip button's) seeking to `target` would go where the seek in flight goes
+    /// already: repeats clamped to the end or the start. Superseding it would only start it over, its exact seek
+    /// decoding the last GOP from its keyframe again before it ever lands. Only presses: other seeks to the same target
+    /// (a track switch's re-read) must supersede it, to read the media again.
+    private func isSeekInFlight(toPressed target: ChaseTarget) -> Bool {
+        guard isSeeking, let chase, chase.minFramePTS == nil else { return false }
+        if chase == target { return true }
+        // At either end an exact and a keyframe seek land on the same frame, the first or the last: the first press
+        // of a burst is exact, the repeats are keyframe seeks.
+        let isAtBound = target.seconds == 0 || (media.duration > 0 && target.seconds == media.duration)
+        return isAtBound && chase.seconds == target.seconds
     }
 
     /// Whether a frame step can be served from the warm pipeline + step cache instead of a full keyframe
@@ -490,7 +512,7 @@ extension PlayerEngine {
         resumePlaybackAfterChase = false
         let baseTime = chase?.seconds ?? (currentFramePTS >= 0 ? currentFramePTS : currentTime)
         let targetTime = forward ? (baseTime + stepDuration) : (baseTime - stepDuration * 1.05)
-        let clampedTarget = max(0, media.duration > 0 ? min(targetTime, media.duration) : targetTime)
+        let clampedTarget = clampedSeekTarget(targetTime)
         resetRelativeSeekBurst()
         // A forward step must land on a frame past the one it steps from.
         seek(to: clampedTarget, exact: true, forward: false, minFramePTS: forward ? baseTime + 0.001 : nil)
