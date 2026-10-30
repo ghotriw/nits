@@ -50,45 +50,45 @@ struct ActionButtonTests {
     func testEngineActiveButtonAndPress() {
         let engine = PlayerEngine.makeForTesting()
         var pressed: [String] = []
-        engine.onActionButton = { pressed.append($0) }
+        engine.actionButtons.onPress = { pressed.append($0) }
 
         engine.currentTime = 15
-        engine.setActionButtons([Self.intro, Self.next])
+        engine.actionButtons.setHostButtons([Self.intro, Self.next])
         // Nothing is active until media is loaded.
-        #expect(engine.activeActionButton == nil)
+        #expect(engine.actionButtons.active == nil)
         engine.isLoaded = true
-        #expect(engine.activeActionButton == Self.intro)
+        #expect(engine.actionButtons.active == Self.intro)
 
         engine.currentTime = 70
-        #expect(engine.activeActionButton == nil)
+        #expect(engine.actionButtons.active == nil)
         engine.currentTime = 2700
-        #expect(engine.activeActionButton == Self.next)
+        #expect(engine.actionButtons.active == Self.next)
 
-        engine.performActionButton(Self.next)
-        engine.performActionButton(Self.recap)  // not one of the engine's buttons
+        engine.actionButtons.perform(Self.next)
+        engine.actionButtons.perform(Self.recap)  // not one of the engine's buttons
         #expect(pressed == ["next"])
 
-        engine.setActionButtons([])
-        #expect(engine.activeActionButton == nil)
+        engine.actionButtons.setHostButtons([])
+        #expect(engine.actionButtons.active == nil)
     }
 
     @Test("A load replaces the previous media's buttons at once with the request's, and stop clears them")
     @MainActor
     func testLoadReplacesButtons() {
         let engine = PlayerEngine.makeForTesting()
-        engine.setActionButtons([Self.next])
+        engine.actionButtons.setHostButtons([Self.next])
 
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("nits-missing-\(UUID()).mkv").path
-        let generation = engine.loadGeneration
+        let generation = engine.actionButtons.loadGeneration
         engine.load(MediaLoadRequest(path: missing))
-        #expect(engine.actionButtons.isEmpty)
-        #expect(engine.activeActionButton == nil)
-        #expect(engine.loadGeneration == generation + 1)
+        #expect(engine.actionButtons.buttons.isEmpty)
+        #expect(engine.actionButtons.active == nil)
+        #expect(engine.actionButtons.loadGeneration == generation + 1)
 
         engine.load(MediaLoadRequest(path: missing).actionButtons([Self.intro]))
-        #expect(engine.actionButtons == [Self.intro])
+        #expect(engine.actionButtons.buttons == [Self.intro])
 
         engine.stop()
-        #expect(engine.actionButtons.isEmpty)
+        #expect(engine.actionButtons.buttons.isEmpty)
     }
 }

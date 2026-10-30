@@ -3,7 +3,7 @@ import Foundation
 /// A button the host shows over the video for a span of the timeline ("Skip Intro", "Next Episode").
 ///
 /// The host decides where the spans are and what pressing the button does: the player only shows the button while
-/// playback is inside `start..<end` and reports its `id` through `onActionButton` when it is pressed.
+/// playback is inside `start..<end` and reports its `id` through `ActionButtonController.onPress` when it is pressed.
 public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
     /// Reported back to the host when the button is pressed.
     public let id: String
@@ -22,7 +22,7 @@ public struct PlaybackActionButton: Sendable, Identifiable, Equatable {
     /// authentication itself: it is fetched without headers.
     public let artworkURL: URL?
     /// Whether pressing the button causes the engine to seek to its `end` directly without host intervention
-    /// (the host's `onActionButton` is not called for this button).
+    /// (the host's `ActionButtonController.onPress` is not called for this button).
     public let seeksToEnd: Bool
 
     public init(

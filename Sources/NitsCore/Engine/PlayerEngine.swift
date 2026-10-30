@@ -12,37 +12,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var currentTime: Double = 0 {
         didSet {
             updateCurrentChapterIndex()
-            updateActiveActionButton()
+            actionButtons.updateActive()
         }
     }
-    /// The action buttons of the media: the host's and the resolver's (SponsorBlock segments).
-    public var actionButtons: [PlaybackActionButton] { actionButtonSet.combined }
-    private var actionButtonSet = ActionButtonSet() {
-        didSet {
-            updateActiveActionButton()
-        }
-    }
-
-    /// Replaces the host's action buttons of the media playing now, keeping the resolver's.
-    public func setActionButtons(_ buttons: [PlaybackActionButton]) {
-        actionButtonSet.setHost(buttons)
-    }
-
-    func setResolvedActionButtons(_ buttons: [PlaybackActionButton]) {
-        actionButtonSet.setResolved(buttons)
-    }
-
-    /// Takes `host`'s buttons for new media, and none of the resolver's yet.
-    func resetActionButtons(host: [PlaybackActionButton] = []) {
-        actionButtonSet.reset(host: host)
-    }
-    /// The button whose span contains `currentTime`; `nil` outside every span and while no media is loaded.
-    public internal(set) var activeActionButton: PlaybackActionButton?
-    /// Bumped by every load. Per-media UI state (a dismissed action button) resets on it: a load from a position inside
-    /// a span to the same position in the next media never shows `activeActionButton` change.
-    public internal(set) var loadGeneration: Int = 0
-    /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
-    public var onActionButton: ((_ id: String) -> Void)?
+    /// The action buttons of the media ("Skip Intro", "Next Episode", SponsorBlock segments) and the one playback is
+    /// in.
+    public let actionButtons = ActionButtonController()
     /// Resolves the pages a load is given (a video site's) into the streams that play them; `nil` opens every URL as
     /// is. Asked for network URLs only, before the demuxer opens (`MediaResolver`).
     @ObservationIgnored
@@ -85,7 +60,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     public var isLoaded: Bool = false {
         didSet {
-            updateActiveActionButton()
+            actionButtons.updateActive()
         }
     }
     public var isLoading: Bool = false
@@ -759,6 +734,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
 
         subtitles.host = self
         toneMapping.host = self
+        actionButtons.host = self
         setupDisplayLink()
         setupAudioObservers()
         updateEffectiveRenderMode()
@@ -889,3 +865,5 @@ public final class PlayerEngine: PlayerEngineProtocol {
         stopFeedingAudio()
     }
 }
+
+extension PlayerEngine: ActionButtonHost {}

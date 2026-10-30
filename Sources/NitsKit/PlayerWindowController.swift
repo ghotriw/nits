@@ -29,14 +29,14 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
 
     /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
     public var onActionButton: ((_ id: String) -> Void)? {
-        get { engine.onActionButton }
-        set { engine.onActionButton = newValue }
+        get { engine.actionButtons.onPress }
+        set { engine.actionButtons.onPress = newValue }
     }
 
     /// Replaces the action buttons of the media playing now, preserving any resolved buttons (e.g. SponsorBlock);
     /// the next load replaces them again (see `openStream(actionButtons:)`).
     public func setActionButtons(_ buttons: [PlaybackActionButton]) {
-        engine.setActionButtons(buttons)
+        engine.actionButtons.setHostButtons(buttons)
     }
 
     /// Set by a host that keeps its own queue (a media server client's series): Next and Previous from the control
@@ -778,7 +778,7 @@ extension PlayerWindowController: PlayerActions {
 
     public func pressActionButton() {
         guard isActionButtonVisible, let button = uiState.actionButton.press() else { return }
-        engine.performActionButton(button)
+        engine.actionButtons.perform(button)
     }
 
     public func dismissActionButton() {

@@ -167,11 +167,7 @@ public protocol PlayerChapterControlling: PlayerMediaDescribing {
 
 /// Host-provided action buttons ("Skip Intro", "Next Episode") shown for spans of the timeline.
 public protocol PlayerActionButtonControlling: AnyObject, Sendable {
-    @MainActor var actionButtons: [PlaybackActionButton] { get }
-    @MainActor var activeActionButton: PlaybackActionButton? { get }
-    @MainActor var onActionButton: ((_ id: String) -> Void)? { get set }
-    @MainActor func performActionButton(_ button: PlaybackActionButton)
-    @MainActor func setActionButtons(_ buttons: [PlaybackActionButton])
+    @MainActor var actionButtons: ActionButtonController { get }
 }
 
 /// Subtitle tracks and selection, their delay, what is on screen and how it is drawn.

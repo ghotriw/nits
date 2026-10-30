@@ -809,11 +809,7 @@ struct PlayerEngineTests {
             func seekToChapter(_ chapter: MediaChapter) {}
             func nextChapter() -> MediaChapter? { nil }
             func previousChapter() -> MediaChapter? { nil }
-            var actionButtons: [PlaybackActionButton] = []
-            var activeActionButton: PlaybackActionButton? = nil
-            var onActionButton: ((String) -> Void)? = nil
-            func performActionButton(_ button: PlaybackActionButton) {}
-            func setActionButtons(_ buttons: [PlaybackActionButton]) { actionButtons = buttons }
+            let actionButtons = ActionButtonController()
             var onTrackNavigation: ((TrackNavigationDirection) -> Void)? = nil
             var trackNavigation = TrackNavigation()
             var canPlayNext: Bool = false

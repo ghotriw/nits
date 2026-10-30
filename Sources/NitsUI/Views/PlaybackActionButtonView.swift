@@ -56,10 +56,10 @@ public struct PlaybackActionButtonView: View {
         .onChange(of: engine.currentTime) { _, time in
             update(at: time)
         }
-        .onChange(of: engine.activeActionButton, initial: true) { _, _ in
+        .onChange(of: engine.actionButtons.active, initial: true) { _, _ in
             update(at: engine.currentTime)
         }
-        .onChange(of: engine.loadGeneration) { _, _ in
+        .onChange(of: engine.actionButtons.loadGeneration) { _, _ in
             // New media: a span with the same id at the same position is still a new span.
             presenter.reset()
             update(at: engine.currentTime)
@@ -69,7 +69,7 @@ public struct PlaybackActionButtonView: View {
     private func actionButton(_ button: PlaybackActionButton) -> some View {
         Button {
             if let pressed = presenter.press() {
-                engine.performActionButton(pressed)
+                engine.actionButtons.perform(pressed)
             }
         } label: {
             Group {
@@ -177,8 +177,8 @@ public struct PlaybackActionButtonView: View {
 
     private func update(at time: Double) {
         let isPlaying = engine.isPlaying && !engine.isSeeking && engine.pendingSeekTime == nil
-        if let button = presenter.update(active: engine.activeActionButton, at: time, isPlaying: isPlaying) {
-            engine.performActionButton(button)
+        if let button = presenter.update(active: engine.actionButtons.active, at: time, isPlaying: isPlaying) {
+            engine.actionButtons.perform(button)
         }
     }
 }

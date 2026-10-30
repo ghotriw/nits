@@ -61,7 +61,7 @@ public final class ActionButtonPresenter {
         return min(1, elapsed / displayDuration)
     }
 
-    /// Feeds the playback position and the engine's `activeActionButton`. `isPlaying` is whether the position moves
+    /// Feeds the playback position and the engine's `actionButtons.active`. `isPlaying` is whether the position moves
     /// by playback (playing, not seeking): only then does it count, so scrubbing and frame steps on pause don't.
     /// Returns the button to press when its auto-press countdown has just run out.
     public func update(active: PlaybackActionButton?, at time: Double, isPlaying: Bool) -> PlaybackActionButton? {

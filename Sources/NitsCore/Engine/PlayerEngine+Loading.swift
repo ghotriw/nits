@@ -36,7 +36,7 @@ extension PlayerEngine {
         self.artworkData = artworkData
         self.artworkURL = artworkURL
         self.isLoading = true
-        loadGeneration += 1
+        actionButtons.mediaWillLoad()
 
         let loadID = UUID()
         self.currentLoadID = loadID
@@ -237,7 +237,7 @@ extension PlayerEngine {
     /// (`resetMediaState`): the previous media's host state must not apply to this one while the load prepares, and
     /// any updates the host sets right after calling `load` must survive the asynchronous load reset.
     private func applyHostState(of request: MediaLoadRequest) {
-        resetActionButtons(host: request.actionButtons)
+        actionButtons.reset(host: request.actionButtons)
         trackNavigation = request.trackNavigation
     }
 
@@ -601,7 +601,7 @@ extension PlayerEngine {
         mediaTitle = ""
         artworkData = nil
         artworkURL = nil
-        resetActionButtons()
+        actionButtons.reset()
         trackNavigation = TrackNavigation()
         isLoading = false
         playbackState = .idle
@@ -866,7 +866,7 @@ extension PlayerEngine {
         self.currentSourcePath = sourcePath
         self.currentHeaders = headers
         self.media = MediaInfo(demuxer: demuxer, fallbackChapters: resolvedChapters)
-        setResolvedActionButtons(resolvedActionButtons)
+        actionButtons.setResolved(resolvedActionButtons)
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
         self.nominalFrameDurationLock.withLock { $0 = frameDuration }

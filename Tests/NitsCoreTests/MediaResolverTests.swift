@@ -565,11 +565,11 @@ struct MediaResolverTests {
 
         #expect(engine.media.chapters.count == 2)
         #expect(engine.media.chapters.map(\.title) == ["Intro", "Outro"])
-        #expect(engine.actionButtons.contains { $0.id == "host-next" })
-        #expect(engine.actionButtons.contains { $0.id == "sponsorblock-0" })
+        #expect(engine.actionButtons.buttons.contains { $0.id == "host-next" })
+        #expect(engine.actionButtons.buttons.contains { $0.id == "sponsorblock-0" })
     }
 
-    @Test("seeksToEnd button triggers seek in engine even when host has onActionButton handler")
+    @Test("seeksToEnd button triggers seek in engine even when host has onPress handler")
     func seeksToEndButtonSeeksEvenWhenHostSetsHandler() async throws {
         guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
         let videoURL = URL(fileURLWithPath: video)
@@ -585,18 +585,18 @@ struct MediaResolverTests {
         engine.mediaResolver = resolver
 
         var hostPressed: [String] = []
-        engine.onActionButton = { hostPressed.append($0) }
+        engine.actionButtons.onPress = { hostPressed.append($0) }
         engine.load(MediaLoadRequest(path: "https://video.example/watch?v=seek-test"))
         await engine.waitForPendingLoad()
         try #require(await engine.waitForPlayback(advancingBy: 0.2))
 
-        engine.performActionButton(button)
+        engine.actionButtons.perform(button)
         #expect(await engine.waitForSeekToSettle())
         #expect(engine.currentTime >= 1.45)
         #expect(hostPressed.isEmpty, "Host handler should not receive buttons handled directly by the engine")
     }
 
-    @Test("Host action button without seeksToEnd dispatches to onActionButton and does not seek")
+    @Test("Host action button without seeksToEnd dispatches to onPress and does not seek")
     func hostButtonWithoutSeeksToEndDispatchesToHostHandler() async throws {
         guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
         let videoURL = URL(fileURLWithPath: video)
@@ -609,19 +609,19 @@ struct MediaResolverTests {
         engine.mediaResolver = resolver
 
         var hostPressed: [String] = []
-        engine.onActionButton = { hostPressed.append($0) }
+        engine.actionButtons.onPress = { hostPressed.append($0) }
         engine.load(MediaLoadRequest(path: "https://video.example/watch?v=host-test", actionButtons: [hostButton]))
         await engine.waitForPendingLoad()
         try #require(await engine.waitForPlayback(advancingBy: 0.2))
 
         let positionBefore = engine.currentTime
-        engine.performActionButton(hostButton)
+        engine.actionButtons.perform(hostButton)
         #expect(hostPressed == ["host-next"])
         #expect(abs(engine.currentTime - positionBefore) < 0.5, "Engine should not seek for host-managed buttons")
     }
 
-    @Test("setActionButtons during playback preserves resolved buttons from media")
-    func setActionButtonsPreservesResolvedButtons() async throws {
+    @Test("setHostButtons during playback preserves resolved buttons from media")
+    func setHostButtonsPreservesResolvedButtons() async throws {
         guard let video = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
         let videoURL = URL(fileURLWithPath: video)
         let server = try TestHTTPServer(root: videoURL.deletingLastPathComponent())
@@ -638,17 +638,17 @@ struct MediaResolverTests {
         engine.load(MediaLoadRequest(path: "https://video.example/watch?v=merge-test"))
         await engine.waitForPendingLoad()
         try #require(await engine.waitForPlayback(advancingBy: 0.2))
-        #expect(engine.actionButtons.map(\.id) == ["sponsorblock-0"])
+        #expect(engine.actionButtons.buttons.map(\.id) == ["sponsorblock-0"])
 
         // Host updates its action buttons mid-stream (e.g. Next Episode becomes known)
         let hostButton = PlaybackActionButton(id: "host-next", title: "Next Episode", start: 2.0)
-        engine.setActionButtons([hostButton])
-        #expect(engine.actionButtons.contains { $0.id == "sponsorblock-0" })
-        #expect(engine.actionButtons.contains { $0.id == "host-next" })
+        engine.actionButtons.setHostButtons([hostButton])
+        #expect(engine.actionButtons.buttons.contains { $0.id == "sponsorblock-0" })
+        #expect(engine.actionButtons.buttons.contains { $0.id == "host-next" })
 
         // Host clears its action buttons
-        engine.setActionButtons([])
-        #expect(engine.actionButtons.map(\.id) == ["sponsorblock-0"])
+        engine.actionButtons.setHostButtons([])
+        #expect(engine.actionButtons.buttons.map(\.id) == ["sponsorblock-0"])
     }
 
     @Test(

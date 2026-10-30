@@ -585,14 +585,15 @@ flowchart TD
     handles presses (`onActionButton(id)`); finding intros and credits (media server markers, chapters, a fallback
     before the end) stays with the host, so Nits is not tied to Emby, Jellyfin or Plex.
   - API: `PlayerWindowController.setActionButtons(_:)` / `openStream(actionButtons:)`, `MediaLoadRequest.actionButtons`;
-    engine-only hosts read `PlayerEngine.activeActionButton`. Each load replaces the previous media's buttons at once;
-    buttons set right after `openStream` survive the background load.
+    engine-only hosts read `PlayerEngine.actionButtons` (`ActionButtonController.active`). Each load replaces the
+    previous media's buttons at once; buttons set right after `openStream` survive the background load.
   - Button in the bottom-trailing corner with a dismiss button beside it. It stays up for a set time of playback
     (Settings → General → Action Buttons, 5–15 s), then shows only with the controls. Optional auto-press with a
     countdown fill (per button opt-out via `allowsAutoPress`). The countdown runs on playback only: it holds on
     pause, scrubbing and frame steps, and restarts after a seek within the span.
-  - Dismissing or pressing hides the button for the rest of its span; a new load resets this (`loadGeneration`).
-    `Return` presses, `Esc` dismisses (before leaving fullscreen); hovering the button keeps the controls and cursor up.
+  - Dismissing or pressing hides the button for the rest of its span; a new load resets this
+    (`ActionButtonController.loadGeneration`). `Return` presses, `Esc` dismisses (before leaving fullscreen); hovering
+    the button keeps the controls and cursor up.
 - [x] **5.11.2. Host-Driven Track Navigation:**
   - A host that keeps its own queue (a media server client's series) sets `onTrackNavigation`; Next / Previous from the
     control bar, the Playback menu (`⌘→` / `⌘←`), media keys and Control Center then call it instead of moving through
