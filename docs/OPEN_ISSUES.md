@@ -62,6 +62,27 @@ note it when this recurs.
 **If it recurs:** the `Frame held …` line (see `docs/LOGGING.md`) tells a link that stopped calling, a tick blocked
 on our side (`max tick`, `max clock read`) and an empty frame queue apart.
 
+## Known limitations
+
+Accepted for now, noted for later.
+
+- **A launch flag over a setting shows the saved value in Settings.** With `--no-osd`, the OSD switch reads "on"; the
+  flag holds until that setting is changed (`LaunchArguments.dropOverrides`), so turning it on takes off-then-on.
+- **Subtitles dropped with a playlist file are not attached.** `MediaOpenRequest.open` attaches them only to the path
+  it loaded; a `.m3u` hands on to its first item, so `engine.currentPath` differs and they are only logged.
+- **An exact seek into audio past the video's end lands on the last frame.** With audio longer than video (video to
+  50 s, audio to 60 s), a seek to 54 s lands on the last frame's 49.96 s: the position is the picture's, while audio
+  starts at 54 s, so playback resumes with ~4 s of silence, and the next arrow press steps from 49.96 s again, never
+  into the audio-only part. The position after such a seek should be its target.
+
+## Revisit only if
+
+- **A second engine in one process** (e.g. a preview player): make `PlayerPerformanceMonitor` per engine instead of
+  `.shared`.
+- **A second view reading `currentMetrics` live**: `PlayerEngine.isCollectingMetrics` is one `Bool` set from
+  `ContentView` (its `didSet` starts and stops `metricsTimer`); the first reader to turn it off would stop it for the
+  other, so it would need to count its readers.
+
 ## Flaky tests to watch
 
 - **`BackwardFrameSteppingTests`** failed once locally with `engine.frameStep.cache.count → 0` after a paused
