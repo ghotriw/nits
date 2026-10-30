@@ -329,6 +329,22 @@ struct PlaybackHistoryGeometryTests {
         #expect(store.savedPreferences(for: media) == nil)
     }
 
+    @Test("A chosen speed, 1× included, is kept without a resume position, and a save without one keeps it")
+    func testSavesPlaybackRate() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(playbackRate: 1.5))
+        #expect(store.savedPreferences(for: media)?.playbackRate == 1.5)
+
+        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(subtitleDelay: 0.5))
+        #expect(store.savedPreferences(for: media)?.playbackRate == 1.5)
+
+        // A chosen 1× is kept with nothing else to keep, on either path.
+        store.savePosition(
+            for: media, position: 0, duration: 3600,
+            preferences: PlaybackPreferences(subtitleDelay: 0, playbackRate: 1))
+        #expect(store.savedPreferences(for: media)?.playbackRate == 1)
+    }
+
     @Test("Records saved before picture geometry existed still decode")
     func testDecodesRecordsWithoutGeometry() throws {
         let defaults = InMemoryUserDefaults()

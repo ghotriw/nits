@@ -647,6 +647,80 @@ struct PlayerEngineTests {
         #expect(engine.playbackRate == 1.0)
     }
 
+    @Test(
+        "A media plays at the speed chosen for it; one without starts at 1× or the previous one's",
+        arguments: [false, true])
+    @MainActor
+    func testPlaybackRateIsSavedPerMedia(carriesPlaybackRate: Bool) throws {
+        guard let chosen = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264),
+            let other = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264)
+        else { return }
+        let engine = PlayerEngine.makeForTesting(
+            configuration: PlayerConfiguration(carriesPlaybackRate: carriesPlaybackRate))
+        defer { engine.stop() }
+
+        engine.load(path: chosen)
+        try #require(engine.isLoaded)
+        engine.setPlaybackRate(1.5)
+
+        engine.load(path: other)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == (carriesPlaybackRate ? 1.5 : 1.0))
+
+        // A speed only kept isn't saved with the media.
+        engine.load(path: chosen)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == 1.5)
+        engine.setPlaybackRate(2.0)
+        engine.load(path: other)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == (carriesPlaybackRate ? 2.0 : 1.0))
+        engine.setPlaybackRate(1.25)
+
+        engine.load(path: chosen)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == 2.0)
+        engine.load(path: other)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == 1.25)
+
+        engine.stop()
+        #expect(engine.playbackRate == (carriesPlaybackRate ? 1.25 : 1.0))
+    }
+
+    @Test("Choosing the speed kept from the previous media, 1× included, saves it with the media")
+    @MainActor
+    func testChoosingTheKeptSpeedSavesIt() throws {
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264),
+            let second = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264),
+            let third = SyntheticTestMediaFactory.ensureMedia(preset: .h264HFR60)
+        else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(carriesPlaybackRate: true))
+        defer { engine.stop() }
+
+        engine.load(path: first)
+        try #require(engine.isLoaded)
+        engine.setPlaybackRate(1.5)
+        engine.load(path: second)
+        try #require(engine.isLoaded)
+        engine.setPlaybackRate(1.5)
+        engine.load(path: third)
+        try #require(engine.isLoaded)
+        engine.setPlaybackRate(1.0)
+        engine.setPlaybackRate(1.5)
+        engine.resetPlaybackRate()
+
+        engine.load(path: first)
+        try #require(engine.isLoaded)
+        engine.setPlaybackRate(2.0)
+        engine.load(path: second)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == 1.5)
+        engine.load(path: third)
+        try #require(engine.isLoaded)
+        #expect(engine.playbackRate == 1.0)
+    }
+
     @Test("Switching media preserves and restores saved playback position")
     @MainActor
     func testSwitchingMediaPreservesAndRestoresPlaybackPosition() async {

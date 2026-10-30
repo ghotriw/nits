@@ -94,6 +94,7 @@ extension PlayerEngine {
         thumbnailManager.reset()
         audioDelay = 0
         audioSink.setDelay(.zero)
+        playbackRate = playbackRateMemory.reset(current: playbackRate, carries: configuration.carriesPlaybackRate)
         // The file's aspect override and crop, zoom and pan; the scaling lasts the session.
         restoreVideoGeometry(from: nil)
 
@@ -630,17 +631,28 @@ extension PlayerEngine {
         case select(trackId: Int)
     }
 
-    /// Track selection, delays and the picture's aspect override and crop to persist. The audio and subtitle tracks
-    /// are written by their owners (`PlaybackInputs.writeAudioPreferences`, `SubtitleController.writePreferences`).
+    /// Track selection, delays, the speed chosen for the media and the picture's aspect override and crop to persist.
+    /// The audio and subtitle tracks are written by their owners (`PlaybackInputs.writeAudioPreferences`,
+    /// `SubtitleController.writePreferences`).
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioDelay: audioDelay,
+            playbackRate: playbackRateMemory.preference(for: playbackRate),
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )
         inputs?.writeAudioPreferences(into: &preferences)
         subtitles.writePreferences(into: &preferences)
         return preferences
+    }
+
+    /// Plays the media at the speed saved for it, unless one was chosen while it loaded; without either it keeps the
+    /// speed `resetMediaState` left.
+    private func restorePlaybackRate(from saved: PlaybackPreferences?) {
+        let rate = playbackRateMemory.restore(saved: saved?.playbackRate, current: playbackRate)
+        guard rate != playbackRate else { return }
+        playbackRate = rate
+        AppLog.info(.engine, "Restored playback rate from saved history: \(playbackRate)x")
     }
 
     /// Extracts an explicit stream index from strings formatted as `stream:N` or `s:N`.
@@ -936,6 +948,7 @@ extension PlayerEngine {
         if self.audioDelay != 0 {
             AppLog.info(.audio, "Restored audio delay from saved history: \(self.audioDelay)s")
         }
+        restorePlaybackRate(from: savedTracks)
         restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
         subtitles.mediaDidLoad(

@@ -22,7 +22,7 @@ struct PictureInPictureControllerTests {
         // Still observing after the first change.
         engine.isPlaying = false
         engine.currentTime = 42
-        engine.playbackRate = 2
+        engine.setPlaybackRate(2)
         #expect(
             await waitUntil {
                 !pip.playbackSnapshot.isPlaying && pip.playbackSnapshot.mediaTime == 42

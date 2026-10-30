@@ -35,6 +35,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio)
     private var resumeEndThresholdRatio: Double = 0.95
 
+    @AppStorage(PlayerConfiguration.keyCarriesPlaybackRate)
+    private var carriesPlaybackRate: Bool = false
+
     @AppStorage(AppSettings.keyEnableOSD)
     private var enableOSD: Bool = true
 
@@ -265,6 +268,19 @@ public struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Keep playback speed for the next video", isOn: $carriesPlaybackRate)
+                        .onChange(of: carriesPlaybackRate) { _, _ in
+                            notifyChange()
+                        }
+                    Text(
+                        "Each video remembers the speed chosen for it. A video without one starts at the previous video's speed when this is on, at normal speed when it is off."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {

@@ -342,9 +342,13 @@ extension PlayerEngine {
     public func setPlaybackRate(_ rate: Double) {
         let rounded = (rate * 100).rounded() / 100.0
         let clamped = max(0.5, min(rounded, 4.0))
-        guard clamped != playbackRate else { return }
-        playbackRate = clamped
-        AppLog.info(.engine, "Playback rate changed to \(playbackRate)x")
+        // Choosing the speed already in effect (kept from the previous media) still makes it this media's.
+        playbackRateMemory.choose()
+        if clamped != playbackRate {
+            playbackRate = clamped
+            AppLog.info(.engine, "Playback rate changed to \(playbackRate)x")
+        }
+        saveCurrentPlaybackProgress()
     }
 
     public func stepPlaybackRate(by delta: Double) {

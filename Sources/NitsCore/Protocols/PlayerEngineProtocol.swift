@@ -69,7 +69,8 @@ public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
 
     @MainActor var volume: Float { get set }
     @MainActor var isMuted: Bool { get set }
-    @MainActor var playbackRate: Double { get set }
+    /// Changed through `setPlaybackRate`, `stepPlaybackRate` and `resetPlaybackRate`, which save it with the media.
+    @MainActor var playbackRate: Double { get }
     @MainActor var seekStepSeconds: Double { get set }
     @MainActor var exactSeekOnSinglePress: Bool { get set }
 

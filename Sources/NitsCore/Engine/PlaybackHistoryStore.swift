@@ -18,6 +18,8 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     public let subtitleDelay: Double?
     /// Audio delay in seconds (`nil` if never set).
     public let audioDelay: Double?
+    /// Playback speed chosen for this media (`nil` if never chosen).
+    public let playbackRate: Double?
     /// Path of the selected external subtitle file, when `subtitleTrackId` is `externalSubtitle`.
     public let externalSubtitlePath: String?
     /// Stream of that file, which tells apart the languages of a VobSub index; `nil` in older records.
@@ -58,6 +60,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.subtitleTrackId = preferences.subtitleTrackId
         self.subtitleDelay = preferences.subtitleDelay
         self.audioDelay = preferences.audioDelay
+        self.playbackRate = preferences.playbackRate
         self.externalSubtitlePath = preferences.externalSubtitlePath
         self.externalSubtitleStreamIndex = preferences.externalSubtitleStreamIndex
         self.listedSubtitle = preferences.listedSubtitle
@@ -74,6 +77,7 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
             subtitleTrackId: subtitleTrackId,
             subtitleDelay: subtitleDelay,
             audioDelay: audioDelay,
+            playbackRate: playbackRate,
             externalSubtitlePath: externalSubtitlePath,
             externalSubtitleStreamIndex: externalSubtitleStreamIndex,
             listedSubtitle: listedSubtitle,
@@ -107,6 +111,8 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public var subtitleTrackId: Int?
     public var subtitleDelay: Double?
     public var audioDelay: Double?
+    /// Saved only when chosen for this media: a speed kept from the previous one (`carriesPlaybackRate`) is `nil`.
+    public var playbackRate: Double?
     public var externalSubtitlePath: String?
     /// See `PlaybackRecord.externalSubtitleStreamIndex`.
     public var externalSubtitleStreamIndex: Int?
@@ -130,6 +136,7 @@ public struct PlaybackPreferences: Sendable, Equatable {
         subtitleTrackId: Int? = nil,
         subtitleDelay: Double? = nil,
         audioDelay: Double? = nil,
+        playbackRate: Double? = nil,
         externalSubtitlePath: String? = nil,
         externalSubtitleStreamIndex: Int? = nil,
         listedSubtitle: ListedSubtitle? = nil,
@@ -142,6 +149,7 @@ public struct PlaybackPreferences: Sendable, Equatable {
         self.subtitleTrackId = subtitleTrackId
         self.subtitleDelay = subtitleDelay
         self.audioDelay = audioDelay
+        self.playbackRate = playbackRate
         self.externalSubtitlePath = externalSubtitlePath
         self.externalSubtitleStreamIndex = externalSubtitleStreamIndex
         self.listedSubtitle = listedSubtitle
@@ -162,6 +170,7 @@ public struct PlaybackPreferences: Sendable, Equatable {
             subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
             subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
             audioDelay: audioDelay ?? saved?.audioDelay,
+            playbackRate: playbackRate ?? saved?.playbackRate,
             externalSubtitlePath: keepsSubtitleFile ? externalSubtitlePath ?? saved?.externalSubtitlePath : nil,
             // Belongs to the path: a new path with no stream of its own doesn't take the old one's.
             externalSubtitleStreamIndex: !keepsSubtitleFile
@@ -182,7 +191,8 @@ public struct PlaybackPreferences: Sendable, Equatable {
     /// Whether there is a preference worth keeping without a resume position.
     var isEmpty: Bool {
         audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0 && (audioDelay ?? 0) == 0
-            && videoAspectRatio?.isValid != true && videoCrop?.isValid != true
+            // A chosen 1× is kept: without it a media would start at the previous one's speed (`carriesPlaybackRate`).
+            && playbackRate == nil && videoAspectRatio?.isValid != true && videoCrop?.isValid != true
     }
 }
 

@@ -64,6 +64,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Minimum seconds played before a position is saved / resumed (default 15.0).
     public var resumeStartThreshold: Double
 
+    /// Whether a media without a speed of its own saved starts at the speed of the one before it, rather than at 1×
+    /// (default false). The speed chosen for a media is saved with it either way; one only kept isn't.
+    public var carriesPlaybackRate: Bool
+
     /// Fraction of video duration after which it is considered completed (default 0.95).
     public var resumeEndThresholdRatio: Double
 
@@ -154,6 +158,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         resumePlayback: Bool = true,
         resumeStartThreshold: Double = 15.0,
         resumeEndThresholdRatio: Double = 0.95,
+        carriesPlaybackRate: Bool = false,
         subtitleFontSize: Double = 24.0,
         subtitleFontName: String = SubtitleSystemFont.rounded.rawValue,
         subtitleFontWeight: String = "Semibold",
@@ -189,6 +194,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.resumePlayback = resumePlayback
         self.resumeStartThreshold = resumeStartThreshold
         self.resumeEndThresholdRatio = resumeEndThresholdRatio
+        self.carriesPlaybackRate = carriesPlaybackRate
         self.subtitleFontSize = subtitleFontSize
         self.subtitleFontName = subtitleFontName
         self.subtitleFontWeight = subtitleFontWeight
@@ -224,6 +230,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyHistoryExcludedDomains = "Nits.historyExcludedDomains"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
     public static let keyResumeEndThresholdRatio = "Nits.resumeEndThresholdRatio"
+    public static let keyCarriesPlaybackRate = "Nits.carriesPlaybackRate"
     public static let keySubtitleFontSize = "Nits.subtitleFontSize"
     public static let keySubtitleFontName = "Nits.subtitleFontName"
     public static let keySubtitleFontWeight = "Nits.subtitleFontWeight"
@@ -278,6 +285,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if let endThreshold = userDefaults.object(forKey: keyResumeEndThresholdRatio) as? NSNumber {
             config.resumeEndThresholdRatio = endThreshold.doubleValue
+        }
+        if userDefaults.object(forKey: keyCarriesPlaybackRate) != nil {
+            config.carriesPlaybackRate = userDefaults.bool(forKey: keyCarriesPlaybackRate)
         }
         if let fontSize = userDefaults.object(forKey: keySubtitleFontSize) as? NSNumber {
             config.subtitleFontSize = fontSize.doubleValue
@@ -376,6 +386,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
+        userDefaults.set(carriesPlaybackRate, forKey: Self.keyCarriesPlaybackRate)
         userDefaults.set(subtitleFontSize, forKey: Self.keySubtitleFontSize)
         userDefaults.set(subtitleFontName, forKey: Self.keySubtitleFontName)
         userDefaults.set(subtitleFontWeight, forKey: Self.keySubtitleFontWeight)

@@ -208,7 +208,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
             audioRenderer.volume = isMuted ? 0.0 : volume
         }
     }
-    public var playbackRate: Double = 1.0 {
+    /// Set through `setPlaybackRate`, which saves it with the media (`playbackRateMemory`).
+    public internal(set) var playbackRate: Double = 1.0 {
         didSet {
             let rounded = (playbackRate * 100).rounded() / 100.0
             let clamped = max(0.5, min(rounded, 4.0))
@@ -237,6 +238,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
     @ObservationIgnored
     let playbackRateLock = OSAllocatedUnfairLock(initialState: Double(1.0))
+    /// Whether `playbackRate` is the current media's, to save with it; reset with the media.
+    @ObservationIgnored
+    var playbackRateMemory = PlaybackRateMemory()
     public var audioTracks: [MediaDemuxer.AudioTrack] = [] {
         didSet {
             if oldValue != audioTracks { tracksDidChange() }
