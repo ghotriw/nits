@@ -40,6 +40,10 @@ extension PlayerEngine {
         let target = max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
+        let next = ChaseTarget(seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS)
+        // The seek in flight goes there already: superseding it would only start it over. Key repeats clamped to the
+        // end would otherwise restart its exact seek, decoding the last GOP from its keyframe, before it ever lands.
+        if isSeeking, chase == next { return }
 
         // Cancel any pending settle debounce from an earlier seek in the burst
         chaseSettleTask?.cancel()
@@ -58,7 +62,7 @@ extension PlayerEngine {
         }
 
         // 2. Immediate responsive UI update (0ms latency for exact seek)
-        chase = ChaseTarget(seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS)
+        chase = next
         if exact {
             currentTime = target
             subtitles.timeDidChange(to: target, .tick)
@@ -74,16 +78,17 @@ extension PlayerEngine {
         executeDemuxerSeek()
     }
 
-    /// Restricts displayable frames to those at/after an exact-seek target, like mpv's hr-seek. Half a frame of
-    /// tolerance keeps the frame whose display interval contains the target. `nil` (keyframe seeks, start at 0)
-    /// lifts the restriction.
-    func setExactSeekDisplayFloor(_ targetSeconds: Double?) {
-        guard let targetSeconds else {
-            frameQueue.setDisplayFloor(.invalid)
-            return
-        }
+    /// Where an exact seek to `targetSeconds` restricts displayable frames from, like mpv's hr-seek. Half a frame of
+    /// tolerance keeps the frame whose display interval contains the target.
+    func exactSeekDisplayFloor(at targetSeconds: Double) -> CMTime {
         let halfFrame = nominalFrameDurationLock.withLock { $0 } * 0.5
-        frameQueue.setDisplayFloor(CMTime(seconds: targetSeconds - halfFrame, preferredTimescale: 90000))
+        return CMTime(seconds: targetSeconds - halfFrame, preferredTimescale: 90000)
+    }
+
+    /// Restricts displayable frames to those at/after an exact-seek target (`exactSeekDisplayFloor`). `nil` (keyframe
+    /// seeks, start at 0) lifts the restriction.
+    func setExactSeekDisplayFloor(_ targetSeconds: Double?) {
+        frameQueue.setDisplayFloor(targetSeconds.map(exactSeekDisplayFloor(at:)) ?? .invalid)
     }
 
     func executeDemuxerSeek() {
@@ -92,7 +97,6 @@ extension PlayerEngine {
 
         isSeeking = true
         let targetSeconds = target.seconds
-        let isExact = target.exact
         let seekId = seekGeneration.current
         let loadID = currentLoadID
 
@@ -103,7 +107,8 @@ extension PlayerEngine {
         stopFeedingVideo()
         stopFeedingAudio()
         frameQueue.clear(resetDroppedFrames: true)
-        setExactSeekDisplayFloor(isExact ? targetSeconds : nil)
+        let exactFloor = exactSeekDisplayFloor(at: targetSeconds)
+        frameQueue.setDisplayFloor(target.exact ? exactFloor : .invalid)
         // The pipeline is about to be flushed and repositioned; incremental forward stepping is invalid
         // until this seek settles and re-establishes contiguity. Release the old step window; it is
         // repopulated below for paused exact seeks (the frame-stepping scenario).
@@ -120,18 +125,27 @@ extension PlayerEngine {
         let frameQueue = self.frameQueue
         // Seed the step window only for paused exact seeks — when the user is scrubbing/stepping, not
         // during seeks that will resume playback.
-        let stepCache: StepFrameCache? = (!shouldResume && isExact) ? self.frameStep.cache : nil
+        let pausedStepCache: StepFrameCache? = shouldResume ? nil : self.frameStep.cache
 
-        seekQueue.async { [weak self, demuxer, externalAudio, decoder, frameQueue, stepCache] in
+        seekQueue.async { [weak self, demuxer, externalAudio, decoder, frameQueue, pausedStepCache] in
             guard let self else { return }
 
             let isSuperseded: @Sendable () -> Bool = { !seekGeneration.isCurrent(seekId) }
+            // The seek as it lands: past the last keyframe, a forward keyframe seek goes to its target exactly
+            // instead of back to that keyframe (see `MediaDemuxer.seek`), to the last frame for a target at the end.
+            var landed = target
 
             if !isSuperseded() {
                 if hasVideo {
                     decoder.flush()
                 }
-                demuxer.seek(to: targetSeconds, exact: isExact, forward: target.forward, audioDelay: audioDelay)
+                let isExact = demuxer.seek(
+                    to: targetSeconds, exact: target.exact, forward: target.forward, audioDelay: audioDelay)
+                if isExact && !target.exact {
+                    landed.exact = true
+                    landed.forward = false
+                    frameQueue.setDisplayFloor(exactFloor)
+                }
             }
 
             var previewFrame: SeekPreview.Result? = nil
@@ -141,9 +155,9 @@ extension PlayerEngine {
                     decoder: decoder,
                     frameQueue: frameQueue,
                     seconds: targetSeconds,
-                    exact: isExact,
+                    exact: landed.exact,
                     minPts: target.minFramePTS,
-                    stepCache: stepCache,
+                    stepCache: landed.exact ? pausedStepCache : nil,
                     isCurrent: { !isSuperseded() }
                 )
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
@@ -155,11 +169,11 @@ extension PlayerEngine {
                     // Its own input goes straight there, now the picture's landing is known: a keyframe seek lands
                     // seconds off the target, before which this input would have nothing left to read, or past it.
                     if !isSuperseded() {
-                        let start = (isExact ? targetSeconds : resolvedSeconds) - audioDelay
+                        let start = (landed.exact ? targetSeconds : resolvedSeconds) - audioDelay
                         externalAudio.seek(to: max(0, start))
                     }
                 } else {
-                    if !isExact, let preview = previewFrame {
+                    if !landed.exact, let preview = previewFrame {
                         demuxer.setTargetAudioPts(seconds: preview.pts - audioDelay)
                     } else if audioDelay != 0 {
                         demuxer.setTargetAudioPts(seconds: targetSeconds - audioDelay)
@@ -187,11 +201,12 @@ extension PlayerEngine {
                 audioSink.flush()
             }
 
+            let settled = landed
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.currentLoadID == loadID else { return }
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
                 self.completeChaseSeek(
-                    target: target,
+                    target: settled,
                     completedSeconds: resolvedSeconds,
                     seekId: seekId,
                     didRenderPreview: previewFrame != nil
@@ -254,7 +269,10 @@ extension PlayerEngine {
             clockSettlingGuardLock.withLock { $0 = nil }
             synchronizer.setRate(0.0, time: targetTime)
             isPlaying = false
-            playbackState = .paused
+            // Media played to its end stays ended when a seek only lands at the end again.
+            if !(playbackState == .completed && isAtEndOfMedia(completedSeconds)) {
+                playbackState = .paused
+            }
             performanceMonitor.handlePlaybackStateChange(isPlaying: false)
             // Exact seeks leave the decoder warm and positioned just past the displayed frame (preview
             // over-reads a few frames into the queue). This enables incremental forward frame-stepping.
@@ -263,15 +281,30 @@ extension PlayerEngine {
             return
         }
 
-        // Playing mode: debounce resumption slightly (300ms) so that sustained key-hold repeat
-        // events (which fire every 40-70ms) don't repeatedly unpause and roll the clock forward.
         chase = target.landed(at: completedSeconds)
+        scheduleChaseSettle(seekId: seekId, at: completedSeconds)
+    }
+
+    /// Resumes playback at `completedSeconds`, where seek `seekId` landed, or ends the media there, unless a newer seek
+    /// comes first. Playing mode: debounce resumption slightly (300ms) so that sustained key-hold repeat
+    /// events (which fire every 40-70ms) don't repeatedly unpause and roll the clock forward.
+    private func scheduleChaseSettle(seekId: Int, at completedSeconds: Double) {
+        let targetTime = CMTime(seconds: completedSeconds, preferredTimescale: 1000)
         chaseSettleTask?.cancel()
         chaseSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.chaseSettleDebounceDuration)
             guard !Task.isCancelled, let self, self.seekGeneration.isCurrent(seekId) else { return }
 
             self.chase = nil
+            // Landed at the end, the media ends, as playing on to it would (within the same margin): resuming there
+            // would start the clock with nothing left to read. After the debounce, so key repeats still held land
+            // here, not on the next item a completion loads.
+            if self.isAtEndOfMedia(completedSeconds) {
+                self.resumePlaybackAfterChase = false
+                AppLog.debug(.engine, "Chase seek settled at the end (\(completedSeconds)s) while playing")
+                self.handleEndOfMedia()
+                return
+            }
             self.startFeeding()
             self.startSynchronizerClockAfterPreroll(at: targetTime)
             self.displayLink?.isPaused = !self.media.hasVideo
@@ -285,7 +318,21 @@ extension PlayerEngine {
     @discardableResult
     public func seekRelative(by seconds: Double) -> Double {
         guard isLoaded, demuxer != nil else { return 0.0 }
+        // Before the presses at the end below: held there, the burst (and the offset it reports) goes on.
         armRelativeSeekBurstTimer()
+
+        // At the end already, a step forward would only land there again: an exact seek decoding the last GOP once more
+        // (and on HLS reading it again) for each key repeat. Playing, the pending settle (which ends the media) waits
+        // for the presses to stop, as their seeks would have it; paused or ended on the last frame, nothing is left.
+        if seconds > 0, !isSeeking {
+            if let settled = chase, chaseSettleTask != nil, isAtEndOfMedia(settled.seconds) {
+                scheduleChaseSettle(seekId: seekGeneration.current, at: settled.seconds)
+                return relativeSeekBurst.offset(landingAt: settled.seconds) ?? 0
+            }
+            if chase == nil, !isPlaying, isOnLastFrame {
+                return relativeSeekBurst.offset(landingAt: currentTime) ?? 0
+            }
+        }
 
         // While a seek is in flight, baseTime steps from the pending target (mpv queue_seek model).
         // On slow frame-threaded streams (e.g. software AV1), rapid keypresses advance the goal,
@@ -301,6 +348,13 @@ extension PlayerEngine {
         seek(to: baseTime + seconds, exact: isExact, forward: isForward)
 
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
+    }
+
+    /// The picture shows the media's last frame, where a seek to the end lands: within a frame and a half of the end
+    /// (`duration` is where the last frame's display ends). Not just within the margin of `isAtEndOfMedia`, from which
+    /// frame steps and seeks still reach the frames after.
+    private var isOnLastFrame: Bool {
+        media.hasVideo && media.duration > 0 && currentFramePTS >= media.duration - nominalFrameDuration * 1.5
     }
 
     public func seekRelative(by seconds: Double, exact: Bool) {

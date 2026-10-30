@@ -181,12 +181,20 @@ session invalidate/reset, `VTVideoDecoder` waits for in-flight frames
 (`VTDecompressionSessionWaitForAsynchronousFrames`) so output callbacks can't race the replacement.
 
 A burst of seeks chases its latest target (`ChaseTarget`): seeks that come while one runs only move the target, and
-the running one goes on to it when it finishes. Seeking stays orchestrated on `PlayerEngine` (it stops the clock, the
+the running one goes on to it when it finishes. One asking for the very target the running one has changes nothing, so
+key repeats clamped to the same position (the end) don't start its decoding over. Seeking stays orchestrated on `PlayerEngine` (it stops the clock, the
 feeders and the display link and restarts them), while the parts that need none of that are types of their own:
 `SeekPreview` decodes the frame a seek lands on and picks it (`SeekPreview.FrameChoice`), `RelativeSeekBurst` follows a
 held arrow key's run of seeks, and `FrameStepState` with `StepFrameCache` and `FrameStepPump` serve paused frame
 steps without a keyframe re-seek. A forward step that seeks carries the frame it steps from (`minFramePTS`) so it lands
 past it.
+
+Past the last keyframe a forward keyframe seek has no keyframe to land on after its target. Rather than fall back to
+the one before it, seconds back near the end, `MediaDemuxer.seek` goes to the target exactly from there and says so
+(for MPEG-TS / MPEG-PS when the keyframe search finds none to the end); the engine decodes the preview as an exact
+seek's. A target at or past the end lands on the last frame: a held arrow key never goes back. Landing at the end ends
+the media when playing (`handleEndOfMedia`, the same as playing on to it), once the resume debounce is over, so key
+repeats still held land there rather than on the next item; paused, it stays on that frame.
 
 On the demuxer side, an exact seek flags every sample before the target `DoNotDisplay` and keeps
 doing so for a second past it: in decode order the first sample past the target is often a P-frame,

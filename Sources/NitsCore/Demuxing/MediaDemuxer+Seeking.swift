@@ -8,12 +8,16 @@ extension MediaDemuxer {
     ///   keyframe intervals) where a backward search would snap a +5 s step back to the same keyframe.
     /// - Parameter audioDelay: Seconds audio plays late against the picture. When positive, the audio heard with the
     ///   landed keyframe precedes it and is read too (see `readAudioAhead`).
-    public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0) {
+    /// - Returns: Whether the seek is exact: asked to be, or a forward one with no keyframe after `seconds` (past the
+    ///   last one). That one goes to `seconds` exactly, from the keyframe before, rather than back to that keyframe,
+    ///   seconds before the target near the end.
+    @discardableResult
+    public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0) -> Bool {
         lockIO()
         defer { lock.unlock() }
         queueLock.lock()
         defer { queueLock.unlock() }
-        guard let ctx = formatCtx else { return }
+        guard let ctx = formatCtx else { return exact }
         completeVariantSwitchBeforeSeek(in: ctx, at: seconds)
         // A track selected before the seek is read from its target (an audio track switch seeks for this).
         applyChangedStreamSelection(in: ctx)
@@ -40,13 +44,20 @@ extension MediaDemuxer {
         } else {
             self.targetAudioPts = -1
         }
-        guard timebase.num > 0 else { return }
+        guard timebase.num > 0 else { return exact }
         // Nothing selected to position: no picture, and the audio heard comes from another input. Seeking stream -1
         // would take the target in `AV_TIME_BASE`, not this time base.
-        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return }
+        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return exact }
         let target = Int64(seconds * Double(timebase.den) / Double(timebase.num))
         // If not exact (keyframe seek), don't set targetPts threshold so that the keyframe sample is displayed immediately
         self.targetPts = exact ? target : -1
+        var isExact = exact
+        // No keyframe after the target: the samples before it, from the keyframe the search falls back to, are only
+        // decoded, as for an exact seek.
+        let goExactly = {
+            isExact = true
+            self.targetPts = target
+        }
         let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
         let useForward = forward && !exact
         let rawTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
@@ -54,20 +65,25 @@ extension MediaDemuxer {
         var ret: Int32 = -1
         if useForward {
             ret = withoutQueueLock { seekTimeline(ctx, to: rawTarget, flags: 0, streams: streams) }
+            if ret < 0 { goExactly() }
         }
         if ret < 0 {
             // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
             ret = withoutQueueLock { seekTimeline(ctx, to: rawTarget, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }
         }
+        if ret >= 0, videoStreamIndex >= 0, Self.isUnindexedStream(ctx) {
+            // The bisection lands near the target, its keyframe search reads on from there: backing off means it found
+            // none to the end.
+            let backedOff = !syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: isExact)
+            if useForward && backedOff && !isExact { goExactly() }
+        } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
+            readAudioAhead(ctx, audioStartSeconds: isExact ? seconds - audioDelay : nil, audioDelay: audioDelay)
+        }
         AppLog.debug(
             .demuxer,
-            "av_seek_frame to targetPts: \(target) (exact: \(exact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
+            "av_seek_frame to targetPts: \(target) (exact: \(isExact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
-        if ret >= 0, videoStreamIndex >= 0, Self.isUnindexedStream(ctx) {
-            syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: exact)
-        } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
-            readAudioAhead(ctx, audioStartSeconds: exact ? seconds - audioDelay : nil, audioDelay: audioDelay)
-        }
+        return isExact
     }
 
     /// Seeks to the keyframe at or before (`AVSEEK_FLAG_BACKWARD`) or after `rawTarget`, in the seek stream's time
@@ -188,9 +204,13 @@ extension MediaDemuxer {
     /// before the keyframe can still be needed: on the attempt that lands it is queued like any audio
     /// read ahead of video (`nextAudioPacket` drops what precedes `targetAudioPts`). Subtitle cues are
     /// kept on every attempt; re-reading them after a back-off is deduplicated.
+    ///
+    /// - Returns: Whether it found the keyframe without backing off. A search that backs off found none from where the
+    ///   bisection landed to the end (or, with `requireAtOrBeforeTarget`, only ones past the target).
+    @discardableResult
     func syncToVideoKeyframe(
         _ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64, requireAtOrBeforeTarget: Bool
-    ) {
+    ) -> Bool {
         let oneSecond = Int64(Double(timebase.den) / Double(timebase.num))
         let maxAttempts = 5
         var seekTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
@@ -221,7 +241,7 @@ extension MediaDemuxer {
                 for packet in audioBeforeKeyframe {
                     audioQueue.append(packet)
                 }
-                return
+                return attempt == 0
             }
             seekTarget -= oneSecond << attempt
             // Before the first timestamp the bisection fails: restart from the beginning instead.
@@ -231,6 +251,7 @@ extension MediaDemuxer {
             }
         }
         AppLog.warning(.demuxer, "No video keyframe found while syncing seek to \(target)")
+        return false
     }
 
     /// Rewinds MPEG-TS / MPEG-PS to their first packet. A timestamp seek bisects and can land past it, dropping the

@@ -727,7 +727,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     self.checkForAudioRendererLag()
 
                     // Check if playback reached the end
-                    if self.isPlaying && self.media.duration > 0 && seconds >= (self.media.duration - 0.25) {
+                    if self.isPlaying && self.isAtEndOfMedia(seconds) {
                         self.handleEndOfMedia()
                     }
                     // Throttled periodic progress auto-save every 15 seconds
@@ -738,6 +738,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 }
             }
         }
+    }
+
+    /// Whether playback at `seconds` has reached the end: within the last quarter second, where the last frames and
+    /// audio packets of a stream end apart.
+    func isAtEndOfMedia(_ seconds: Double) -> Bool {
+        media.duration > 0 && seconds >= media.duration - 0.25
     }
 
     func handleEndOfMedia() {

@@ -8,7 +8,7 @@ extension PlayerEngine {
         guard isLoaded else { return }
 
         // If video reached the end or is in completed state, restart from the beginning
-        if playbackState == .completed || (media.duration > 0 && currentTime >= (media.duration - 0.25)) {
+        if playbackState == .completed || isAtEndOfMedia(currentTime) {
             seek(to: 0.0)
         }
 

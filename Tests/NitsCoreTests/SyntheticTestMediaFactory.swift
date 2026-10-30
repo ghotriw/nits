@@ -28,6 +28,8 @@ public enum SyntheticTestMediaFactory {
         case audioCodecMatrix
         /// H.264 video (60s) with strictly spaced keyframes every 5.0 seconds (GOP=120 @ 24fps, no scenecut)
         case wideGOPH264
+        /// `wideGOPH264` in MPEG-TS: no index, so seeks bisect and search for the keyframe (`syncToVideoKeyframe`)
+        case wideGOPH264TS
         /// AV1 video (3s) encoded with libsvtav1 (640x360 @ 24fps) with AAC audio
         case av1SDR
         /// WMV2 video (3s) encoded with wmv2 (640x360 @ 24fps) with WMAv2 audio in ASF container
@@ -158,6 +160,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_uhd_hdr_5subs.mkv"
             case .wideGOPH264:
                 return "synth_wide_gop_h264_5s.mp4"
+            case .wideGOPH264TS:
+                return "synth_wide_gop_h264_5s.ts"
             case .av1SDR:
                 return "synth_av1_sdr.mkv"
             case .wmv2SDR:
@@ -742,7 +746,7 @@ public enum SyntheticTestMediaFactory {
                 outputPath,
             ]
 
-        case .wideGOPH264:
+        case .wideGOPH264, .wideGOPH264TS:
             // 60 seconds H.264 (640x360 @ 24fps)
             // Strictly spaced keyframes every 5.0 seconds: GOP=120, keyint_min=120, sc_threshold=0 (no scenecut)
             // AAC stereo audio

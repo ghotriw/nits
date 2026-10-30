@@ -100,6 +100,9 @@ extension PlayerEngine {
         logDecoderStall("a call from \(caller) has not returned for \(blockedFor)")
         stopFeedingVideo()
         guard replaceStalledDecoder() else { return }
+        // Supersedes the seek in flight even when it has this target, which a seek alone would leave running (with
+        // the stalled decoder): when it returns, the chase starts it again with the new one.
+        seekGeneration.advance()
         seek(to: rereadPosition, exact: true)
     }
 
