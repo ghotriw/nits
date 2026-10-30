@@ -4,7 +4,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("PlayerConfiguration & Launch Arguments Tests")
+@Suite("PlayerConfiguration Tests")
 struct PlayerConfigurationTests {
 
     @Test("Default configuration enables tone mapping and auto render mode")
@@ -16,34 +16,6 @@ struct PlayerConfigurationTests {
         #expect(config.sharpness == 0.5)
         #expect(config.initialVolume == 1.0)
         #expect(config.enableOSD == true)
-    }
-
-    @Test("CLI arguments correctly parse tone mapping disable flag")
-    func testParseDisableToneMapping() {
-        let args = ["Nits", "--disable-tone-mapping", "/path/to/movie.mkv"]
-        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
-
-        #expect(config.enableToneMapping == false)
-        #expect(mediaPath == "/path/to/movie.mkv")
-    }
-
-    @Test("CLI arguments parse render mode, target nits, sharpness, and volume")
-    func testParseCustomFlags() {
-        let args = [
-            "Nits",
-            "--render-mode=system",
-            "--target-nits=300",
-            "--sharpness=0.8",
-            "--volume=0.4",
-            "video.mp4",
-        ]
-        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
-
-        #expect(config.defaultRenderMode == .system)
-        #expect(config.targetNits == 300.0)
-        #expect(config.sharpness == 0.8)
-        #expect(config.initialVolume == 0.4)
-        #expect(mediaPath == "video.mp4")
     }
 
     @Test("Engine respects isToneMappingPermitted=false even on SDR display")
@@ -80,44 +52,6 @@ struct PlayerConfigurationTests {
         #expect(engine.activeRenderMode == .metalToneMap)
     }
 
-    @Test("CLI arguments correctly parse HTTP headers and network URL")
-    func testParseHTTPHeadersAndURL() {
-        let args = [
-            "Nits",
-            "--header=X-Api-Key: test-api-key-12345",
-            "--header",
-            "Authorization: Bearer token-xyz",
-            "https://stream.example.com/videos/123/stream.mkv",
-        ]
-        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
-
-        #expect(mediaPath == "https://stream.example.com/videos/123/stream.mkv")
-        #expect(config.httpHeaders["X-Api-Key"] == "test-api-key-12345")
-        #expect(config.httpHeaders["Authorization"] == "Bearer token-xyz")
-    }
-
-    @Test("CLI arguments correctly parse start-time and resume flags")
-    func testParseStartTimeAndResumeFlags() {
-        let args = [
-            "Nits",
-            "--start-time=124.5",
-            "--no-resume",
-            "movie.mkv",
-        ]
-        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
-
-        #expect(mediaPath == "movie.mkv")
-        #expect(config.startTime == 124.5)
-        #expect(config.resumePlayback == false)
-    }
-
-    @Test("CLI arguments correctly parse subtitle font name")
-    func testParseSubtitleFontFlag() {
-        let args = ["Nits", "--subtitle-font=Helvetica Neue", "movie.mkv"]
-        let (config, _) = PlayerConfiguration.parse(arguments: args)
-        #expect(config.subtitleFontName == "Helvetica Neue")
-    }
-
     @Test("UserDefaults roundtrip preserves subtitle font name")
     func testUserDefaultsSubtitleFont() {
         let defaults = InMemoryUserDefaults()
@@ -127,13 +61,6 @@ struct PlayerConfigurationTests {
 
         let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
         #expect(loaded.subtitleFontName == "Avenir Next")
-    }
-
-    @Test("CLI arguments correctly parse subtitle font weight")
-    func testParseSubtitleWeightFlag() {
-        let args = ["Nits", "--subtitle-weight=bold", "movie.mkv"]
-        let (config, _) = PlayerConfiguration.parse(arguments: args)
-        #expect(config.subtitleFontWeight == "bold")
     }
 
     @Test("UserDefaults roundtrip preserves subtitle font weight")
@@ -147,7 +74,7 @@ struct PlayerConfigurationTests {
         #expect(loaded.subtitleFontWeight == "Heavy")
     }
 
-    @Test("Dolby Vision trims default off, persist, and follow the CLI flags")
+    @Test("Dolby Vision trims default off and persist")
     func testDolbyVisionTrimsSetting() {
         #expect(PlayerConfiguration().applyDolbyVisionTrims == false)
 
@@ -156,14 +83,9 @@ struct PlayerConfigurationTests {
         config.applyDolbyVisionTrims = true
         config.saveToUserDefaults(userDefaults: defaults)
         #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).applyDolbyVisionTrims == true)
-
-        #expect(PlayerConfiguration.parse(arguments: ["Nits", "--dovi-trims"]).configuration.applyDolbyVisionTrims)
-        #expect(
-            !PlayerConfiguration.parse(arguments: ["Nits", "--no-dovi-trims"], base: config).configuration
-                .applyDolbyVisionTrims)
     }
 
-    @Test("Local contrast defaults to the fitted strength, persists, and follows the CLI flag within 0 ... 1")
+    @Test("Local contrast defaults to the fitted strength and persists")
     func testLocalContrastSetting() {
         #expect(PlayerConfiguration().localContrast == ToneMapController.defaultLocalContrast)
 
@@ -172,18 +94,6 @@ struct PlayerConfigurationTests {
         config.localContrast = 0
         config.saveToUserDefaults(userDefaults: defaults)
         #expect(PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).localContrast == 0)
-
-        #expect(
-            PlayerConfiguration.parse(arguments: ["Nits", "--local-contrast=0.75"]).configuration.localContrast == 0.75)
-        #expect(PlayerConfiguration.parse(arguments: ["Nits", "--local-contrast=3"]).configuration.localContrast == 1)
-    }
-
-    @Test("CLI arguments correctly parse audio-track and subtitle-track flags")
-    func testParseTrackFlags() {
-        let args = ["Nits", "--audio-track=jpn", "--subtitle-track", "off", "/tmp/movie.mkv"]
-        let config = PlayerConfiguration.parse(arguments: args).configuration
-        #expect(config.audioTrack == "jpn")
-        #expect(config.subtitleTrack == "off")
     }
 
     @Test("Picture in Picture defaults hide the window and stay opt-in")
@@ -240,19 +150,6 @@ struct PlayerConfigurationTests {
         #expect(loaded.enableOSD == false)
     }
 
-    @Test("CLI arguments correctly parse OSD disable and enable flags")
-    func testParseOSDFlags() {
-        let argsDisable = ["Nits", "--no-osd", "movie.mkv"]
-        let (configDisabled, _) = PlayerConfiguration.parse(arguments: argsDisable)
-        #expect(configDisabled.enableOSD == false)
-
-        let argsEnable = ["Nits", "--enable-osd", "movie.mkv"]
-        let (configEnabled, _) = PlayerConfiguration.parse(
-            arguments: argsEnable,
-            base: PlayerConfiguration(enableOSD: false)
-        )
-        #expect(configEnabled.enableOSD == true)
-    }
 }
 
 @Suite("Debug OSD Configuration Tests")
@@ -281,65 +178,5 @@ struct DebugOSDConfigurationTests {
         #expect(loaded.debugOSDMinimumLevel == .debug)
         #expect(loaded.debugOSDDuration == 10.0)
         #expect(loaded.osdDuration == 3.0)
-    }
-
-    @Test("CLI arguments parse debug OSD flags and clamp duration")
-    func testParseFlags() {
-        let args = ["Nits", "--debug-osd", "--debug-osd-level=info", "--debug-osd-duration=500", "movie.mkv"]
-        let (config, mediaPath) = PlayerConfiguration.parse(arguments: args)
-        #expect(config.enableDebugOSD == true)
-        #expect(config.debugOSDMinimumLevel == .info)
-        #expect(config.debugOSDDuration == 60.0)
-        #expect(mediaPath == "movie.mkv")
-
-        let (disabled, _) = PlayerConfiguration.parse(
-            arguments: ["Nits", "--no-debug-osd", "--debug-osd-level=bogus"],
-            base: PlayerConfiguration(enableDebugOSD: true)
-        )
-        #expect(disabled.enableDebugOSD == false)
-        #expect(disabled.debugOSDMinimumLevel == .warning)
-    }
-}
-
-@Suite("OSD Duration Configuration Tests")
-struct OSDDurationConfigurationTests {
-    @Test("CLI argument parses and clamps OSD duration")
-    func testParseOSDDuration() {
-        let (config, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=2.5"])
-        #expect(config.osdDuration == 2.5)
-
-        let (tooLong, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=99"])
-        #expect(tooLong.osdDuration == 10.0)
-
-        let (tooShort, _) = PlayerConfiguration.parse(arguments: ["Nits", "--osd-duration=0"])
-        #expect(tooShort.osdDuration == 0.5)
-    }
-
-    @Test("CLI arguments parse SponsorBlock flags")
-    func testParseSponsorBlock() {
-        let (disabled, _) = PlayerConfiguration.parse(arguments: ["Nits", "--no-sponsorblock"])
-        #expect(disabled.sponsorBlock == false)
-
-        let (enabled, _) = PlayerConfiguration.parse(
-            arguments: ["Nits", "--sponsorblock"], base: PlayerConfiguration(sponsorBlock: false))
-        #expect(enabled.sponsorBlock == true)
-    }
-
-    @Test("Reloading saved settings under the launch arguments keeps the flags and the settings changed since")
-    func testReloadKeepsCommandLineOverrides() {
-        let defaults = InMemoryUserDefaults()
-        let arguments = ["Nits", "--no-ytdl", "--no-sponsorblock", "--header=Referer: https://example.com"]
-        PlayerConfiguration(ytdlpPath: "/opt/yt-dlp").saveToUserDefaults(userDefaults: defaults)
-
-        // Settings saves a change, then the app reloads its configuration.
-        defaults.set(10.0, forKey: PlayerConfiguration.keySeekStepSeconds)
-        let (reloaded, _) = PlayerConfiguration.parse(
-            arguments: arguments, base: .loadFromUserDefaults(userDefaults: defaults))
-
-        #expect(reloaded.seekStepSeconds == 10.0)
-        #expect(reloaded.resolvesWithYTDLP == false)
-        #expect(reloaded.sponsorBlock == false)
-        #expect(reloaded.ytdlpPath == "/opt/yt-dlp")
-        #expect(reloaded.httpHeaders["Referer"] == "https://example.com")
     }
 }

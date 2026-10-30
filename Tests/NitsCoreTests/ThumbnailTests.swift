@@ -326,20 +326,10 @@ struct ThumbnailTests {
         #expect(eofDesc.lowercased().contains("end of file"))
     }
 
-    @Test("PlayerConfiguration networkThumbnailPolicy persistence and CLI flags")
+    @Test("PlayerConfiguration networkThumbnailPolicy persistence")
     func testNetworkThumbnailPolicyConfiguration() {
         let defaultConfig = PlayerConfiguration()
         #expect(defaultConfig.networkThumbnailPolicy == .localNetworkOnly)
-
-        // CLI parsing
-        let (parsedAlways, _) = PlayerConfiguration.parse(arguments: ["app", "--network-thumbnails=always"])
-        #expect(parsedAlways.networkThumbnailPolicy == .always)
-
-        let (parsedNever, _) = PlayerConfiguration.parse(arguments: ["app", "--no-network-thumbnails"])
-        #expect(parsedNever.networkThumbnailPolicy == .never)
-
-        let (parsedLAN, _) = PlayerConfiguration.parse(arguments: ["app", "--network-thumbnails=lan"])
-        #expect(parsedLAN.networkThumbnailPolicy == .localNetworkOnly)
 
         // UserDefaults save and load
         let suite = InMemoryUserDefaults()

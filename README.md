@@ -217,7 +217,8 @@ engine.onTimeUpdate = { currentTime, duration in
 
 ## Command-Line Options
 
-Arguments work with `swift run`, the bundle script, and `open --args`:
+Arguments work with `swift run`, the bundle script, and `open --args`. A flag stands over the saved setting for the
+session, until that setting is changed in Settings:
 
 ```bash
 swift run Nits --no-osd ~/Movies/sample.mkv

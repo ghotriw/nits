@@ -187,7 +187,7 @@ struct RecentMediaStoreTests {
         #expect(store.progressRevision > revAfterSave)
     }
 
-    @Test("PlayerConfiguration parses and persists rememberRecentMedia")
+    @Test("PlayerConfiguration persists rememberRecentMedia")
     func testPlayerConfigurationRecentMedia() {
         let defaults = InMemoryUserDefaults()
         var config = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
@@ -198,14 +198,6 @@ struct RecentMediaStoreTests {
 
         let reloaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults)
         #expect(reloaded.rememberRecentMedia == false)
-
-        // Test CLI flags
-        let parsedDisabled = PlayerConfiguration.parse(arguments: ["nits", "--no-recent-media"])
-        #expect(parsedDisabled.configuration.rememberRecentMedia == false)
-
-        let parsedEnabled = PlayerConfiguration.parse(
-            arguments: ["nits", "--recent-media"], base: parsedDisabled.configuration)
-        #expect(parsedEnabled.configuration.rememberRecentMedia == true)
     }
 
     @Test(

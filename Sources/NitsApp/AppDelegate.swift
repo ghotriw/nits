@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var welcomeWindowController: WelcomeWindowController?
     private(set) var playerWindowController: PlayerWindowController?
     private var configuration: PlayerConfiguration
+    private var launchArguments: LaunchArguments
+    /// The saved settings `configuration` was made from, to tell which ones Settings changes.
+    private var savedConfiguration: PlayerConfiguration
     var rememberRecentMedia: Bool {
         configuration.rememberRecentMedia
     }
@@ -20,9 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasOpenedInitialMedia: Bool = false
 
     override init() {
-        let parsed = Self.loadConfiguration()
-        self.configuration = parsed.configuration
-        self.initialMediaPath = parsed.mediaPath
+        let launchArguments = LaunchArguments()
+        let saved = PlayerConfiguration.loadFromUserDefaults()
+        self.launchArguments = launchArguments
+        self.savedConfiguration = saved
+        self.configuration = launchArguments.applied(to: saved)
+        self.initialMediaPath = launchArguments.mediaPath
         super.init()
     }
 
@@ -198,15 +204,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         parent.beginSheet(sheetWindow)
     }
 
-    /// Settings are saved, so they come back from `UserDefaults`, with the command line's flags still on top.
+    /// Settings are saved, so they come back from `UserDefaults`, with the command line's flags on top, except those
+    /// whose setting was just changed.
     func settingsDidChange() {
-        configuration = Self.loadConfiguration().configuration
+        let saved = PlayerConfiguration.loadFromUserDefaults()
+        launchArguments.dropOverrides(changedFrom: savedConfiguration, to: saved)
+        savedConfiguration = saved
+        configuration = launchArguments.applied(to: saved)
         PlaybackHistoryStore.shared.exclusionPolicy = configuration.historyExclusionPolicy
         playerWindowController?.applyConfiguration(configuration)
-    }
-
-    private static func loadConfiguration() -> (configuration: PlayerConfiguration, mediaPath: String?) {
-        PlayerConfiguration.parse(base: .loadFromUserDefaults())
     }
 
     private func setupAppIcon() {
