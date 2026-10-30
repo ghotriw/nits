@@ -11,7 +11,8 @@ import Foundation
 /// Whether the clock is moving yet tells nothing: the synchronizer can hold it for a while after the queue has started.
 /// What tells is how long the device ran before stopping. Healthy starts that restart the IO stop it within ~10 ms of
 /// starting it, while the queue start still waits for it; the switch from a placeholder comes after 100 ms or more.
-/// The engine's own stops (pause, seek, track switch) stop the clock first, through `cancelPreroll()`.
+/// The engine's own stops (pause, seek, track switch, buffering) stop the clock first, through `clockDidStop()` (from
+/// `cancelPreroll()` or buffering's start).
 ///
 /// Only a run that began after the clock started counts, one the renderer's queue started: the device is shared, so
 /// the stop of a previous media's queue (or of another player's in the process) can arrive after the clock started.

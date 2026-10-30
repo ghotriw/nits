@@ -21,7 +21,7 @@ extension PlayerEngine {
         let clock = synchronizer.currentTime()
         let pending = audioSink.pendingStart
         // Audio about to play counts as due: the renderer needs it in its queue well before the clock reaches it.
-        let dueBy = clock.seconds + Self.bufferingAudioLowWatermark * playbackRate
+        let dueBy = clock.seconds + BufferingPolicy.audioLowWatermark * playbackRate
         let isPendingDue = pending.map { $0.isNumeric && $0.seconds < dueBy } ?? false
         let isLagging =
             isPlaying && !isBuffering && !isSeeking && chaseTargetTime == nil && !isPrerolling

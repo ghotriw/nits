@@ -20,21 +20,9 @@ import Foundation
 /// from the picture's: either one does. Audio runs dry unless its input has ended; pictures when the frame queue is low
 /// with none queued in the picture's input (read ahead) for the decoder.
 ///
-/// Audio amounts are in seconds of playback (media seconds divided by the rate): the renderer queues about a second
-/// of playback at any rate (measured 0.9–1.4 s of media at 1x, 2.8–3.9 s at 4x). Video amounts are in frames: the
-/// feeder keeps 25–40 whatever the frame rate, which at 60 or 120 fps is well under half a second.
+/// The thresholds and both decisions are `BufferingPolicy`'s; this extension reads the amounts and holds and
+/// restarts the clock, on the timings of its wait (`bufferingAudioSettleTime`, `bufferingPollInterval`).
 extension PlayerEngine {
-    /// Seconds of playback of queued audio below which the renderer counts as running dry.
-    static let bufferingAudioLowWatermark: Double = 0.15
-    /// Seconds of playback of queued audio before playback resumes; above the low watermark, so a resume does not
-    /// run straight into another hold.
-    static let bufferingResumeAudio: Double = 0.5
-    /// Queued frames below which video counts as running low: under the 25 the feeder refills from while frames
-    /// arrive (measured minimum 25 at 1x–4x).
-    static let bufferingVideoLowFrames = 20
-    /// Queued frames before playback resumes; above `bufferingVideoLowFrames`, and reachable with the clock held,
-    /// as the feeder fills to 40 before pausing.
-    static let bufferingResumeFrames = 30
     /// How long the queued audio may stay unchanged before it counts as all there is. With the clock held the
     /// renderer stops taking audio once full, and with video at its limit the demuxer reads no further audio.
     static let bufferingAudioSettleTime: Duration = .milliseconds(500)
@@ -50,6 +38,21 @@ extension PlayerEngine {
         return (end - clock).seconds
     }
 
+    /// What is queued at `clock`, for `BufferingPolicy`.
+    private func bufferingLevels(at clock: CMTime, inputs: PlaybackInputs) -> BufferingPolicy.Levels {
+        BufferingPolicy.Levels(
+            audioAhead: audioAhead(of: clock),
+            queuedFrames: frameQueue.count,
+            hasAudio: hasAudioStream,
+            hasVideo: media.hasVideo,
+            isAudioSeparate: inputs.isAudioSeparate,
+            isAudioEOF: inputs.isAudioEOF,
+            isVideoReadAheadDry: inputs.main.isVideoReadAheadDry,
+            secondsPastLastFrame: clock.seconds - frameQueue.getLastRenderedPTS(),
+            frameDuration: nominalFrameDurationLock.withLock { $0 }
+        )
+    }
+
     /// Starts buffering when media has run out (see the extension's comment). Called by the periodic time
     /// observer, which fires only while the clock runs.
     func checkForStarvation() {
@@ -58,41 +61,19 @@ extension PlayerEngine {
         else { return }
         let clock = synchronizer.currentTime()
         guard clock.isNumeric else { return }
-
-        let rate = Double(synchronizer.rate)
-        let ahead = audioAhead(of: clock)
-        let queued = frameQueue.count
-        let isStarved: Bool
-        if hasAudioStream, inputs.isAudioSeparate {
-            // An audio file on an input of its own: one input running out doesn't drain the other, so each stream
-            // counts on its own. Audio that has ended plays no more; pictures run out when the picture's input has
-            // none queued for the decoder (reading on demand, the feeder reads as it needs: never).
-            let isAudioDry = ahead < Self.bufferingAudioLowWatermark * rate && !inputs.isAudioEOF
-            let isVideoDry =
-                media.hasVideo && queued < Self.bufferingVideoLowFrames && inputs.main.isVideoReadAheadDry
-            isStarved = isAudioDry || isVideoDry
-        } else if hasAudioStream {
-            isStarved =
-                ahead < Self.bufferingAudioLowWatermark * rate
-                && (!media.hasVideo || queued < Self.bufferingVideoLowFrames)
-        } else if media.hasVideo {
-            // A frame or two behind with nothing queued: a decoder that keeps up hovers at an empty queue at times.
-            let frameDuration = nominalFrameDurationLock.withLock { $0 }
-            isStarved = queued == 0 && clock.seconds > frameQueue.getLastRenderedPTS() + 2 * frameDuration
-        } else {
-            isStarved = false
-        }
-        guard isStarved else { return }
+        let levels = bufferingLevels(at: clock, inputs: inputs)
+        guard BufferingPolicy.isStarved(levels, rate: Double(synchronizer.rate)) else { return }
 
         synchronizer.setRate(0, time: clock)
         // Holds the clock without `cancelPreroll()`, which would end this buffering: an IO stop from here on is the
         // engine's own.
-        audioOutputInterruptionLock.withLock { $0.clockStopped() }
+        clockDidStop()
         isBuffering = true
         AppLog.info(
             .engine,
-            "Buffering at \(String(format: "%.3f", clock.seconds))s: audio \(String(format: "%.3f", ahead))s ahead, "
-                + "\(queued) frame(s) queued; holding the clock"
+            "Buffering at \(String(format: "%.3f", clock.seconds))s: audio "
+                + "\(String(format: "%.3f", levels.audioAhead))s ahead, \(levels.queuedFrames) frame(s) queued; "
+                + "holding the clock"
         )
         bufferingResumeTask = Task { @MainActor [weak self] in
             await self?.waitToResumeAfterBuffering(heldAt: clock)
@@ -124,32 +105,11 @@ extension PlayerEngine {
         }
     }
 
-    /// - Parameter audioSettled: The queued audio has not changed for `bufferingAudioSettleTime`, so no more is
-    ///   coming while the clock is held. Playback then resumes with what there is: above the low watermark (the
-    ///   renderer is full), or with video ready, when the audio may be stuck behind the demuxer's full video packet
-    ///   queue. With neither, data has stopped altogether and the clock stays held.
     private func isReadyToResumeAfterBuffering(heldAt clock: CMTime, audioSettled: Bool) -> Bool {
         guard let inputs, !inputs.isEOF else { return true }
         // The clock is held at rate 0; the amounts are for the rate it resumes at.
-        let ahead = audioAhead(of: clock)
-        let isVideoReady = !media.hasVideo || frameQueue.count >= Self.bufferingResumeFrames
-        let isAudioReady: Bool
-        if !hasAudioStream {
-            isAudioReady = true
-        } else if inputs.isAudioSeparate {
-            // On an input of its own no picture's queue holds the audio back: audio that stopped coming is short, not
-            // all there is, and resuming with the picture ready would run into silence and buffer again at once. It
-            // resumes once the renderer has enough (or is full), or the file has ended.
-            isAudioReady =
-                inputs.isAudioEOF || ahead >= Self.bufferingResumeAudio * playbackRate
-                || (audioSettled && ahead > Self.bufferingAudioLowWatermark * playbackRate)
-        } else {
-            isAudioReady =
-                ahead >= Self.bufferingResumeAudio * playbackRate
-                || (audioSettled
-                    && (ahead > Self.bufferingAudioLowWatermark * playbackRate || (media.hasVideo && isVideoReady)))
-        }
-        return isAudioReady && isVideoReady
+        return BufferingPolicy.isReadyToResume(
+            bufferingLevels(at: clock, inputs: inputs), rate: playbackRate, audioSettled: audioSettled)
     }
 
     /// Ends buffering without restarting the clock; whoever calls it re-anchors or stops the clock itself.

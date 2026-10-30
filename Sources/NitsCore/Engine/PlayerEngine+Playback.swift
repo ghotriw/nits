@@ -302,14 +302,25 @@ extension PlayerEngine {
             + "queued frames: \(frameQueue.count), first at \(head); presented: \(presented); anchor: \(anchor)"
     }
 
-    /// Every path that stops or re-anchors the clock (pause, seek, reload, a clock start) passes here, so it also
-    /// ends buffering, which holds the clock the same way.
+    /// The clock is about to stop or be re-anchored: every path that does it (pause, seek, reload, a clock start)
+    /// passes here first, directly or through `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`. Despite
+    /// its name, it ends both holds on the clock, a pending preroll and buffering, whose tasks would otherwise restart
+    /// it at a stale position, and tells the audio detectors (`clockDidStop()`).
+    ///
+    /// Buffering ends itself through here (its resume restarts the clock), so its start, which holds the clock,
+    /// calls `clockDidStop()` alone.
     func cancelPreroll() {
         pendingClockStartLock.withLock { $0 = nil }
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
         updateAwaitingClockStart()
         cancelBuffering()
+        clockDidStop()
+    }
+
+    /// Tells the audio detectors the clock stopped or is re-anchored: a lag or an output IO stop seen before no longer
+    /// counts, and an IO stop from here until the clock starts again is the engine's own.
+    func clockDidStop() {
         audioLagDetector.clockRestarted()
         audioOutputInterruptionLock.withLock { $0.clockStopped() }
     }
