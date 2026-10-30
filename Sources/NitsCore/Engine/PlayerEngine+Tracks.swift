@@ -125,10 +125,12 @@ extension PlayerEngine {
         guard let source = resolvedSource else { return }
         // A track chosen on load again is chosen by the settings again; the viewer's choice is kept.
         let audioTrack = inputs.flatMap { $0.isAudioSelectionAutomatic ? nil : String($0.selectedAudioTrackId) }
+        let subtitleTrack: String? =
+            subtitles.selectionIsAutomatic ? nil : (subtitles.selectedTrackId.map(String.init) ?? "off")
         guard
             let (request, media) = source.switching(
-                to: id, startTime: rereadPosition, audioTrack: audioTrack, title: mediaTitle,
-                artworkData: artworkData, artworkURL: artworkURL)
+                to: id, startTime: rereadPosition, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
+                title: mediaTitle, artworkData: artworkData, artworkURL: artworkURL)
         else { return }
         let wasPaused = playbackState == .paused
         AppLog.info(.engine, "Switching to video format \(id)")

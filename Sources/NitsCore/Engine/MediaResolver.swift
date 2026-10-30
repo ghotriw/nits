@@ -67,6 +67,8 @@ public struct ResolvedMedia: Sendable, Equatable {
     public var httpRequestSize: Int?
     /// Audio of its own (a site's separate audio streams), before the request's.
     public var audioFiles: [MediaLoadRequest.AudioFile]
+    /// Subtitles of its own (a site's subtitle tracks), before the request's.
+    public var subtitleFiles: [MediaLoadRequest.SubtitleFile]
     /// Chapters of the media (a site's chapters, e.g. from yt-dlp), used when the stream's container has none.
     public var chapters: [MediaChapter]
     /// The page's title, shown when the request gives none.
@@ -84,6 +86,7 @@ public struct ResolvedMedia: Sendable, Equatable {
 
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],
+        subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
         chapters: [MediaChapter] = [], title: String? = nil, historyKey: String? = nil,
         actionButtons: [PlaybackActionButton] = [], httpRequestSize: Int? = nil, videoFormats: [VideoFormat] = [],
         selectedVideoFormatID: String? = nil
@@ -94,6 +97,7 @@ public struct ResolvedMedia: Sendable, Equatable {
         self.headers = headers
         self.httpRequestSize = httpRequestSize
         self.audioFiles = audioFiles
+        self.subtitleFiles = subtitleFiles
         self.chapters = chapters
         self.title = title
         self.historyKey = historyKey

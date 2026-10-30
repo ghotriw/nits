@@ -119,22 +119,30 @@ extension SubtitleController {
     /// listed when it arrives.
     func loadDocument(
         trackId id: Int,
-        read: @escaping @Sendable (FFmpegInterrupt) -> SubtitleDocument?,
+        read: @escaping @Sendable (FFmpegInterrupt) async -> SubtitleDocument?,
         isCurrent: @escaping @MainActor @Sendable (SubtitleController) -> Bool
     ) {
         guard loads[id] == nil else { return }
         let interrupt = FFmpegInterrupt()
         let task = Task.detached(priority: .userInitiated) { [weak self] in
-            let document = read(interrupt)
+            let document = await read(interrupt)
             await MainActor.run {
                 guard let self else { return }
                 if self.loads[id]?.interrupt === interrupt { self.loads[id] = nil }
-                guard !interrupt.isCancelled, isCurrent(self) else { return }
+                guard !interrupt.isCancelled, !Task.isCancelled, isCurrent(self) else { return }
                 guard let document else {
                     AppLog.warning(.subtitles, "Can't read subtitle track \(id)")
                     return
                 }
                 self.loadedDocuments[id] = document
+                if let url = self.tracks.first(where: { $0.id == id })?.externalURL, !url.isFileURL {
+                    self.remoteDocumentCache[url] = document
+                }
+                if document.assScript != nil, let index = self.tracks.firstIndex(where: { $0.id == id }),
+                    self.tracks[index].format != .ass
+                {
+                    self.tracks[index] = self.tracks[index].with(format: .ass)
+                }
                 guard self.selectedTrackId == id else { return }
                 self.activeDocument = document
                 self.updateShown(at: self.host?.currentTime ?? 0)

@@ -80,6 +80,63 @@ struct SubtitleTests {
         #expect(doc.activeCue(at: 59.0) == nil)
     }
 
+    @Test("Parse YouTube rollup WebVTT cues without duplicating shifted lines or 10ms bridge cues")
+    func testParseYouTubeRollupWebVTT() {
+        let vttData = """
+            WEBVTT
+            Kind: captions
+            Language: en
+
+            00:00:00.080 --> 00:00:01.910 align:start position:0%
+             \nfirst<00:00:00.400><c> line</c><00:00:00.800><c> here</c>
+
+            00:00:01.910 --> 00:00:01.920 align:start position:0%
+            first line here\n \n
+            00:00:01.920 --> 00:00:04.230 align:start position:0%
+            first line here
+            second<00:00:02.480><c> line</c><00:00:03.000><c> now</c>
+
+            00:00:04.230 --> 00:00:04.240 align:start position:0%
+            second line now
+             \n
+            00:00:04.240 --> 00:00:06.500 align:start position:0%
+            second line now
+            third line &quot;quoted&quot; &#39;ok&#39;
+            """
+
+        let doc = SubtitleDocument.parseWebVTT(vttData, collapsingRollUp: true)
+        #expect(doc.cues.count == 3)
+        #expect(doc.cues[0].text == "first line here")
+        #expect(abs(doc.cues[0].startTime - 0.08) < 0.001)
+        #expect(abs(doc.cues[0].endTime - 1.92) < 0.001)
+
+        #expect(doc.cues[1].text == "second line now")
+        #expect(abs(doc.cues[1].startTime - 1.92) < 0.001)
+        #expect(abs(doc.cues[1].endTime - 4.24) < 0.001)
+
+        #expect(doc.cues[2].text == "third line \"quoted\" 'ok'")
+        #expect(abs(doc.cues[2].startTime - 4.24) < 0.001)
+        #expect(abs(doc.cues[2].endTime - 6.50) < 0.001)
+    }
+
+    @Test("WebVTT cues that repeat a line keep it unless roll-up collapsing is asked for")
+    func testWebVTTKeepsRepeatedLinesByDefault() {
+        let vttData = """
+            WEBVTT
+
+            00:00:01.000 --> 00:00:02.000
+            Hey!
+
+            00:00:02.000 --> 00:00:03.000
+            Hey!
+            Who's there?
+            """
+        let doc = SubtitleDocument.parseWebVTT(vttData)
+        #expect(doc.cues.map(\.text) == ["Hey!", "Hey!\nWho's there?"])
+        let collapsed = SubtitleDocument.parseWebVTT(vttData, collapsingRollUp: true)
+        #expect(collapsed.cues.map(\.text) == ["Hey!", "Who's there?"])
+    }
+
     @Test("Strip ASS tags such as {\\an8}, {\\b1}, {\\pos(x,y)} and convert \\N newlines")
     func testStripASSTags() {
         let input = "{\\an8}First line\\NSecond line{\\b1} Yes!"

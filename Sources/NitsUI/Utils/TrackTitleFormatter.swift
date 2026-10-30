@@ -12,9 +12,13 @@ public enum TrackTitleFormatter {
         let trimmedLang = language.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedLang.isEmpty {
             let loc = Locale.current
-            if let localized = loc.localizedString(forLanguageCode: trimmedLang) {
-                parts.append("[\(localized.capitalized)]")
-            } else {
+            if let localized = loc.localizedString(forIdentifier: trimmedLang)
+                ?? loc.localizedString(forLanguageCode: trimmedLang)
+            {
+                if trimmedTitle.range(of: localized, options: .caseInsensitive) == nil {
+                    parts.append("[\(localized.capitalized)]")
+                }
+            } else if trimmedTitle.range(of: trimmedLang, options: .caseInsensitive) == nil {
                 parts.append("[\(trimmedLang.uppercased())]")
             }
         }

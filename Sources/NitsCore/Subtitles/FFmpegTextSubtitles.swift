@@ -63,15 +63,22 @@ enum FFmpegTextSubtitles {
     static func read(
         url: URL, frameRate: Double?, hints: TextFileEncoding.Hints = .init(), interrupt: FFmpegInterrupt? = nil
     ) -> SubtitleDocument? {
-        guard let data = try? Data(contentsOf: url), let text = TextFileEncoding.utf8(data, hints: hints) else {
-            return nil
-        }
-        guard let name = format(of: text, path: url.path), let inputFormat = av_find_input_format(name) else {
-            return nil
-        }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return read(data: data, of: url, frameRate: frameRate, hints: hints, interrupt: interrupt)
+    }
+
+    /// The cues of the bytes of `url` (a downloaded file), read as `read(url:)` reads a file.
+    static func read(
+        data: Data, of url: URL, frameRate: Double?, hints: TextFileEncoding.Hints = .init(),
+        interrupt: FFmpegInterrupt? = nil
+    ) -> SubtitleDocument? {
+        guard let text = TextFileEncoding.utf8(data, hints: hints) else { return nil }
         // Same extension: FFmpeg's probes weigh it.
         let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(url.pathExtension)
+        guard let name = format(of: text, path: copy.path), let inputFormat = av_find_input_format(name) else {
+            return nil
+        }
         guard (try? text.write(to: copy)) != nil else { return nil }
         defer { try? FileManager.default.removeItem(at: copy) }
 

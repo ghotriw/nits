@@ -350,6 +350,13 @@ extension PlayerEngine {
                     file.httpRequestSize = file.httpRequestSize ?? request.httpRequestSize ?? 0
                     return file
                 }
+            source.subtitleFiles =
+                resolved.subtitleFiles
+                + request.subtitleFiles.map { file in
+                    var file = file
+                    file.headers = file.headers ?? request.headers
+                    return file
+                }
             historyKey = resolved.historyKey ?? path
             chaptersFromResolver = resolved.chapters
             buttonsFromResolver = resolved.actionButtons
@@ -357,7 +364,10 @@ extension PlayerEngine {
                 mediaTitle = title
                 resolvedTitle = title
             }
-            AppLog.info(.engine, "Resolved '\(path)': \(resolved.audioFiles.count) audio stream(s) of its own")
+            AppLog.info(
+                .engine,
+                "Resolved '\(path)': \(resolved.audioFiles.count) audio stream(s), "
+                    + "\(resolved.subtitleFiles.count) subtitle track(s) of its own")
             return .resolved
         }
 
@@ -502,6 +512,7 @@ extension PlayerEngine {
             historyKey: historyKey,
             headers: source.headers,
             httpRequestSize: source.httpRequestSize,
+            subtitleFiles: source.subtitleFiles,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -574,6 +585,7 @@ extension PlayerEngine {
             historyKey: path,
             headers: request.headers,
             httpRequestSize: request.httpRequestSize,
+            subtitleFiles: request.subtitleFiles,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -585,6 +597,7 @@ extension PlayerEngine {
         loadingTask?.cancel()
         loadingTask = nil
         resetMediaState(reportingTracks: true)
+        subtitles.discardDownloadedDocuments()
         mediaTitle = ""
         artworkData = nil
         artworkURL = nil
@@ -823,7 +836,8 @@ extension PlayerEngine {
     func applyLoadedDemuxer(
         _ demuxer: MediaDemuxer, inputs: PlaybackInputs, path: String, sourcePath: String, historyKey: String,
         headers: [String: String],
-        httpRequestSize: Int? = nil, requestedStartTime: Double?,
+        httpRequestSize: Int? = nil, subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
+        requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
         resolvedTitle: String? = nil,
         resolvedChapters: [MediaChapter] = [],
@@ -931,7 +945,8 @@ extension PlayerEngine {
         restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
         subtitles.mediaDidLoad(
-            tracks: demuxer.subtitleTracks, path: path, saved: savedTracks, requestedTrack: requestedSubtitleTrack,
+            tracks: demuxer.subtitleTracks, subtitleFiles: subtitleFiles, defaultHeaders: headers, path: path,
+            saved: savedTracks, requestedTrack: requestedSubtitleTrack,
             audioLanguage: audioTracks.first { $0.id == selectedAudioTrackId }?.language)
 
         if demuxer.hasVideo {

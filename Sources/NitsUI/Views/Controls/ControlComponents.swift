@@ -253,8 +253,10 @@ public struct ControlSubtitleTrackButton: View {
         if !engine.subtitles.tracks.isEmpty {
             menu.addItem(NSMenuItem.separator())
             for track in engine.subtitles.tracks {
+                let label = TrackTitleFormatter.format(
+                    title: track.title, language: track.language, fallbackId: track.id + 1)
                 let item = NSMenuItem(
-                    title: track.title,
+                    title: label,
                     action: #selector(ControlMenuHelper.executeAction(_:)),
                     keyEquivalent: ""
                 )
@@ -263,7 +265,7 @@ public struct ControlSubtitleTrackButton: View {
                 let target = ControlMenuHelper { [weak engine, weak uiState] in
                     engine?.subtitles.select(trackId: track.id)
                     if engine?.enableOSD == true {
-                        uiState?.osd.show(.subtitleTrack(title: track.title))
+                        uiState?.osd.show(.subtitleTrack(title: label))
                     }
                 }
                 item.target = target

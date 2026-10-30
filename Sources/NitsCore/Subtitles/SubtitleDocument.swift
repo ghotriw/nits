@@ -125,8 +125,10 @@ public struct SubtitleDocument: Sendable, Equatable {
         return SubtitleDocument(cues: cues)
     }
 
-    /// Parses a WebVTT string into a SubtitleDocument.
-    public static func parseWebVTT(_ text: String) -> SubtitleDocument {
+    /// Parses a WebVTT string into a SubtitleDocument. `collapsingRollUp` (auto-generated captions) shows each line of
+    /// roll-up captions once: a line the previous cue ended with is dropped from the top of the next, and a cue that
+    /// only repeats the previous one lengthens it.
+    public static func parseWebVTT(_ text: String, collapsingRollUp: Bool = false) -> SubtitleDocument {
         var cues: [SubtitleCue] = []
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         let blocks = normalized.components(separatedBy: "\n\n")
@@ -169,19 +171,37 @@ public struct SubtitleDocument: Sendable, Equatable {
                 alignment = .topCenter
             }
 
-            let cleanText = cleanFormattingTags(cueText)
+            var cleanLines = textLines.map(cleanFormattingTags).filter { !$0.isEmpty }
+            // Starts as the previous cue ends, as roll-up captions go on (through 10 ms cues that hold a line alone).
+            let continuesPrevious = cues.last.map { start >= $0.startTime && start - $0.endTime <= 0.1 } ?? false
+            if collapsingRollUp, continuesPrevious, let previous = cues.last {
+                // Roll-up captions (YouTube ASR) repeat the previous cue's trailing line at the top of the next cue.
+                let previousLines = previous.text.components(separatedBy: "\n")
+                while cleanLines.count > 1, cleanLines.first == previousLines.last {
+                    cleanLines.removeFirst()
+                }
+            }
+            let cleanText = cleanLines.joined(separator: "\n")
 
             if !cleanText.isEmpty {
-                index += 1
-                cues.append(
-                    SubtitleCue(
-                        id: index,
-                        startTime: start,
-                        endTime: end,
-                        text: cleanText,
-                        alignment: alignment
+                if collapsingRollUp, continuesPrevious, let previous = cues.last, previous.text == cleanText,
+                    previous.alignment == alignment
+                {
+                    cues[cues.count - 1] = SubtitleCue(
+                        id: previous.id, startTime: previous.startTime, endTime: max(previous.endTime, end),
+                        text: previous.text, alignment: previous.alignment)
+                } else {
+                    index += 1
+                    cues.append(
+                        SubtitleCue(
+                            id: index,
+                            startTime: start,
+                            endTime: end,
+                            text: cleanText,
+                            alignment: alignment
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -289,6 +309,9 @@ public struct SubtitleDocument: Sendable, Equatable {
         result = result.replacingOccurrences(of: "&amp;", with: "&")
         result = result.replacingOccurrences(of: "&lt;", with: "<")
         result = result.replacingOccurrences(of: "&gt;", with: ">")
+        result = result.replacingOccurrences(of: "&quot;", with: "\"")
+        result = result.replacingOccurrences(of: "&#39;", with: "'")
+        result = result.replacingOccurrences(of: "&apos;", with: "'")
         result = result.replacingOccurrences(of: "&nbsp;", with: " ")
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
