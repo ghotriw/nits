@@ -103,17 +103,15 @@ public struct SettingsView: View {
         guard !folders.contains(where: { $0.overlaps(folder) }) else { return }
         folders.append(folder)
         rawHistoryExcludedFolders = HistoryExclusionPolicy.encodeFolders(folders)
-        let domains = currentExcludedDomains
         RecentMediaStore.shared.purge(matching: HistoryExclusionPolicy(excludedFolders: [folder]))
-        notifyChange(folders: folders, domains: domains)
+        notifyChange()
     }
 
     private func handleRemoveFolder(_ folder: ExcludedFolder) {
         var folders = currentExcludedFolders
         folders.removeAll { $0.path.caseInsensitiveCompare(folder.path) == .orderedSame }
         rawHistoryExcludedFolders = HistoryExclusionPolicy.encodeFolders(folders)
-        let domains = currentExcludedDomains
-        notifyChange(folders: folders, domains: domains)
+        notifyChange()
     }
 
     private func handleAddDomain(_ domain: String) {
@@ -121,20 +119,18 @@ public struct SettingsView: View {
         guard !domains.contains(domain) else { return }
         domains.append(domain)
         rawHistoryExcludedDomains = HistoryExclusionPolicy.encodeList(domains)
-        let folders = currentExcludedFolders
         RecentMediaStore.shared.purge(matching: HistoryExclusionPolicy(excludedDomains: [domain]))
-        notifyChange(folders: folders, domains: domains)
+        notifyChange()
     }
 
     private func handleRemoveDomain(_ domain: String) {
         var domains = currentExcludedDomains
         domains.removeAll { $0 == domain }
         rawHistoryExcludedDomains = HistoryExclusionPolicy.encodeList(domains)
-        let folders = currentExcludedFolders
-        notifyChange(folders: folders, domains: domains)
+        notifyChange()
     }
 
-    var onConfigurationChanged: ((PlayerConfiguration) -> Void)?
+    var onSettingsChanged: (() -> Void)?
 
     public enum SettingsTab: String, CaseIterable, Identifiable {
         case general = "General"
@@ -158,8 +154,8 @@ public struct SettingsView: View {
         }
     }
 
-    public init(onConfigurationChanged: ((PlayerConfiguration) -> Void)? = nil) {
-        self.onConfigurationChanged = onConfigurationChanged
+    public init(onSettingsChanged: (() -> Void)? = nil) {
+        self.onSettingsChanged = onSettingsChanged
     }
 
     public var body: some View {
@@ -636,56 +632,8 @@ public struct SettingsView: View {
         return "\(value) \(seconds == 1.0 ? "second" : "seconds")"
     }
 
+    /// Every setting is in `UserDefaults` (`@AppStorage`) by the time this runs, so the host reloads them from there.
     private func notifyChange() {
-        notifyChange(folders: nil, domains: nil)
-    }
-
-    private func notifyChange(folders: [ExcludedFolder]?, domains: [String]?) {
-        let savedConfig = PlayerConfiguration.loadFromUserDefaults()
-        let resolvedFolders = folders ?? currentExcludedFolders
-        let resolvedDomains = domains ?? currentExcludedDomains
-        let current = PlayerConfiguration(
-            enableToneMapping: enableToneMapping,
-            defaultRenderMode: .auto,
-            targetNitsScale: Float(targetNitsScale),
-            sharpness: Float(sharpness),
-            applyDolbyVisionTrims: applyDolbyVisionTrims,
-            localContrast: Float(localContrast),
-            resumePlayback: resumePlayback,
-            rememberRecentMedia: rememberRecentMedia,
-            resumeStartThreshold: resumeStartThreshold,
-            resumeEndThresholdRatio: resumeEndThresholdRatio,
-            subtitleFontSize: savedConfig.subtitleFontSize,
-            subtitleFontName: savedConfig.subtitleFontName,
-            subtitleFontWeight: savedConfig.subtitleFontWeight,
-            subtitleTextColorHex: savedConfig.subtitleTextColorHex,
-            subtitleBgColorHex: savedConfig.subtitleBgColorHex,
-            subtitleBgOpacity: savedConfig.subtitleBgOpacity,
-            usesAuthoredSubtitleStyles: savedConfig.usesAuthoredSubtitleStyles,
-            showsOnlyForcedSubtitles: savedConfig.showsOnlyForcedSubtitles,
-            assStyleOverride: savedConfig.assStyleOverride,
-            subtitleScale: savedConfig.subtitleScale,
-            subtitlePosition: savedConfig.subtitlePosition,
-            enableOSD: enableOSD,
-            osdDuration: osdDuration,
-            enableDebugOSD: enableDebugOSD,
-            debugOSDMinimumLevel: debugOSDMinimumLevel,
-            debugOSDDuration: debugOSDDuration,
-            autoLoadFolderMedia: autoLoadFolderMedia,
-            seekStepSeconds: seekStepSeconds,
-            exactSeekOnSinglePress: exactSeekOnSinglePress,
-            videoScaling: videoScaling,
-            networkThumbnailPolicy: networkThumbnailPolicy,
-            pictureInPictureWindowBehavior: pictureInPictureWindowBehavior,
-            pausesOnPictureInPicture: pausesOnPictureInPicture,
-            entersPictureInPictureOnMinimize: entersPictureInPictureOnMinimize,
-            actionButtonDisplayDuration: actionButtonDisplayDuration,
-            actionButtonAutoPress: actionButtonAutoPress,
-            trackLanguages: savedConfig.trackLanguages,
-            subtitleEncoding: savedConfig.subtitleEncoding,
-            historyExcludedFolders: resolvedFolders,
-            historyExcludedDomains: resolvedDomains
-        )
-        onConfigurationChanged?(current)
+        onSettingsChanged?()
     }
 }

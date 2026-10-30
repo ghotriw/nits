@@ -20,8 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasOpenedInitialMedia: Bool = false
 
     override init() {
-        let baseConfig = PlayerConfiguration.loadFromUserDefaults()
-        let parsed = PlayerConfiguration.parse(base: baseConfig)
+        let parsed = Self.loadConfiguration()
         self.configuration = parsed.configuration
         self.initialMediaPath = parsed.mediaPath
         super.init()
@@ -88,36 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) {
         guard !urls.isEmpty else { return }
         Task {
-            let resolution = await MediaURLResolver.resolveAsync(urls, source: "Open")
-            guard !resolution.urls.isEmpty else {
-                if let player = playerWindowController, player.window?.isVisible == true {
-                    player.uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
-                } else {
-                    NSSound.beep()
-                }
+            let request = await MediaOpenRequest.resolving(urls, source: "Open")
+            // With no player on screen, nothing opens and subtitle files have nothing to attach to.
+            guard !request.media.isEmpty || playerWindowController?.window?.isVisible == true else {
+                NSSound.beep()
                 return
             }
-            openResolvedMediaFiles(
-                at: resolution.urls, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
+            await showPlayer().open(
+                request, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
         }
-    }
-
-    private func openResolvedMediaFiles(
-        at urls: [URL], startTime: Double?, audioTrack: String?, subtitleTrack: String?
-    ) {
-        guard let firstURL = urls.first else { return }
-        if urls.count > 1 {
-            AppLog.info(
-                .playlist,
-                "Opening \(urls.count) media files. Populating playlist and starting '\(firstURL.lastPathComponent)'")
-            ensurePlayerWindowController()
-            if let playlist = playerWindowController?.engine.playlist {
-                playlist.clear()
-                playlist.append(urls: urls)
-            }
-        }
-        openStream(
-            url: firstURL, headers: [:], startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
     }
 
     @discardableResult
@@ -147,18 +125,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         url: URL, headers: [String: String], startTime: Double? = nil, audioTrack: String? = nil,
         subtitleTrack: String? = nil
     ) {
-        ensurePlayerWindowController()
+        showPlayer().openStream(
+            url: url, headers: headers, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
+    }
 
-        // Close/hide welcome window
+    /// The player window, created if there is none, in place of the Welcome window.
+    private func showPlayer() -> PlayerWindowController {
+        let controller = ensurePlayerWindowController()
         welcomeWindowController?.window?.orderOut(nil)
         welcomeWindowController?.close()
         welcomeWindowController = nil
-
-        // Open stream or file in main player window
-        playerWindowController?.openStream(
-            url: url, headers: headers, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack)
         isPlayerActive = true
-        activePlayer = playerWindowController
+        activePlayer = controller
+        return controller
     }
 
     func openRecentItem(_ item: RecentMediaItem) {
@@ -219,10 +198,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         parent.beginSheet(sheetWindow)
     }
 
-    func updateConfiguration(_ newConfig: PlayerConfiguration) {
-        self.configuration = newConfig
-        PlaybackHistoryStore.shared.exclusionPolicy = newConfig.historyExclusionPolicy
-        self.playerWindowController?.applyConfiguration(self.configuration)
+    /// Settings are saved, so they come back from `UserDefaults`, with the command line's flags still on top.
+    func settingsDidChange() {
+        configuration = Self.loadConfiguration().configuration
+        PlaybackHistoryStore.shared.exclusionPolicy = configuration.historyExclusionPolicy
+        playerWindowController?.applyConfiguration(configuration)
+    }
+
+    private static func loadConfiguration() -> (configuration: PlayerConfiguration, mediaPath: String?) {
+        PlayerConfiguration.parse(base: .loadFromUserDefaults())
     }
 
     private func setupAppIcon() {

@@ -22,6 +22,9 @@ public final class PlayerUIState {
     public var isPictureInPicturePossible: Bool = false
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
     @ObservationIgnored public var togglePictureInPicture: (() -> Void)?
+    /// Does what a double click on a title bar does by the system setting; set by the host that owns the window, for
+    /// the controls' top bar standing in for the title bar. `nil` zooms the window.
+    @ObservationIgnored public var titleBarDoubleClicked: (() -> Void)?
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     /// Controls, OSD, HUD, subtitles and the action button are hidden while the window is captured for a still of the
     /// picture as the screen shows it.

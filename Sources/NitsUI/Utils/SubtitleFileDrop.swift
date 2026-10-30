@@ -3,15 +3,15 @@ import NitsCore
 
 /// Subtitle files dropped on the player attach to the media playing instead of opening as media themselves.
 @MainActor
-enum SubtitleFileDrop {
+public enum SubtitleFileDrop {
     /// Splits dropped URLs into subtitle files (never media) and everything else, keeping order.
-    static func split(_ urls: [URL]) -> (subtitles: [URL], others: [URL]) {
+    public static func split(_ urls: [URL]) -> (subtitles: [URL], others: [URL]) {
         (urls.filter(SidecarSubtitles.isSubtitleFile), urls.filter { !SidecarSubtitles.isSubtitleFile($0) })
     }
 
     /// Adds the files as subtitle tracks of the loaded media, selecting the last readable one, and reports the
     /// outcome on the OSD.
-    static func attach(_ urls: [URL], to engine: PlayerEngine, osd: OSDManager) {
+    public static func attach(_ urls: [URL], to engine: PlayerEngine, osd: OSDManager) {
         guard !urls.isEmpty else { return }
         guard engine.isLoaded else {
             osd.show(

@@ -33,8 +33,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     private var isPictureInPictureFromMinimize = false
     /// PiP's restore, held back while the window comes out of the Dock.
     private var pendingPictureInPictureRestore: (@MainActor () -> Void)?
-    /// Set in `windowWillClose`; PiP callbacks that follow must not show the window again.
-    private var isWindowClosing = false
+    /// Set in `windowWillClose`; PiP callbacks and opens still resolving that follow must not show the window again.
+    private(set) var isWindowClosing = false
 
     /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
     public var onActionButton: ((_ id: String) -> Void)? {
@@ -132,6 +132,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         uiState.togglePictureInPicture = { [weak self] in
             self?.togglePictureInPicture()
         }
+        uiState.titleBarDoubleClicked = { [weak window] in
+            window?.performTitleBarDoubleClickAction()
+        }
         // Created now, not on first toggle: it follows the engine from here on and prepares AVKit for the first video.
         _ = pictureInPicture
         rememberRecentMedia = configuration.rememberRecentMedia
@@ -140,11 +143,11 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         applyActionButtonConfiguration(configuration)
         applyMediaResolverConfiguration(configuration)
 
-        window.title = "Nits"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        observeMediaTitle()
 
         window.center()
         window.delegate = self
@@ -154,8 +157,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         let contentView = ContentView(
             engine: engine,
             uiState: uiState,
-            onFileLoaded: { [weak self] url in
-                self?.window?.title = url.lastPathComponent
+            onOpenURLs: { [weak self] urls in
+                self?.openMedia(urls: urls)
             },
             onControlsVisibilityChanged: { [weak self] isVisible in
                 self?.updateTrafficLightsVisibility(isVisible: isVisible)
@@ -302,6 +305,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         )
     }
 
+    /// Loads `url` and, with `presentsWindow`, brings the window and the app to the front.
     public func openStream(
         url: URL,
         title: String? = nil,
@@ -312,14 +316,12 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
         actionButtons: [PlaybackActionButton] = [],
-        trackNavigation: TrackNavigation = TrackNavigation()
+        trackNavigation: TrackNavigation = TrackNavigation(),
+        presentsWindow: Bool = true
     ) {
-        let isNetwork = MediaURL.isNetworkURL(url.absoluteString)
-        let rawPath = isNetwork ? url.absoluteString : url.standardizedFileURL.path(percentEncoded: false)
-
         engine.load(
             MediaLoadRequest(
-                path: rawPath,
+                path: MediaOpenRequest.loadPath(for: url),
                 title: title,
                 artworkData: artworkData,
                 artworkURL: artworkURL,
@@ -330,7 +332,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
                 actionButtons: actionButtons,
                 trackNavigation: trackNavigation
             ))
-        window?.title = engine.mediaTitle
+        updateTrafficLightsVisibility(isVisible: true)
+        guard presentsWindow else { return }
 
         showWindow(nil)
         NSApp.activate()
@@ -338,8 +341,18 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         if let contentView = window?.contentView {
             window?.makeFirstResponder(contentView)
         }
-        updateTrafficLightsVisibility(isVisible: true)
         onKeyStatusChanged?(true)
+    }
+
+    /// The window's title follows the media's, which a load sets late for a playlist file and refines from the
+    /// container's metadata or a resolver. Re-registered after every change, as `withObservationTracking` reports one.
+    private func observeMediaTitle() {
+        window?.title = engine.mediaTitle.isEmpty ? "Nits" : engine.mediaTitle
+        withObservationTracking {
+            _ = engine.mediaTitle
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeMediaTitle() }
+        }
     }
 
     public func exitFullscreen() {

@@ -46,7 +46,11 @@ public struct ControlsOverlay: View {
                 .gesture(WindowDragGesture())
                 .simultaneousGesture(
                     TapGesture(count: 2).onEnded {
-                        (NSApp.keyWindow ?? NSApp.mainWindow)?.zoom(nil)
+                        if let titleBarDoubleClicked = uiState?.titleBarDoubleClicked {
+                            titleBarDoubleClicked()
+                        } else {
+                            (NSApp.keyWindow ?? NSApp.mainWindow)?.zoom(nil)
+                        }
                     }
                 )
                 .allowsWindowActivationEvents()

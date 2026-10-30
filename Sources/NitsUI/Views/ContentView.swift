@@ -5,7 +5,8 @@ import SwiftUI
 public struct ContentView: View {
     public let engine: PlayerEngine
     public var uiState: PlayerUIState
-    public var onFileLoaded: ((URL) -> Void)?
+    /// Opens what was dropped on the video or picked in the Open panel; `nil` opens it in the engine here.
+    public var onOpenURLs: (([URL]) -> Void)?
     public var onControlsVisibilityChanged: ((Bool) -> Void)?
     public var onToggleFullscreen: (() -> Void)?
 
@@ -26,13 +27,13 @@ public struct ContentView: View {
     public init(
         engine: PlayerEngine,
         uiState: PlayerUIState = PlayerUIState(),
-        onFileLoaded: ((URL) -> Void)? = nil,
+        onOpenURLs: (([URL]) -> Void)? = nil,
         onControlsVisibilityChanged: ((Bool) -> Void)? = nil,
         onToggleFullscreen: (() -> Void)? = nil
     ) {
         self.engine = engine
         self.uiState = uiState
-        self.onFileLoaded = onFileLoaded
+        self.onOpenURLs = onOpenURLs
         self.onControlsVisibilityChanged = onControlsVisibilityChanged
         self.onToggleFullscreen = onToggleFullscreen
     }
@@ -451,42 +452,15 @@ public struct ContentView: View {
     }
 
     private func loadMedia(urls: [URL]) {
-        // Subtitle files attach to the media: the one playing, or the one dropped with them.
-        let (subtitleURLs, mediaURLs) = SubtitleFileDrop.split(urls)
-        guard !mediaURLs.isEmpty else {
-            SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
-            return
-        }
-        Task {
-            let resolution = await MediaURLResolver.resolveAsync(mediaURLs, source: "Drop / open")
-            // Subtitles dropped with a video belong to it: none for the media already playing if it can't be opened.
-            guard let path = loadResolvedMedia(urls: resolution.urls) else {
-                uiState.osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
-                return
+        guard !urls.isEmpty else { return }
+        if let onOpenURLs {
+            onOpenURLs(urls)
+        } else {
+            Task {
+                await MediaOpenRequest.resolving(urls, source: "Drop / open").open(in: engine, osd: uiState.osd)
             }
-            guard !subtitleURLs.isEmpty else { return }
-            // A file on a network volume loads in the background; attach once it is in, unless another took its place.
-            await engine.waitForPendingLoad()
-            guard engine.isLoaded, engine.currentPath == MediaURL.normalizeMediaPath(path) else {
-                AppLog.info(.subtitles, "Dropped subtitles not attached: '\(path)' isn't what is loaded")
-                return
-            }
-            SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
         }
-    }
-
-    /// Loads the first URL (the rest become the playlist) and returns the path it loads, `nil` if there are none.
-    private func loadResolvedMedia(urls: [URL]) -> String? {
-        guard let firstURL = urls.first else { return nil }
-        if urls.count > 1 {
-            engine.playlist.clear()
-            engine.playlist.append(urls: urls)
-        }
-        let filePath = firstURL.path(percentEncoded: false)
-        engine.load(path: filePath)
-        onFileLoaded?(firstURL)
         scheduleControlsHide()
-        return filePath
     }
 }
 

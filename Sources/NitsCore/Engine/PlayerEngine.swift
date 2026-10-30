@@ -218,8 +218,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         if config.videoScaling != previousVideoScaling {
             self.videoGeometry.scaling = config.videoScaling
         }
-        self.playlist.setRepeatMode(config.playlistRepeatMode)
-        self.playlist.setShuffle(config.playlistIsShuffled)
     }
 
     public var enableOSD: Bool = true
@@ -723,8 +721,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
         self.seekStepSeconds = configuration.seekStepSeconds
         self.exactSeekOnSinglePress = configuration.exactSeekOnSinglePress
         self.playlist = PlaylistManager(
-            repeatMode: configuration.playlistRepeatMode,
-            isShuffled: configuration.playlistIsShuffled,
             userDefaults: userDefaults,
             durationCache: durationCache
         )

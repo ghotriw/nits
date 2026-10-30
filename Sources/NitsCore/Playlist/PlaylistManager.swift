@@ -67,14 +67,25 @@ public final class PlaylistManager: Sendable {
     /// Supported extensions for media files and playlist files.
     nonisolated public static let supportedExtensions: Set<String> = mediaExtensions.union(playlistExtensions)
 
+    /// `UserDefaults` keys of the persisted repeat mode and shuffle state.
+    nonisolated public static let keyRepeatMode = "Nits.playlistRepeatMode"
+    nonisolated public static let keyIsShuffled = "Nits.playlistIsShuffled"
+
+    /// - Parameters:
+    ///   - repeatMode: `nil` restores the mode stored in `userDefaults`, else `.off`.
+    ///   - isShuffled: `nil` restores the state stored in `userDefaults`, else `false`.
+    ///   - userDefaults: Where repeat and shuffle changes persist; `nil` keeps them in memory.
     public init(
         items: [PlaylistItem] = [],
-        repeatMode: PlaylistRepeatMode = .off,
-        isShuffled: Bool = false,
+        repeatMode: PlaylistRepeatMode? = nil,
+        isShuffled: Bool? = nil,
         autoPlayNext: Bool = true,
         userDefaults: UserDefaults? = nil,
         durationCache: MediaDurationCache? = nil
     ) {
+        let repeatMode =
+            repeatMode ?? userDefaults?.string(forKey: Self.keyRepeatMode).flatMap(PlaylistRepeatMode.init) ?? .off
+        let isShuffled = isShuffled ?? userDefaults?.object(forKey: Self.keyIsShuffled) as? Bool ?? false
         self.repeatMode = repeatMode
         self.isShuffled = isShuffled
         self.autoPlayNext = autoPlayNext
@@ -645,7 +656,7 @@ public final class PlaylistManager: Sendable {
     /// Sets repeat mode and optionally persists it to the configured UserDefaults store.
     public func setRepeatMode(_ mode: PlaylistRepeatMode) {
         repeatMode = mode
-        userDefaults?.set(mode.rawValue, forKey: PlayerConfiguration.keyPlaylistRepeatMode)
+        userDefaults?.set(mode.rawValue, forKey: Self.keyRepeatMode)
     }
 
     /// Cycles through repeat modes: off -> all -> one -> off, persisting the change if configured.
@@ -663,7 +674,7 @@ public final class PlaylistManager: Sendable {
     public func toggleShuffle() {
         if items.count <= 1 {
             isShuffled.toggle()
-            userDefaults?.set(isShuffled, forKey: PlayerConfiguration.keyPlaylistIsShuffled)
+            userDefaults?.set(isShuffled, forKey: Self.keyIsShuffled)
             return
         }
 
@@ -691,7 +702,7 @@ public final class PlaylistManager: Sendable {
             currentIndex = newIndex
         }
 
-        userDefaults?.set(isShuffled, forKey: PlayerConfiguration.keyPlaylistIsShuffled)
+        userDefaults?.set(isShuffled, forKey: Self.keyIsShuffled)
     }
 
     // MARK: - Sorting

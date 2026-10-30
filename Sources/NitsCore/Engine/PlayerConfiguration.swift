@@ -164,12 +164,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// (if provided, overrides the track saved in resume history).
     public var subtitleTrack: String?
 
-    /// Saved playlist repeat mode (default .off).
-    public var playlistRepeatMode: PlaylistRepeatMode
-
-    /// Saved playlist shuffle state (default false).
-    public var playlistIsShuffled: Bool
-
     /// Policy for timeline hover thumbnail generation on network streams (default .localNetworkOnly).
     public var networkThumbnailPolicy: NetworkThumbnailPolicy
     /// Whether the pages of video sites play, resolved by yt-dlp found on the system (default true).
@@ -254,8 +248,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         startTime: Double? = nil,
         audioTrack: String? = nil,
         subtitleTrack: String? = nil,
-        playlistRepeatMode: PlaylistRepeatMode = .off,
-        playlistIsShuffled: Bool = false,
         networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
         resolvesWithYTDLP: Bool = true,
         ytdlpPath: String = "",
@@ -309,8 +301,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.startTime = startTime
         self.audioTrack = audioTrack
         self.subtitleTrack = subtitleTrack
-        self.playlistRepeatMode = playlistRepeatMode
-        self.playlistIsShuffled = playlistIsShuffled
         self.networkThumbnailPolicy = networkThumbnailPolicy
         self.resolvesWithYTDLP = resolvesWithYTDLP
         self.ytdlpPath = ytdlpPath
@@ -360,8 +350,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySeekStepSeconds = "Nits.seekStepSeconds"
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
     public static let keyVideoScaling = "Nits.videoScaling"
-    public static let keyPlaylistRepeatMode = "Nits.playlistRepeatMode"
-    public static let keyPlaylistIsShuffled = "Nits.playlistIsShuffled"
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
     public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
     public static let keyYTDLPPath = "Nits.ytdlpPath"
@@ -480,14 +468,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         {
             config.videoScaling = scaling
         }
-        if let repeatRaw = userDefaults.string(forKey: keyPlaylistRepeatMode),
-            let mode = PlaylistRepeatMode(rawValue: repeatRaw)
-        {
-            config.playlistRepeatMode = mode
-        }
-        if userDefaults.object(forKey: keyPlaylistIsShuffled) != nil {
-            config.playlistIsShuffled = userDefaults.bool(forKey: keyPlaylistIsShuffled)
-        }
         if let networkThumbnailsRaw = userDefaults.string(forKey: keyNetworkThumbnailPolicy),
             let policy = NetworkThumbnailPolicy(rawValue: networkThumbnailsRaw)
         {
@@ -582,8 +562,6 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)
         userDefaults.set(videoScaling.rawValue, forKey: Self.keyVideoScaling)
-        userDefaults.set(playlistRepeatMode.rawValue, forKey: Self.keyPlaylistRepeatMode)
-        userDefaults.set(playlistIsShuffled, forKey: Self.keyPlaylistIsShuffled)
         userDefaults.set(networkThumbnailPolicy.rawValue, forKey: Self.keyNetworkThumbnailPolicy)
         userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
         userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)

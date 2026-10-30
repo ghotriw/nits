@@ -324,4 +324,22 @@ struct OSDDurationConfigurationTests {
             arguments: ["Nits", "--sponsorblock"], base: PlayerConfiguration(sponsorBlock: false))
         #expect(enabled.sponsorBlock == true)
     }
+
+    @Test("Reloading saved settings under the launch arguments keeps the flags and the settings changed since")
+    func testReloadKeepsCommandLineOverrides() {
+        let defaults = InMemoryUserDefaults()
+        let arguments = ["Nits", "--no-ytdl", "--no-sponsorblock", "--header=Referer: https://example.com"]
+        PlayerConfiguration(ytdlpPath: "/opt/yt-dlp").saveToUserDefaults(userDefaults: defaults)
+
+        // Settings saves a change, then the app reloads its configuration.
+        defaults.set(10.0, forKey: PlayerConfiguration.keySeekStepSeconds)
+        let (reloaded, _) = PlayerConfiguration.parse(
+            arguments: arguments, base: .loadFromUserDefaults(userDefaults: defaults))
+
+        #expect(reloaded.seekStepSeconds == 10.0)
+        #expect(reloaded.resolvesWithYTDLP == false)
+        #expect(reloaded.sponsorBlock == false)
+        #expect(reloaded.ytdlpPath == "/opt/yt-dlp")
+        #expect(reloaded.httpHeaders["Referer"] == "https://example.com")
+    }
 }

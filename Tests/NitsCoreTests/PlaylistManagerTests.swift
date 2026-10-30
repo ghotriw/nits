@@ -573,34 +573,47 @@ struct PlaylistManagerTests {
         #expect(items[3999].url.path == "/Volumes/Drive/media_4000.mp4")
     }
 
-    @Test("Playlist repeat mode and shuffle persistence")
+    @Test("Repeat mode and shuffle persist and come back in the next manager on the same defaults")
     func testRepeatAndShufflePersistence() {
         let testDefaults = InMemoryUserDefaults()
 
-        var config = PlayerConfiguration.loadFromUserDefaults(userDefaults: testDefaults)
-        #expect(config.playlistRepeatMode == .off)
-        #expect(config.playlistIsShuffled == false)
+        let fresh = PlaylistManager(userDefaults: testDefaults)
+        #expect(fresh.repeatMode == .off)
+        #expect(fresh.isShuffled == false)
 
-        config.playlistRepeatMode = .all
-        config.playlistIsShuffled = true
-        config.saveToUserDefaults(userDefaults: testDefaults)
+        fresh.setRepeatMode(.all)
+        fresh.toggleShuffle()
+        #expect(testDefaults.string(forKey: PlaylistManager.keyRepeatMode) == PlaylistRepeatMode.all.rawValue)
+        #expect(testDefaults.bool(forKey: PlaylistManager.keyIsShuffled) == true)
 
-        let loaded = PlayerConfiguration.loadFromUserDefaults(userDefaults: testDefaults)
-        #expect(loaded.playlistRepeatMode == .all)
-        #expect(loaded.playlistIsShuffled == true)
+        let restored = PlaylistManager(userDefaults: testDefaults)
+        #expect(restored.repeatMode == .all)
+        #expect(restored.isShuffled == true)
 
-        // Verifying code review point 3: PlaylistManager uses injected userDefaults
-        let isolatedManager = PlaylistManager(
-            repeatMode: loaded.playlistRepeatMode,
-            isShuffled: loaded.playlistIsShuffled,
-            userDefaults: testDefaults
-        )
-        isolatedManager.cycleRepeatMode()
-        #expect(
-            testDefaults.string(forKey: PlayerConfiguration.keyPlaylistRepeatMode) == PlaylistRepeatMode.one.rawValue)
+        // Explicit values win over the stored ones.
+        let explicit = PlaylistManager(repeatMode: .one, isShuffled: false, userDefaults: testDefaults)
+        #expect(explicit.repeatMode == .one)
+        #expect(explicit.isShuffled == false)
+    }
 
-        isolatedManager.toggleShuffle()
-        #expect(testDefaults.bool(forKey: PlayerConfiguration.keyPlaylistIsShuffled) == false)
+    @Test("Applying a configuration keeps repeat and shuffle; a new engine on the same defaults restores them")
+    func testEngineKeepsRepeatAndShuffle() {
+        let testDefaults = InMemoryUserDefaults()
+        let engine = PlayerEngine.makeForTesting(userDefaults: testDefaults)
+        engine.playlist.setRepeatMode(.one)
+        engine.playlist.toggleShuffle()
+
+        // A Settings change re-applies the configuration.
+        var changed = engine.configuration
+        changed.seekStepSeconds += 1
+        engine.applyConfiguration(changed)
+        #expect(engine.playlist.repeatMode == .one)
+        #expect(engine.playlist.isShuffled == true)
+
+        // The player window closes and another opens with a new engine.
+        let next = PlayerEngine.makeForTesting(userDefaults: testDefaults)
+        #expect(next.playlist.repeatMode == .one)
+        #expect(next.playlist.isShuffled == true)
     }
 
     @Test("PlaylistManager isLoading state tracking")

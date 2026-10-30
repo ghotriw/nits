@@ -10,8 +10,8 @@ struct NitsApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(onConfigurationChanged: { newConfig in
-                appDelegate.updateConfiguration(newConfig)
+            SettingsView(onSettingsChanged: {
+                appDelegate.settingsDidChange()
             })
         }
         .commands {
