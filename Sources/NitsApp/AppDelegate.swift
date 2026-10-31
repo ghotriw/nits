@@ -113,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let controller = playerWindowController {
             return controller
         }
+        // Quick settings save to `UserDefaults` without going through Settings, so what a window starts with is read
+        // again here rather than taken from what the app launched with.
+        settingsDidChange()
         let controller = PlayerWindowController(
             configuration: configuration, settings: settings, recentMediaStore: .shared)
         controller.onClose = { [weak self] _, _ in
