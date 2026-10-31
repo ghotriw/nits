@@ -620,6 +620,75 @@ extension PlayerWindowController: PlayerActions {
         uiState.osd.show(.subtitleDelay(seconds: engine.subtitles.delay))
     }
 
+    public func resetSubtitleDelay() {
+        guard engine.isLoaded else { return }
+        engine.subtitles.resetDelay()
+        uiState.osd.show(.subtitleDelay(seconds: engine.subtitles.delay))
+    }
+
+    public var isMediaLoaded: Bool { engine.isLoaded }
+    public var subtitleTracks: [SubtitleTrack] { engine.subtitles.tracks }
+    public var selectedSubtitleTrackId: Int? { engine.subtitles.selectedTrackId }
+    public var selectedSecondarySubtitleTrackId: Int? { engine.subtitles.secondary.selectedTrackId }
+    public var secondarySubtitleCandidates: [SubtitleTrack] { engine.subtitles.secondary.candidates }
+    public var subtitleDelay: Double { engine.subtitles.delay }
+    public var subtitleEncoding: String.Encoding? {
+        engine.subtitles.encoding(ofTrack: engine.subtitles.selectedTrackId)
+    }
+    public var canSetSubtitleEncoding: Bool {
+        engine.subtitles.canSetEncoding(ofTrack: engine.subtitles.selectedTrackId)
+    }
+    public var secondarySubtitleEncoding: String.Encoding? {
+        engine.subtitles.encoding(ofTrack: engine.subtitles.secondary.selectedTrackId)
+    }
+    public var canSetSecondarySubtitleEncoding: Bool {
+        engine.subtitles.canSetEncoding(ofTrack: engine.subtitles.secondary.selectedTrackId)
+    }
+
+    public func selectSubtitleTrack(_ id: Int?) {
+        guard engine.isLoaded else { return }
+        engine.subtitles.select(trackId: id)
+    }
+
+    public func selectSecondarySubtitleTrack(_ id: Int?) {
+        guard engine.isLoaded else { return }
+        engine.subtitles.secondary.select(trackId: id)
+    }
+
+    public func loadSubtitleFile() {
+        guard engine.isLoaded, let url = SubtitleFilePicker.pick() else { return }
+        Task { await engine.subtitles.addExternal(url: url) }
+    }
+
+    public func loadSecondarySubtitleFile() {
+        guard engine.isLoaded, let url = SubtitleFilePicker.pick() else { return }
+        Task { await engine.subtitles.secondary.addExternal(url: url) }
+    }
+
+    public var secondarySubtitleDelay: Double { engine.subtitles.secondary.delay }
+
+    public func stepSecondarySubtitleDelay(by delta: Double) {
+        guard engine.isLoaded, engine.subtitles.secondary.isActive else { return }
+        engine.subtitles.secondary.stepDelay(by: delta)
+        uiState.osd.show(.secondarySubtitleDelay(seconds: engine.subtitles.secondary.delay))
+    }
+
+    public func resetSecondarySubtitleDelay() {
+        guard engine.isLoaded, engine.subtitles.secondary.isActive else { return }
+        engine.subtitles.secondary.resetDelay()
+        uiState.osd.show(.secondarySubtitleDelay(seconds: engine.subtitles.secondary.delay))
+    }
+
+    public func setSubtitleEncoding(_ encoding: String.Encoding?) {
+        guard let id = engine.subtitles.selectedTrackId else { return }
+        engine.subtitles.setEncoding(encoding, ofTrack: id)
+    }
+
+    public func setSecondarySubtitleEncoding(_ encoding: String.Encoding?) {
+        guard let id = engine.subtitles.secondary.selectedTrackId else { return }
+        engine.subtitles.setEncoding(encoding, ofTrack: id)
+    }
+
     public func stepAudioDelay(by delta: Double) {
         guard engine.isLoaded, !engine.audioTracks.isEmpty else { return }
         engine.stepAudioDelay(by: delta)

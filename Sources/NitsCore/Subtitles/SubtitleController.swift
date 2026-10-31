@@ -91,10 +91,14 @@ public final class SubtitleController {
     }
 
     @ObservationIgnored weak var host: (any SubtitleHost)?
-    @ObservationIgnored public var settings: Settings
+    public internal(set) var settings: Settings
+
+    /// The second track shown with the selected one.
+    public let secondary = SecondarySubtitles()
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
+        secondary.controller = self
     }
 
     // MARK: Tracks
@@ -139,9 +143,18 @@ public final class SubtitleController {
 
     // MARK: Timing and drawing
 
-    /// Seconds subtitles are shifted by: positive shows them later, negative earlier. Set with `setDelay`.
+    /// Seconds the selected track is shifted by: positive shows it later, negative earlier. Each track has its own (as
+    /// tracks of a file are timed apart), kept for the file by `SubtitleTrack.persistenceKey`. Set with `setDelay`.
     public internal(set) var delay: Double = 0
     public static let delayRange: ClosedRange<Double> = -30.0...30.0
+    /// The delay of each track of the media that has one, by `SubtitleTrack.persistenceKey`: those saved for the file and
+    /// the ones set since.
+    @ObservationIgnored var trackDelays: [String: Double] = [:]
+    /// The encoding the user chose for each subtitle file of the media, by `SubtitleTrack.persistenceKey`.
+    public internal(set) var trackEncodings: [String: String.Encoding] = [:]
+    /// The second track saved for the file that the media couldn't show (a file that moved): kept in what is saved
+    /// until another is chosen.
+    @ObservationIgnored var unrestoredSecondaryKey: String?
     /// The style also applies to ASS dialogue with `assStyleOverride`: a change redraws it, but of the weight, which
     /// libass doesn't take.
     public var style = SubtitleStyle() {
@@ -229,6 +242,8 @@ public final class SubtitleController {
     @ObservationIgnored var indexLoad: Load?
     /// Counts `reset()`s, so files `addExternal(urls:)` read for media since left aren't added to the next.
     @ObservationIgnored var mediaGeneration = 0
+    /// Counts the reads of each local track's file, so one for an encoding since replaced isn't taken.
+    @ObservationIgnored var readGenerations: [Int: Int] = [:]
 
     // MARK: libass
 
@@ -287,6 +302,7 @@ extension SubtitleController {
             // Disable subtitles
             cancelLoads()
             self.selectedTrackId = nil
+            self.delay = 0
             self.activeDocument = nil
             self.cues.removeAll()
             self.images.removeAll()
@@ -302,6 +318,10 @@ extension SubtitleController {
         // Skipping through tracks must not leave a whole-file read running for each one passed.
         cancelLoads(except: id)
         self.selectedTrackId = id
+        // It can't be both; redrawn below, by the document set.
+        secondary.release(trackId: id)
+        // Before its document: the cues it picks are due at its own delay.
+        self.delay = trackDelays[key(of: track)] ?? 0
         // The previous track's cues (and libass script) go until this one's document is there.
         self.activeDocument = nil
         self.cues = []
@@ -315,7 +335,7 @@ extension SubtitleController {
         if track.isExternal {
             self.activeDocument = loadedDocuments[id]
             self.updateShown(at: now)
-            if activeDocument == nil, let url = track.externalURL {
+            if activeDocument == nil, let url = track.externalURL, let read = documentReader(for: track) {
                 let streamIndex = track.streamIndex
                 // Another file may have been opened meanwhile, with tracks of the same ids.
                 let isCurrent: @MainActor @Sendable (SubtitleController) -> Bool = { controller in
@@ -323,38 +343,7 @@ extension SubtitleController {
                         $0.id == id && $0.externalURL == url && $0.streamIndex == streamIndex
                     }
                 }
-                if track.format == .bitmap {
-                    // Pictures are read when the track is selected, as the pictures of a DVD run to tens of megabytes.
-                    loadDocument(
-                        trackId: id,
-                        read: { interrupt in
-                            EmbeddedSubtitleReader.extractEmbeddedSubtitles(
-                                url: url.path, headers: [:], streamIndex: streamIndex, interrupt: interrupt)
-                        }, isCurrent: isCurrent)
-                } else {
-                    // MicroDVD counts frames: without a rate of its own, the video's is the one.
-                    let frameRate = demuxer.flatMap {
-                        $0.hasVideo ? 1 / $0.readingDescription(\.nominalFrameDuration) : nil
-                    }
-                    let hints = textEncodingHints(for: url, language: track.language)
-                    if url.isFileURL {
-                        // A format FFmpeg reads; the other local files are read whole when added.
-                        loadDocument(
-                            trackId: id,
-                            read: { interrupt in
-                                FFmpegTextSubtitles.read(
-                                    url: url, frameRate: frameRate, hints: hints, interrupt: interrupt)
-                            }, isCurrent: isCurrent)
-                    } else {
-                        let headers = externalHeaders[id] ?? host?.currentHeaders ?? [:]
-                        let remote = RemoteSubtitle(
-                            url: url, headers: headers, format: track.format,
-                            isAutoGenerated: track.isAutoGenerated, frameRate: frameRate, hints: hints)
-                        loadDocument(
-                            trackId: id, read: { interrupt in await remote.read(interrupt: interrupt) },
-                            isCurrent: isCurrent)
-                    }
-                }
+                loadDocument(trackId: id, read: read, isCurrent: isCurrent)
             }
         } else if let demuxer {
             // Embedded tracks come from the packets playback reads, as in mpv and VLC: a read of the whole file would
@@ -371,20 +360,19 @@ extension SubtitleController {
 // MARK: - Delay
 
 extension SubtitleController {
-    /// Shifts subtitles by `seconds` (clamped to `delayRange`, rounded to milliseconds) and saves the delay for the
-    /// file. One delay serves all of the file's subtitle tracks.
+    /// Shifts the selected track by `seconds` (clamped to `delayRange`, rounded to milliseconds) and saves the delay for
+    /// the track. Nothing without a selected track.
     public func setDelay(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        let range = Self.delayRange
-        let clamped = min(max((seconds * 1000).rounded() / 1000, range.lowerBound), range.upperBound)
+        guard let track = tracks.first(where: { $0.id == selectedTrackId }) else { return }
+        let clamped = Self.clampedDelay(seconds)
         guard clamped != delay else { return }
         delay = clamped
-        AppLog.info(.subtitles, "Subtitle delay changed to \(clamped)s")
+        store(delay: clamped, of: track)
         let now = host?.currentTime ?? 0
         updateShown(at: now)
         // The track is due at another time now, which may lie outside what was read.
         refreshEmbedded(around: now)
-        host?.saveCurrentPlaybackProgress()
     }
 
     public func stepDelay(by delta: Double) {
@@ -410,9 +398,14 @@ extension SubtitleController {
         indexLoad = nil
         // The next media tries libass again; if its queue is still stuck, the watch finds it so again.
         isLibassStalled = false
+        unrestoredSecondaryKey = nil
+        secondary.reset()
         selectedTrackId = nil
         selectionIsAutomatic = false
         delay = 0
+        trackDelays.removeAll()
+        trackEncodings.removeAll()
+        readGenerations.removeAll()
         activeDocument = nil
         cues.removeAll()
         images.removeAll()
@@ -446,12 +439,9 @@ extension SubtitleController {
         // its document, under an id (1000 + count) the new media's files are given too.
         reset()
         self.tracks = tracks
-        // Set directly, not via `setDelay`: nothing to re-save, and the track below picks its cues with it.
-        let savedDelay = saved?.subtitleDelay ?? 0
-        delay = savedDelay.isFinite ? min(max(savedDelay, Self.delayRange.lowerBound), Self.delayRange.upperBound) : 0
-        if delay != 0 {
-            AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(delay)s")
-        }
+        // The tracks pick their delays up from these as they are selected (`delay(of:)`).
+        trackDelays = (saved?.subtitleDelays ?? [:]).mapValues(Self.clampedDelay)
+        trackEncodings = Self.encodings(from: saved?.subtitleEncodings)
         addSubtitleFiles(
             subtitleFiles, defaultHeaders: defaultHeaders, read: readFiles, reusing: previousRemoteDocuments)
         // Before the saved selection: a saved external file that is one of them maps to the same track.
@@ -481,6 +471,7 @@ extension SubtitleController {
                 AppLog.info(.subtitles, "Selected subtitle track \(trackId) by language and flags")
             }
         }
+        restoreSecondary(from: saved, readFiles: readFiles)
     }
 
     /// Shows what is due at `seconds` (playback time; the delay is applied here) and reads what a seek or a load
@@ -523,7 +514,9 @@ extension SubtitleController {
         assStyleOverride = configuration.assStyleOverride
         scale = configuration.subtitleScale
         position = configuration.subtitlePosition
-        settings = Settings(encoding: configuration.subtitleEncoding, trackLanguages: configuration.trackLanguages)
+        settings.trackLanguages = configuration.trackLanguages
+        // Through the change, so the files open are read in it too.
+        setDefaultEncoding(configuration.subtitleEncoding)
     }
 }
 
@@ -534,7 +527,11 @@ extension SubtitleController {
     /// saved by its path, and a network one by its language, title and kind (`ListedSubtitle`). A selection made on
     /// load by `TrackAutoSelection` isn't saved.
     func writePreferences(into preferences: inout PlaybackPreferences) {
-        preferences.subtitleDelay = delay
+        preferences.subtitleDelays = trackDelays
+        preferences.subtitleEncodings = trackEncodings.compactMapValues(TextFileEncoding.name(of:))
+        preferences.secondarySubtitle =
+            secondary.selectedTrackId.flatMap { id in tracks.first { $0.id == id } }.map(key(of:))
+            ?? unrestoredSecondaryKey ?? ""
         if selectionIsAutomatic {
             // Left as saved: nothing, or a track this file no longer has.
         } else if let id = selectedTrackId {
@@ -616,6 +613,7 @@ extension SubtitleController {
         // A cue due at `t` shows at `t + delay`.
         let playbackSeconds = seconds
         let seconds = seconds - delay
+        secondary.show(at: playbackSeconds - secondary.delay)
         if let id = selectedTrackId,
             let track = tracks.first(where: { $0.id == id }),
             !track.isExternal,
@@ -650,5 +648,113 @@ extension SubtitleController {
             shown = shown.compactMap { $0.forcedOnly() }
         }
         if shown != images { images = shown }
+    }
+}
+
+// MARK: - With a second track
+
+extension SubtitleController {
+    /// The text the overlay draws: the selected track's cues (libass draws its own) and the second track's. With a
+    /// second track on, the selected one's cues sit at the bottom, whatever position they ask for (the top is the
+    /// second's, and two tracks each placing themselves overlap).
+    public var textCues: [SubtitleCue] {
+        let selected = isDrawingAuthored ? [] : cues
+        guard secondary.isActive else { return selected }
+        let placed = selected.map {
+            SubtitleCue(
+                id: $0.id, startTime: $0.startTime, endTime: $0.endTime, text: $0.text, alignment: .bottomCenter,
+                rawPayload: $0.rawPayload)
+        }
+        return placed + secondary.cues
+    }
+
+    /// The playback time, which each track takes its delay off.
+    var shownSeconds: Double {
+        host?.currentTime ?? 0
+    }
+
+    /// The second track was chosen or dropped: libass draws the selected ASS track only without one, as it places its
+    /// dialogue itself.
+    func secondaryDidChange() {
+        syncAuthored()
+        updateShown(at: host?.currentTime ?? 0)
+    }
+}
+
+// MARK: - Delay per track
+
+extension SubtitleController {
+    static func clampedDelay(_ seconds: Double) -> Double {
+        guard seconds.isFinite else { return 0 }
+        let range = delayRange
+        return min(max((seconds * 1000).rounded() / 1000, range.lowerBound), range.upperBound)
+    }
+
+    /// The delay kept for `track`; 0 for one never shifted.
+    func delay(of track: SubtitleTrack) -> Double {
+        trackDelays[key(of: track)] ?? 0
+    }
+
+    /// Keeps `delay` for `track` and saves it for the file; a track back at 0 keeps nothing.
+    func store(delay: Double, of track: SubtitleTrack) {
+        AppLog.info(.subtitles, "Subtitle delay of track \(track.id) changed to \(delay)s")
+        trackDelays[key(of: track)] = delay == 0 ? nil : delay
+        host?.saveCurrentPlaybackProgress()
+    }
+}
+
+extension SubtitleController {
+    /// `SubtitleTrack.persistenceKey`, told apart for tracks that share one (two network files of the same language and
+    /// title) by their order.
+    func key(of track: SubtitleTrack) -> String {
+        let base = track.persistenceKey
+        let same = tracks.filter { $0.persistenceKey == base }
+        guard same.count > 1, let index = same.firstIndex(where: { $0.id == track.id }), index > 0 else { return base }
+        return "\(base)~\(index)"
+    }
+
+    /// Shows the second track saved for the file, if the media still has it (a file added by hand is read again, as
+    /// the main track's is: `MediaSubtitleFiles.Lookup.savedSecondaryPath`) and it isn't the main one.
+    private func restoreSecondary(from saved: PlaybackPreferences?, readFiles: MediaSubtitleFiles) {
+        guard let key = saved?.secondarySubtitle, !key.isEmpty else { return }
+        var track = tracks.first { self.key(of: $0) == key }
+        if track == nil, let path = SubtitleTrack.filePath(ofKey: key), let read = readFiles[URL(fileURLWithPath: path)]
+        {
+            addReadFile(read)
+            track = tracks.first { self.key(of: $0) == key }
+        }
+        guard let track else {
+            unrestoredSecondaryKey = key
+            return
+        }
+        secondary.select(trackId: track.id, persist: false)
+        guard secondary.isActive else {
+            unrestoredSecondaryKey = key
+            return
+        }
+        AppLog.info(.subtitles, "Restored second subtitle track from saved history: \(track.id)")
+    }
+}
+
+// MARK: - Encoding per file
+
+extension SubtitleController {
+    /// The encodings saved for the media's subtitle files (`PlaybackPreferences.subtitleEncodings`), told by name.
+    nonisolated static func encodings(from names: [String: String]?) -> [String: String.Encoding] {
+        (names ?? [:]).compactMapValues(TextFileEncoding.encoding(named:))
+    }
+
+    /// The choices among `encodings` for files added by hand or found next to the media, by standardized path: what
+    /// `MediaSubtitleFiles` reads those files in.
+    nonisolated static func fileEncodings(in encodings: [String: String.Encoding]) -> [String: String.Encoding] {
+        var byPath: [String: String.Encoding] = [:]
+        for (key, encoding) in encodings {
+            if let path = SubtitleTrack.filePath(ofKey: key) { byPath[path] = encoding }
+        }
+        return byPath
+    }
+
+    func fileEncodings() -> [String: String.Encoding] {
+        Self.fileEncodings(in: trackEncodings)
     }
 }

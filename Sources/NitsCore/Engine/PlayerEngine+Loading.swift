@@ -843,7 +843,10 @@ extension PlayerEngine {
             requested: files,
             sidecarsOf: MediaURL.isNetworkURL(path) ? nil : path,
             savedPath: saved?.subtitleTrackId == PlaybackRecord.externalSubtitle ? saved?.externalSubtitlePath : nil,
-            encoding: subtitles.settings.encoding)
+            savedSecondaryPath: saved?.secondarySubtitle.flatMap(SubtitleTrack.filePath(ofKey:)),
+            encoding: subtitles.settings.encoding,
+            fileEncodings: SubtitleController.fileEncodings(
+                in: SubtitleController.encodings(from: saved?.subtitleEncodings)))
     }
 
     /// The inputs of a media just opened: the audio files in the order asked for (those declared listed, the rest

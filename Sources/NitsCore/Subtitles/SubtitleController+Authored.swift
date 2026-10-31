@@ -8,7 +8,7 @@ extension SubtitleController {
     /// here waits for libass: creating the renderer (fonts) and feeding it happen off the main thread.
     func syncAuthored(renderIfReady: Bool = true) {
         let selected = selectedTrackId.flatMap { id in tracks.first { $0.id == id } }
-        guard usesAuthoredStyles, renderSize.width >= 1, renderSize.height >= 1,
+        guard usesAuthoredStyles, !secondary.isActive, renderSize.width >= 1, renderSize.height >= 1,
             selected?.format == .ass, let script = activeDocument?.assScript, let trackId = selected?.id
         else {
             dropAuthoredRenderer()

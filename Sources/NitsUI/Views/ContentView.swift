@@ -129,7 +129,7 @@ public struct ContentView: View {
 
             // Subtitles Overlay
             SubtitleOverlayView(
-                cues: engine.subtitles.isDrawingAuthored ? [] : engine.subtitles.cues,
+                cues: engine.subtitles.textCues,
                 images: engine.subtitles.images,
                 fontSize: engine.subtitles.style.fontSize,
                 textColor: Color(hex: engine.subtitles.style.textColorHex) ?? .white,

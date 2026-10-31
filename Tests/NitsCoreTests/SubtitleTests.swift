@@ -224,6 +224,9 @@ struct SubtitleDelayTests {
         engine.subtitles.activeDocument = SubtitleDocument(cues: [
             SubtitleCue(id: 1, startTime: 10.0, endTime: 12.0, text: "Line", alignment: .bottomCenter)
         ])
+        // A delay belongs to the selected track.
+        engine.subtitles.tracks = [SubtitleTrack(id: 1, title: "Test", language: "en")]
+        engine.subtitles.selectedTrackId = 1
         return engine
     }
 
@@ -342,6 +345,8 @@ struct SubtitleCueEventTests {
             SubtitleCue(
                 id: 2, startTime: 20.0, endTime: 22.0, text: "Second", rawPayload: "0,0,Default,,0,0,0,,Second"),
         ])
+        engine.subtitles.tracks = [SubtitleTrack(id: 1, title: "Test", language: "en")]
+        engine.subtitles.selectedTrackId = 1
         return engine
     }
 

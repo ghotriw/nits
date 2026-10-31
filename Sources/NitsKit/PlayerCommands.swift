@@ -14,6 +14,21 @@ public struct PlayerCommands: Commands {
         focusedPlayer ?? fallbackPlayer?()
     }
 
+    /// The encoding of a subtitle file: the default (automatic detection, or the one in Settings) or a choice.
+    private func encodingPicker(
+        get: @escaping @MainActor @Sendable () -> String.Encoding?,
+        set: @escaping @MainActor @Sendable (String.Encoding?) -> Void, isEnabled: Bool
+    ) -> some View {
+        Picker("Encoding", selection: Binding(get: get, set: set)) {
+            Text("Default").tag(String.Encoding?.none)
+            Divider()
+            ForEach(SubtitleEncodingCatalog.all, id: \.name) { entry in
+                Text(entry.title).tag(String.Encoding?.some(entry.encoding))
+            }
+        }
+        .disabled(!isEnabled)
+    }
+
     public var body: some Commands {
         CommandMenu("Playback") {
             Button("Play / Pause") {
@@ -122,6 +137,98 @@ public struct PlayerCommands: Commands {
                 )
             )
             .disabled(playerActions == nil)
+        }
+
+        CommandMenu("Subtitles") {
+            let tracks = playerActions?.subtitleTracks ?? []
+            // The tracks are the media loaded's.
+            let loaded = playerActions?.isMediaLoaded ?? false
+            Picker(
+                "Subtitle Track",
+                selection: Binding(
+                    get: { playerActions?.selectedSubtitleTrackId },
+                    set: { playerActions?.selectSubtitleTrack($0) }
+                )
+            ) {
+                Text("Off").tag(Int?.none)
+                if !tracks.isEmpty { Divider() }
+                ForEach(tracks) { track in
+                    Text(TrackTitleFormatter.format(track))
+                        .tag(Int?.some(track.id))
+                }
+            }
+            .pickerStyle(.inline)
+            .disabled(!loaded)
+
+            Divider()
+
+            Button("Load External Subtitle…") {
+                playerActions?.loadSubtitleFile()
+            }
+            .disabled(!loaded)
+
+            // Of this track's file: files differ in encoding as tracks do in language.
+            encodingPicker(
+                get: { playerActions?.subtitleEncoding }, set: { playerActions?.setSubtitleEncoding($0) },
+                isEnabled: playerActions?.canSetSubtitleEncoding ?? false)
+
+            Divider()
+
+            let delay = playerActions?.subtitleDelay ?? 0
+            let hasMain = playerActions?.selectedSubtitleTrackId != nil
+            Button("Delay Later (+0.1 s)") { playerActions?.stepSubtitleDelay(by: 0.1) }
+                .disabled(!hasMain)
+            Button("Delay Earlier (−0.1 s)") { playerActions?.stepSubtitleDelay(by: -0.1) }
+                .disabled(!hasMain)
+            Button("Reset Delay (\(String(format: "%+.1f s", delay)))") { playerActions?.resetSubtitleDelay() }
+                .disabled(!hasMain || delay == 0)
+
+            Divider()
+
+            // The same for the second track, shown above the main one.
+            Menu("Second Subtitle Track") {
+                let candidates = playerActions?.secondarySubtitleCandidates ?? []
+                Picker(
+                    "Second Subtitle Track",
+                    selection: Binding(
+                        get: { playerActions?.selectedSecondarySubtitleTrackId },
+                        set: { playerActions?.selectSecondarySubtitleTrack($0) }
+                    )
+                ) {
+                    Text("Off").tag(Int?.none)
+                    if !candidates.isEmpty { Divider() }
+                    ForEach(candidates) { track in
+                        Text(TrackTitleFormatter.format(track))
+                            .tag(Int?.some(track.id))
+                    }
+                }
+                .pickerStyle(.inline)
+
+                Divider()
+
+                Button("Load External Subtitle…") {
+                    playerActions?.loadSecondarySubtitleFile()
+                }
+
+                encodingPicker(
+                    get: { playerActions?.secondarySubtitleEncoding },
+                    set: { playerActions?.setSecondarySubtitleEncoding($0) },
+                    isEnabled: playerActions?.canSetSecondarySubtitleEncoding ?? false)
+
+                Divider()
+
+                let secondDelay = playerActions?.secondarySubtitleDelay ?? 0
+                let hasSecond = playerActions?.selectedSecondarySubtitleTrackId != nil
+                Button("Delay Later (+0.1 s)") { playerActions?.stepSecondarySubtitleDelay(by: 0.1) }
+                    .disabled(!hasSecond)
+                Button("Delay Earlier (−0.1 s)") { playerActions?.stepSecondarySubtitleDelay(by: -0.1) }
+                    .disabled(!hasSecond)
+                Button("Reset Delay (\(String(format: "%+.1f s", secondDelay)))") {
+                    playerActions?.resetSecondarySubtitleDelay()
+                }
+                .disabled(!hasSecond || secondDelay == 0)
+            }
+            .disabled(!loaded)
         }
 
         CommandMenu("Video") {

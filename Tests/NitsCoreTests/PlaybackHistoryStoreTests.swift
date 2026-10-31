@@ -152,7 +152,7 @@ struct PlaybackHistoryStoreTests {
         let legacyTracks = store.savedPreferences(for: legacyMedia)
         #expect(legacyTracks?.audioTrackId == nil)
         #expect(legacyTracks?.subtitleTrackId == nil)
-        #expect(legacyTracks?.subtitleDelay == nil)
+        #expect(legacyTracks?.subtitleDelays == nil)
     }
 
     @Test("PlaybackHistoryStore keeps the subtitle delay across saves and lets an explicit 0 override it")
@@ -162,17 +162,17 @@ struct PlaybackHistoryStoreTests {
         let media = MediaHistoryIdentity(historyKey: "/movies/out_of_sync.mkv")
 
         // A delay alone keeps the record even at the start of the file.
-        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelay: 1.4))
-        #expect(store.savedPreferences(for: media)?.subtitleDelay == 1.4)
+        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelays: ["s1": 1.4]))
+        #expect(store.savedPreferences(for: media)?.subtitleDelays == ["s1": 1.4])
 
         // `nil` keeps the saved delay.
         store.savePosition(for: media, position: 120.0, duration: 1000.0)
-        #expect(store.savedPreferences(for: media)?.subtitleDelay == 1.4)
+        #expect(store.savedPreferences(for: media)?.subtitleDelays == ["s1": 1.4])
         #expect(store.savedPosition(for: media) == 120.0)
 
         store.savePosition(
-            for: media, position: 130.0, duration: 1000.0, preferences: PlaybackPreferences(subtitleDelay: 0))
-        #expect(store.savedPreferences(for: media)?.subtitleDelay == 0)
+            for: media, position: 130.0, duration: 1000.0, preferences: PlaybackPreferences(subtitleDelays: ["s1": 0]))
+        #expect(store.savedPreferences(for: media)?.subtitleDelays == ["s1": 0])
     }
 
     @Test("PlaybackHistoryStore keeps preferences of a finished file and resets only its position")
@@ -183,18 +183,19 @@ struct PlaybackHistoryStoreTests {
 
         store.savePosition(
             for: media, position: 300.0, duration: 1000.0,
-            preferences: PlaybackPreferences(subtitleTrackId: 2, subtitleDelay: -0.6))
+            preferences: PlaybackPreferences(subtitleTrackId: 2, subtitleDelays: ["s1": -0.6]))
         store.savePosition(for: media, position: 990.0, duration: 1000.0)
 
         #expect(store.savedPosition(for: media) == nil)
         let preferences = store.savedPreferences(for: media)
         #expect(preferences?.subtitleTrackId == 2)
-        #expect(preferences?.subtitleDelay == -0.6)
+        #expect(preferences?.subtitleDelays == ["s1": -0.6])
 
         // Without preferences, a finished or barely started file leaves no record.
         let plainMedia = MediaHistoryIdentity(historyKey: "/movies/plain.mkv")
         store.savePosition(
-            for: plainMedia, position: 300.0, duration: 1000.0, preferences: PlaybackPreferences(subtitleDelay: 0))
+            for: plainMedia, position: 300.0, duration: 1000.0,
+            preferences: PlaybackPreferences(subtitleDelays: ["s1": 0]))
         store.savePosition(for: plainMedia, position: 990.0, duration: 1000.0)
         #expect(store.savedPreferences(for: plainMedia) == nil)
     }
@@ -227,7 +228,7 @@ struct PlaybackHistoryStoreTests {
             PlaybackPreferences(subtitleTrackId: PlaybackRecord.listedSubtitle, listedSubtitle: listed))
         #expect(store.savedPreferences(for: media)?.listedSubtitle == listed)
 
-        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelay: 0.5))
+        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelays: ["s1": 0.5]))
         #expect(store.savedPreferences(for: media)?.listedSubtitle == listed)
 
         store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleTrackId: 1))
@@ -246,7 +247,7 @@ struct PlaybackHistoryStoreTests {
         #expect(store.savedPreferences(for: media)?.externalSubtitleStreamIndex == 1)
 
         // A save that doesn't touch the subtitle file keeps its stream.
-        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelay: 0.5))
+        store.savePreferences(for: media, duration: 1000.0, PlaybackPreferences(subtitleDelays: ["s1": 0.5]))
         #expect(store.savedPreferences(for: media)?.externalSubtitleStreamIndex == 1)
 
         store.savePreferences(
@@ -317,14 +318,14 @@ struct PlaybackHistoryGeometryTests {
         #expect(store.savedPreferences(for: media)?.videoAspectRatio?.isValid == false)
 
         // `nil` keeps the saved crop.
-        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(subtitleDelay: 0.5))
+        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(subtitleDelays: ["s1": 0.5]))
         #expect(store.savedPreferences(for: media)?.videoCrop == wide)
 
         // Cleared with nothing else to keep: the record goes away.
         store.savePosition(
             for: media, position: 0, duration: 3600,
             preferences: PlaybackPreferences(
-                subtitleDelay: 0, videoAspectRatio: PlaybackPreferences.noGeometryOverride,
+                subtitleDelays: ["s1": 0], videoAspectRatio: PlaybackPreferences.noGeometryOverride,
                 videoCrop: PlaybackPreferences.noGeometryOverride))
         #expect(store.savedPreferences(for: media) == nil)
     }
@@ -335,13 +336,13 @@ struct PlaybackHistoryGeometryTests {
         store.savePreferences(for: media, duration: 3600, PlaybackPreferences(playbackRate: 1.5))
         #expect(store.savedPreferences(for: media)?.playbackRate == 1.5)
 
-        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(subtitleDelay: 0.5))
+        store.savePreferences(for: media, duration: 3600, PlaybackPreferences(subtitleDelays: ["s1": 0.5]))
         #expect(store.savedPreferences(for: media)?.playbackRate == 1.5)
 
         // A chosen 1× is kept with nothing else to keep, on either path.
         store.savePosition(
             for: media, position: 0, duration: 3600,
-            preferences: PlaybackPreferences(subtitleDelay: 0, playbackRate: 1))
+            preferences: PlaybackPreferences(subtitleDelays: ["s1": 0], playbackRate: 1))
         #expect(store.savedPreferences(for: media)?.playbackRate == 1)
     }
 
@@ -349,10 +350,10 @@ struct PlaybackHistoryGeometryTests {
     func testDecodesRecordsWithoutGeometry() throws {
         let defaults = InMemoryUserDefaults()
         let store = PlaybackHistoryStore(userDefaults: defaults)
-        let legacy = #"{"position":120,"duration":3600,"lastUpdated":0,"subtitleDelay":0.2}"#
+        let legacy = #"{"position":120,"duration":3600,"lastUpdated":0,"subtitleDelays":{"s1":0.2}}"#
         defaults.set(Data(legacy.utf8), forKey: store.storageKey(for: path))
         let preferences = try #require(store.savedPreferences(for: media))
-        #expect(preferences.subtitleDelay == 0.2)
+        #expect(preferences.subtitleDelays == ["s1": 0.2])
         #expect(preferences.videoAspectRatio == nil && preferences.videoCrop == nil)
     }
 }

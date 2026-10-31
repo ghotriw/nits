@@ -95,8 +95,12 @@ struct MediaSubtitleFiles: Sendable {
         var sidecarsOf: String?
         /// The file the history saved for the media, when one was selected.
         var savedPath: String?
+        /// The file the history saved as the second track (`SubtitleTrack.persistenceKey` of a file), when it is one.
+        var savedSecondaryPath: String?
         /// The user's choice for files that aren't Unicode.
         var encoding: String.Encoding?
+        /// The choices made for single files (by standardized path), over `encoding`.
+        var fileEncodings: [String: String.Encoding] = [:]
         /// Files already listed as tracks (`SubtitleTrack.externalURL`): not read again.
         var listed: Set<URL> = []
     }
@@ -132,7 +136,8 @@ struct MediaSubtitleFiles: Sendable {
             let target = SubtitleFileRead.target(of: url)
             files.targets[key] = target
             guard files.reads[target] == nil, !lookup.listed.contains(target) else { return }
-            files.reads[target] = SubtitleFileRead.read(target: target, file: file, encoding: lookup.encoding)
+            files.reads[target] = SubtitleFileRead.read(
+                target: target, file: file, encoding: lookup.fileEncodings[target.path] ?? lookup.encoding)
         }
         for file in lookup.requested where file.url.isFileURL {
             read(file.url, file: file)
@@ -144,6 +149,9 @@ struct MediaSubtitleFiles: Sendable {
         }
         // One that moved since is left out: the history's choice is then left to `TrackAutoSelection`.
         if let path = lookup.savedPath, !isCancelled(), FileManager.default.fileExists(atPath: path) {
+            read(URL(fileURLWithPath: path))
+        }
+        if let path = lookup.savedSecondaryPath, !isCancelled(), FileManager.default.fileExists(atPath: path) {
             read(URL(fileURLWithPath: path))
         }
         return files

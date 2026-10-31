@@ -45,6 +45,7 @@ public protocol PlayerActions: AnyObject {
     func stepPlaybackRate(by delta: Double)
     func resetPlaybackRate()
     func stepSubtitleDelay(by delta: Double)
+    func resetSubtitleDelay()
     func stepAudioDelay(by delta: Double)
     func toggleDebugHUD()
     func toggleQuickSettings()
@@ -73,6 +74,32 @@ public protocol PlayerActions: AnyObject {
     func resetVideoZoom()
     /// Saves the frame on screen as an image, as the render mode shows it.
     func captureFrame()
+
+    // Subtitles
+    /// Whether media is loaded, which subtitles are of.
+    var isMediaLoaded: Bool { get }
+    var subtitleTracks: [SubtitleTrack] { get }
+    var selectedSubtitleTrackId: Int? { get }
+    var selectedSecondarySubtitleTrackId: Int? { get }
+    /// The tracks that can be shown second.
+    var secondarySubtitleCandidates: [SubtitleTrack] { get }
+    var subtitleDelay: Double { get }
+    /// The encoding chosen for the main track's file; `nil` is the default. Not for a track of the media itself.
+    var subtitleEncoding: String.Encoding? { get }
+    var canSetSubtitleEncoding: Bool { get }
+    var secondarySubtitleEncoding: String.Encoding? { get }
+    var canSetSecondarySubtitleEncoding: Bool { get }
+    func selectSubtitleTrack(_ id: Int?)
+    func selectSecondarySubtitleTrack(_ id: Int?)
+    /// Asks for a subtitle file and adds it to the media.
+    func loadSubtitleFile()
+    /// Asks for a subtitle file and shows it as the second track.
+    func loadSecondarySubtitleFile()
+    var secondarySubtitleDelay: Double { get }
+    func stepSecondarySubtitleDelay(by delta: Double)
+    func resetSecondarySubtitleDelay()
+    func setSubtitleEncoding(_ encoding: String.Encoding?)
+    func setSecondarySubtitleEncoding(_ encoding: String.Encoding?)
 }
 
 extension PlayerActions {
@@ -130,6 +157,26 @@ extension PlayerActions {
     public func stepPlaybackRate(by delta: Double) {}
     public func resetPlaybackRate() {}
     public func stepSubtitleDelay(by delta: Double) {}
+    public func resetSubtitleDelay() {}
+    public var isMediaLoaded: Bool { false }
+    public var subtitleTracks: [SubtitleTrack] { [] }
+    public var selectedSubtitleTrackId: Int? { nil }
+    public var selectedSecondarySubtitleTrackId: Int? { nil }
+    public var secondarySubtitleCandidates: [SubtitleTrack] { [] }
+    public var subtitleDelay: Double { 0 }
+    public var subtitleEncoding: String.Encoding? { nil }
+    public var canSetSubtitleEncoding: Bool { false }
+    public var secondarySubtitleEncoding: String.Encoding? { nil }
+    public var canSetSecondarySubtitleEncoding: Bool { false }
+    public func selectSubtitleTrack(_ id: Int?) {}
+    public func selectSecondarySubtitleTrack(_ id: Int?) {}
+    public func loadSubtitleFile() {}
+    public func loadSecondarySubtitleFile() {}
+    public var secondarySubtitleDelay: Double { 0 }
+    public func stepSecondarySubtitleDelay(by delta: Double) {}
+    public func resetSecondarySubtitleDelay() {}
+    public func setSubtitleEncoding(_ encoding: String.Encoding?) {}
+    public func setSecondarySubtitleEncoding(_ encoding: String.Encoding?) {}
     public func stepAudioDelay(by delta: Double) {}
 }
 

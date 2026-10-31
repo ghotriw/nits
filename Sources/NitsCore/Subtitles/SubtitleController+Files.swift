@@ -23,10 +23,16 @@ extension SubtitleController {
     /// meanwhile.
     @discardableResult
     public func addExternal(urls: [URL]) async -> AddedSubtitleFiles {
+        await addExternal(urls: urls, asSecondary: false)
+    }
+
+    /// `addExternal(urls:)`, the last file shown as the second track (`SecondarySubtitles`) rather than the main one;
+    /// `.unreadable` also when it can't be (pictures).
+    func addExternal(urls: [URL], asSecondary: Bool) async -> AddedSubtitleFiles {
         let generation = mediaGeneration
         let lookup = MediaSubtitleFiles.Lookup(
             requested: urls.filter(\.isFileURL).map { MediaLoadRequest.SubtitleFile(url: $0) },
-            encoding: settings.encoding, listed: Set(tracks.compactMap(\.externalURL)))
+            encoding: settings.encoding, fileEncodings: fileEncodings(), listed: Set(tracks.compactMap(\.externalURL)))
         let read = await Task.detached(priority: .userInitiated) { MediaSubtitleFiles.read(lookup) }.value
         guard mediaGeneration == generation else {
             AppLog.info(.subtitles, "Subtitle files read for media no longer loaded: not added")
@@ -42,7 +48,12 @@ extension SubtitleController {
                 return self.tracks.filter { $0.externalURL == target }.map(\.id)
             }
             guard let trackId = ids.last else { return }
-            self.select(trackId: trackId)
+            if asSecondary {
+                self.secondary.select(trackId: trackId)
+                guard self.secondary.selectedTrackId == trackId else { return }
+            } else {
+                self.select(trackId: trackId)
+            }
             selected = trackId
         }
         // The added tracks and the selection are reported once.
@@ -122,8 +133,8 @@ extension SubtitleController {
 
     /// What tells the encoding of a subtitle file besides its bytes: the user's choice and the language of its track
     /// (`language`), else the one in its name.
-    func textEncodingHints(for url: URL, language: String? = nil) -> TextFileEncoding.Hints {
-        Self.textEncodingHints(for: url, language: language, encoding: settings.encoding)
+    func textEncodingHints(for track: SubtitleTrack, url: URL) -> TextFileEncoding.Hints {
+        Self.textEncodingHints(for: url, language: track.language, encoding: effectiveEncoding(of: track))
     }
 
     /// `textEncodingHints(for:language:)` with the user's choice `encoding`.
@@ -148,7 +159,10 @@ extension SubtitleController {
             if file.language?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { file.language = nil }
             if file.url.isFileURL {
                 addReadFile(
-                    read[file.url] ?? SubtitleFileRead.read(file.url, file: file, encoding: settings.encoding),
+                    read[file.url]
+                        ?? SubtitleFileRead.read(
+                            file.url, file: file,
+                            encoding: fileEncodings()[file.url.standardizedFileURL.path] ?? settings.encoding),
                     file: file)
                 continue
             }
@@ -223,5 +237,165 @@ extension SubtitleController {
         if !ids.isEmpty {
             AppLog.info(.subtitles, "Found \(ids.count) subtitle file(s) next to the media")
         }
+    }
+}
+
+// MARK: - Encoding
+
+extension SubtitleController {
+    /// Whether the text encoding of `trackId` can be chosen: a text file
+    public func canSetEncoding(ofTrack trackId: Int?) -> Bool {
+        guard let track = tracks.first(where: { $0.id == trackId }) else { return false }
+        // A file of its own: tracks of a container (`streamIndex` names one) are UTF-8, and the choice is by file.
+        return track.isExternal && track.streamIndex < 0 && track.format != .bitmap
+    }
+
+    /// The encoding the user chose for `trackId`'s file; `nil` for the default (`settings.encoding`, else detected).
+    public func encoding(ofTrack trackId: Int?) -> String.Encoding? {
+        tracks.first(where: { $0.id == trackId }).flatMap { trackEncodings[key(of: $0)] }
+    }
+
+    /// What `track`'s file is read in unless its bytes tell: its own choice, else the default.
+    func effectiveEncoding(of track: SubtitleTrack) -> String.Encoding? {
+        trackEncodings[key(of: track)] ?? settings.encoding
+    }
+
+    /// Reads the file of `trackId` in `encoding`, as the user chooses by hand (`nil` goes back to the default); the
+    /// choice is kept for the file with the track. Files differ in encoding, as tracks do in language, so it is the
+    /// track's own. A track that isn't a text file (`canSetEncoding`) is left as it is.
+    public func setEncoding(_ encoding: String.Encoding?, ofTrack trackId: Int) {
+        guard canSetEncoding(ofTrack: trackId), let track = tracks.first(where: { $0.id == trackId }),
+            self.encoding(ofTrack: trackId) != encoding
+        else { return }
+        trackEncodings[key(of: track)] = encoding
+        AppLog.info(
+            .subtitles,
+            "Encoding of subtitle track \(trackId) set to \(encoding.flatMap(TextFileEncoding.name(of:)) ?? "default")")
+        host?.saveCurrentPlaybackProgress()
+        reread([track])
+    }
+
+    /// Takes a new default encoding (the settings'), and reads the files that have none of their own in it.
+    func setDefaultEncoding(_ encoding: String.Encoding?) {
+        guard settings.encoding != encoding else { return }
+        settings.encoding = encoding
+        reread(tracks.filter { trackEncodings[key(of: $0)] == nil })
+    }
+
+    /// Reads the text files among `tracks` again, in their encodings now, and redraws those on screen (main and
+    /// second). The network ones are downloaded again when shown; the local ones are read here, off the main actor.
+    private func reread(_ tracks: [SubtitleTrack]) {
+        let affected = tracks.filter { $0.isExternal && $0.format != .bitmap }
+        guard !affected.isEmpty else { return }
+        let media = mediaGeneration
+        // Reads under way are in the old encoding: their documents must not land.
+        for track in affected {
+            loads[track.id]?.cancel()
+            loads[track.id] = nil
+        }
+        let network = affected.filter { $0.externalURL?.isFileURL != true }
+        for track in network {
+            loadedDocuments[track.id] = nil
+            if let url = track.externalURL { remoteDocumentCache[url] = nil }
+        }
+        reload(trackIds: Set(network.map(\.id)))
+        let locals = affected.compactMap {
+            track -> (track: SubtitleTrack, url: URL, encoding: String.Encoding?)? in
+            guard let url = track.externalURL, url.isFileURL else { return nil }
+            return (track, url, effectiveEncoding(of: track))
+        }
+        guard !locals.isEmpty else { return }
+        // A newer choice for a track replaces the read of this one.
+        var generations: [Int: Int] = [:]
+        for source in locals {
+            readGenerations[source.track.id, default: 0] += 1
+            generations[source.track.id] = readGenerations[source.track.id]
+        }
+        Task { [weak self] in
+            let reads = await Task.detached(priority: .userInitiated) {
+                locals.map { source -> (Int, SubtitleFileRead) in
+                    // As the file was listed: its language, kind and format guide how it is read.
+                    let file = MediaLoadRequest.SubtitleFile(
+                        url: source.url, language: source.track.language, isAutoGenerated: source.track.isAutoGenerated,
+                        format: source.track.format == .ass ? .ass : .text)
+                    return (source.track.id, SubtitleFileRead.read(source.url, file: file, encoding: source.encoding))
+                }
+            }.value
+            guard let self, self.mediaGeneration == media else { return }
+            var done: Set<Int> = []
+            for (id, read) in reads where self.readGenerations[id] == generations[id] {
+                switch read.content {
+                case .document(let document): self.loadedDocuments[id] = document
+                case .ffmpegText, .bitmap, nil: self.loadedDocuments[id] = nil
+                }
+                done.insert(id)
+            }
+            self.reload(trackIds: done)
+        }
+    }
+
+    /// Shows the tracks among `ids` that are on screen again, reading their files if their documents were dropped.
+    private func reload(trackIds ids: Set<Int>) {
+        if let id = selectedTrackId, ids.contains(id) {
+            let wasAutomatic = selectionIsAutomatic
+            select(trackId: id, persistHistory: false)
+            selectionIsAutomatic = wasAutomatic
+        }
+        if let id = secondary.selectedTrackId, ids.contains(id) { secondary.reload() }
+    }
+}
+
+// MARK: - Reading a track whole
+
+extension SubtitleController {
+    /// The read of `track`'s document for a track that isn't the selected one: its file, or the stream out of the media
+    /// (every packet of it, as `EmbeddedSubtitleReader.extractEmbeddedSubtitles` reads); `nil` for a track that has
+    /// nothing to read from (no media). An external track's read is the one `select` runs.
+    func documentReader(for track: SubtitleTrack) -> (@Sendable (FFmpegInterrupt) async -> SubtitleDocument?)? {
+        let demuxer = host?.demuxer
+        guard let url = track.externalURL else {
+            guard let path = host?.currentSourcePath, track.streamIndex >= 0 else { return nil }
+            let headers = host?.currentHeaders ?? [:]
+            let streamIndex = track.streamIndex
+            return { interrupt in
+                EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+                    url: path, headers: headers, streamIndex: streamIndex, interrupt: interrupt)
+            }
+        }
+        let streamIndex = track.streamIndex
+        if track.format == .bitmap {
+            // Pictures are read when the track is selected, as the pictures of a DVD run to tens of megabytes.
+            return { interrupt in
+                EmbeddedSubtitleReader.extractEmbeddedSubtitles(
+                    url: url.path, headers: [:], streamIndex: streamIndex, interrupt: interrupt)
+            }
+        }
+        // MicroDVD counts frames: without a rate of its own, the video's is the one.
+        let frameRate = demuxer.flatMap { $0.hasVideo ? 1 / $0.readingDescription(\.nominalFrameDuration) : nil }
+        let hints = textEncodingHints(for: track, url: url)
+        if url.isFileURL {
+            // A format FFmpeg reads; the other local files are read whole when added.
+            return { interrupt in
+                FFmpegTextSubtitles.read(url: url, frameRate: frameRate, hints: hints, interrupt: interrupt)
+            }
+        }
+        let headers = externalHeaders[track.id] ?? host?.currentHeaders ?? [:]
+        let remote = RemoteSubtitle(
+            url: url, headers: headers, format: track.format, isAutoGenerated: track.isAutoGenerated,
+            frameRate: frameRate, hints: hints)
+        return { interrupt in await remote.read(interrupt: interrupt) }
+    }
+
+    /// The document of an external track already read (or downloaded), `nil` for any other.
+    func cachedDocument(of track: SubtitleTrack) -> SubtitleDocument? {
+        guard track.isExternal else { return nil }
+        return loadedDocuments[track.id] ?? track.externalURL.flatMap { remoteDocumentCache[$0] }
+    }
+
+    /// Keeps the document read for the second track, as `loadDocument` does for the selected one.
+    func cache(_ document: SubtitleDocument, of track: SubtitleTrack) {
+        guard let url = track.externalURL else { return }
+        loadedDocuments[track.id] = document
+        if !url.isFileURL { remoteDocumentCache[url] = document }
     }
 }

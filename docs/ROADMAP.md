@@ -195,7 +195,7 @@ flowchart TD
   - Runtime adjustment without a seek: the renderer is flushed and the audio it held is enqueued again with the new
     shift. Manual entry in Quick Settings (`Audio` pane, milliseconds).
   - Keyboard shortcuts (`J` / `K`, as in VLC; `F` is fullscreen) adjusting delay in ±50ms steps with OSD feedback.
-  - Remembered per file in `PlaybackHistoryStore`, like the subtitle delay.
+  - Remembered per file in `PlaybackHistoryStore`, like the subtitle delay (which is per subtitle track).
 - [ ] **2.8.2. Dynamic Range Compression & Night Mode:**
   - Audio processing filter stage in `FFAudioDecoder` or CoreAudio AudioUnit graph.
   - Night Mode / Voice Boost: dynamic range compression raising low-level dialogue while softly limiting explosive peaks and loud effects.
@@ -330,7 +330,8 @@ flowchart TD
     embedded tracks' do, but no longer than until the next one, so lines a few frames long don't overlap. Matroska's
     plain `S_TEXT/ASCII` (`text`) streams are listed as text tracks.
   - [x] Encoding of text subtitle files and playlists (`TextFileEncoding`), in mpv's order: byte order mark, valid
-    UTF-8, the encoding chosen in Settings → Languages, Foundation's detector (`NSString.stringEncoding(for:…)`, no
+    UTF-8, the encoding chosen for the file (Subtitles menu, per track and remembered for the file; else the one in Settings →
+    Languages), Foundation's detector (`NSString.stringEncoding(for:…)`, no
     lossy guesses, on the first 64 KB), then Windows-1251 / 1252 / Latin-1. The detector knows letters by their lower
     case: Cyrillic in capitals (forced subtitles) or a single line of it it takes for ISO Latin 2, Thai, Hebrew, GB
     18030 or Latin-1. So its CJK guesses are taken unless the text reads as Windows-1251 with no odd word, no capital
@@ -456,7 +457,12 @@ flowchart TD
     raises bottom subtitles of every kind, `SubtitleController.scale` sizes ASS dialogue (libass' font scale and line position,
     dialogue only) and picture subtitles (each half of the frame as a block, from the edge it is near); plain text
     keeps its font size.
-  - [ ] A second subtitle track shown at once.
+  - [x] A second subtitle track shown at once (`SecondarySubtitles`, mpv's `secondary-sid`): plain text at the top, whatever
+    position its cues ask for; while it is on, the main track's text sits at the bottom and an ASS track is drawn as
+    text instead of by libass (which places its dialogue itself), so positioned cues don't overlap. Chosen in Quick
+    Settings or the Subtitles menu, with its own delay, encoding and external file, and remembered for the file. Text
+    tracks only; one of the media itself is read whole when chosen (not over the network).
+  - [x] A Subtitles menu: the track, external file, encoding and delay of each of the two tracks.
 
 ---
 
@@ -465,10 +471,12 @@ flowchart TD
 > Compensate for out-of-sync subtitle releases and simplify subtitle loading.
 
 - [x] **4.6.1. Subtitle Timing Offset (Subtitle Delay):**
-  - Configurable timestamp shift (`SubtitleController.delay`, `-30.0 ... +30.0` s) applied to the cue lookup.
+  - Configurable timestamp shift (`SubtitleController.delay` of the selected track, `SecondarySubtitles.delay` of the
+    second, `-30.0 ... +30.0` s) applied to the cue lookup. Each track has its own, as tracks of a file are timed apart.
   - Hotkey adjustments (`Z` / `X`) stepping timing by ±100ms with real-time OSD indication.
   - Manual entry field in Quick Settings (`Subtitles` pane).
-  - Remembered per file in `PlaybackHistoryStore`, like the track selection; a selected external subtitle file is
+  - Remembered per file and track in `PlaybackHistoryStore` (`subtitleDelays`, by `SubtitleTrack.persistenceKey`),
+    like the track selection; a selected external subtitle file is
     remembered by path (and stream, for the languages of a VobSub index) and loaded again when the media is reopened.
 - [x] **4.6.2. Drag-and-Drop Subtitle Attachment:**
   - Dropping a subtitle file (`.srt`, `.vtt`, `.ass`, `.ssa`, `.sup`, `.idx` or a VobSub `.sub`) on the video or the playlist drawer attaches the file to the media playing and selects

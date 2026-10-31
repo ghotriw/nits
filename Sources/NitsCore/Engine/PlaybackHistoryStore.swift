@@ -14,8 +14,14 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
     /// `PlaybackRecord.externalSubtitle` the file at `externalSubtitlePath`, `PlaybackRecord.listedSubtitle` the
     /// network file `listedSubtitle` tells.
     public let subtitleTrackId: Int?
-    /// Subtitle delay in seconds (`nil` if never set).
-    public let subtitleDelay: Double?
+    /// Subtitle delay in seconds of each subtitle track that has one, by `SubtitleTrack.persistenceKey` (`nil` if never
+    /// set).
+    public let subtitleDelays: [String: Double]?
+    /// `SubtitleTrack.persistenceKey` of the second subtitle track; empty when there is none (`nil` if never chosen).
+    public let secondarySubtitle: String?
+    /// The encoding (IANA name) the user chose for each subtitle file, by `SubtitleTrack.persistenceKey` (`nil` if
+    /// never).
+    public let subtitleEncodings: [String: String]?
     /// Audio delay in seconds (`nil` if never set).
     public let audioDelay: Double?
     /// Playback speed chosen for this media (`nil` if never chosen).
@@ -58,7 +64,9 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         self.lastUpdated = lastUpdated
         self.audioTrackId = preferences.audioTrackId
         self.subtitleTrackId = preferences.subtitleTrackId
-        self.subtitleDelay = preferences.subtitleDelay
+        self.subtitleDelays = preferences.subtitleDelays
+        self.secondarySubtitle = preferences.secondarySubtitle
+        self.subtitleEncodings = preferences.subtitleEncodings
         self.audioDelay = preferences.audioDelay
         self.playbackRate = preferences.playbackRate
         self.externalSubtitlePath = preferences.externalSubtitlePath
@@ -75,7 +83,9 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         PlaybackPreferences(
             audioTrackId: audioTrackId,
             subtitleTrackId: subtitleTrackId,
-            subtitleDelay: subtitleDelay,
+            subtitleDelays: subtitleDelays,
+            secondarySubtitle: secondarySubtitle,
+            subtitleEncodings: subtitleEncodings,
             audioDelay: audioDelay,
             playbackRate: playbackRate,
             externalSubtitlePath: externalSubtitlePath,
@@ -109,7 +119,12 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public var audioTrackId: Int?
     /// See `PlaybackRecord.subtitleTrackId`.
     public var subtitleTrackId: Int?
-    public var subtitleDelay: Double?
+    /// By `SubtitleTrack.persistenceKey`: one delay per track, as tracks of a file are timed apart.
+    public var subtitleDelays: [String: Double]?
+    /// See `PlaybackRecord.secondarySubtitle`.
+    public var secondarySubtitle: String?
+    /// See `PlaybackRecord.subtitleEncodings`.
+    public var subtitleEncodings: [String: String]?
     public var audioDelay: Double?
     /// Saved only when chosen for this media: a speed kept from the previous one (`carriesPlaybackRate`) is `nil`.
     public var playbackRate: Double?
@@ -134,7 +149,9 @@ public struct PlaybackPreferences: Sendable, Equatable {
     public init(
         audioTrackId: Int? = nil,
         subtitleTrackId: Int? = nil,
-        subtitleDelay: Double? = nil,
+        subtitleDelays: [String: Double]? = nil,
+        secondarySubtitle: String? = nil,
+        subtitleEncodings: [String: String]? = nil,
         audioDelay: Double? = nil,
         playbackRate: Double? = nil,
         externalSubtitlePath: String? = nil,
@@ -147,7 +164,9 @@ public struct PlaybackPreferences: Sendable, Equatable {
     ) {
         self.audioTrackId = audioTrackId
         self.subtitleTrackId = subtitleTrackId
-        self.subtitleDelay = subtitleDelay
+        self.subtitleDelays = subtitleDelays
+        self.secondarySubtitle = secondarySubtitle
+        self.subtitleEncodings = subtitleEncodings
         self.audioDelay = audioDelay
         self.playbackRate = playbackRate
         self.externalSubtitlePath = externalSubtitlePath
@@ -168,7 +187,9 @@ public struct PlaybackPreferences: Sendable, Equatable {
         return PlaybackPreferences(
             audioTrackId: audioTrackId ?? saved?.audioTrackId,
             subtitleTrackId: subtitleTrackId ?? saved?.subtitleTrackId,
-            subtitleDelay: subtitleDelay ?? saved?.subtitleDelay,
+            subtitleDelays: subtitleDelays ?? saved?.subtitleDelays,
+            secondarySubtitle: secondarySubtitle ?? saved?.secondarySubtitle,
+            subtitleEncodings: subtitleEncodings ?? saved?.subtitleEncodings,
             audioDelay: audioDelay ?? saved?.audioDelay,
             playbackRate: playbackRate ?? saved?.playbackRate,
             externalSubtitlePath: keepsSubtitleFile ? externalSubtitlePath ?? saved?.externalSubtitlePath : nil,
@@ -190,7 +211,9 @@ public struct PlaybackPreferences: Sendable, Equatable {
 
     /// Whether there is a preference worth keeping without a resume position.
     var isEmpty: Bool {
-        audioTrackId == nil && subtitleTrackId == nil && (subtitleDelay ?? 0) == 0 && (audioDelay ?? 0) == 0
+        audioTrackId == nil && subtitleTrackId == nil && (subtitleDelays ?? [:]).values.allSatisfy { $0 == 0 }
+            && (secondarySubtitle ?? "").isEmpty && (subtitleEncodings ?? [:]).isEmpty
+            && (audioDelay ?? 0) == 0
             // A chosen 1× is kept: without it a media would start at the previous one's speed (`carriesPlaybackRate`).
             && playbackRate == nil && videoAspectRatio?.isValid != true && videoCrop?.isValid != true
     }
