@@ -54,7 +54,7 @@ public struct MediaOpenRequest: Sendable, Equatable {
         }
         guard !subtitles.isEmpty else { return }
 
-        // A file on a network volume loads in the background; attach once it is in, unless another took its place.
+        // Media loads in the background; attach once it is in, unless another took its place.
         await engine.waitForPendingLoad()
         guard engine.isLoaded, engine.currentPath == MediaURL.normalizeMediaPath(path) else {
             AppLog.info(.subtitles, "Subtitles opened with '\(path)' not attached: it isn't what is loaded")

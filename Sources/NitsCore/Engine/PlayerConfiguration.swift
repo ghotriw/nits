@@ -71,6 +71,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Fraction of video duration after which it is considered completed (default 0.95).
     public var resumeEndThresholdRatio: Double
 
+    /// Whether local media files load synchronously on the main thread (used by programmatic test suites).
+    /// Default is false: in production, demuxing and external audio open in a background task off the main thread,
+    /// keeping the UI responsive, while applying demuxer state remains on the main actor.
+    public var synchronousLocalLoads: Bool
+
     /// Font size for text subtitles (default 24.0).
     public var subtitleFontSize: Double
 
@@ -158,6 +163,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         resumePlayback: Bool = true,
         resumeStartThreshold: Double = 15.0,
         resumeEndThresholdRatio: Double = 0.95,
+        synchronousLocalLoads: Bool = false,
         carriesPlaybackRate: Bool = false,
         subtitleFontSize: Double = 24.0,
         subtitleFontName: String = SubtitleSystemFont.rounded.rawValue,
@@ -194,6 +200,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.resumePlayback = resumePlayback
         self.resumeStartThreshold = resumeStartThreshold
         self.resumeEndThresholdRatio = resumeEndThresholdRatio
+        self.synchronousLocalLoads = synchronousLocalLoads
         self.carriesPlaybackRate = carriesPlaybackRate
         self.subtitleFontSize = subtitleFontSize
         self.subtitleFontName = subtitleFontName

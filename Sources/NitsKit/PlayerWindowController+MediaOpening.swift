@@ -4,7 +4,7 @@ import NitsUI
 
 extension PlayerWindowController {
     /// Opens the URLs dropped on the player or picked in its Open panel, in place: the window stays where it is.
-    /// Returns the task resolving and loading them.
+    /// Returns the task resolving, opening and awaiting load completion of the media.
     @discardableResult
     public func openMedia(urls: [URL]) -> Task<Void, Never>? {
         guard !urls.isEmpty else { return nil }
@@ -26,5 +26,6 @@ extension PlayerWindowController {
                 url: url, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
                 presentsWindow: presentsWindow)
         }
+        await engine.waitForPendingLoad()
     }
 }

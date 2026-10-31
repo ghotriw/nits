@@ -704,10 +704,13 @@ struct PlayerEngineTests {
         ])
         let firstItem = try #require(engine.playlist.currentItem)
         engine.load(item: firstItem)
+        await engine.waitForPendingLoad()
         try #require(engine.isLoaded)
         engine.playNext()
+        await engine.waitForPendingLoad()
         try #require(engine.isLoaded)
         engine.playPlaylistItem(id: firstItem.id)
+        await engine.waitForPendingLoad()
         try #require(engine.isLoaded)
         #expect(reported == [first, second, first])
 
@@ -721,6 +724,68 @@ struct PlayerEngineTests {
         await engine.waitForPendingLoad()
         try #require(engine.isLoaded)
         #expect(reported == [second, playlistURL.path])
+    }
+
+    @Test("Asynchronous local media and playlist loading preserves continuous isLoading state")
+    @MainActor
+    func testAsynchronousLocalLoadsAndPlaylistHandoff() async throws {
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264),
+            let second = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264)
+        else { return }
+        let engine = PlayerEngine.makeForTesting(synchronousLocalLoads: false)
+        defer { engine.stop() }
+
+        // A local file loads in the background, as the app loads it.
+        #expect(!engine.isLoaded)
+        engine.load(path: first)
+        #expect(engine.isLoading)
+        #expect(!engine.isLoaded)
+        await engine.waitForPendingLoad()
+        try #require(engine.isLoaded)
+        #expect(!engine.isLoading)
+
+        // A playlist file stays loading from its parsing to its first item in: the parsing task, cancelled by the
+        // item's load it hands on to, must not end the loading. The observer, queued on the main actor, runs between
+        // the two tasks.
+        engine.stop()
+        #expect(!engine.isLoaded)
+        #expect(!engine.isLoading)
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let playlistURL = folder.appendingPathComponent("list.m3u")
+        try "#EXTM3U\n\(second)\n\(first)\n".write(to: playlistURL, atomically: true, encoding: .utf8)
+
+        var didDropLoadingBeforeLoaded = false
+        engine.load(path: playlistURL.path)
+        #expect(engine.isLoading)
+        #expect(!engine.isLoaded)
+
+        let observerTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if !engine.isLoaded && !engine.isLoading {
+                    didDropLoadingBeforeLoaded = true
+                }
+                await Task.yield()
+            }
+        }
+
+        await engine.waitForPendingLoad()
+        observerTask.cancel()
+
+        try #require(engine.isLoaded)
+        #expect(!engine.isLoading)
+        #expect(!didDropLoadingBeforeLoaded)
+        #expect(engine.playlist.currentItem?.url.path == second)
+
+        // The playlist's next item loads in the background too.
+        engine.playNext()
+        #expect(engine.isLoading)
+        await engine.waitForPendingLoad()
+        try #require(engine.isLoaded)
+        #expect(!engine.isLoading)
+        #expect(engine.playlist.currentItem?.url.path == first)
     }
 
     @Test("Choosing the speed kept from the previous media, 1× included, saves it with the media")

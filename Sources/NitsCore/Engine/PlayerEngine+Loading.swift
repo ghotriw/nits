@@ -148,11 +148,12 @@ extension PlayerEngine {
             self.isLoading = true
             self.playlist.setIsLoading(true)
             loadingTask?.cancel()
-            loadingTask = Task { @MainActor [weak self] in
+            var currentTask: Task<Void, Never>?
+            currentTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 defer {
                     self.playlist.setIsLoading(false)
-                    if Task.isCancelled {
+                    if Task.isCancelled && self.loadingTask == currentTask {
                         self.isLoading = false
                     }
                 }
@@ -192,6 +193,7 @@ extension PlayerEngine {
                     }
                 }
             }
+            self.loadingTask = currentTask
             return
         }
 
@@ -200,7 +202,8 @@ extension PlayerEngine {
         self.artworkData = request.artworkData
         self.artworkURL = request.artworkURL
 
-        if isRemoteOrMounted {
+        let shouldLoadAsync = isRemoteOrMounted || !configuration.synchronousLocalLoads
+        if shouldLoadAsync {
             self.isLoading = true
             self.playbackState = .loading
             loadingTask?.cancel()
@@ -213,8 +216,8 @@ extension PlayerEngine {
         }
     }
 
-    /// Waits for a load `load(_:)` left running in the background (files on network volumes, playlist files), including
-    /// the one it hands on to, such as a playlist's first item. Returns at once after a synchronous load.
+    /// Waits for a load left running in the background (asynchronous local loads, files on network volumes, playlist
+    /// files), including the one it hands on to, such as a playlist's first item. Returns at once after a synchronous load.
     public func waitForPendingLoad() async {
         while let task = loadingTask {
             await task.value
