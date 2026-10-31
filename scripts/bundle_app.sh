@@ -135,8 +135,8 @@ if [ -f "$APP_ICON" ]; then
     cp "$APP_ICON" "$RESOURCES_DIR/AppIcon.icns"
 fi
 
-# About panel credits and third-party notices (LGPL code is shipped even with --no-dylibs)
-cp "$DIR/Sources/NitsApp/Resources/Credits.rtf" "$RESOURCES_DIR/Credits.rtf"
+# Nits' own license and third-party notices (LGPL code is shipped even with --no-dylibs)
+cp "$DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
 mkdir -p "$RESOURCES_DIR/ThirdPartyLicenses"
 cp "$DIR/THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/ThirdPartyLicenses/"
 
@@ -261,6 +261,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Andrii Honcharov</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>CFBundleDocumentTypes</key>

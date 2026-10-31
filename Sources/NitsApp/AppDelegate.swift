@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var isPlayerActive: Bool = false
     var activePlayer: (any PlayerActions)?
     private var welcomeWindowController: WelcomeWindowController?
+    private var aboutWindowController: AboutWindowController?
     private(set) var playerWindowController: PlayerWindowController?
     private var configuration: PlayerConfiguration
     private var settings: AppSettings
@@ -61,6 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         showWelcomeWindow()
         NSApp.activate()
+    }
+
+    func showAboutWindow() {
+        if aboutWindowController == nil {
+            aboutWindowController = AboutWindowController()
+        }
+        aboutWindowController?.show()
     }
 
     func showWelcomeWindow() {

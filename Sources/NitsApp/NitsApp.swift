@@ -15,6 +15,12 @@ struct NitsApp: App {
             })
         }
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Nits") {
+                    appDelegate.showAboutWindow()
+                }
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button("Open File…") {
                     appDelegate.promptOpenFile()
