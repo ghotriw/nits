@@ -564,10 +564,13 @@ extension PlaybackStressTests {
         // What a backward seek while playing does: pause the clock where it is, then restart it at the target.
         engine.playbackClock.setRate(0, time: engine.synchronizer.currentTime())
         engine.startSynchronizerClock(at: .zero, rate: 1.0)
-        // The clock applies its changes on a queue of its own.
-        engine.playbackClock.waitUntilApplied()
-        let clock = engine.synchronizer.currentTime().seconds
-        #expect(clock < 0.5, "Clock still reads the paused position \(clock)s after restarting at 0s")
+        // The clock everyone reads (`PlaybackClock`) stands at the start at once, and while the change is applied and the
+        // synchronizer comes to it. The synchronizer itself may show the paused position for a while.
+        for _ in 0..<20 {
+            let clock = engine.playbackClock.currentTime().seconds
+            #expect(clock < 0.5, "Clock still reads the paused position \(clock)s after restarting at 0s")
+            try? await Task.sleep(for: .milliseconds(5))
+        }
 
         engine.stop()
     }

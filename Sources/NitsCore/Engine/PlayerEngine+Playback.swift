@@ -112,15 +112,6 @@ extension PlayerEngine {
         at targetTime: CMTime, rate: Double, startDelay: TimeInterval = 0, keepsRunning: Bool = false
     ) {
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
-        // A positive-rate setRate(_:time:) leaves currentTime() at its old value until the audio device has started
-        // (tens of ms, hundreds under load), so after a backward seek the display link would drop every frame from
-        // the new position as late. Moving the paused clock first makes the new position visible at once; a
-        // running clock (rate change) is left alone so audio does not restart.
-        if rate > 0, playbackClock.rate == 0, targetTime.isNumeric,
-            abs(playbackClock.currentTime().seconds - targetTime.seconds) > 0.001
-        {
-            playbackClock.setRate(0, time: targetTime)
-        }
         if rate > 0 {
             audioOutputInterruptionLock.withLock { $0.clockStarted(at: .now) }
         }
