@@ -1069,10 +1069,10 @@ extension PlayerEngine {
         self.isLoaded = true
         self.isLoading = false
 
-        // Synchronously re-anchor clock and reset FrameQueue so any subsequent play() or display tick
+        // Re-anchor the clock (read at once through `PlaybackClock`) and reset FrameQueue so any subsequent play() or display tick
         // observes the clean timeline start and cannot drop initial frames with stale clock from previous media
         let targetCMTime = CMTime(seconds: effectiveStartTime, preferredTimescale: 60000)
-        self.startSynchronizerClock(at: targetCMTime, rate: 0.0, armGuard: false)
+        self.startSynchronizerClock(at: targetCMTime, rate: 0.0)
         self.frameQueue.clear(resetDroppedFrames: true)
 
         let decoder = self.stallGuardedDecoder(for: "the post-load flush")

@@ -78,7 +78,6 @@ extension PlayerEngine {
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
         chaseSettling.abandonSettle()
-        clockSettlingGuardLock.withLock { $0 = nil }
     }
 
     /// Stops audio/video feeding and halts the clock, marking playback as paused.
@@ -106,26 +105,13 @@ extension PlayerEngine {
     /// - Parameters:
     ///   - targetTime: Target timeline position for CoreAudio synchronizer.
     ///   - rate: Target playback rate.
-    ///   - armGuard: If `true`, arms `ClockSettlingGuard` to hold video frames while hardware clock settles to new target.
     ///   - startDelay: If positive, `targetTime` is pinned to `now + startDelay` host time instead of letting the
     ///     synchronizer pick the start (see `play()`).
     ///   - keepsRunning: The call gives the running clock a new rate where it stands (see `PlaybackClock.setRate`).
     nonisolated func startSynchronizerClock(
-        at targetTime: CMTime, rate: Double, armGuard: Bool = true, startDelay: TimeInterval = 0,
-        keepsRunning: Bool = false
+        at targetTime: CMTime, rate: Double, startDelay: TimeInterval = 0, keepsRunning: Bool = false
     ) {
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
-        let scheduledHostTime = hostNow.seconds + max(startDelay, 0)
-        if armGuard, targetTime.isNumeric {
-            let targetSec = targetTime.seconds
-            clockSettlingGuardLock.withLock {
-                $0 = ClockSettlingGuard(
-                    targetSeconds: targetSec,
-                    setHostTime: scheduledHostTime,
-                    rate: rate
-                )
-            }
-        }
         // A positive-rate setRate(_:time:) leaves currentTime() at its old value until the audio device has started
         // (tens of ms, hundreds under load), so after a backward seek the display link would drop every frame from
         // the new position as late. Moving the paused clock first makes the new position visible at once; a

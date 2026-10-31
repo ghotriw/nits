@@ -494,7 +494,8 @@ extension PlaybackStressTests {
         #expect(restartedAt < 0.3, "Clock resumed from the previous run at \(restartedAt)s")
         #expect(await engine.waitForClock(toPass: 0.5))
 
-        // With ClockSettlingGuard in place, the engine must NOT discard a burst of frames.
+        // The clock reads as standing at its start until the synchronizer has come to it (`PlaybackClock`), so the engine
+        // must NOT discard a burst of frames.
         // (At most 1-2 frames may be skipped due to display VSYNC vs media cadence quantization).
         #expect(engine.droppedFramesCount <= 2, "Stale clock caused frame drop burst: \(engine.droppedFramesCount)")
         #expect(engine.isPlaying == true)

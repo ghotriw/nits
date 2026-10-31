@@ -229,13 +229,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
             // (`isLoadStartPending`) does.
             if isPlaying && !isPrerollPending && !isBuffering && !isLoadStartPending {
                 let currentRate = playbackRate
-                clockSettlingGuardLock.withLock { guardState in
-                    guard var state = guardState else { return }
-                    state.rate = currentRate
-                    guardState = state
-                }
                 startSynchronizerClock(
-                    at: playbackClock.currentTime(), rate: currentRate, armGuard: false, keepsRunning: true)
+                    at: playbackClock.currentTime(), rate: currentRate, keepsRunning: true)
             }
         }
     }
@@ -478,31 +473,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     var chaseSettling = ChaseSettling()
 
-    // MARK: - Clock Settling & Sync Guards
-
-    /// Transient guard protecting against `AVSampleBufferRenderSynchronizer` clock reporting staleness.
-    ///
-    /// Root cause: When `synchronizer.setRate(rate, time: targetTime)` is invoked (e.g. after loading a new
-    /// media track or completing an asynchronous demuxer seek), CoreAudio hardware timebase re-anchoring
-    /// happens asynchronously. For the first few milliseconds, `synchronizer.currentTime()` may still
-    /// report the prior playback position (e.g. from the previous track or before the seek).
-    ///
-    /// Without this guard, `CADisplayLinkTick` observes an apparent multi-second drift between the stale clock
-    /// and newly decoded frames starting at `targetTime`, causing `FrameQueue` to rapidly discard/drop all
-    /// pre-buffered frames in a burst.
-    struct ClockSettlingGuard: Sendable {
-        let targetSeconds: Double
-        let setHostTime: Double
-        var rate: Double
-    }
-    @ObservationIgnored
-    let clockSettlingGuardLock = OSAllocatedUnfairLock<ClockSettlingGuard?>(initialState: nil)
-
-    /// Safety timeout (0.35s): unconditionally unblocks frame popping if hardware clock fails to settle promptly.
-    nonisolated static let clockSettlingTimeoutSeconds: Double = 0.35
-
-    /// Base tolerance (0.15s): dynamic allowable clock window `(rate * elapsedHost) + 0.15s` around targetTime.
-    nonisolated static let clockSettlingBaseToleranceSeconds: Double = 0.15
+    // MARK: - Sync Diagnostics
 
     /// Threshold in milliseconds to log anomalous A/V sync drift spikes (throttled to 1/sec).
     nonisolated static let syncDriftSpikeThresholdMs: Double = 500.0
@@ -529,7 +500,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     struct TicksSincePop {
         var ticks = 0
         var emptyQueueTicks = 0
-        var settlingHoldTicks = 0
         /// Ticks at which the clock had not moved since the previous one (paused, or waiting for audio to start).
         var stoppedClockTicks = 0
         var maxCallbackGap: CFTimeInterval = 0

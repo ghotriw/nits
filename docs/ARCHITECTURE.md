@@ -248,8 +248,7 @@ once and applied in order behind the caller's back, so `setRate` never blocks a 
   of the synchronizer on the caller's thread) is read as it runs, without waiting for a start.
 - The synchronizer is never read under the clock's lock, for the same reason `setRate` is queued.
 
-The display link, the time observer and the engine all read `PlaybackClock.currentTime()`. `ClockSettlingGuard`
-still reads the raw synchronizer; it now duplicates the settling above and is to go.
+The display link, the time observer and the engine all read `PlaybackClock.currentTime()`.
 
 **Resuming after a seek.** `ChaseSettling` holds what the seeks of a burst decide among themselves:
 

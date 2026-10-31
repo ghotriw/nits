@@ -48,7 +48,6 @@ extension PlayerEngine {
         chaseSettleTask = nil
         chaseSettling.abandonSettle()
         cancelPreroll()
-        clockSettlingGuardLock.withLock { $0 = nil }
 
         // 1. Maintain play intent across seek bursts (Apple QA1820 / mpv)
         if !isSeeking && chase == nil {
@@ -275,7 +274,6 @@ extension PlayerEngine {
         if !shouldResume {
             // Paused mode: settle immediately
             chase = nil
-            clockSettlingGuardLock.withLock { $0 = nil }
             playbackClock.setRate(0.0, time: targetTime)
             isPlaying = false
             // Media played to its end stays ended when a seek only lands at the end again.

@@ -94,7 +94,7 @@ flowchart TD
 - [x] **2.1. Hardware Master Clock Synchronization (A/V Sync):**
   - Unified playback clock driven by `AVSampleBufferRenderSynchronizer` with `AVSampleBufferAudioRenderer`.
   - CoreAudio hardware timebase anchors media timing; video presentation is paced against the synchronizer clock, eliminating lip-sync drift.
-  - Clock settling guard (`ClockSettlingGuard`): transient hardware clock stabilization on seek and track changes, preventing burst frame drops in `FrameQueue`.
+  - Playback clock (`PlaybackClock`): rate changes applied off the caller's thread, and a clock that reads as standing at its start until the synchronizer has come to it, preventing burst frame drops in `FrameQueue` after seeks and track changes.
 - [x] **2.2. Audio Demuxing & Decoding (FFmpeg libavcodec + libswresample):**
   - Concurrent packet extraction via background `audioQueue`.
   - Multi-threaded decoding and resampling to 48kHz 32-bit Float Linear PCM wrapped into `CMSampleBuffer` via `FFAudioDecoder`.

@@ -297,33 +297,6 @@ extension PlayerEngine {
             return state.lastTargetTimestamp > 0 ? (targetTimestamp - state.lastTargetTimestamp) * 1000.0 : 0
         }
 
-        // Stale clock leap protection: if playback or seek just started, verify the hardware clock
-        // has settled into the active playback window before popping video frames.
-        let shouldHoldFrame = clockSettlingGuardLock.withLock { guardState -> Bool in
-            guard let state = guardState else { return false }
-            let elapsedHost = now - state.setHostTime
-            // Safety timeout: after 0.35s unconditionally clear guard so video never hangs.
-            if elapsedHost >= Self.clockSettlingTimeoutSeconds {
-                guardState = nil
-                return false
-            }
-            let clockSeconds = synchronizer.currentTime().seconds
-            let baseTolerance = Self.clockSettlingBaseToleranceSeconds
-            let minAllowedClock = state.targetSeconds - baseTolerance
-            let maxAllowedClock = state.targetSeconds + (state.rate * elapsedHost) + baseTolerance
-            if clockSeconds < minAllowedClock || clockSeconds > maxAllowedClock {
-                // Clock has not yet transitioned/settled to target window. Hold frame.
-                return true
-            }
-            // Clock is aligned with target start time. Clear transient guard atomically.
-            guardState = nil
-            return false
-        }
-        if shouldHoldFrame {
-            tickDiagnosticsLock.withLock { $0.sincePop.settlingHoldTicks += 1 }
-            return
-        }
-
         let start = CACurrentMediaTime()
         let frameDuration = nominalFrameDurationLock.withLock { $0 }
         let currentRate = playbackRateLock.withLock { $0 }
@@ -496,7 +469,7 @@ extension PlayerEngine {
         func ms(_ seconds: Double) -> String { String(format: "%.1f", seconds * 1000) }
         AppLog.debug(
             .video,
-            "Frame held \(ms(hold)) ms (\(Int((hold / tickInterval).rounded())) ticks, cadence \(Int(cadenceTicks))) before PTS \(String(format: "%.3f", pts.seconds))s at clock \(String(format: "%.3f", clockSeconds))s: \(sample.ticks) callbacks, max gap \(ms(sample.maxCallbackGap)) ms; clock stopped in \(sample.stoppedClockTicks), queue empty in \(sample.emptyQueueTicks), settling hold in \(sample.settlingHoldTicks); max tick \(ms(sample.maxTickDuration)) ms, max clock read \(ms(sample.maxClockRead)) ms; queue now \(frameQueue.count)"
+            "Frame held \(ms(hold)) ms (\(Int((hold / tickInterval).rounded())) ticks, cadence \(Int(cadenceTicks))) before PTS \(String(format: "%.3f", pts.seconds))s at clock \(String(format: "%.3f", clockSeconds))s: \(sample.ticks) callbacks, max gap \(ms(sample.maxCallbackGap)) ms; clock stopped in \(sample.stoppedClockTicks), queue empty in \(sample.emptyQueueTicks); max tick \(ms(sample.maxTickDuration)) ms, max clock read \(ms(sample.maxClockRead)) ms; queue now \(frameQueue.count)"
         )
     }
 
