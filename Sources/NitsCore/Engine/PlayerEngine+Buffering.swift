@@ -28,12 +28,12 @@ extension PlayerEngine {
     static let bufferingAudioSettleTime: Duration = .milliseconds(500)
     static let bufferingPollInterval: Duration = .milliseconds(50)
 
-    private var hasAudioStream: Bool {
+    var hasAudioStream: Bool {
         audioDecoder != nil && inputs?.audioSource != nil
     }
 
     /// Media seconds of audio the renderer holds past `clock` (0 when it holds none).
-    private func audioAhead(of clock: CMTime) -> Double {
+    func audioAhead(of clock: CMTime) -> Double {
         guard let end = audioSink.bufferedEnd, end.isNumeric else { return 0 }
         return (end - clock).seconds
     }
@@ -57,14 +57,14 @@ extension PlayerEngine {
     /// observer, which fires only while the clock runs.
     func checkForStarvation() {
         guard isPlaying, !isBuffering, !isSeeking, chase == nil, !isPrerolling,
-            let inputs, !inputs.isEOF, synchronizer.rate > 0
+            let inputs, !inputs.isEOF, playbackClock.rate > 0
         else { return }
-        let clock = synchronizer.currentTime()
+        let clock = playbackClock.currentTime()
         guard clock.isNumeric else { return }
         let levels = bufferingLevels(at: clock, inputs: inputs)
-        guard BufferingPolicy.isStarved(levels, rate: Double(synchronizer.rate)) else { return }
+        guard BufferingPolicy.isStarved(levels, rate: Double(playbackClock.rate)) else { return }
 
-        synchronizer.setRate(0, time: clock)
+        playbackClock.setRate(0, time: clock)
         // Holds the clock without `cancelPreroll()`, which would end this buffering: an IO stop from here on is the
         // engine's own.
         clockDidStop()

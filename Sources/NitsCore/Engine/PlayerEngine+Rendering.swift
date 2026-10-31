@@ -258,7 +258,7 @@ extension PlayerEngine {
         pendingClockStartLock.withLock { $0?.displayLinkTicks += 1 }
         alignPendingClockStartWithFirstFrame()
         let clockReadStart = CACurrentMediaTime()
-        let clockNow = synchronizer.currentTime()
+        let clockNow = playbackClock.currentTime()
         guard clockNow.isNumeric else { return }
         let now = CACurrentMediaTime()
         let clockAdvanced = tickDiagnosticsLock.withLock { state -> Bool in
@@ -307,7 +307,7 @@ extension PlayerEngine {
                 guardState = nil
                 return false
             }
-            let clockSeconds = clockNow.seconds
+            let clockSeconds = synchronizer.currentTime().seconds
             let baseTolerance = Self.clockSettlingBaseToleranceSeconds
             let minAllowedClock = state.targetSeconds - baseTolerance
             let maxAllowedClock = state.targetSeconds + (state.rate * elapsedHost) + baseTolerance
@@ -530,7 +530,7 @@ extension PlayerEngine {
     }
 
     public func renderCurrentFrame(at explicitTime: CMTime?) {
-        let currentSyncTime = explicitTime ?? synchronizer.currentTime()
+        let currentSyncTime = explicitTime ?? playbackClock.currentTime()
         if currentSyncTime.isValid {
             // Makes the frame at the clock the last rendered one, with its RPU.
             _ = frameQueue.getLatestFrame(forSyncTime: currentSyncTime)

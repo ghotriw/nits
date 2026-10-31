@@ -58,6 +58,7 @@ extension PlayerEngine {
         saveCurrentPlaybackProgress()
         resolvedSource = nil
         resetRelativeSeekBurst()
+        chaseSettling.reset()
         seekGeneration.advance()
         isSeeking = false
         isLoadStartPending = false
@@ -71,7 +72,7 @@ extension PlayerEngine {
         inputs?.cancel()
         inputs = nil
         stopPlaybackPipeline()
-        synchronizer.setRate(0.0, time: .zero)
+        playbackClock.setRate(0.0, time: .zero)
         audioLagDetector = AudioLagDetector()
         audioOutputInterruptionLock.withLock { $0.reset() }
         clearVideoSurface()

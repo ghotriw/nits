@@ -422,6 +422,9 @@ extension PlaybackStressTests {
         engine.load(path: path)
         #expect(engine.isLoaded == true)
 
+        // Paused, so the keyframe steps start from where the last one landed: playing, the clock moves on and a step
+        // from 0.3 s reaches the keyframe after 5 s.
+        engine.pause()
         // Settle at 0.0s
         engine.seek(to: 0.0, exact: true)
         _ = await engine.waitUntil { !engine.isSeeking && engine.currentFramePTS >= 0 }
@@ -522,10 +525,12 @@ extension PlaybackStressTests {
         #expect(await engine.waitUntil { !engine.isSeeking && engine.pendingSeekTime == nil && engine.isPlaying })
         // From the moment playback resumes the clock must read the new position. A stale ~11s reading (the
         // synchronizer keeps it until the audio device restarts) makes the display link drop every frame from 0s.
+        // The clock read is `PlaybackClock`'s, the one the display link and the engine use: the synchronizer itself
+        // may still show the old position while its queue of changes drains.
         var staleReadings: [Double] = []
         let deadline = ContinuousClock.now + .seconds(3)
         while ContinuousClock.now < deadline {
-            let clock = engine.synchronizer.currentTime().seconds
+            let clock = engine.playbackClock.currentTime().seconds
             if clock > 2.0 { staleReadings.append(clock) }
             if clock > 0.5 { break }
             try? await Task.sleep(for: .milliseconds(5))
@@ -556,8 +561,10 @@ extension PlaybackStressTests {
         #expect(await engine.waitForClock(toPass: 1.0), "Clock did not advance past 1.0s")
 
         // What a backward seek while playing does: pause the clock where it is, then restart it at the target.
-        engine.synchronizer.setRate(0, time: engine.synchronizer.currentTime())
+        engine.playbackClock.setRate(0, time: engine.synchronizer.currentTime())
         engine.startSynchronizerClock(at: .zero, rate: 1.0)
+        // The clock applies its changes on a queue of its own.
+        engine.playbackClock.waitUntilApplied()
         let clock = engine.synchronizer.currentTime().seconds
         #expect(clock < 0.5, "Clock still reads the paused position \(clock)s after restarting at 0s")
 

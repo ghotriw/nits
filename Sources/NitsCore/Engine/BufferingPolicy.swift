@@ -38,6 +38,12 @@ enum BufferingPolicy {
         var frameDuration: Double = 0
     }
 
+    /// Seconds of playback of queued audio before the clock starts on a renderer that was flushed. Twice the low
+    /// watermark: at the watermark `isStarved` would hold the clock again at its first check.
+    static func audioAheadToStart(rate: Double) -> Double {
+        2 * audioLowWatermark * rate
+    }
+
     /// Media has run out at `rate`, the clock's current one (see `PlayerEngine+Buffering`).
     static func isStarved(_ levels: Levels, rate: Double) -> Bool {
         if levels.hasAudio, levels.isAudioSeparate {

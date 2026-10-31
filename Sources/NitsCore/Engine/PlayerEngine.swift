@@ -234,7 +234,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     state.rate = currentRate
                     guardState = state
                 }
-                startSynchronizerClock(at: synchronizer.currentTime(), rate: currentRate, armGuard: false)
+                startSynchronizerClock(
+                    at: playbackClock.currentTime(), rate: currentRate, armGuard: false, keepsRunning: true)
             }
         }
     }
@@ -430,7 +431,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     let audioOutputInterruptionLock = OSAllocatedUnfairLock(initialState: AudioOutputInterruptionDetector())
     var audioDecoder: FFAudioDecoder?
-    let synchronizer = AVSampleBufferRenderSynchronizer()
+    nonisolated let playbackClock = PlaybackClock()
+    nonisolated var synchronizer: AVSampleBufferRenderSynchronizer { playbackClock.synchronizer }
     /// The inputs the media plays from: its own and audio files added to it; audio is read through it.
     var inputs: PlaybackInputs?
     /// The media's own input (`inputs.main`): the picture, subtitles, variants.
@@ -473,7 +475,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var chaseSettleTask: Task<Void, Never>? = nil
     static let relativeSeekBurstTimeout: Duration = .milliseconds(300)
     static let relativeSeekBurstWatchdogTimeout: Duration = .seconds(3)
-    static let chaseSettleDebounceDuration: Duration = .milliseconds(300)
+    @ObservationIgnored
+    var chaseSettling = ChaseSettling()
 
     // MARK: - Clock Settling & Sync Guards
 
@@ -580,11 +583,19 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let requestHostTime: Double
         /// Display-link callbacks since the request; explains a preroll timeout (0 → the link is not ticking).
         var displayLinkTicks = 0
+        /// Output latency to pin the start ahead by, when the renderer already holds audio (see
+        /// `startSynchronizerClockAfterPreroll`).
+        var startDelay: TimeInterval = 0
+        /// The audio renderer has not been refilled after a flush: the tick leaves the start to `isAudioReadyToStart`'s
+        /// wait (`awaitAudioBeforeClockStart`), which clears this.
+        var awaitsAudio = false
     }
     @ObservationIgnored
     let pendingClockStartLock = OSAllocatedUnfairLock<PendingClockStart?>(initialState: nil)
     @ObservationIgnored
     var prerollTimeoutTask: Task<Void, Never>? = nil
+    @ObservationIgnored
+    var prerollAudioTask: Task<Void, Never>? = nil
     /// Refreshes `currentMetrics` twice a second, with the process's CPU and memory, for a view showing them (the
     /// performance HUD); off, they change only when media loads, and no timer runs.
     public var isCollectingMetrics: Bool = false {
@@ -699,7 +710,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         let audioOutputInterruption = audioOutputInterruptionLock
         self.audioSink = DelayedAudioSink(
             wrapping: BufferTrackingAudioSink(
-                wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: synchronizer),
+                wrapping: makeAudioRendererSink(renderer: audioRenderer, synchronizer: playbackClock.synchronizer),
                 onFlush: { audioOutputInterruption.withLock { $0.rendererFlushed() } }))
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
@@ -728,7 +739,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 else { return }
                 // Re-read the clock NOW: the callback's `time` argument may be stale (captured before a
                 // seek settled), which would roll the UI position back to a pre-seek value.
-                let seconds = CMTimeGetSeconds(self.synchronizer.currentTime())
+                let seconds = CMTimeGetSeconds(self.playbackClock.currentTime())
                 if !seconds.isNaN && !seconds.isInfinite && seconds >= 0 {
                     self.currentTime = seconds
                     self.onTimeUpdate?(seconds, self.media.duration)
@@ -833,6 +844,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displaySleepManager.enableDisplaySleep()
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
+        prerollAudioTask?.cancel()
+        prerollAudioTask = nil
         if let observer = timeObserver {
             synchronizer.removeTimeObserver(observer)
         }

@@ -18,14 +18,14 @@ extension PlayerEngine {
     /// Re-anchors the clock once `audioLagDetector` says the renderer has held back due audio for long enough.
     /// Called by the periodic time observer, which fires only while the clock runs.
     func checkForAudioRendererLag() {
-        let clock = synchronizer.currentTime()
+        let clock = playbackClock.currentTime()
         let pending = audioSink.pendingStart
         // Audio about to play counts as due: the renderer needs it in its queue well before the clock reaches it.
         let dueBy = clock.seconds + BufferingPolicy.audioLowWatermark * playbackRate
         let isPendingDue = pending.map { $0.isNumeric && $0.seconds < dueBy } ?? false
         let isLagging =
             isPlaying && !isBuffering && !isSeeking && chase == nil && !isPrerolling
-            && synchronizer.rate > 0 && clock.isNumeric && isPendingDue
+            && playbackClock.rate > 0 && clock.isNumeric && isPendingDue
         guard let heldFor = audioLagDetector.observe(isLagging: isLagging, at: .now), let pending else { return }
 
         AppLog.warning(
@@ -39,7 +39,7 @@ extension PlayerEngine {
     /// The output device started or stopped its IO (see `AudioOutputRoute`). Reads the clock's rate at once, on the
     /// route's queue: by the time the main actor gets to it, the clock may have started or stopped.
     nonisolated func audioOutputRunningChanged(_ isRunning: Bool) {
-        let rate = Double(synchronizer.rate)
+        let rate = Double(playbackClock.rate)
         let generation = audioOutputInterruptionLock.withLock {
             $0.deviceRunningChanged(isRunning: isRunning, rate: rate, at: .now)
         }
@@ -52,7 +52,7 @@ extension PlayerEngine {
     /// The output device stopped its IO under the started clock and now runs again: the renderer's audio queue is left
     /// behind the clock (see `AudioOutputInterruptionDetector`).
     private func recoverFromAudioOutputInterruption(generation: UInt64) {
-        guard isPlaying, !isBuffering, !isSeeking, chase == nil, !isPrerolling, synchronizer.rate > 0
+        guard isPlaying, !isBuffering, !isSeeking, chase == nil, !isPrerolling, playbackClock.rate > 0
         else { return }
         // A pause, seek or buffering since stopped the clock, and its restart re-anchored the queue anyway.
         guard audioOutputInterruptionLock.withLock({ $0.confirmRecovery(generation: generation, at: .now) }) else {
@@ -61,7 +61,7 @@ extension PlayerEngine {
         AppLog.warning(
             .engine,
             "Audio output restarted its IO under the running clock at "
-                + "\(String(format: "%.3f", synchronizer.currentTime().seconds))s; re-anchoring the clock")
+                + "\(String(format: "%.3f", playbackClock.currentTime().seconds))s; re-anchoring the clock")
         reanchorClockForAudio()
     }
 
@@ -70,7 +70,7 @@ extension PlayerEngine {
     private func reanchorClockForAudio() {
         haltPlaybackPipeline()
         startFeeding()
-        startSynchronizerClockAfterPreroll(at: synchronizer.currentTime(), alignWithBufferedAudio: true)
+        startSynchronizerClockAfterPreroll(at: playbackClock.currentTime(), alignWithBufferedAudio: true)
         displayLink?.isPaused = !media.hasVideo
     }
 }

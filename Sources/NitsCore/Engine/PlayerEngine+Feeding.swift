@@ -42,7 +42,15 @@ extension PlayerEngine {
         if demuxer.hasVideo {
             startFeedingVideo()
         }
-        startFeedingAudio()
+        // The renderer's flush restarts its audio queue: off the main thread, in the run that is about to feed it.
+        let sink = audioSink
+        if chaseSettling.isAudioFlushPending {
+            chaseSettling.isAudioFlushPending = false
+            sink.expectFlush()
+            if !startFeedingAudio(prepare: { sink.flush() }) { sink.withdrawExpectedFlush() }
+        } else {
+            startFeedingAudio()
+        }
     }
 
     func startFeedingVideo() {
@@ -212,10 +220,11 @@ extension PlayerEngine {
 
     /// - Parameter prepare: Runs once the previous run has unwound and before this one enqueues anything (also when
     ///   nothing is fed because playback is paused), so it can flush the renderer with no enqueue in flight.
-    func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil) {
+    @discardableResult
+    func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil) -> Bool {
         guard let source = inputs?.audioSource, let aDecoder = self.audioDecoder,
             let audioTimebase = source.audioDecoderInput()?.timebase
-        else { return }
+        else { return false }
         // The previous run may still be unwinding from its cancellation; the new one waits for it so the
         // output it stashes is delivered first and in order.
         let previousRun = audioFeedingTask
@@ -238,6 +247,7 @@ extension PlayerEngine {
                 firstFedPTS: firstFedPTS
             )
         }
+        return true
     }
 
     /// Feeds decoded audio to the renderer until cancelled or EOF.

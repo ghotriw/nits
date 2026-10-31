@@ -96,7 +96,7 @@ extension PlayerEngine {
     /// in flight keeps its target: the re-read must not pull playback back to the frame before it.
     var rereadPosition: Double {
         chase?.seconds
-            ?? (media.hasVideo && currentFramePTS >= 0 ? currentFramePTS : synchronizer.currentTime().seconds)
+            ?? (media.hasVideo && currentFramePTS >= 0 ? currentFramePTS : playbackClock.currentTime().seconds)
     }
 
     /// Switches the HLS variant. Read on demand, without a seek: the demuxer splices at the new variant's first
@@ -226,10 +226,10 @@ extension PlayerEngine {
         // flight flushes it all again and reads audio from its target with the new delay.
         stopFeedingAudio()
         let sink = audioSink
-        let synchronizer = self.synchronizer
+        let clock = self.playbackClock
         let generation = decoder.generation
         startFeedingAudio {
-            let replay = sink.changeDelay(to: delay, keepingAudioAfter: synchronizer.currentTime())
+            let replay = sink.changeDelay(to: delay, keepingAudioAfter: clock.currentTime())
             decoder.requeue(replay, generation: generation)
         }
     }
@@ -270,7 +270,7 @@ extension PlayerEngine {
 }
 
 extension PlayerEngine: SubtitleHost {
-    var clockSeconds: Double { synchronizer.currentTime().seconds }
+    var clockSeconds: Double { playbackClock.currentTime().seconds }
 
     var subtitleVideo: SubtitleVideo {
         SubtitleVideo(

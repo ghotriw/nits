@@ -41,9 +41,12 @@ extension PlayerEngine {
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
 
+        chaseSettling.noteRequest()
+
         // Cancel any pending settle debounce from an earlier seek in the burst
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
+        chaseSettling.abandonSettle()
         cancelPreroll()
         clockSettlingGuardLock.withLock { $0 = nil }
 
@@ -52,7 +55,7 @@ extension PlayerEngine {
             resumePlaybackAfterChase = isPlaying
             if isPlaying {
                 // Instantly pause playback clock and CADisplayLink during seek burst to prevent clock jitter / drift
-                synchronizer.setRate(0.0, time: synchronizer.currentTime())
+                playbackClock.setRate(0.0, time: playbackClock.currentTime())
                 displayLink?.isPaused = true
             }
         }
@@ -97,6 +100,8 @@ extension PlayerEngine {
         let loadID = currentLoadID
 
         let shouldResume = self.resumePlaybackAfterChase
+        if shouldResume { chaseSettling.isAudioFlushPending = true }
+        chaseSettling.isAudioRefillPending = true
 
         // Stop feeding packets from the old position.
         isFeeding.withLock { $0 = false }
@@ -125,6 +130,10 @@ extension PlayerEngine {
 
         seekQueue.async { [weak self, demuxer, externalAudio, decoder, frameQueue, pausedStepCache] in
             guard let self else { return }
+            let signposter = PlayerPerformanceMonitor.shared.signposter
+            let signpostID = signposter.makeSignpostID()
+            let seekInterval = signposter.beginInterval("Seek", id: signpostID)
+            defer { signposter.endInterval("Seek", seekInterval) }
 
             let isSuperseded: @Sendable () -> Bool = { !seekGeneration.isCurrent(seekId) }
             // The seek as it lands: past the last keyframe, a forward keyframe seek goes to its target exactly
@@ -144,6 +153,7 @@ extension PlayerEngine {
                 }
             }
 
+            signposter.emitEvent("Demuxed", id: signpostID)
             var previewFrame: SeekPreview.Result? = nil
             if hasVideo {
                 previewFrame = SeekPreview.decode(
@@ -191,12 +201,15 @@ extension PlayerEngine {
                 externalAudio.seek(to: max(0, targetSeconds - audioDelay))
             }
 
+            signposter.emitEvent("Previewed", id: signpostID)
             // Expensive audio reset only for the seek that is still current (final chase target).
             if !isSuperseded() {
                 audioDecoder?.flush()
-                audioSink.flush()
+                // Resuming: flushed by `startFeeding()`, once, however many seeks the burst took.
+                if !shouldResume { audioSink.flush() }
             }
 
+            signposter.emitEvent("Audio reset", id: signpostID)
             let settled = landed
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.currentLoadID == loadID else { return }
@@ -263,7 +276,7 @@ extension PlayerEngine {
             // Paused mode: settle immediately
             chase = nil
             clockSettlingGuardLock.withLock { $0 = nil }
-            synchronizer.setRate(0.0, time: targetTime)
+            playbackClock.setRate(0.0, time: targetTime)
             isPlaying = false
             // Media played to its end stays ended when a seek only lands at the end again.
             if !(playbackState == .completed && isAtEndOfMedia(completedSeconds)) {
@@ -282,15 +295,36 @@ extension PlayerEngine {
     }
 
     /// Resumes playback at `completedSeconds`, where seek `seekId` landed, or ends the media there, unless a newer seek
-    /// comes first. Playing mode: debounce resumption slightly (300ms) so that sustained key-hold repeat
+    /// comes first. Playing mode: debounce resumption slightly (300ms) when seeks come in a burst so that sustained key-hold repeat
     /// events (which fire every 40-70ms) don't repeatedly unpause and roll the clock forward.
     private func scheduleChaseSettle(seekId: Int, at completedSeconds: Double) {
         let targetTime = CMTime(seconds: completedSeconds, preferredTimescale: 1000)
         chaseSettleTask?.cancel()
+        let token = chaseSettling.beginSettle()
         chaseSettleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.chaseSettleDebounceDuration)
+            if let self, self.chaseSettling.resumeDelay > .zero {
+                try? await Task.sleep(for: self.chaseSettling.resumeDelay)
+            }
             guard !Task.isCancelled, let self, self.seekGeneration.isCurrent(seekId) else { return }
 
+            self.chaseSettling.commitSettle(token)
+            defer { self.chaseSettling.endSettle(token) }
+
+            // The audio the seek left in the renderer goes before the feeders and the clock start, not alongside them:
+            // a flush racing the clock's start holds the first sound back by most of a second. On `seekQueue`, so the
+            // main thread does not wait for the renderer.
+            if self.chaseSettling.isAudioFlushPending {
+                self.chaseSettling.isAudioFlushPending = false
+                let sink = self.audioSink
+                sink.expectFlush()
+                await withCheckedContinuation { continuation in
+                    self.seekQueue.async {
+                        sink.flush()
+                        continuation.resume()
+                    }
+                }
+                guard !Task.isCancelled, self.seekGeneration.isCurrent(seekId) else { return }
+            }
             self.chase = nil
             // Landed at the end, the media ends, as playing on to it would (within the same margin): resuming there
             // would start the clock with nothing left to read. After the debounce, so key repeats still held land
@@ -302,7 +336,7 @@ extension PlayerEngine {
                 return
             }
             self.startFeeding()
-            self.startSynchronizerClockAfterPreroll(at: targetTime)
+            self.startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: self.hasAudioStream)
             self.displayLink?.isPaused = !self.media.hasVideo
             self.isPlaying = true
             self.playbackState = .playing
@@ -321,7 +355,9 @@ extension PlayerEngine {
         // (and on HLS reading it again) for each key repeat. Playing, the pending settle (which ends the media) waits
         // for the presses to stop, as their seeks would have it; paused or ended on the last frame, nothing is left.
         if seconds > 0, !isSeeking {
-            if let settled = chase, chaseSettleTask != nil, isAtEndOfMedia(settled.seconds) {
+            if let settled = chase, chaseSettleTask != nil, !chaseSettling.isSettleCommitted,
+                isAtEndOfMedia(settled.seconds)
+            {
                 scheduleChaseSettle(seekId: seekGeneration.current, at: settled.seconds)
                 return relativeSeekBurst.offset(landingAt: settled.seconds) ?? 0
             }
@@ -494,7 +530,7 @@ extension PlayerEngine {
         let pts = entry.pts.seconds
         renderDirect(
             pixelBuffer: entry.pixelBuffer, pts: pts, hdrMetadata: entry.hdrMetadata, restartsSmoothing: !forward)
-        synchronizer.setRate(0.0, time: entry.pts)
+        playbackClock.setRate(0.0, time: entry.pts)
         currentTime = pts
         subtitles.timeDidChange(to: pts, .tick)
         onTimeUpdate?(pts, media.duration)

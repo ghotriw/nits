@@ -93,6 +93,8 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         /// Start of the buffer waiting for the renderer to take it.
         var pending: CMTime?
         /// Bumped by `flush()`, so an enqueue that was in flight across it doesn't record pre-flush media.
+        /// A flush is on its way (`expectFlush`) and has not run: `end` is still audio from before it.
+        var isFlushOwed = false
         var generation: UInt64 = 0
     }
 
@@ -110,6 +112,21 @@ final class BufferTrackingAudioSink: AudioRendererSink {
     /// End of the latest audio enqueued since the last flush; `nil` if none.
     var bufferedEnd: CMTime? {
         state.withLock { $0.end }
+    }
+
+    /// A flush is on its way and has not run, so `bufferedEnd` is audio that is about to go.
+    var isFlushOwed: Bool {
+        state.withLock { $0.isFlushOwed }
+    }
+
+    /// Says a flush is coming (from a feeder's run that has not reached it yet), so a reader does not take what
+    /// `bufferedEnd` says for what the renderer will hold. The flush clears it; `withdrawExpectedFlush` when none comes.
+    func expectFlush() {
+        state.withLock { $0.isFlushOwed = true }
+    }
+
+    func withdrawExpectedFlush() {
+        state.withLock { $0.isFlushOwed = false }
     }
 
     /// Start of the audio the renderer has not taken yet while the feeder waits on its backpressure; `nil` while
@@ -143,6 +160,7 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         state.withLock { state in
             state.end = nil
             state.pending = nil
+            state.isFlushOwed = false
             state.generation &+= 1
         }
         onFlush?()
@@ -183,6 +201,18 @@ final class DelayedAudioSink: AudioRendererSink {
     /// Start of the audio waiting for the renderer to take it, on the clock's timeline (delay included).
     var pendingStart: CMTime? {
         wrapped.pendingStart
+    }
+
+    var isFlushOwed: Bool {
+        wrapped.isFlushOwed
+    }
+
+    func expectFlush() {
+        wrapped.expectFlush()
+    }
+
+    func withdrawExpectedFlush() {
+        wrapped.withdrawExpectedFlush()
     }
 
     /// Sets the delay for audio enqueued from now on, keeping what is already queued; for a pipeline that is flushed
