@@ -7,6 +7,16 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 > [!NOTE]
 > Pre-1.0: the `NitsKit` / `NitsCore` API may change between minor versions.
 
+## Install
+
+```bash
+brew install --cask ghotriw/tap/nits
+```
+
+Or download the zip from [Releases](https://github.com/ghotriw/nits/releases). The app is ad-hoc signed, not
+notarized: after unzipping, run `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
+System Settings → Privacy & Security → Open Anyway. The Homebrew cask does this for you.
+
 ## Roadmap
 
 **Video & HDR**
