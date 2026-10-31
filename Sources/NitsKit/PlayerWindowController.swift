@@ -24,6 +24,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     private let pictureInPicture: PictureInPictureWindowCoordinator
     private var rememberRecentMedia = true
     private let recentMediaStore: RecentMediaStore?
+    /// The windowed frame while the window is in or entering fullscreen: the exit animation returns to it.
+    private var frameBeforeFullscreen: NSRect?
     /// Set in `windowWillClose`; opens still resolving that follow must not show the window again.
     private(set) var isWindowClosing = false
 
@@ -391,7 +393,59 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         nowPlayingController.isKeyWindow = false
     }
 
+    /// The share of the system's duration the custom transition takes: shorter feels more responsive.
+    private static let fullscreenAnimationSpeedFactor = 0.75
+
+    /// The window animates its own frame (see `window(_:startCustomAnimationToEnterFullScreenOn:withDuration:)`), so
+    /// the video keeps playing during the transition. With the system animation AppKit animates a snapshot of the
+    /// window and the picture freezes until it ends.
+    public func customWindowsToEnterFullScreen(for window: NSWindow) -> [NSWindow]? {
+        [window]
+    }
+
+    public func customWindowsToExitFullScreen(for window: NSWindow) -> [NSWindow]? {
+        [window]
+    }
+
+    /// Where the window goes on leaving fullscreen: the frame it had before. One on a screen that is gone (a monitor
+    /// unplugged meanwhile) is centered on the window's screen at its old size, cut to fit; with none at all (it
+    /// entered fullscreen some other way) the window takes 2/3 of the screen. (`constrainFrameRect` leaves the
+    /// horizontal position alone, so it can't bring a frame from a gone screen back.)
+    private func windowedFrame(for window: NSWindow) -> NSRect {
+        guard let screen = window.screen ?? NSScreen.main else { return window.frame }
+        if let frame = frameBeforeFullscreen,
+            let home = NSScreen.screens.first(where: { $0.frame.intersects(frame) })
+        {
+            return window.constrainFrameRect(frame, to: home)
+        }
+        let area = screen.visibleFrame
+        let size =
+            frameBeforeFullscreen.map { NSSize(width: min($0.width, area.width), height: min($0.height, area.height)) }
+            ?? NSSize(width: area.width * 2 / 3, height: area.height * 2 / 3)
+        return NSRect(
+            x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height)
+    }
+
+    public func window(
+        _ window: NSWindow, startCustomAnimationToEnterFullScreenOn screen: NSScreen,
+        withDuration duration: TimeInterval
+    ) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration * Self.fullscreenAnimationSpeedFactor
+            window.animator().setFrame(screen.frame, display: true)
+        }
+    }
+
+    public func window(_ window: NSWindow, startCustomAnimationToExitFullScreenWithDuration duration: TimeInterval) {
+        let target = windowedFrame(for: window)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration * Self.fullscreenAnimationSpeedFactor
+            window.animator().setFrame(target, display: true)
+        }
+    }
+
     public func windowWillEnterFullScreen(_ notification: Notification) {
+        frameBeforeFullscreen = window?.frame
         updateToolbar(isFullscreen: true)
         window?.titleVisibility = .visible
         window?.titlebarAppearsTransparent = false
@@ -402,6 +456,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     }
 
     public func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        // The custom animation may already have stretched the window.
+        if let frame = frameBeforeFullscreen { window.setFrame(frame, display: true) }
+        frameBeforeFullscreen = nil
         updateToolbar(isFullscreen: false)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -412,7 +469,15 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         window?.titleVisibility = .hidden
     }
 
+    public func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        // The window stays in fullscreen, but the custom animation may already have shrunk it;
+        // `frameBeforeFullscreen` is kept for the next exit.
+        if let screen = window.screen { window.setFrame(screen.frame, display: true) }
+        window.titleVisibility = .visible
+    }
+
     public func windowDidExitFullScreen(_ notification: Notification) {
+        frameBeforeFullscreen = nil
         updateToolbar(isFullscreen: false)
         window?.titlebarAppearsTransparent = true
         uiState.isFullscreen = false
