@@ -146,6 +146,12 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
 - **Code that stops or re-anchors the synchronizer clock goes through `cancelPreroll()`** (directly or via
   `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`): it also ends a pending preroll and
   buffering, whose tasks would otherwise restart the clock at a stale position.
+- **The master clock is `PlaybackClock`.** Change its rate through `playbackClock.setRate`, never `synchronizer.setRate`
+  (a rate change waits for the audio renderer's queue and blocked the main thread and the display link for up to 700
+  ms), and read the position the engine decides on through `playbackClock.currentTime()`, which reads as the latest
+  change makes it. Never read the synchronizer under a lock. A seek that resumes leaves the audio renderer unflushed
+  until its resume, which flushes it once and makes the start wait for the audio to come back
+  (`isAudioReadyToStart`); see "The master clock and resuming after a seek" in `docs/ARCHITECTURE.md`.
 - **Picture in Picture** mirrors the display layer 1:1 (macOS AVKit bug), so while it is active the
   layer's geometry comes from `pictureInPictureLayerGeometry`, not the host view's bounds. Keep the
   AVKit workarounds guarded (act only on a broken layout) and don't give PiP a controlTimebase of its
@@ -201,6 +207,10 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
   skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only
   to report, so run them locally before pushing.
+- Keep `.realtimePlayback` tests short (a few seconds each). They run one at a time through a queue shared across
+  suites, and a test's 60 s limit counts its wait in it: one long test (14 s of playback) pushed eleven unrelated tests
+  over the limit in a full run, which look like hangs and pass on their own. Tests that only measure (they need a
+  media file of one's own) take `.enabled(if:)` on the environment variable, so a run reports them as skipped.
 - Frame-freeze detection uses `PixelBufferAnalyzer`.
 - Media tests skip when `ffmpeg` is missing; CI installs it.
 - `TestHTTPServer` serves connections on its own queue (a `TaskExecutor`), never the cooperative pool: tests that

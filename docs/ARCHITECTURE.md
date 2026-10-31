@@ -221,6 +221,103 @@ discontinuity can't hide every following frame. Container quirks:
   rather than timestamp matching. Exact-seek preroll on such samples carries the target
   (`exactSeekTargetAttachmentKey`), and the decoder decides on the frame's real PTS.
 
+### The master clock and resuming after a seek
+
+A seek while playing pauses the clock, lands, and starts it again. Done naively that costs hundreds of milliseconds and
+blocks the UI, and where the time goes is in the audio renderer, not in decoding. This section is what was measured
+and the rules that came out of it. (Measured on a 4K HEVC / Dolby Vision MKV on a local disk, built-in speakers; the
+measurement tests are in `SeekSpinnerTimelineTests` and run with `NITS_TIMELINE_MEDIA=<file>`.)
+
+**`AVSampleBufferRenderSynchronizer.setRate` blocks.** It waits for the audio renderer's queue, which holds its lock
+while it starts, stops or flushes. A pause that follows a start (a second press of an arrow key) blocked the caller for
+up to 700 ms, and the caller was the main thread or the display link's. A stack sample showed the main thread inside
+`FigAudioQueuePause`, waiting on a mutex, with a dozen audio-queue threads alive, which suggests that a flush recreates the renderer's queue (not
+confirmed beyond the thread names).
+
+**`PlaybackClock` owns the synchronizer and applies its rate changes on a queue of its own.** A change is recorded at
+once and applied in order behind the caller's back, so `setRate` never blocks a caller. Nothing else calls
+`synchronizer.setRate`. The clock the engine decides on is the one it asked for, not the one the synchronizer shows yet:
+
+- A clock asked to hold reads as held at that position, applied or not.
+- A clock asked to run reads as standing at its start until the change is applied *and* the synchronizer has come to
+  it (`settlingTolerance`, with `settlingTimeout` as the way out). The synchronizer keeps showing the old position
+  for a while after `setRate` returns (until the audio device runs, tens to hundreds of ms), and a reader that took
+  that for the clock would drop every frame from the new position as late. It is not projected forward: the
+  synchronizer holds the clock back while the device starts, and a clock that ran ahead of it would step back.
+- A change of rate on a running clock (`keepsRunning`, said by the caller; deciding it from a reading would be a read
+  of the synchronizer on the caller's thread) is read as it runs, without waiting for a start.
+- The synchronizer is never read under the clock's lock, for the same reason `setRate` is queued.
+
+The display link, the time observer and the engine all read `PlaybackClock.currentTime()`. `ClockSettlingGuard`
+still reads the raw synchronizer; it now duplicates the settling above and is to go.
+
+**Resuming after a seek.** `ChaseSettling` holds what the seeks of a burst decide among themselves:
+
+- A seek with no other just before it resumes playback as soon as it lands. mpv waits only while a burst is on
+  (`MPSEEK_FLAG_DELAY`, until the first frame of the previous seek is shown), not for a fixed time after each seek.
+- A seek that follows another within `burstDebounce` (300 ms) waits it out, so a held key's repeats (every 40–70 ms,
+  at default settings) do not start and stop the clock each time. A burst's resume is *committed* once its wait is
+  over (`beginSettle` / `commitSettle`): it flushes the renderer, then starts the feeders and the clock, and can no
+  longer be restarted by `endSeekBurst()` or the end-of-media check, which would skip the flush it has under way.
+- `endSeekBurst()` ends the wait when the key is released (`PlayerWindow.sendEvent` sees the key-up of ←/→).
+  The debounce stays as the way out when no key-up comes (focus lost, a seek from a button or a remote). A fixed
+  debounce cannot suit every key-repeat setting; the key-up does not depend on it.
+
+**The audio renderer is flushed once per burst, ahead of everything that depends on it.** A flush restarts the
+renderer's audio queue, and a flush that races the start of the clock holds the first sound back by most of a
+second. So a seek that will resume leaves the renderer alone while the clock is held (nothing feeds it), and the
+resume flushes it first, on `seekQueue` (`sink.expectFlush()` marks the debt; the flush clears it), and only then
+starts the feeders and the clock. A seek that does not resume (paused) flushes where it lands.
+
+**The clock waits for the audio to come back.** A flushed renderer is empty. A clock started on it runs on an empty
+queue, and `checkForStarvation` finds audio and frames short at its first tick and holds the clock again, with a
+spinner. That used to be hidden: the synchronous `setRate` blocked the main thread for the audio device, which gave
+the feeders time to fill the queues by accident, and an unrelated grace period covered the rest. Now
+`isAudioReadyToStart` (`PlayerEngine+AudioPreroll.swift`) makes the start wait until the renderer holds
+`BufferingPolicy.audioAheadToStart` of audio past the target (twice the starvation watermark: at the watermark the
+first check would hold the clock again), or the audio has ended, or there is none. It applies only while the renderer
+is owed a refill by a seek (`isAudioRefillPending`), so loads and plain pause / play are not delayed. The wait
+is the preroll's: a start whose video is ready but whose audio is not is pending with `awaitsAudio`; the display-link
+tick leaves it alone and a poll on the main actor (`prerollAudioPollInterval`) starts it, which also serves audio
+without video, where nothing ticks. The preroll timeout still bounds it.
+
+Because the renderer holds audio when the clock starts after that wait, the start is pinned one output latency ahead
+(`startDelay`), as a resume from pause is. A start "as soon as possible" over enqueued audio makes the synchronizer
+discard the device buffer and leap ahead by the latency: measured, it added about 150 ms before the picture moved.
+
+**What it came to** (same file and speakers; "HEAD" is before this work):
+
+| | HEAD | now |
+|---|---|---|
+| Single keyframe seek while playing, picture moving | ~290 ms | 235–272 ms |
+| Key held, from the last press to the clock | ~310 ms | 20–60 ms |
+| `seekRelative` call in a held-key burst, slowest | up to 713 ms | 0–1 ms |
+| `play()` after a seek made on pause, clock moving | 189–324 ms, spinner in 5 of 12 | 200–236 ms, no spinner |
+| Audio track switch, clock stopped for | 389–578 ms, spinner every time | 137–234 ms, no spinner |
+
+**Why not "as in mpv / IINA"** (`.ref/mpv/audio/out`). mpv does not restart the audio device on a seek, which is
+what keeps IINA's seeks quick (as far as the code shows). `ao_coreaudio.c` pulls audio from an AudioUnit and on a seek only calls `AudioUnitReset`, which
+empties its buffers and leaves the unit running; the unit is stopped later, after an idle timeout. Its own comment
+gives the reason: restarting the unit "takes a noticeable amount of time", with a wireless device most of all.
+`AVSampleBufferAudioRenderer` has no such operation. The only way to empty it is `flush()`, which restarts its audio
+queue and, with it, the output device's IO (see `BufferTrackingAudioSink`). That is the cost of this stack, and an
+asynchronous clock does not remove it: `PlaybackClock` stops the main thread from waiting for it, and everything above
+reduces the restarts to one per resume. mpv's own `ao_avfoundation.m`, which uses the same synchronizer and renderer,
+calls `setRate` and `flush` from mpv's core thread (`stop` through `dispatch_sync` on its queue); it is the same
+stack as ours. (What is verified here is the `ao_coreaudio.c` code and our measurements; how `ao_avfoundation` feels
+in IINA is not.)
+
+mpv also does not debounce a burst of seeks. `MPSEEK_FLAG_DELAY` (`playloop.c`, `execute_queued_seek`) only holds the
+next seek back until the first frame of the previous one is shown, and a seek that arrives while the previous one is
+finishing skips starting the audio altogether (`handle_playback_restart`). With its device never restarted, nothing
+costs enough to be worth waiting for. Here a resume does (the flush above), so a held key's repeats wait out
+`burstDebounce`, or until the key is released. mpv's playloop restarts after a seek only when the first frame and
+the audio are ready, which is what `isAudioReadyToStart` does for the audio side.
+
+**Left as is.** Changing the audio track stops the clock for about 140–230 ms (probably the renderer's queue
+being set up for the new format; not investigated); it is a seek (`rereadPosition`) and takes the same path, without a spinner now. It is not
+audible as more than a short gap. Revisit if it is in the bundle.
+
 ### FrameQueue
 
 A fixed-capacity, pre-allocated ring buffer of `DecodedFrame?`:
