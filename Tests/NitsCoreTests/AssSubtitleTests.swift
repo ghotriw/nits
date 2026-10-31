@@ -592,13 +592,18 @@ struct AssSubtitleTrackTests {
         for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         try #require(engine.subtitles.isDrawingAuthored && !engine.subtitles.images.isEmpty)
 
+        // Paused first: the engine plays after a load, and its time ticks keep a libass call in flight, which keeps a
+        // watch going (it ends only when none of the engine's calls is under way when it looks).
+        engine.pause()
         // A watch armed earlier (making the renderer, the first frame) ends first, so the render below arms a fresh one.
         for _ in 0..<300 where engine.subtitles.libassWatch != nil { try await Task.sleep(for: .milliseconds(10)) }
-        try #require(engine.subtitles.libassWatch == nil)
+        try #require(
+            engine.subtitles.libassWatch == nil,
+            "playing \(engine.isPlaying), calls \(engine.subtitles.libassCallsInFlight), running \(engine.subtitles.isAuthoredRenderRunning), call \(String(describing: AssSubtitleRenderer.currentCallDuration))"
+        )
         // A render arms the watch, comes back at once, and then another's call holds the queue past the timeout.
         engine.subtitles.redrawAuthored()
-        // Paused, so no time tick renders; then quiet: no render of the engine's running, asked for, or about to be.
-        engine.pause()
+        // Paused above, so no time tick renders; then quiet: no render of the engine's running, asked for, or about to be.
         func isQuiet() -> Bool {
             engine.subtitles.libassCallsInFlight == 0 && !engine.subtitles.isAuthoredRenderRunning
                 && engine.subtitles.pendingAuthoredRenderTime == nil && engine.subtitles.windowRead == nil
