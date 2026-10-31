@@ -663,7 +663,9 @@ public struct PlaylistOverlayView: View {
         guard !urls.isEmpty else { return false }
         // Subtitle files are no playlist items: they attach to the media playing.
         let (subtitleURLs, mediaURLs) = SubtitleFileDrop.split(urls)
-        SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd)
+        if !subtitleURLs.isEmpty {
+            Task { await SubtitleFileDrop.attach(subtitleURLs, to: engine, osd: uiState.osd) }
+        }
         guard !mediaURLs.isEmpty else { return true }
         AppLog.info(.playlist, "Dropped \(mediaURLs.count) item(s) onto playlist drawer")
         appendInBackground(mediaURLs)

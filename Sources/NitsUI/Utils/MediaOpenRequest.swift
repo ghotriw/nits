@@ -37,14 +37,21 @@ public struct MediaOpenRequest: Sendable, Equatable {
             if subtitles.isEmpty {
                 osd.show(.custom(symbol: "exclamationmark.triangle", text: "No playable media"))
             } else {
-                SubtitleFileDrop.attach(subtitles, to: engine, osd: osd)
+                await SubtitleFileDrop.attach(subtitles, to: engine, osd: osd)
             }
             return
         }
         if media.count > 1 {
             AppLog.info(.playlist, "Opening \(media.count) media files, starting '\(first.lastPathComponent)'")
-            engine.playlist.clear()
-            engine.playlist.append(urls: media)
+            // Playlist files among them are read off the main actor (folders were expanded by `resolving`); an open
+            // since made replaces this one.
+            guard await engine.playlist.replaceAsync(with: media) else {
+                AppLog.info(.playlist, "Opening '\(first.lastPathComponent)' superseded by another")
+                return
+            }
+        } else {
+            // A group of files opened before and still read gives up: this one is the last opened.
+            engine.playlist.supersedePendingReplace()
         }
         let path = Self.loadPath(for: first)
         if let load {
@@ -60,6 +67,6 @@ public struct MediaOpenRequest: Sendable, Equatable {
             AppLog.info(.subtitles, "Subtitles opened with '\(path)' not attached: it isn't what is loaded")
             return
         }
-        SubtitleFileDrop.attach(subtitles, to: engine, osd: osd)
+        await SubtitleFileDrop.attach(subtitles, to: engine, osd: osd)
     }
 }

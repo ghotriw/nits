@@ -20,10 +20,10 @@ struct SubtitleFileDropTests {
     }
 
     @Test("Subtitles dropped with nothing playing add no track and say why on the OSD")
-    func testDropWithoutMedia() {
+    func testDropWithoutMedia() async {
         let engine = PlayerEngine.makeForTesting()
         let osd = OSDManager()
-        SubtitleFileDrop.attach([URL(fileURLWithPath: "/m/a.srt")], to: engine, osd: osd)
+        await SubtitleFileDrop.attach([URL(fileURLWithPath: "/m/a.srt")], to: engine, osd: osd)
         #expect(engine.subtitles.tracks.isEmpty)
         guard case .custom(_, let text, _, _) = osd.currentEvent else {
             Issue.record("Expected a custom OSD event, got \(String(describing: osd.currentEvent))")

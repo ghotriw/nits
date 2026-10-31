@@ -445,7 +445,7 @@ public struct QuickSubtitlesPane: View {
         openPanel.canChooseFiles = true
 
         if openPanel.runModal() == .OK, let url = openPanel.url {
-            engine.subtitles.addExternal(url: url)
+            Task { await engine.subtitles.addExternal(url: url) }
         }
     }
 }

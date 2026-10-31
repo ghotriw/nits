@@ -86,7 +86,7 @@ public final class SubtitleController {
         case tick
         /// A seek landed: show what is due, and read in a window what playback reads after.
         case seekLanded
-        /// A load applied its start time; the track was chosen before it: read in a window.
+        /// A load applied its start time; the track was chosen before it: show what is due, and read in a window.
         case mediaStarted
     }
 
@@ -227,6 +227,8 @@ public final class SubtitleController {
     /// The read of the file's own index of subtitle streams (`EmbeddedSubtitleReader.readIndex`), once per media:
     /// cancelled only with it, so seeks in a row don't restart it; window reads wait for it.
     @ObservationIgnored var indexLoad: Load?
+    /// Counts `reset()`s, so files `addExternal(urls:)` read for media since left aren't added to the next.
+    @ObservationIgnored var mediaGeneration = 0
 
     // MARK: libass
 
@@ -400,6 +402,7 @@ extension SubtitleController {
     /// Takes the media's subtitles away: its tracks, what is on screen (hosts get `[]`), the libass renderer, the
     /// documents read and the reads still running.
     func reset() {
+        mediaGeneration += 1
         cancelLoads()
         // A merge still running is for the media left (it checks the demuxer); the next one's reads needn't wait.
         stashMerge = nil
@@ -427,10 +430,12 @@ extension SubtitleController {
     /// Takes the tracks of media just opened (its demuxer is the host's now) and chooses one: the request's, else the
     /// one saved for the file, else by `TrackAutoSelection` (none when nothing fits). Restores the saved delay first,
     /// as the track picks its cues with it, and adds the subtitle files of the request/page and next to a local file.
+    /// The local ones are those `readFiles` read (`MediaSubtitleFiles.Lookup` of `subtitleFiles`, the media's path and
+    /// `saved`), before the load was applied.
     func mediaDidLoad(
         tracks: [SubtitleTrack], subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
-        defaultHeaders: [String: String] = [:], path: String, saved: PlaybackPreferences?, requestedTrack: String?,
-        audioLanguage: String?
+        defaultHeaders: [String: String] = [:], readFiles: MediaSubtitleFiles, saved: PlaybackPreferences?,
+        requestedTrack: String?, audioLanguage: String?
     ) {
         // Keep remote subtitle documents already downloaded for the same URLs (e.g. when switching a page's video
         // format), so the active track stays shown without re-downloading.
@@ -447,9 +452,10 @@ extension SubtitleController {
         if delay != 0 {
             AppLog.info(.subtitles, "Restored subtitle delay from saved history: \(delay)s")
         }
-        addSubtitleFiles(subtitleFiles, defaultHeaders: defaultHeaders, reusing: previousRemoteDocuments)
+        addSubtitleFiles(
+            subtitleFiles, defaultHeaders: defaultHeaders, read: readFiles, reusing: previousRemoteDocuments)
         // Before the saved selection: a saved external file that is one of them maps to the same track.
-        addSidecarFiles(for: path)
+        addSidecarFiles(readFiles)
 
         let chosen: Bool
         if let spec = requestedTrack, let preference = PlayerEngine.resolveSubtitleSelection(spec, in: self.tracks) {
@@ -463,7 +469,7 @@ extension SubtitleController {
             }
             chosen = true
         } else {
-            chosen = restoreSelection(from: saved, among: self.tracks)
+            chosen = restoreSelection(from: saved, among: self.tracks, readFiles: readFiles)
         }
         if !chosen {
             selectionIsAutomatic = true
@@ -489,8 +495,9 @@ extension SubtitleController {
             // a window. Once per settled seek, not per scrub step, on its own demuxer.
             refreshEmbedded(around: seconds)
         case .mediaStarted:
-            // The cue on screen at a resume point is read in a window (a start at 0 needs none, playback reads from
-            // there).
+            // The track was chosen before the start time was applied, its cues for 0: those due at the start. The cue
+            // on screen at a resume point is read in a window (a start at 0 needs none, playback reads from there).
+            updateShown(at: seconds)
             refreshEmbedded(around: seconds)
         }
     }
@@ -551,17 +558,19 @@ extension SubtitleController {
     /// Selects the subtitles saved for the file, or none when they were turned off. Returns whether there was a
     /// selection to restore: a saved file that moved or a track the media no longer has leaves the choice to
     /// `TrackAutoSelection`.
-    private func restoreSelection(from saved: PlaybackPreferences?, among tracks: [SubtitleTrack]) -> Bool {
+    /// A saved file is one `readFiles` read (`MediaSubtitleFiles.Lookup.savedPath`).
+    private func restoreSelection(
+        from saved: PlaybackPreferences?, among tracks: [SubtitleTrack], readFiles: MediaSubtitleFiles
+    ) -> Bool {
         guard let id = saved?.subtitleTrackId else { return false }
         if id == PlaybackRecord.subtitlesOff {
             select(trackId: nil, persistHistory: false)
             return true
         }
         if id == PlaybackRecord.externalSubtitle {
-            guard let path = saved?.externalSubtitlePath, FileManager.default.fileExists(atPath: path),
-                let trackId = externalTrack(
-                    among: addExternalFile(url: URL(fileURLWithPath: path)),
-                    streamIndex: saved?.externalSubtitleStreamIndex)
+            // Not read when it moved since.
+            guard let path = saved?.externalSubtitlePath, let read = readFiles[URL(fileURLWithPath: path)],
+                let trackId = externalTrack(among: addReadFile(read), streamIndex: saved?.externalSubtitleStreamIndex)
             else {
                 AppLog.warning(
                     .subtitles, "Saved external subtitle file is missing: \(saved?.externalSubtitlePath ?? "no path")")

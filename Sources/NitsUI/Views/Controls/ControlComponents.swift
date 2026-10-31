@@ -286,8 +286,10 @@ public struct ControlSubtitleTrackButton: View {
 
             let handleSelection: (NSApplication.ModalResponse) -> Void = { response in
                 if response == .OK, let url = panel.url {
-                    engine?.subtitles.addExternal(url: url)
-                    uiState?.osd.show(.subtitleTrack(title: url.lastPathComponent))
+                    Task { @MainActor in
+                        guard let engine, let osd = uiState?.osd else { return }
+                        await SubtitleFileDrop.attach([url], to: engine, osd: osd)
+                    }
                 }
             }
 

@@ -30,6 +30,14 @@ extension PlayerEngine {
         // update (up to 50 ms back) and, aligned with buffered audio, hold it for an output latency — a stutter.
         if isPlaying { return }
 
+        // The load's start still runs on `seekQueue` (`isLoadStartPending`): the feeders would read from before its
+        // start position. Playing from now on, as after a start right away; the start, once in, starts the pipeline.
+        if isLoadStartPending {
+            isPlaying = true
+            playbackState = .playing
+            return
+        }
+
         let feedingActive = isFeeding.withLock { $0 }
         if !feedingActive {
             startFeeding()

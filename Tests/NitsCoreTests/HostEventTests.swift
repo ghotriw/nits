@@ -195,7 +195,7 @@ struct HostEventTests {
         var reports: [Int?] = []
         engine.onTracksChanged = { reports.append(engine.subtitles.selectedTrackId) }
 
-        engine.subtitles.addExternal(url: subtitleURL)
+        await engine.subtitles.addExternal(url: subtitleURL)
         let added = try #require(engine.subtitles.tracks.first { $0.externalURL != nil })
         #expect(reports == [added.id])
     }

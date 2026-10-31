@@ -165,7 +165,7 @@ struct PlayerEngineTests {
 
     @Test("An external subtitle file and the subtitle delay are restored when the media is opened again")
     @MainActor
-    func testExternalSubtitleRestoredOnReload() throws {
+    func testExternalSubtitleRestoredOnReload() async throws {
         guard let mediaPath = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles) else { return }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -179,18 +179,18 @@ struct PlayerEngineTests {
         try #require(engine.isLoaded)
         let embeddedCount = engine.subtitles.tracks.count
 
-        engine.subtitles.addExternal(url: subtitleURL)
-        engine.subtitles.addExternal(url: subtitleURL)  // the same file again selects its track, adds none
+        await engine.subtitles.addExternal(url: subtitleURL)
+        await engine.subtitles.addExternal(url: subtitleURL)  // the same file again selects its track, adds none
         #expect(engine.subtitles.tracks.count == embeddedCount + 1)
 
         // Several at once: the last readable one is selected, an unreadable one is skipped.
         let secondURL = directory.appendingPathComponent("second.srt")
         try "1\n00:00:00,000 --> 00:00:02,000\nSecond line\n".write(to: secondURL, atomically: true, encoding: .utf8)
-        engine.subtitles.addExternal(urls: [secondURL, directory.appendingPathComponent("missing.srt")])
+        await engine.subtitles.addExternal(urls: [secondURL, directory.appendingPathComponent("missing.srt")])
         #expect(engine.subtitles.tracks.count == embeddedCount + 2)
         #expect(engine.subtitles.tracks.first { $0.id == engine.subtitles.selectedTrackId }?.externalURL == secondURL)
 
-        engine.subtitles.addExternal(url: subtitleURL)
+        await engine.subtitles.addExternal(url: subtitleURL)
         engine.subtitles.setDelay(0.5)
 
         engine.load(path: mediaPath)

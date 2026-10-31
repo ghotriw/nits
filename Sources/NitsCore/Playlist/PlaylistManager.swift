@@ -28,6 +28,12 @@ public final class PlaylistManager: Sendable {
 
     /// Whether the playlist is currently loading/parsing media tracks asynchronously.
     public private(set) var isLoading: Bool = false
+    /// Counts `replaceAsync(with:)` calls and opens since: only the last one replaces the playlist.
+    @ObservationIgnored
+    private var replaceGeneration = 0
+    /// Folder scans and playlist reads under way (`expanding`): `isLoading` stays set until the last ends.
+    @ObservationIgnored
+    private var pendingExpansions = 0
 
     /// Items filtered by the current `searchQuery` (cached for performance).
     public private(set) var filteredItems: [PlaylistItem] = []
@@ -337,12 +343,38 @@ public final class PlaylistManager: Sendable {
     /// Appends URLs like `append(urls:)`, but scans folders and reads playlists (local or remote)
     /// off the main actor while `isLoading` is set, so slow volumes never stall the UI.
     public func appendAsync(urls: [URL]) async {
-        self.isLoading = true
-        defer { self.isLoading = false }
-
-        let newItems = await Self.expandToItems(urls)
+        let newItems = await expanding(urls)
         guard !Task.isCancelled, !newItems.isEmpty else { return }
         append(items: newItems)
+    }
+
+    /// Replaces the playlist with `urls`, read as `appendAsync(urls:)` reads them, off the main actor: the playlist
+    /// stays as it was until they are read. Returns whether it was replaced: not when a later call or
+    /// `supersedePendingReplace()` came first, or the task was cancelled.
+    public func replaceAsync(with urls: [URL]) async -> Bool {
+        replaceGeneration += 1
+        let generation = replaceGeneration
+        let newItems = await expanding(urls)
+        guard !Task.isCancelled, replaceGeneration == generation else { return false }
+        clear()
+        if !newItems.isEmpty { append(items: newItems) }
+        return true
+    }
+
+    /// Makes a `replaceAsync(with:)` still reading give up: media opened since without replacing the playlist.
+    public func supersedePendingReplace() {
+        replaceGeneration += 1
+    }
+
+    /// `expandToItems` with `isLoading` set while it runs (as long as any of these runs).
+    private func expanding(_ urls: [URL]) async -> [PlaylistItem] {
+        pendingExpansions += 1
+        isLoading = true
+        defer {
+            pendingExpansions -= 1
+            if pendingExpansions == 0 { isLoading = false }
+        }
+        return await Self.expandToItems(urls)
     }
 
     /// Folders become their playable media, playlist files their entries, anything else one item.

@@ -10,8 +10,8 @@ public enum SubtitleFileDrop {
     }
 
     /// Adds the files as subtitle tracks of the loaded media, selecting the last readable one, and reports the
-    /// outcome on the OSD.
-    public static func attach(_ urls: [URL], to engine: PlayerEngine, osd: OSDManager) {
+    /// outcome on the OSD. The files are read off the main actor.
+    public static func attach(_ urls: [URL], to engine: PlayerEngine, osd: OSDManager) async {
         guard !urls.isEmpty else { return }
         guard engine.isLoaded else {
             osd.show(
@@ -19,25 +19,19 @@ public enum SubtitleFileDrop {
             return
         }
 
-        // A VobSub `.sub` loads through its `.idx`; dropped together, the pair is one file. `split` let only subtitle
-        // files through, so none is left out here.
-        var seen = Set<URL>()
-        let files = urls.map { SidecarSubtitles.vobSubIndex(forDataFile: $0) ?? $0 }
-            .filter { seen.insert($0.standardizedFileURL).inserted }
-
-        AppLog.info(.subtitles, "Dropped \(files.count) subtitle file(s) onto the player")
-        engine.subtitles.addExternal(urls: files)
-
-        let added = Set(files.map(\.standardizedFileURL))
-        if let selected = engine.subtitles.tracks.first(where: { $0.id == engine.subtitles.selectedTrackId }),
-            let url = selected.externalURL, added.contains(url)
-        {
+        // A VobSub `.sub` loads through its `.idx`: dropped together, the pair is listed once.
+        AppLog.info(.subtitles, "Adding \(urls.count) subtitle file(s) to the media playing")
+        switch await engine.subtitles.addExternal(urls: urls) {
+        case .selected(let track):
             let title = TrackTitleFormatter.format(
-                title: selected.title, language: selected.language, fallbackId: selected.id + 1)
+                title: track.title, language: track.language, fallbackId: track.id + 1)
             osd.show(.subtitleTrack(title: title))
-        } else {
-            let name = (files.last ?? urls[0]).lastPathComponent
+        case .unreadable:
+            let name = urls[urls.count - 1].lastPathComponent
             osd.show(.custom(symbol: "exclamationmark.triangle", text: "Can't read \(name)"))
+        case .mediaChanged:
+            // The media they were for is gone; the new one shows its own.
+            break
         }
     }
 }

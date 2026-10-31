@@ -27,6 +27,8 @@ extension MediaDemuxer {
 
     struct ReadAheadControl: Sendable {
         var isStopped = false
+        /// Started held (`startReadAhead(held:)`): the thread reads nothing until `releaseReadAhead()`.
+        var isHeld = false
         /// Threads waiting in `lockIO()`.
         var ioWaiters = 0
     }
@@ -48,14 +50,17 @@ extension MediaDemuxer {
         return body()
     }
 
-    /// Starts reading ahead; before the consumers start, as from then on they only take from the queues.
-    public func startReadAhead(limits: ReadAheadLimits = ReadAheadLimits()) {
+    /// Starts reading ahead; before the consumers start, as from then on they only take from the queues. `held`, it reads
+    /// nothing until `releaseReadAhead()`, while `readsAhead` already tells it does: for a start position to be sought
+    /// first, rather than read from the start of the input up to it (a network request, a whole HLS segment).
+    public func startReadAhead(limits: ReadAheadLimits = ReadAheadLimits(), held: Bool = false) {
         queueLock.lock()
         guard !readsAhead else {
             queueLock.unlock()
             return
         }
         readsAhead = true
+        if held { readAheadControl.withLock { $0.isHeld = true } }
         readAheadLimits = limits
         // Only the read-ahead thread uses it, from its start on: no `lock`, which the main thread must not take.
         adaptiveBitrate.logic = AdaptiveBitrateLogic(
@@ -69,6 +74,12 @@ extension MediaDemuxer {
         thread.qualityOfService = .userInitiated
         thread.start()
         AppLog.info(.demuxer, "Reading ahead up to \(Int(limits.seconds)) s / \(limits.bytes >> 20) MB")
+    }
+
+    /// Lets a read-ahead started held (`startReadAhead(held:)`) read.
+    public func releaseReadAhead() {
+        readAheadControl.withLock { $0.isHeld = false }
+        readAheadWake.signal()
     }
 
     /// Stops the read-ahead thread; what is queued can still be taken.
@@ -85,6 +96,10 @@ extension MediaDemuxer {
     private func readAheadStep() -> Bool {
         let control = readAheadControl.withLock { $0 }
         guard !control.isStopped else { return false }
+        if control.isHeld {
+            _ = readAheadWake.wait(timeout: .now() + .milliseconds(20))
+            return true
+        }
         if control.ioWaiters > 0 {
             _ = readAheadWake.wait(timeout: .now() + .milliseconds(1))
             return true

@@ -2,155 +2,154 @@ import Foundation
 
 // MARK: - Subtitle files
 
+/// What `SubtitleController.addExternal(urls:)` came to.
+public enum AddedSubtitleFiles: Sendable, Equatable {
+    /// The track selected: of the last file that could be read.
+    case selected(SubtitleTrack)
+    /// None of the files could be read.
+    case unreadable
+    /// Other media loaded while they were read: not added.
+    case mediaChanged
+}
+
 extension SubtitleController {
-    public func addExternal(url: URL) {
-        addExternal(urls: [url])
+    @discardableResult
+    public func addExternal(url: URL) async -> AddedSubtitleFiles {
+        await addExternal(urls: [url])
     }
 
-    /// Adds subtitle files as tracks and selects the last one that could be read; files already added are reused.
-    public func addExternal(urls: [URL]) {
+    /// Adds subtitle files as tracks and selects the last one that could be read; files already added are reused, not
+    /// read again. Local files are read off the main actor (`MediaSubtitleFiles`); not added if other media loads
+    /// meanwhile.
+    @discardableResult
+    public func addExternal(urls: [URL]) async -> AddedSubtitleFiles {
+        let generation = mediaGeneration
+        let lookup = MediaSubtitleFiles.Lookup(
+            requested: urls.filter(\.isFileURL).map { MediaLoadRequest.SubtitleFile(url: $0) },
+            encoding: settings.encoding, listed: Set(tracks.compactMap(\.externalURL)))
+        let read = await Task.detached(priority: .userInitiated) { MediaSubtitleFiles.read(lookup) }.value
+        guard mediaGeneration == generation else {
+            AppLog.info(.subtitles, "Subtitle files read for media no longer loaded: not added")
+            return .mediaChanged
+        }
+        var selected: Int?
         let addAndSelect = {
-            guard let trackId = urls.flatMap({ self.addExternalFile(url: $0) }).last else { return }
+            let ids = urls.flatMap { url -> [Int] in
+                guard url.isFileURL else { return self.addNetworkFile(url: url) }
+                if let file = read[url] { return self.addReadFile(file) }
+                // Listed already, not read again.
+                guard let target = read.target(of: url) else { return [] }
+                return self.tracks.filter { $0.externalURL == target }.map(\.id)
+            }
+            guard let trackId = ids.last else { return }
             self.select(trackId: trackId)
+            selected = trackId
         }
         // The added tracks and the selection are reported once.
         if let host { host.deferringTracksChanged(addAndSelect) } else { addAndSelect() }
+        guard let track = selected.flatMap({ id in tracks.first { $0.id == id } }) else { return .unreadable }
+        return .selected(track)
     }
 
-    /// Adds a subtitle file as tracks (several for a VobSub index with more than one language), or finds the ones
-    /// already made from it; empty if the file can't be read.
-    func addExternalFile(url: URL) -> [Int] {
-        // A network file is listed now and downloaded when selected (`RemoteSubtitle`), off the main actor.
-        guard url.isFileURL else {
-            // Tagged by its name, as a local file is. Without the media's headers: it may be on another host.
-            let tags = SidecarSubtitles.tags(of: url)
-            let file = MediaLoadRequest.SubtitleFile(
-                url: url, title: "\(url.deletingPathExtension().lastPathComponent) (External)",
-                language: tags.language, headers: [:], isForced: tags.isForced, isSDH: tags.isSDH)
-            addSubtitleFiles([file], defaultHeaders: [:])
-            return tracks.filter { $0.externalURL == url }.map(\.id)
-        }
-        // A VobSub `.sub` loads through its `.idx`, whichever of the two was picked.
-        // One with no index is MicroDVD or SubViewer text, which FFmpeg reads (VobSub data on its own reads as none).
-        let url = SidecarSubtitles.vobSubIndex(forDataFile: url) ?? url
-        if SidecarSubtitles.isBitmapSubtitleFile(url) { return addExternalBitmapFile(url: url) }
-        return addExternalTextFile(url: url).map { [$0] } ?? []
+    /// Lists a network subtitle file as a track, or finds the one already made from it; it is downloaded when
+    /// selected (`RemoteSubtitle`), off the main actor.
+    func addNetworkFile(url: URL) -> [Int] {
+        // Tagged by its name, as a local file is. Without the media's headers: it may be on another host.
+        let tags = SidecarSubtitles.tags(of: url)
+        let file = MediaLoadRequest.SubtitleFile(
+            url: url, title: "\(url.deletingPathExtension().lastPathComponent) (External)",
+            language: tags.language, headers: [:], isForced: tags.isForced, isSDH: tags.isSDH)
+        addSubtitleFiles([file], defaultHeaders: [:], read: MediaSubtitleFiles())
+        return tracks.filter { $0.externalURL == url }.map(\.id)
     }
 
-    /// Adds a PGS (`.sup`) or VobSub (`.idx`) file, listed as `file` says when given. Its pictures are read when a
-    /// track is selected.
-    private func addExternalBitmapFile(url: URL, file: MediaLoadRequest.SubtitleFile? = nil) -> [Int] {
-        let url = url.standardizedFileURL
+    /// Lists a local file `SubtitleFileRead` read as tracks, as `file` says when given, or finds those already made
+    /// from it; empty if it couldn't be read.
+    @discardableResult
+    func addReadFile(_ read: SubtitleFileRead, file: MediaLoadRequest.SubtitleFile? = nil) -> [Int] {
+        let url = read.url
         let existing = tracks.filter { $0.externalURL == url }
         if !existing.isEmpty { return existing.map(\.id) }
-
-        let streams = EmbeddedSubtitleReader.bitmapSubtitleStreams(of: url)
-        guard !streams.isEmpty else {
-            AppLog.error(.subtitles, "No bitmap subtitle stream in \(url)")
-            return []
-        }
-        let name = file?.title ?? url.deletingPathExtension().lastPathComponent
         let tags = SidecarSubtitles.tags(of: url)
-        var ids: [Int] = []
-        for stream in streams {
-            let id = 1000 + tracks.count
-            let language = stream.language.isEmpty ? (file?.language ?? tags.language ?? "und") : stream.language
-            let title =
-                streams.count > 1
-                ? "\(name) (\(language))" : (file?.title ?? "\(name) (External)")
+        let name = url.deletingPathExtension().lastPathComponent
+        switch read.content {
+        case nil:
+            return []
+        case .bitmap(let streams):
+            let name = file?.title ?? name
+            var ids: [Int] = []
+            for stream in streams {
+                let id = 1000 + tracks.count
+                let language = stream.language.isEmpty ? (file?.language ?? tags.language ?? "und") : stream.language
+                let title =
+                    streams.count > 1
+                    ? "\(name) (\(language))" : (file?.title ?? "\(name) (External)")
+                tracks.append(
+                    SubtitleTrack(
+                        id: id,
+                        streamIndex: stream.index,
+                        title: title,
+                        language: language,
+                        externalURL: url,
+                        isForced: tags.isForced || file?.isForced == true,
+                        isSDH: tags.isSDH || file?.isSDH == true,
+                        isAutoGenerated: file?.isAutoGenerated == true,
+                        format: .bitmap
+                    ))
+                ids.append(id)
+            }
+            return ids
+        case .document, .ffmpegText:
+            var document: SubtitleDocument?
+            if case .document(let parsed) = read.content { document = parsed }
+            let trackId = 1000 + tracks.count
             tracks.append(
                 SubtitleTrack(
-                    id: id,
-                    streamIndex: stream.index,
-                    title: title,
-                    language: language,
+                    id: trackId,
+                    streamIndex: -1,
+                    title: file?.title ?? "\(name) (External)",
+                    language: file?.language ?? tags.language ?? "und",
                     externalURL: url,
                     isForced: tags.isForced || file?.isForced == true,
                     isSDH: tags.isSDH || file?.isSDH == true,
                     isAutoGenerated: file?.isAutoGenerated == true,
-                    format: .bitmap
+                    format: SubtitleFileRead.isASS(url, file: file) || document?.assScript != nil ? .ass : .text
                 ))
-            ids.append(id)
+            loadedDocuments[trackId] = document
+            return [trackId]
         }
-        return ids
     }
 
     /// What tells the encoding of a subtitle file besides its bytes: the user's choice and the language of its track
     /// (`language`), else the one in its name.
     func textEncodingHints(for url: URL, language: String? = nil) -> TextFileEncoding.Hints {
-        let given = language.flatMap { $0 == "und" || $0.isEmpty ? nil : $0 }
-        let effectiveLanguage = given ?? (url.isFileURL ? SidecarSubtitles.tags(of: url).language : nil)
-        return TextFileEncoding.Hints(encoding: settings.encoding, language: effectiveLanguage)
+        Self.textEncodingHints(for: url, language: language, encoding: settings.encoding)
     }
 
-    /// Adds a text subtitle file as a track, listed as `file` says when given, or finds the track already made from
-    /// it; `nil` if the file can't be read. SRT, WebVTT and ASS files are parsed here; the formats FFmpeg reads
-    /// (`FFmpegTextSubtitles`) only have their beginning looked at, and are read in the background when the track is
-    /// selected.
-    func addExternalTextFile(url: URL, file: MediaLoadRequest.SubtitleFile? = nil) -> Int? {
-        let url = url.isFileURL ? url.standardizedFileURL : url
-        if let existing = tracks.first(where: { $0.externalURL == url }) {
-            return existing.id
-        }
-
-        let fileExtension = url.pathExtension.lowercased()
-        let isASS = fileExtension == "ass" || fileExtension == "ssa" || file?.format == .ass
-        let hints = textEncodingHints(for: url, language: file?.language)
-        var document: SubtitleDocument?
-        if FFmpegTextSubtitles.extensions.contains(fileExtension) {
-            guard FFmpegTextSubtitles.isReadable(url, hints: hints) else {
-                AppLog.warning(
-                    .subtitles, "No subtitles in a format FFmpeg reads (MicroDVD, SubViewer, SAMI) in \(url.path)")
-                return nil
-            }
-        } else {
-            guard let data = try? Data(contentsOf: url),
-                let parsed = Self.parseTextSubtitle(
-                    data: data, url: url, format: isASS ? .ass : .text,
-                    collapsingRollUp: file?.isAutoGenerated == true, hints: hints)
-            else {
-                AppLog.error(.subtitles, "Unable to decode subtitle file with supported encodings: \(url)")
-                return nil
-            }
-            document = parsed
-        }
-
-        let trackId = 1000 + tracks.count
-        let trackName = url.deletingPathExtension().lastPathComponent
-        let tags = SidecarSubtitles.tags(of: url)
-        let track = SubtitleTrack(
-            id: trackId,
-            streamIndex: -1,
-            title: file?.title ?? "\(trackName) (External)",
-            language: file?.language ?? tags.language ?? "und",
-            externalURL: url,
-            isForced: tags.isForced || file?.isForced == true,
-            isSDH: tags.isSDH || file?.isSDH == true,
-            isAutoGenerated: file?.isAutoGenerated == true,
-            format: isASS || document?.assScript != nil ? .ass : .text
-        )
-        tracks.append(track)
-        loadedDocuments[trackId] = document
-        return trackId
+    /// `textEncodingHints(for:language:)` with the user's choice `encoding`.
+    nonisolated static func textEncodingHints(
+        for url: URL, language: String?, encoding: String.Encoding?
+    ) -> TextFileEncoding.Hints {
+        let given = language.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0 == "und" || $0.isEmpty ? nil : $0 }
+        let effectiveLanguage = given ?? (url.isFileURL ? SidecarSubtitles.tags(of: url).language : nil)
+        return TextFileEncoding.Hints(encoding: encoding, language: effectiveLanguage)
     }
 
     /// Adds the subtitle files of a load request or resolved page (`MediaLoadRequest.subtitleFiles`). Local files are
-    /// read as `addExternalFile` reads them; network ones are listed without being downloaded until their track is
-    /// selected.
+    /// listed as `read` read them (a file it hasn't is read here, on the calling actor); network ones are listed
+    /// without being downloaded until their track is selected.
     func addSubtitleFiles(
         _ files: [MediaLoadRequest.SubtitleFile], defaultHeaders: [String: String],
-        reusing cachedDocuments: [URL: SubtitleDocument] = [:]
+        read: MediaSubtitleFiles, reusing cachedDocuments: [URL: SubtitleDocument] = [:]
     ) {
         for var file in files {
             // A blank language is none: "und" for a network file, the one its name tags for a local one.
             if file.language?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { file.language = nil }
             if file.url.isFileURL {
-                let url = SidecarSubtitles.vobSubIndex(forDataFile: file.url) ?? file.url
-                if SidecarSubtitles.isBitmapSubtitleFile(url) {
-                    _ = addExternalBitmapFile(url: url, file: file)
-                } else {
-                    _ = addExternalTextFile(url: url, file: file)
-                }
+                addReadFile(
+                    read[file.url] ?? SubtitleFileRead.read(file.url, file: file, encoding: settings.encoding),
+                    file: file)
                 continue
             }
             if tracks.contains(where: { $0.externalURL == file.url }) { continue }
@@ -218,11 +217,9 @@ extension SubtitleController {
         return SubtitleDocument.parseSRT(text)
     }
 
-    /// Adds the subtitle files next to a local media file as tracks (see `SidecarSubtitles`).
-    func addSidecarFiles(for path: String) {
-        guard !MediaURL.isNetworkURL(path) else { return }
-        let mediaURL = URL(string: path).flatMap { $0.isFileURL ? $0 : nil } ?? URL(fileURLWithPath: path)
-        let ids = SidecarSubtitles.urls(for: mediaURL).flatMap { addExternalFile(url: $0) }
+    /// Adds the subtitle files found next to a local media file as tracks (`MediaSubtitleFiles.sidecars`).
+    func addSidecarFiles(_ read: MediaSubtitleFiles) {
+        let ids = read.sidecars.flatMap { url in read[url].map { addReadFile($0) } ?? [] }
         if !ids.isEmpty {
             AppLog.info(.subtitles, "Found \(ids.count) subtitle file(s) next to the media")
         }

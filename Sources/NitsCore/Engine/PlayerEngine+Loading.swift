@@ -60,6 +60,7 @@ extension PlayerEngine {
         resetRelativeSeekBurst()
         seekGeneration.advance()
         isSeeking = false
+        isLoadStartPending = false
         chase = nil
         resumePlaybackAfterChase = false
         decoderStallRecoveries = 0
@@ -448,7 +449,14 @@ extension PlayerEngine {
 
         // The audio files that go with it, opened with it: their tracks are chosen from with the media's.
         // Off the main actor: listing a network volume's folder can take seconds.
-        let lookup = externalAudioLookup(for: path, historyKey: historyKey, source: source, demuxer: demuxer)
+        let saved = historyStore.savedPreferences(
+            for: MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: source.path))
+        let lookup = externalAudioLookup(for: path, source: source, saved: saved, demuxer: demuxer)
+        // The subtitle files, read alongside: listing the folder, opening and parsing each. Given up with the load.
+        let subtitleLookup = subtitleFilesLookup(for: path, files: source.subtitleFiles, saved: saved)
+        let subtitleRead = Task.detached(priority: .userInitiated) {
+            MediaSubtitleFiles.read(subtitleLookup, isCancelled: { interruptContext.isCancelled })
+        }
         var externalAudio = await Task.detached(priority: .userInitiated) {
             Self.openExternalAudio(lookup, interrupt: interruptContext)
         }.value
@@ -470,6 +478,8 @@ extension PlayerEngine {
             }.value
             if endIfSuperseded() { return }
         }
+        let subtitleFiles = await subtitleRead.value
+        if endIfSuperseded() { return }
         // The request's files first, as they were asked for.
         let rank = { (opened: OpenedAudioFile) in
             lookup.requested.firstIndex { $0.url == opened.file.url } ?? lookup.requested.count
@@ -488,8 +498,6 @@ extension PlayerEngine {
         }
         let inputs = Self.makeInputs(main: demuxer, requested: lookup.requested, opened: externalAudio)
         // The track to start with may be in a file only declared: opened before the media starts, as it is the one heard.
-        let saved = historyStore.savedPreferences(
-            for: MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: source.path))
         if let url = inputs.unopenedFileToStartWith(
             requested: request.audioTrack, saved: saved, languages: configuration.trackLanguages.audioLanguages)
         {
@@ -512,6 +520,8 @@ extension PlayerEngine {
             headers: source.headers,
             httpRequestSize: source.httpRequestSize,
             subtitleFiles: source.subtitleFiles,
+            saved: saved,
+            readSubtitleFiles: subtitleFiles,
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -572,7 +582,9 @@ extension PlayerEngine {
         }
 
         // Opened with the media: there is no waiting for a file in a synchronous load.
-        var lookup = externalAudioLookup(for: path, historyKey: path, source: request, demuxer: demuxer)
+        let saved = historyStore.savedPreferences(
+            for: MediaHistoryIdentity(historyKey: path, path: path, sourcePath: path))
+        var lookup = externalAudioLookup(for: path, source: request, saved: saved, demuxer: demuxer)
         for index in lookup.requested.indices { lookup.requested[index].declaredStream = nil }
         applyLoadedDemuxer(
             demuxer,
@@ -585,6 +597,9 @@ extension PlayerEngine {
             headers: request.headers,
             httpRequestSize: request.httpRequestSize,
             subtitleFiles: request.subtitleFiles,
+            saved: saved,
+            readSubtitleFiles: MediaSubtitleFiles.read(
+                subtitleFilesLookup(for: path, files: request.subtitleFiles, saved: saved)),
             requestedStartTime: request.startTime,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
@@ -754,15 +769,13 @@ extension PlayerEngine {
     /// An audio file `openExternalAudio` could read, with how it is to be listed.
     typealias OpenedAudioFile = (file: MediaLoadRequest.AudioFile, demuxer: MediaDemuxer)
 
-    /// What the media at `path` (in the history as `historyKey`), its streams `source` (the request, or what a resolver
-    /// found) just opened by `demuxer`, takes audio files from. Reads the history only: the folder is listed by
+    /// What the media at `path`, its streams `source` (the request, or what a resolver found) just opened by `demuxer`,
+    /// takes audio files from, with `saved` its preferences in the history. The folder is listed by
     /// `openExternalAudio`, which may run off the main actor.
     private func externalAudioLookup(
-        for path: String, historyKey: String, source: MediaLoadRequest, demuxer: MediaDemuxer
+        for path: String, source: MediaLoadRequest, saved: PlaybackPreferences?, demuxer: MediaDemuxer
     ) -> ExternalAudioLookup {
-        let saved = historyStore.savedPreferences(
-            for: MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: source.path))
-        return ExternalAudioLookup(
+        ExternalAudioLookup(
             requested: source.audioFiles.map { file in
                 var file = file
                 if file.url.isFileURL { file.url = file.url.standardizedFileURL }
@@ -820,6 +833,18 @@ extension PlayerEngine {
         return files.indices.compactMap { index in demuxers[index].map { (files[index], $0) } }
     }
 
+    /// What `MediaSubtitleFiles.read` reads for the media at `path`: `files` (the request's or page's), those next to
+    /// it, and the one `saved` selected.
+    private func subtitleFilesLookup(
+        for path: String, files: [MediaLoadRequest.SubtitleFile], saved: PlaybackPreferences?
+    ) -> MediaSubtitleFiles.Lookup {
+        MediaSubtitleFiles.Lookup(
+            requested: files,
+            sidecarsOf: MediaURL.isNetworkURL(path) ? nil : path,
+            savedPath: saved?.subtitleTrackId == PlaybackRecord.externalSubtitle ? saved?.externalSubtitlePath : nil,
+            encoding: subtitles.settings.encoding)
+    }
+
     /// The inputs of a media just opened: the audio files in the order asked for (those declared listed, the rest
     /// opened), then those found next to it.
     static func makeInputs(
@@ -847,6 +872,7 @@ extension PlayerEngine {
         _ demuxer: MediaDemuxer, inputs: PlaybackInputs, path: String, sourcePath: String, historyKey: String,
         headers: [String: String],
         httpRequestSize: Int? = nil, subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
+        saved savedTracks: PlaybackPreferences?, readSubtitleFiles: MediaSubtitleFiles,
         requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
         resolvedTitle: String? = nil,
@@ -928,9 +954,8 @@ extension PlayerEngine {
         let mediaIdentity = MediaHistoryIdentity(historyKey: historyKey, path: path, sourcePath: sourcePath)
         // Track selection priority chain (per kind):
         // 1. Explicit request (CLI, host app, deep link)
-        // 2. PlaybackHistoryStore saved selection (always: `resumePlayback` governs only the position)
+        // 2. PlaybackHistoryStore saved selection (`savedTracks`; always: `resumePlayback` governs only the position)
         // 3. `TrackAutoSelection` by the language settings and the tracks' flags
-        let savedTracks = historyStore.savedPreferences(for: mediaIdentity)
         inputs.selectAudioTrackOnLoad(
             requested: requestedAudioTrack, saved: savedTracks, languages: configuration.trackLanguages.audioLanguages)
 
@@ -956,8 +981,8 @@ extension PlayerEngine {
         restoreVideoGeometry(from: savedTracks)
         self.loadError = nil
         subtitles.mediaDidLoad(
-            tracks: demuxer.subtitleTracks, subtitleFiles: subtitleFiles, defaultHeaders: headers, path: path,
-            saved: savedTracks, requestedTrack: requestedSubtitleTrack,
+            tracks: demuxer.subtitleTracks, subtitleFiles: subtitleFiles, defaultHeaders: headers,
+            readFiles: readSubtitleFiles, saved: savedTracks, requestedTrack: requestedSubtitleTrack,
             audioLanguage: audioTracks.first { $0.id == selectedAudioTrackId }?.language)
 
         if demuxer.hasVideo {
@@ -1037,27 +1062,11 @@ extension PlayerEngine {
             effectiveStartTime = 0.0
         }
 
-        if effectiveStartTime > 0 {
-            demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
-            demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)
-            demuxer.purgeAudio(beforeSeconds: effectiveStartTime - audioDelay)
-        }
-        // A file's track chosen above starts where the picture does, on its own input (a file just opened is at 0).
-        if let external = inputs.selectedExternal, effectiveStartTime - audioDelay > 0 {
-            external.seek(to: effectiveStartTime - audioDelay)
-        }
-        // Once the description above is read: from here on a variant switch's splice rewrites it on the reading thread
-        // (`MediaDemuxer.readingDescription`). Before the feeders start, as they then only take from the queues.
-        if readsAhead {
-            demuxer.startReadAhead()
-        }
         setExactSeekDisplayFloor(effectiveStartTime > 0 ? effectiveStartTime : nil)
 
         self.currentTime = effectiveStartTime
         self.isLoaded = true
         self.isLoading = false
-        // The track was chosen above, before the start time was applied.
-        subtitles.timeDidChange(to: effectiveStartTime, .mediaStarted)
 
         // Synchronously re-anchor clock and reset FrameQueue so any subsequent play() or display tick
         // observes the clean timeline start and cannot drop initial frames with stale clock from previous media
@@ -1069,20 +1078,65 @@ extension PlayerEngine {
         let hasVideo = demuxer.hasVideo
         let loadID = self.currentLoadID
         let seekId = self.seekGeneration.current
-        // On the seek queue so this flush is ordered with seeks: a seek issued right after load would
-        // otherwise have its preview decode flushed from under it.
+        let interrupt = self.currentInterruptContext
+        let seekGeneration = self.seekGeneration
+        let seekQueue = self.seekQueue
+        let externalAudio = inputs.selectedExternal
+        let audioDelay = self.audioDelay
+        // Once the description above is read: from here on a variant switch's splice rewrites it on the reading thread
+        // (`MediaDemuxer.readingDescription`). Before the feeders start, as they then only take from the queues; here,
+        // not after the start position below, so that what the main actor does right after the load (a host's
+        // `onMediaLoaded`, a track or variant switch) finds the demuxer reading ahead. Held until it is positioned
+        // there, not to read from the start of the input first.
+        let holdsReadAhead = readsAhead && effectiveStartTime > 0
+        if readsAhead {
+            demuxer.startReadAhead(held: holdsReadAhead)
+        }
+        // The start position and this flush, on the seek queue as any seek: ordered before a seek issued right after
+        // load (whose preview decode the flush would otherwise flush from under it), and off the main thread, as
+        // `av_seek_frame` reads (a network request, a search through a file without an index) under the input's lock.
+        // `play()` waits for it (`isLoadStartPending`).
+        isLoadStartPending = true
         self.seekQueue.async { [weak self] in
+            // Not for a demuxer a newer load or a stop closed meanwhile, nor when a seek since issued positions it.
+            var isPositioned = false
+            if interrupt?.isCancelled != true, seekGeneration.isCurrent(seekId) {
+                if effectiveStartTime > 0 {
+                    demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
+                    isPositioned = true
+                    demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)
+                    demuxer.purgeAudio(beforeSeconds: effectiveStartTime - audioDelay)
+                }
+                // A file's track chosen at load starts where the picture does, on its own input (a file just opened is
+                // at 0).
+                if let externalAudio, effectiveStartTime - audioDelay > 0 {
+                    externalAudio.seek(to: effectiveStartTime - audioDelay)
+                }
+            }
+            // Positioned here, the seek released it (`MediaDemuxer.seek`). Otherwise the seek since issued, next on this
+            // queue, does, before it reads: released now, it would read a packet (a segment) from the start first. Last
+            // on the queue in case none comes.
+            if holdsReadAhead, !isPositioned {
+                seekQueue.async { demuxer.releaseReadAhead() }
+            }
             if hasVideo {
                 decoder.flush()
             }
             guard let self else { return }
             DispatchQueue.main.async {
-                guard self.currentLoadID == loadID else { return }
+                // Not after a stop, which keeps the load's id but clears the flag.
+                guard self.currentLoadID == loadID, self.isLoadStartPending else { return }
+                self.isLoadStartPending = false
                 // Paused since the load (a host's "load, then pause"): it stays paused, on its first frame. Starting
-                // here would play from under the pause.
+                // here would play from under the pause. Its seek shows the cues there when it lands.
                 if self.playbackState == .paused {
                     if self.seekGeneration.isCurrent(seekId) { self.seek(to: effectiveStartTime, exact: true) }
                     return
+                }
+                // The cues on screen at the start, once the demuxer is there: a window read before its seek would be
+                // dropped by it. A seek since issued shows and reads its own when it lands.
+                if self.seekGeneration.isCurrent(seekId) {
+                    self.subtitles.timeDidChange(to: effectiveStartTime, .mediaStarted)
                 }
                 // A seek issued right after load (e.g. a host's "load, then seek") owns the pipeline: its
                 // preview is reading the demuxer on `seekQueue`, and starting the feeders here would race it
@@ -1092,11 +1146,14 @@ extension PlayerEngine {
                     if self.isSeeking || self.chase != nil {
                         self.resumePlaybackAfterChase = true
                     } else {
+                        // A `play()` while the start ran only said so (`isLoadStartPending`).
+                        if !self.isFeeding.withLock({ $0 }) { self.isPlaying = false }
                         self.play()
                     }
                     return
                 }
-                let alreadyStarted = self.isPlaying
+                // Not started by a `play()` meanwhile, which only reported playing (`isLoadStartPending`).
+                let alreadyStarted = self.isFeeding.withLock { $0 }
                 if !alreadyStarted {
                     self.frameQueue.clear(resetDroppedFrames: true)
                     self.startFeeding()
@@ -1113,8 +1170,8 @@ extension PlayerEngine {
                 }
                 self.displayLink?.isPaused = !hasVideo
                 if !alreadyStarted {
-                    self.isPlaying = true
-                    self.playbackState = .playing
+                    if !self.isPlaying { self.isPlaying = true }
+                    if self.playbackState != .playing { self.playbackState = .playing }
                     self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
                 }
             }

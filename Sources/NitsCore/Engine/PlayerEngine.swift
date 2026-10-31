@@ -225,8 +225,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 pending?.rate = clamped
                 return true
             }
-            // Buffering also holds the clock; its resume starts it at `playbackRate`.
-            if isPlaying && !isPrerollPending && !isBuffering {
+            // Buffering also holds the clock; its resume starts it at `playbackRate`, as a load's start still running
+            // (`isLoadStartPending`) does.
+            if isPlaying && !isPrerollPending && !isBuffering && !isLoadStartPending {
                 let currentRate = playbackRate
                 clockSettlingGuardLock.withLock { guardState in
                     guard var state = guardState else { return }
@@ -464,6 +465,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var reportedSeeking = false
     @ObservationIgnored
     var resumePlaybackAfterChase: Bool = false
+    /// A load is applied, and its start (the demuxer's start position, the decoder's flush) still runs on `seekQueue`:
+    /// `play()` leaves starting to it, as the feeders would read from before the start position.
+    @ObservationIgnored
+    var isLoadStartPending = false
     @ObservationIgnored
     var chaseSettleTask: Task<Void, Never>? = nil
     static let relativeSeekBurstTimeout: Duration = .milliseconds(300)

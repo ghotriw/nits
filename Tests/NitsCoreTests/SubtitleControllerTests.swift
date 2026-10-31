@@ -47,7 +47,7 @@ struct SubtitleControllerTests {
     }
 
     @Test("An added file becomes the selected track, reported once, and shows its cues as time moves")
-    func addsAndShowsFile() throws {
+    func addsAndShowsFile() async throws {
         let url = try subtitleFile(
             "1\n00:00:01,000 --> 00:00:03,000\nПривіт\n\n2\n00:00:05,000 --> 00:00:06,000\nДругий\n")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -55,7 +55,7 @@ struct SubtitleControllerTests {
         let controller = SubtitleController()
         controller.host = host
 
-        controller.addExternal(url: url)
+        await controller.addExternal(url: url)
         let track = try #require(controller.tracks.first)
         #expect(controller.selectedTrackId == track.id && track.language == "uk")
         #expect(host.reports == 1)
@@ -73,18 +73,18 @@ struct SubtitleControllerTests {
     }
 
     @Test("A file added while media opens in the background doesn't outlive the load")
-    func fileAddedDuringLoadIsDropped() throws {
+    func fileAddedDuringLoadIsDropped() async throws {
         let url = try subtitleFile("1\n00:00:01,000 --> 00:00:03,000\nПривіт\n")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let host = FakeHost()
         let controller = SubtitleController()
         controller.host = host
-        controller.addExternal(url: url)
+        await controller.addExternal(url: url)
         try #require(controller.selectedTrackId != nil)
 
         // Media without subtitles of its own or next to it, and nothing that chooses a track.
         controller.mediaDidLoad(
-            tracks: [], path: "/nonexistent/media.mkv", saved: nil, requestedTrack: nil, audioLanguage: nil)
+            tracks: [], readFiles: MediaSubtitleFiles(), saved: nil, requestedTrack: nil, audioLanguage: nil)
         controller.timeDidChange(to: 2, .tick)
         #expect(controller.tracks.isEmpty)
         #expect(controller.selectedTrackId == nil)
@@ -92,13 +92,13 @@ struct SubtitleControllerTests {
     }
 
     @Test("History saves an added file by its path and the delay; a reset forgets the media's tracks")
-    func writesPreferencesAndResets() throws {
+    func writesPreferencesAndResets() async throws {
         let url = try subtitleFile("1\n00:00:01,000 --> 00:00:03,000\nПривіт\n")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let host = FakeHost()
         let controller = SubtitleController()
         controller.host = host
-        controller.addExternal(url: url)
+        await controller.addExternal(url: url)
         controller.setDelay(-0.5)
 
         var preferences = PlaybackPreferences()

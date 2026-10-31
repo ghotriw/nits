@@ -28,8 +28,10 @@ extension MediaDemuxer {
         lastAudioPts = -1
         lastVideoReadTime = Int64.min
         inputEndedOnDemand = false
-        // The read-ahead thread reads on from where this seek leaves the input.
+        // The read-ahead thread reads on from where this seek leaves the input; one started held for a start position
+        // (`startReadAhead(held:)`) too, as a seek issued before it was positioned there takes its place.
         readAheadEnded = false
+        readAheadControl.withLock { $0.isHeld = false }
         consumedSeconds = seconds
         defer { readAheadWake.signal() }
         let previousReadAhead = readAheadState.withLock { $0 }
