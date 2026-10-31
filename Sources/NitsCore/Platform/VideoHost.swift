@@ -21,6 +21,8 @@ public protocol VideoHost: AnyObject {
     /// A link for this view's screen as a whole, which keeps firing while the view is hidden (Picture in Picture
     /// usually hides its window).
     func makeScreenDisplayLink(target: Any, selector: Selector) -> CADisplayLink?
+    /// Identifies the screen this view is on, the same for as long as it stays there; `nil` off screen.
+    var screenIdentity: AnyHashable? { get }
     /// Highest refresh rate of this view's screen.
     var maximumFramesPerSecond: Int { get }
     /// Lays the video layers out again; `immediately` also when the view is hidden and would not lay out on its own.

@@ -149,6 +149,11 @@
             (window?.screen ?? NSScreen.main)?.displayLink(target: target, selector: selector)
         }
 
+        public var screenIdentity: AnyHashable? {
+            (window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID)
+                .map(AnyHashable.init)
+        }
+
         public var maximumFramesPerSecond: Int {
             (window?.screen ?? NSScreen.main)?.maximumFramesPerSecond ?? 60
         }

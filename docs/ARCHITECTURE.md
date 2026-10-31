@@ -78,7 +78,8 @@ drawable) are platform-neutral; a host view owns one and supplies its scale, its
 pixel alignment. Policy stays in the engine, so a port adds implementations, not engine changes:
 `DisplaySleepManager` decides when to keep the display awake and the assertion only holds it; the host
 reports its screen's EDR headroom and calls `videoHostScreenDidChange()`, and the engine decides
-whether the screen is HDR (`minimumHDRDisplayHeadroom`) and the display-link rate.
+whether the screen is HDR (`minimumHDRDisplayHeadroom`) and the display-link rate, and replaces a link
+made for another screen (`screenIdentity`): a view's link does not leave a screen that is unplugged.
 `./scripts/format.sh lint` fails on AppKit / UIKit / IOKit / CoreAudio HAL code, and on the
 one-platform members of shared frameworks NitsCore has used, outside `Platform/<os>/`, since nothing
 compiles NitsCore for another platform yet.

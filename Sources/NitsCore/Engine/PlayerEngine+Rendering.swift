@@ -25,27 +25,22 @@ extension PlayerEngine {
     public func attachDisplayLink(to host: any VideoHost) {
         self.videoHost = host
         updateHDRDisplay()
-        let target = displayLinkTarget ?? DisplayLinkTarget(engine: self)
-        self.displayLinkTarget = target
-
-        guard let link = host.makeDisplayLink(target: target, selector: #selector(DisplayLinkTarget.onTick(_:)))
-        else { return }
-        displayLink?.invalidate()
-        link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
-        link.isPaused = !isPlaying
-        self.displayLink = link
-        guard !isPictureInPictureActive else {
-            retargetDisplayLinkForPictureInPicture()
-            return
-        }
-        updateDisplayLinkFrameRate()
+        recreateDisplayLink()
     }
 
     /// The host's screen changed, or that screen's parameters did (display mode, refresh rate, HDR, scale):
     /// re-matches the display-link rate and the render mode to it. `VideoHost`s call it; the engine observes no
     /// screens itself.
+    ///
+    /// A view's link follows its window to another screen, but not off a screen that is gone (a monitor unplugged):
+    /// it stays on that display and stops ticking until it comes back. So a link made for another screen is replaced;
+    /// not one for the same screen, whose parameters change many times a second while its EDR headroom ramps.
     public func videoHostScreenDidChange() {
-        updateDisplayLinkFrameRate()
+        if videoHost?.screenIdentity != displayLinkScreen {
+            recreateDisplayLink()
+        } else {
+            updateDisplayLinkFrameRate()
+        }
         updateHDRDisplay()
     }
 
@@ -60,9 +55,9 @@ extension PlayerEngine {
         videoHost.setNeedsVideoLayout(immediately: false)
     }
 
-    /// A view-based link stops when its window is hidden, which PiP usually does. While PiP is active the link
-    /// follows the screen; on exit it returns to the host view.
-    func retargetDisplayLinkForPictureInPicture() {
+    /// Replaces the display link with one for the host view, or for its screen while PiP is active: a view-based link
+    /// stops when its window is hidden, which PiP usually does.
+    func recreateDisplayLink() {
         let target = displayLinkTarget ?? DisplayLinkTarget(engine: self)
         self.displayLinkTarget = target
         let selector = #selector(DisplayLinkTarget.onTick(_:))
@@ -74,11 +69,15 @@ extension PlayerEngine {
         } else {
             newLink = videoHost?.makeDisplayLink(target: target, selector: selector)
         }
-        guard let link = newLink else { return }
+        guard let link = newLink else {
+            updateDisplayLinkFrameRate()
+            return
+        }
         displayLink?.invalidate()
         link.add(to: DisplayLinkThread.shared.runLoop, forMode: .default)
         link.isPaused = !isPlaying
         self.displayLink = link
+        displayLinkScreen = videoHost?.screenIdentity
         AppLog.debug(.video, "Display link follows \(isPictureInPictureActive ? "screen (PiP)" : "host view")")
         updateDisplayLinkFrameRate()
     }

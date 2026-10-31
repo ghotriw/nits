@@ -138,7 +138,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         didSet {
             guard oldValue != isPictureInPictureActive else { return }
             updateEffectiveRenderMode()
-            retargetDisplayLinkForPictureInPicture()
+            recreateDisplayLink()
         }
     }
     /// How the host view lays out `displayLayer` around Picture in Picture; `nil` fills the host view.
@@ -619,6 +619,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
         frameQueue.getLastRenderedBuffer()
     }
     var displayLink: CADisplayLink?
+    /// `VideoHost.screenIdentity` when `displayLink` was made: a link for a screen the host has left is replaced.
+    var displayLinkScreen: AnyHashable?
     var displayLinkTarget: DisplayLinkTarget?
     /// View showing the video: the display link follows it, geometry changes lay it out.
     @ObservationIgnored weak var videoHost: (any VideoHost)?
