@@ -37,6 +37,8 @@ public protocol PlayerActions: AnyObject {
     func seekRelative(by seconds: Double)
     func seekForward()
     func seekBackward()
+    /// The arrow key that repeated the seek is released.
+    func endSeekBurst()
     func stepVolume(by delta: Float)
     func toggleMute()
     func setPlaybackRate(_ rate: Double)
@@ -74,6 +76,7 @@ public protocol PlayerActions: AnyObject {
 }
 
 extension PlayerActions {
+    public func endSeekBurst() {}
     public var playbackRate: Double {
         get { 1.0 }
         set {}

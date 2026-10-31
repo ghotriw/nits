@@ -85,6 +85,9 @@ public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
     @MainActor func seek(to seconds: Double, exact: Bool)
     @MainActor @discardableResult func seekRelative(by seconds: Double) -> Double
     @MainActor func seekRelative(by seconds: Double, exact: Bool)
+    /// The key or button that repeated seeks is released: nothing more is coming, so playback resumes at once instead
+    /// of after the wait that tells a burst from a single seek. Without it, the wait ends the burst.
+    @MainActor func endSeekBurst()
     @MainActor func stepFrameForward()
     @MainActor func stepFrameBackward()
     @MainActor func stepVolume(by delta: Float)
@@ -212,6 +215,9 @@ public protocol PlayerEngineProtocol:
 // MARK: - Default Implementations & Convenience Extensions
 
 extension PlayerPlaybackControlling {
+    @MainActor
+    public func endSeekBurst() {}
+
     @MainActor
     public var onMediaLoaded:
         ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?

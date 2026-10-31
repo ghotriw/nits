@@ -387,6 +387,14 @@ extension PlayerEngine {
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
     }
 
+    public func endSeekBurst() {
+        chaseSettling.endBurst()
+        // A resume waiting out the wait that tells a burst from a single seek goes now; one whose seek has not landed
+        // yet takes the shorter wait when it does.
+        guard chaseSettleTask != nil, !chaseSettling.isSettleCommitted, !isSeeking, let landed = chase else { return }
+        scheduleChaseSettle(seekId: seekGeneration.current, at: landed.seconds)
+    }
+
     /// Where a seek to `seconds` goes: within the media.
     func clampedSeekTarget(_ seconds: Double) -> Double {
         max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)

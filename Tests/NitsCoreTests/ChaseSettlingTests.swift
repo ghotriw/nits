@@ -19,6 +19,18 @@ struct ChaseSettlingTests {
         #expect(settling.resumeDelay == .zero)
     }
 
+    @Test("The end of a burst makes the resume wait for nothing")
+    func endOfBurst() {
+        var settling = ChaseSettling()
+        let start = ContinuousClock.now
+        settling.noteRequest(at: start)
+        settling.noteRequest(at: start + .milliseconds(60))
+        #expect(settling.resumeDelay == ChaseSettling.burstDebounce)
+
+        settling.endBurst()
+        #expect(settling.resumeDelay == .zero)
+    }
+
     @Test("A resume past its wait cannot be restarted, one still waiting can")
     func committedResume() {
         var settling = ChaseSettling()

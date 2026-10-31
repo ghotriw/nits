@@ -32,6 +32,11 @@ public final class PlayerWindow: NSWindow {
         if event.type == .keyDown, handleHardwareKey(event) {
             return
         }
+        // A held arrow key repeats a seek; its release ends the burst, so playback resumes at once. Whatever modifiers
+        // are down by then: the burst began without them.
+        if event.type == .keyUp, event.keyCode == 0x7B || event.keyCode == 0x7C {
+            actionHandler?.endSeekBurst()
+        }
         super.sendEvent(event)
     }
 

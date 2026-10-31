@@ -51,6 +51,11 @@ struct ChaseSettling {
         committedSettle = nil
     }
 
+    /// The burst is over (the key that made it was released): the resume waits for nothing more.
+    mutating func endBurst() {
+        resumeDelay = .zero
+    }
+
     /// A seek is requested.
     mutating func noteRequest(at instant: ContinuousClock.Instant = .now) {
         let isBurst = lastRequestAt.map { instant - $0 < Self.burstDebounce } ?? false

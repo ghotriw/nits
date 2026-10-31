@@ -161,6 +161,7 @@ struct SeekSpinnerTimelineTests {
                             if press < presses - 1 { try? await Task.sleep(for: .milliseconds(60)) }
                         }
                         let lastPress = ms()
+                        if burst { engine.endSeekBurst() }  // what the key release does
                         var landed: Double?
                         var clockStarted: Double?
                         var moved: Double?
