@@ -1,7 +1,9 @@
 import NitsCore
 import SwiftUI
 
-public struct SubtitleOverlayView: View {
+public struct SubtitleOverlayView: View, Equatable {
+    // `ContentView` redraws the overlay only when `==` sees a change: a new stored property goes in `==` too, or the
+    // overlay stops following it. `onRenderSizeChange` stays out (a closure can't be compared).
     public let cues: [SubtitleCue]
     public let images: [SubtitleImageCue]
     public let fontSize: Double
@@ -89,20 +91,43 @@ public struct SubtitleOverlayView: View {
         CGSize(width: (frame.width * scale).rounded(), height: (frame.height * scale).rounded())
     }
 
+    public nonisolated static func == (lhs: SubtitleOverlayView, rhs: SubtitleOverlayView) -> Bool {
+        lhs.fontSize == rhs.fontSize
+            && lhs.textColor == rhs.textColor
+            && lhs.backgroundColor == rhs.backgroundColor
+            && lhs.backgroundOpacity == rhs.backgroundOpacity
+            && lhs.fontName == rhs.fontName
+            && lhs.fontWeight == rhs.fontWeight
+            && lhs.videoWidth == rhs.videoWidth
+            && lhs.videoHeight == rhs.videoHeight
+            && lhs.sampleAspectRatio == rhs.sampleAspectRatio
+            && lhs.geometry == rhs.geometry
+            && lhs.imageScale == rhs.imageScale
+            && lhs.raise == rhs.raise
+            && lhs.cues == rhs.cues
+            && lhs.images == rhs.images
+    }
+
     public static let referenceViewportHeight: Double = 720.0
     public static let minFontSize: Double = 14.0
     public static let maxFontSize: Double = 72.0
 
-    private var topCues: [SubtitleCue] {
-        cues.filter { isTopAligned($0.alignment) }
-    }
-
-    private var centerCues: [SubtitleCue] {
-        cues.filter { $0.alignment == .center }
-    }
-
-    private var bottomCues: [SubtitleCue] {
-        cues.filter { !isTopAligned($0.alignment) && $0.alignment != .center }
+    private static func partition(_ cues: [SubtitleCue]) -> (
+        top: [SubtitleCue], center: [SubtitleCue], bottom: [SubtitleCue]
+    ) {
+        var top: [SubtitleCue] = []
+        var center: [SubtitleCue] = []
+        var bottom: [SubtitleCue] = []
+        for cue in cues {
+            if isTopAligned(cue.alignment) {
+                top.append(cue)
+            } else if cue.alignment == .center {
+                center.append(cue)
+            } else {
+                bottom.append(cue)
+            }
+        }
+        return (top, center, bottom)
     }
 
     public var body: some View {
@@ -121,6 +146,7 @@ public struct SubtitleOverlayView: View {
             let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
             let verticalEdgePadding = max(20.0, 40.0 * scale)
             let horizontalMargin = max(16.0, 32.0 * scale)
+            let resolvedFont = Self.resolveFont(name: fontName, size: effectiveFontSize, weightName: fontWeight)
 
             ZStack {
                 // Pictures come and go at once, without the text's fade: a typeset sign belongs to its shot, and a
@@ -128,13 +154,14 @@ public struct SubtitleOverlayView: View {
                 imageLayer(in: layout)
 
                 if !cues.isEmpty {
+                    let (topCues, centerCues, bottomCues) = Self.partition(cues)
                     VStack(spacing: 8 * scale) {
                         // Top aligned cues
                         if !topCues.isEmpty {
                             VStack(spacing: 6 * scale) {
                                 ForEach(topCues) { cue in
                                     cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize,
+                                        cue, font: resolvedFont,
                                         horizontalMargin: horizontalMargin,
                                         scale: scale)
                                 }
@@ -149,7 +176,7 @@ public struct SubtitleOverlayView: View {
                             VStack(spacing: 6 * scale) {
                                 ForEach(centerCues) { cue in
                                     cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize,
+                                        cue, font: resolvedFont,
                                         horizontalMargin: horizontalMargin,
                                         scale: scale)
                                 }
@@ -163,7 +190,7 @@ public struct SubtitleOverlayView: View {
                             VStack(spacing: 6 * scale) {
                                 ForEach(bottomCues) { cue in
                                     cueRow(
-                                        cue, effectiveFontSize: effectiveFontSize,
+                                        cue, font: resolvedFont,
                                         horizontalMargin: horizontalMargin,
                                         scale: scale)
                                 }
@@ -241,11 +268,24 @@ public struct SubtitleOverlayView: View {
         var frames = cue.regions.map { imageFrame(of: $0, canvas: canvas, in: layout.frameRect) }
         let bounds = layout.visibleRect
         guard !bounds.isEmpty else { return frames }
-        let halves = Dictionary(grouping: frames.indices.filter { !frames[$0].isEmpty }) {
-            frames[$0].midY < layout.frameRect.midY
+        var topGroup: [Int] = []
+        var bottomGroup: [Int] = []
+        for index in frames.indices {
+            let frame = frames[index]
+            guard !frame.isEmpty else { continue }
+            if frame.midY < layout.frameRect.midY {
+                topGroup.append(index)
+            } else {
+                bottomGroup.append(index)
+            }
         }
+        let halves: [(isTop: Bool, group: [Int])] = [
+            (isTop: true, group: topGroup),
+            (isTop: false, group: bottomGroup),
+        ]
         for (isTop, group) in halves {
-            var union = group.dropFirst().reduce(frames[group[0]]) { $0.union(frames[$1]) }
+            guard let firstIndex = group.first else { continue }
+            var union = group.dropFirst().reduce(frames[firstIndex]) { $0.union(frames[$1]) }
             if scale != 1 {
                 let anchor = CGPoint(x: union.midX, y: isTop ? union.minY : union.maxY)
                 for index in group {
@@ -254,7 +294,7 @@ public struct SubtitleOverlayView: View {
                         x: anchor.x + (frame.minX - anchor.x) * scale, y: anchor.y + (frame.minY - anchor.y) * scale,
                         width: frame.width * scale, height: frame.height * scale)
                 }
-                union = group.dropFirst().reduce(frames[group[0]]) { $0.union(frames[$1]) }
+                union = group.dropFirst().reduce(frames[firstIndex]) { $0.union(frames[$1]) }
             }
             // Inside the visible part first, then raised from there, as text is from the visible bottom: raised
             // before, a block a crop pushed up would only come back to the edge. A raise that would take it past the
@@ -284,18 +324,35 @@ public struct SubtitleOverlayView: View {
         return 0
     }
 
+    /// Composite cache key using numeric fields rather than string interpolation for image cue lookups.
+    private final class ImageKey: NSObject {
+        let cue: Int
+        let index: Int
+        init(cue: Int, index: Int) {
+            self.cue = cue
+            self.index = index
+        }
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? ImageKey else { return false }
+            return cue == other.cue && index == other.index
+        }
+        override var hash: Int {
+            cue ^ (index << 16)
+        }
+    }
+
     /// Pictures of the regions on screen, so a redraw of the view (the time ticks) doesn't expand and wrap the pixels
     /// again. A cue's regions never change, and libass frames get a new id with every render. A libass frame may hold a
     /// picture per sign on screen, so the count is roomy; bytes bound the frames already replaced.
-    private nonisolated(unsafe) static let imageCache: NSCache<NSString, CGImage> = {
-        let cache = NSCache<NSString, CGImage>()
+    private nonisolated(unsafe) static let imageCache: NSCache<ImageKey, CGImage> = {
+        let cache = NSCache<ImageKey, CGImage>()
         cache.countLimit = 32
         cache.totalCostLimit = 64 << 20
         return cache
     }()
 
     private static func cachedImage(of region: SubtitleImageCue.Region, cue: Int, index: Int) -> CGImage? {
-        let key = "\(cue)-\(index)" as NSString
+        let key = ImageKey(cue: cue, index: index)
         if let cached = imageCache.object(forKey: key) { return cached }
         guard let image = makeImage(region) else { return nil }
         imageCache.setObject(image, forKey: key, cost: region.width * region.height * 4)
@@ -357,19 +414,19 @@ public struct SubtitleOverlayView: View {
     }
 
     @ViewBuilder
-    private func cueRow(_ cue: SubtitleCue, effectiveFontSize: Double, horizontalMargin: Double, scale: Double)
+    private func cueRow(_ cue: SubtitleCue, font: Font, horizontalMargin: Double, scale: Double)
         -> some View
     {
         HStack {
-            if isTrailingAligned(cue.alignment) {
+            if Self.isTrailingAligned(cue.alignment) {
                 Spacer()
             }
 
             subtitleLabel(
-                cue.text, textAlignment: textAlignment(for: cue.alignment), effectiveFontSize: effectiveFontSize,
+                cue.text, font: font, textAlignment: textAlignment(for: cue.alignment),
                 scale: scale)
 
-            if isLeadingAligned(cue.alignment) {
+            if Self.isLeadingAligned(cue.alignment) {
                 Spacer()
             }
         }
@@ -407,13 +464,13 @@ public struct SubtitleOverlayView: View {
     }
 
     @ViewBuilder
-    private func subtitleLabel(_ text: String, textAlignment: TextAlignment, effectiveFontSize: Double, scale: Double)
+    private func subtitleLabel(_ text: String, font: Font, textAlignment: TextAlignment, scale: Double)
         -> some View
     {
         let outlineWidth = max(1.0, 1.5 * scale)
 
         Text(text)
-            .font(Self.resolveFont(name: fontName, size: effectiveFontSize, weightName: fontWeight))
+            .font(font)
             .foregroundStyle(textColor)
             .multilineTextAlignment(textAlignment)
             .subtitleOutline(radius: outlineWidth, color: .black.opacity(0.95))
@@ -426,22 +483,22 @@ public struct SubtitleOverlayView: View {
             )
     }
 
-    private func isTopAligned(_ alignment: SubtitleAlignment) -> Bool {
+    private static func isTopAligned(_ alignment: SubtitleAlignment) -> Bool {
         alignment == .topCenter || alignment == .topLeft || alignment == .topRight
     }
 
-    private func isLeadingAligned(_ alignment: SubtitleAlignment) -> Bool {
+    private static func isLeadingAligned(_ alignment: SubtitleAlignment) -> Bool {
         alignment == .topLeft || alignment == .bottomLeft
     }
 
-    private func isTrailingAligned(_ alignment: SubtitleAlignment) -> Bool {
+    private static func isTrailingAligned(_ alignment: SubtitleAlignment) -> Bool {
         alignment == .topRight || alignment == .bottomRight
     }
 
     private func textAlignment(for alignment: SubtitleAlignment) -> TextAlignment {
-        if isLeadingAligned(alignment) {
+        if Self.isLeadingAligned(alignment) {
             return .leading
-        } else if isTrailingAligned(alignment) {
+        } else if Self.isTrailingAligned(alignment) {
             return .trailing
         }
         return .center

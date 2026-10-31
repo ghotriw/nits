@@ -145,6 +145,7 @@ public struct ContentView: View {
                 raise: engine.subtitles.raise,
                 onRenderSizeChange: { engine.subtitles.renderSize = $0 }
             )
+            .equatable()
             .ignoresSafeArea()
             .allowsHitTesting(false)
             .opacity(uiState.isCapturingScreen ? 0 : 1)
