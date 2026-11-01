@@ -221,7 +221,7 @@ struct HostEventTests {
         #expect(engine.isPlaying)
     }
 
-    @Test("Pausing while a playing seek waits to resume settles the seek, and play() resumes from its target")
+    @Test("Pausing right after a playing seek lands settles the seek, and play() resumes from its target")
     func pauseDuringSeekSettle() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
         let engine = PlayerEngine.makeForTesting()
@@ -233,10 +233,11 @@ struct HostEventTests {
 
         engine.seek(to: 3.0)
         try #require(await engine.waitUntil(timeout: .seconds(5)) { !engine.isSeeking }, "The seek did not decode")
-        try #require(engine.pendingSeekTime != nil, "The seek resumed before the pause")
         engine.pause()
         #expect(changes == [true, false])
         #expect(engine.pendingSeekTime == nil)
+        #expect(!engine.isPlaying)
+        #expect(abs(engine.currentTime - 3.0) < 1, "Paused at \(engine.currentTime)s")
 
         engine.play()
         #expect(

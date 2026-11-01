@@ -38,13 +38,26 @@ extension PlayerEngine {
             return
         }
 
+        // A seek moved the position and no join has brought the audio since (a seek on pause, or one the user paused
+        // during): playing on is a join of the audio to the picture's clock, as after a seek that resumes.
+        let joinsAudio = audioJoin.isRendererStale && hasAudioStream
         let feedingActive = isFeeding.withLock { $0 }
         if !feedingActive {
-            startFeeding()
+            startFeeding(audio: !joinsAudio)
         }
         let targetTime = resolvePlaybackStartTime(syncTime: playbackClock.currentTime())
-        // Resuming from pause: the audio renderer still holds the paused media.
-        startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: true)
+        if joinsAudio {
+            if media.hasVideo {
+                startSynchronizerClockAfterPreroll(at: targetTime, isProvisional: true)
+            } else {
+                cancelPreroll()
+                playbackClock.setRate(0.0, time: targetTime)
+            }
+            audioJoin.begin(on: self, from: targetTime, hasPicture: media.hasVideo)
+        } else {
+            // Resuming from pause: the audio renderer still holds the paused media.
+            startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: true)
+        }
         displayLink?.isPaused = !media.hasVideo
         isPlaying = true
         playbackState = .playing
@@ -77,7 +90,6 @@ extension PlayerEngine {
         }
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
-        chaseSettling.abandonSettle()
     }
 
     /// Stops audio/video feeding and halts the clock, marking playback as paused.
@@ -109,8 +121,14 @@ extension PlayerEngine {
     ///     synchronizer pick the start (see `play()`).
     ///   - keepsRunning: The call gives the running clock a new rate where it stands (see `PlaybackClock.setRate`).
     nonisolated func startSynchronizerClock(
-        at targetTime: CMTime, rate: Double, startDelay: TimeInterval = 0, keepsRunning: Bool = false
+        at targetTime: CMTime, rate: Double, startDelay: TimeInterval = 0, keepsRunning: Bool = false,
+        isProvisional: Bool = false
     ) {
+        // The clock runs on host time alone until the audio joins it (`AudioJoin`); the audio device is not running yet.
+        if isProvisional && rate > 0 {
+            playbackClock.startProvisional(at: targetTime, rate: Float(rate))
+            return
+        }
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
         if rate > 0 {
             audioOutputInterruptionLock.withLock { $0.clockStarted(at: .now) }
@@ -163,9 +181,13 @@ extension PlayerEngine {
     ///   clock ahead by the output latency (~15–20 ms on built-in speakers), skipping that much audio and a video
     ///   frame. Scheduling the start one output latency ahead lets the first sample at `targetTime` become audible
     ///   exactly when the clock reaches it.
-    func startSynchronizerClockAfterPreroll(at targetTime: CMTime, alignWithBufferedAudio: Bool = false) {
+    ///
+    /// - Parameter isProvisional: The clock runs on host time alone (`PlaybackClock.startProvisional`) once the anchor
+    ///   frame is up; the caller joins the audio to it (`AudioJoin`), which the synchronizer then takes over.
+    func startSynchronizerClockAfterPreroll(
+        at targetTime: CMTime, alignWithBufferedAudio: Bool = false, isProvisional: Bool = false
+    ) {
         cancelPreroll()
-        let isAudioReady = isAudioReadyToStart(at: targetTime)
         // Nothing presents video without a display link, so there is no anchor frame to protect.
         let isReady =
             !media.hasVideo || displayLink == nil || (inputs?.isVideoEOF ?? true)
@@ -173,26 +195,26 @@ extension PlayerEngine {
         let startDelay =
             alignWithBufferedAudio
             ? min(PlatformAudioOutputRoute.currentOutputLatency() ?? 0, Self.maxOutputLatencyAlignment) : 0
-        if isReady && isAudioReady {
+        if isReady {
             if startDelay > 0 {
                 AppLog.debug(
                     .engine,
                     "Aligning clock start with buffered audio: +\(String(format: "%.1f", startDelay * 1000.0))ms output latency"
                 )
             }
-            startSynchronizerClock(at: targetTime, rate: playbackRate, startDelay: startDelay)
+            startSynchronizerClock(
+                at: targetTime, rate: playbackRate, startDelay: startDelay, isProvisional: isProvisional)
             return
         }
 
         playbackClock.setRate(0.0, time: targetTime)
         var request = PendingClockStart(
             targetTime: targetTime, rate: playbackRate, requestHostTime: CACurrentMediaTime())
-        request.awaitsAudio = !isAudioReady
         request.startDelay = startDelay
+        request.isProvisional = isProvisional
         let pending = request
         pendingClockStartLock.withLock { $0 = pending }
         updateAwaitingClockStart()
-        if !isAudioReady { awaitAudioBeforeClockStart() }
         prerollTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.prerollTimeout)
             guard !Task.isCancelled, let self else { return }
@@ -208,24 +230,28 @@ extension PlayerEngine {
                 .engine,
                 "Preroll timed out after \(Self.prerollTimeout); starting clock anyway. \(self.prerollDiagnostics(pending))"
             )
-            self.startSynchronizerClock(at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay)
+            self.startSynchronizerClock(
+                at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay,
+                isProvisional: pending.isProvisional)
         }
     }
 
     /// Called from the display-link tick after presentation: starts a pending clock exactly once when the
     /// anchor frame is on screen and the next frames are decoded.
     nonisolated func startPendingClockIfPrerolled() {
-        guard pendingClockStartLock.withLock({ $0 != nil && $0?.awaitsAudio == false }),
+        guard pendingClockStartLock.withLock({ $0 != nil }),
             frameQueue.getLastRenderedPTS() >= 0,
             frameQueue.count >= Self.prerollMinimumQueuedFrames,
             let pending = pendingClockStartLock.withLock({ state -> PendingClockStart? in
-                guard let claimed = state, !claimed.awaitsAudio else { return nil }
+                guard let claimed = state else { return nil }
                 state = nil
                 return claimed
             })
         else { return }
 
-        startSynchronizerClock(at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay)
+        startSynchronizerClock(
+            at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay,
+            isProvisional: pending.isProvisional)
         DispatchQueue.main.async { [weak self] in self?.updateAwaitingClockStart() }
         let elapsedMs = (CACurrentMediaTime() - pending.requestHostTime) * 1000.0
         AppLog.debug(
@@ -261,7 +287,7 @@ extension PlayerEngine {
                 pending?.targetTime = head
                 return .move
             }
-            guard headIsFirstPicture, !current.awaitsAudio else { return .none }
+            guard headIsFirstPicture else { return .none }
             pending = nil
             return .start(current)
         }
@@ -271,7 +297,9 @@ extension PlayerEngine {
         case .move:
             playbackClock.setRate(0, time: head)
         case .start(let pending):
-            startSynchronizerClock(at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay)
+            startSynchronizerClock(
+                at: pending.targetTime, rate: pending.rate, startDelay: pending.startDelay,
+                isProvisional: pending.isProvisional)
             DispatchQueue.main.async { [weak self] in self?.updateAwaitingClockStart() }
             AppLog.debug(
                 .engine,
@@ -305,8 +333,7 @@ extension PlayerEngine {
         pendingClockStartLock.withLock { $0 = nil }
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
-        prerollAudioTask?.cancel()
-        prerollAudioTask = nil
+        audioJoin.cancel()
         updateAwaitingClockStart()
         cancelBuffering()
         clockDidStop()

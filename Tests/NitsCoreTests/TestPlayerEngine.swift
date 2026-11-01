@@ -7,12 +7,13 @@ import NitsTestSupport
 extension PlayerEngine {
     /// Waits until the master clock passes `seconds`.
     ///
-    /// After `play()` the synchronizer holds the clock until the audio device is running. A device that was idle
+    /// Read through `playbackClock`, as the engine does: the synchronizer itself lags behind a seek (its rate changes wait in
+    /// a queue, behind the audio renderer's locks), and the picture runs on the clock before the audio joins it. A device that was idle
     /// (notably a Bluetooth route such as AirPods) takes several hundred milliseconds to start, so tests must not
     /// assume the clock moves a fixed time after `play()`.
     @MainActor
     func waitForClock(toPass seconds: Double, timeout: Duration = PlayerEngine.testWaitTimeout) async -> Bool {
-        await waitUntil(timeout: timeout) { synchronizer.currentTime().seconds > seconds }
+        await waitUntil(timeout: timeout) { playbackClock.currentTime().seconds > seconds }
     }
 
     /// Waits until no seek is in flight and none is waiting to resume playback (the chase-settle debounce).
@@ -31,7 +32,7 @@ extension PlayerEngine {
             !isSeeking && pendingSeekTime == nil && isPlaying && !isPrerolling
         }
         guard started else { return false }
-        return await waitForClock(toPass: synchronizer.currentTime().seconds + seconds, timeout: timeout)
+        return await waitForClock(toPass: playbackClock.currentTime().seconds + seconds, timeout: timeout)
     }
 
     /// Steps one frame forward and waits until the step has moved the frame and finished decoding.

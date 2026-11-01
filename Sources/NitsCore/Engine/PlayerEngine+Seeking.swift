@@ -41,12 +41,9 @@ extension PlayerEngine {
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
 
-        chaseSettling.noteRequest()
-
-        // Cancel any pending settle debounce from an earlier seek in the burst
+        // The end-of-media wait of an earlier seek in the burst, and the audio join of one that resumed
         chaseSettleTask?.cancel()
         chaseSettleTask = nil
-        chaseSettling.abandonSettle()
         cancelPreroll()
 
         // 1. Maintain play intent across seek bursts (Apple QA1820 / mpv)
@@ -94,16 +91,17 @@ extension PlayerEngine {
         guard let demuxer = self.demuxer else { return }
 
         isSeeking = true
+        audioJoin.isRendererStale = true
         let targetSeconds = target.seconds
         let seekId = seekGeneration.current
         let loadID = currentLoadID
 
         let shouldResume = self.resumePlaybackAfterChase
-        if shouldResume { chaseSettling.isAudioFlushPending = true }
-        chaseSettling.isAudioRefillPending = true
 
-        // Stop feeding packets from the old position.
+        // Stop feeding packets from the old position. The video feeder is only cancelled: it may be inside a decode of a
+        // packet from there, whose frame would come out into the seek's preview, so the seek waits for it below.
         isFeeding.withLock { $0 = false }
+        let unwindingVideoFeeder = videoFeedingTask
         stopFeedingVideo()
         stopFeedingAudio()
         frameQueue.clear(resetDroppedFrames: true)
@@ -127,8 +125,16 @@ extension PlayerEngine {
         // during seeks that will resume playback.
         let pausedStepCache: StepFrameCache? = shouldResume ? nil : self.frameStep.cache
 
-        seekQueue.async { [weak self, demuxer, externalAudio, decoder, frameQueue, pausedStepCache] in
+        seekQueue.async {
+            [weak self, demuxer, externalAudio, decoder, frameQueue, pausedStepCache, unwindingVideoFeeder] in
             guard let self else { return }
+            // Before the decoder is flushed and the demuxer moved: the old run's last frame (`SeekPreview` takes the
+            // earliest one the decoder emits, so a stale one from the old position wins over the landing's) and its
+            // last packet read would otherwise come in after.
+            if let unwindingVideoFeeder {
+                Self.waitForUnwind(of: unwindingVideoFeeder)
+                frameQueue.clear()
+            }
             let signposter = PlayerPerformanceMonitor.shared.signposter
             let signpostID = signposter.makeSignpostID()
             let seekInterval = signposter.beginInterval("Seek", id: signpostID)
@@ -204,7 +210,7 @@ extension PlayerEngine {
             // Expensive audio reset only for the seek that is still current (final chase target).
             if !isSuperseded() {
                 audioDecoder?.flush()
-                // Resuming: flushed by `startFeeding()`, once, however many seeks the burst took.
+                // Resuming: flushed by `AudioJoin`, once, however many seeks the burst took.
                 if !shouldResume { audioSink.flush() }
             }
 
@@ -274,6 +280,7 @@ extension PlayerEngine {
         if !shouldResume {
             // Paused mode: settle immediately
             chase = nil
+
             playbackClock.setRate(0.0, time: targetTime)
             isPlaying = false
             // Media played to its end stays ended when a seek only lands at the end again.
@@ -289,57 +296,59 @@ extension PlayerEngine {
         }
 
         chase = target.landed(at: completedSeconds)
-        scheduleChaseSettle(seekId: seekId, at: completedSeconds)
+        resumeAfterChase(seekId: seekId, at: completedSeconds)
     }
 
-    /// Resumes playback at `completedSeconds`, where seek `seekId` landed, or ends the media there, unless a newer seek
-    /// comes first. Playing mode: debounce resumption slightly (300ms) when seeks come in a burst so that sustained key-hold repeat
-    /// events (which fire every 40-70ms) don't repeatedly unpause and roll the clock forward.
-    private func scheduleChaseSettle(seekId: Int, at completedSeconds: Double) {
+    /// Resumes playback at `completedSeconds`, where seek `seekId` landed, at once: the picture runs on a clock of its own
+    /// (host time) and the audio, flushed and refilled behind it, joins that clock later (`AudioJoin`). A seek that comes
+    /// before the next frame takes over from here; seeks in a series cost no more than the picture.
+    ///
+    /// Landed at the end, the media ends instead, after a short wait (`endOfMediaWait`): the key repeats of a held key
+    /// still come, and would land in the next item a completion loads.
+    private func resumeAfterChase(seekId: Int, at completedSeconds: Double) {
         let targetTime = CMTime(seconds: completedSeconds, preferredTimescale: 1000)
         chaseSettleTask?.cancel()
-        let token = chaseSettling.beginSettle()
+        chaseSettleTask = nil
+        // Landed at the end, the media ends, as playing on to it would (within the same margin): resuming there would
+        // start the clock with nothing left to read.
+        if isAtEndOfMedia(completedSeconds) {
+            scheduleEndOfMediaAfterChase(seekId: seekId, at: completedSeconds)
+            return
+        }
+        chase = nil
+        startFeeding(audio: false)
+        let joinsAudio = hasAudioStream
+        if media.hasVideo {
+            startSynchronizerClockAfterPreroll(at: targetTime, isProvisional: joinsAudio)
+        } else {
+            cancelPreroll()
+            playbackClock.setRate(0.0, time: targetTime)
+        }
+        if joinsAudio {
+            audioJoin.begin(on: self, from: targetTime, hasPicture: media.hasVideo)
+        } else if !media.hasVideo {
+            startSynchronizerClock(at: targetTime, rate: playbackRate)
+        }
+        displayLink?.isPaused = !media.hasVideo
+        isPlaying = true
+        playbackState = .playing
+        performanceMonitor.handlePlaybackStateChange(isPlaying: true)
+        AppLog.debug(.engine, "Chase seek resumed at \(completedSeconds)s")
+    }
+
+    /// How long a seek that landed at the end waits for more presses before the media ends.
+    static let endOfMediaWait: Duration = .milliseconds(300)
+
+    private func scheduleEndOfMediaAfterChase(seekId: Int, at completedSeconds: Double) {
+        chaseSettleTask?.cancel()
         chaseSettleTask = Task { @MainActor [weak self] in
-            if let self, self.chaseSettling.resumeDelay > .zero {
-                try? await Task.sleep(for: self.chaseSettling.resumeDelay)
-            }
+            try? await Task.sleep(for: Self.endOfMediaWait)
             guard !Task.isCancelled, let self, self.seekGeneration.isCurrent(seekId) else { return }
-
-            self.chaseSettling.commitSettle(token)
-            defer { self.chaseSettling.endSettle(token) }
-
-            // The audio the seek left in the renderer goes before the feeders and the clock start, not alongside them:
-            // a flush racing the clock's start holds the first sound back by most of a second. On `seekQueue`, so the
-            // main thread does not wait for the renderer.
-            if self.chaseSettling.isAudioFlushPending {
-                self.chaseSettling.isAudioFlushPending = false
-                let sink = self.audioSink
-                sink.expectFlush()
-                await withCheckedContinuation { continuation in
-                    self.seekQueue.async {
-                        sink.flush()
-                        continuation.resume()
-                    }
-                }
-                guard !Task.isCancelled, self.seekGeneration.isCurrent(seekId) else { return }
-            }
+            self.chaseSettleTask = nil
             self.chase = nil
-            // Landed at the end, the media ends, as playing on to it would (within the same margin): resuming there
-            // would start the clock with nothing left to read. After the debounce, so key repeats still held land
-            // here, not on the next item a completion loads.
-            if self.isAtEndOfMedia(completedSeconds) {
-                self.resumePlaybackAfterChase = false
-                AppLog.debug(.engine, "Chase seek settled at the end (\(completedSeconds)s) while playing")
-                self.handleEndOfMedia()
-                return
-            }
-            self.startFeeding()
-            self.startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: self.hasAudioStream)
-            self.displayLink?.isPaused = !self.media.hasVideo
-            self.isPlaying = true
-            self.playbackState = .playing
-            self.performanceMonitor.handlePlaybackStateChange(isPlaying: true)
-            AppLog.debug(.engine, "Chase seek settled and resumed at \(completedSeconds)s")
+            self.resumePlaybackAfterChase = false
+            AppLog.debug(.engine, "Chase seek settled at the end (\(completedSeconds)s) while playing")
+            self.handleEndOfMedia()
         }
     }
 
@@ -353,10 +362,8 @@ extension PlayerEngine {
         // (and on HLS reading it again) for each key repeat. Playing, the pending settle (which ends the media) waits
         // for the presses to stop, as their seeks would have it; paused or ended on the last frame, nothing is left.
         if seconds > 0, !isSeeking {
-            if let settled = chase, chaseSettleTask != nil, !chaseSettling.isSettleCommitted,
-                isAtEndOfMedia(settled.seconds)
-            {
-                scheduleChaseSettle(seekId: seekGeneration.current, at: settled.seconds)
+            if let settled = chase, chaseSettleTask != nil, isAtEndOfMedia(settled.seconds) {
+                scheduleEndOfMediaAfterChase(seekId: seekGeneration.current, at: settled.seconds)
                 return relativeSeekBurst.offset(landingAt: settled.seconds) ?? 0
             }
             if chase == nil, !isPlaying, isOnLastFrame {
@@ -383,14 +390,6 @@ extension PlayerEngine {
         seek(to: baseTime + seconds, exact: isExact, forward: isForward)
 
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
-    }
-
-    public func endSeekBurst() {
-        chaseSettling.endBurst()
-        // A resume waiting out the wait that tells a burst from a single seek goes now; one whose seek has not landed
-        // yet takes the shorter wait when it does.
-        guard chaseSettleTask != nil, !chaseSettling.isSettleCommitted, !isSeeking, let landed = chase else { return }
-        scheduleChaseSettle(seekId: seekGeneration.current, at: landed.seconds)
     }
 
     /// Where a seek to `seconds` goes: within the media.

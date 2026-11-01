@@ -35,7 +35,7 @@ struct ExternalAudioTests {
         #expect(engine.selectedAudioTrackId == external.id)
         #expect(engine.inputs?.isAudioSeparate == true)
         try #require(await engine.waitForPlayback(advancingBy: 0.5))
-        let clock = engine.synchronizer.currentTime().seconds
+        let clock = engine.playbackClock.currentTime().seconds
         let fed = try await firstFedAudio(engine)
         #expect(abs(fed - clock) < 1, "The file's audio started at \(fed)s with the clock at \(clock)s")
         #expect(!engine.isBuffering)
@@ -45,7 +45,7 @@ struct ExternalAudioTests {
         #expect(engine.inputs?.isAudioSeparate == false)
         try #require(await engine.waitForPlayback(advancingBy: 0.5))
         let ownFed = try await firstFedAudio(engine)
-        #expect(abs(ownFed - engine.synchronizer.currentTime().seconds) < 1)
+        #expect(abs(ownFed - engine.playbackClock.currentTime().seconds) < 1)
     }
 
     @Test("A keyframe seek starts the file's audio where the picture landed, not at the target")
@@ -256,7 +256,7 @@ struct ExternalAudioTests {
         #expect(selected.externalURL == remote)
         #expect(engine.inputs?.isAudioSeparate == true)
         #expect(!engine.isBuffering)
-        let clock = engine.synchronizer.currentTime().seconds
+        let clock = engine.playbackClock.currentTime().seconds
         let fed = try await firstFedAudio(engine)
         #expect(abs(fed - clock) < 1, "The file's audio started at \(fed)s with the clock at \(clock)s")
         let asked = server.requests.filter { $0.path == dubURL.lastPathComponent }
@@ -307,13 +307,13 @@ struct ExternalAudioTests {
         server.setBehavior(.init(bytesPerSecond: 1), forPaths: { $0 == name })
         engine.seek(to: 50, exact: true)
         #expect(await engine.waitUntil(timeout: .seconds(10)) { engine.isBuffering }, "No buffering without audio")
-        let heldAt = engine.synchronizer.currentTime().seconds
+        let heldAt = engine.playbackClock.currentTime().seconds
         // Without audio coming in, it doesn't resume into silence (and buffer again) once the picture is ready.
         for _ in 0..<40 {
             try await Task.sleep(for: .milliseconds(50))
             #expect(engine.isBuffering, "Resumed with no audio coming")
         }
-        #expect(engine.synchronizer.currentTime().seconds - heldAt < 0.3)
+        #expect(engine.playbackClock.currentTime().seconds - heldAt < 0.3)
 
         server.setBehavior(.init(), forPaths: { $0 == name })
         #expect(await engine.waitUntil(timeout: .seconds(10)) { !engine.isBuffering }, "Didn't resume once data came")

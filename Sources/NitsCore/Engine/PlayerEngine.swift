@@ -229,6 +229,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
             // (`isLoadStartPending`) does.
             if isPlaying && !isPrerollPending && !isBuffering && !isLoadStartPending {
                 let currentRate = playbackRate
+                // The clock runs on host time while the audio joins it: the join takes the new rate over.
+                if playbackClock.changeProvisionalRate(to: Float(currentRate)) { return }
                 startSynchronizerClock(
                     at: playbackClock.currentTime(), rate: currentRate, keepsRunning: true)
             }
@@ -470,8 +472,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var chaseSettleTask: Task<Void, Never>? = nil
     static let relativeSeekBurstTimeout: Duration = .milliseconds(300)
     static let relativeSeekBurstWatchdogTimeout: Duration = .seconds(3)
-    @ObservationIgnored
-    var chaseSettling = ChaseSettling()
 
     // MARK: - Sync Diagnostics
 
@@ -556,16 +556,16 @@ public final class PlayerEngine: PlayerEngineProtocol {
         /// Output latency to pin the start ahead by, when the renderer already holds audio (see
         /// `startSynchronizerClockAfterPreroll`).
         var startDelay: TimeInterval = 0
-        /// The audio renderer has not been refilled after a flush: the tick leaves the start to `isAudioReadyToStart`'s
-        /// wait (`awaitAudioBeforeClockStart`), which clears this.
-        var awaitsAudio = false
+        /// The clock starts on host time alone, for `AudioJoin` to bring the audio to (see `PlaybackClock.startProvisional`).
+        var isProvisional = false
     }
     @ObservationIgnored
     let pendingClockStartLock = OSAllocatedUnfairLock<PendingClockStart?>(initialState: nil)
     @ObservationIgnored
     var prerollTimeoutTask: Task<Void, Never>? = nil
+    /// Joins the audio to the picture's clock after a seek that resumes.
     @ObservationIgnored
-    var prerollAudioTask: Task<Void, Never>? = nil
+    let audioJoin = AudioJoin()
     /// Refreshes `currentMetrics` twice a second, with the process's CPU and memory, for a view showing them (the
     /// performance HUD); off, they change only when media loads, and no timer runs.
     public var isCollectingMetrics: Bool = false {
@@ -814,8 +814,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         displaySleepManager.enableDisplaySleep()
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil
-        prerollAudioTask?.cancel()
-        prerollAudioTask = nil
+        audioJoin.cancel()
         if let observer = timeObserver {
             synchronizer.removeTimeObserver(observer)
         }

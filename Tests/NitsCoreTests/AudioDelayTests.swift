@@ -193,7 +193,7 @@ struct AudioDelayPlaybackTests {
     /// Seconds of audio the renderer holds past the clock.
     private func audioAhead(of engine: PlayerEngine) -> Double? {
         guard let end = engine.audioSink.bufferedEnd, end.isNumeric else { return nil }
-        return (end - engine.synchronizer.currentTime()).seconds
+        return (end - engine.playbackClock.currentTime()).seconds
     }
 
     @Test("A delay change while playing shifts the queued audio and keeps the clock running")
@@ -205,7 +205,7 @@ struct AudioDelayPlaybackTests {
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
         #expect(audioAhead(of: engine) != nil)
         let seekId = engine.seekGeneration.current
-        let clockBefore = engine.synchronizer.currentTime().seconds
+        let clockBefore = engine.playbackClock.currentTime().seconds
 
         engine.setAudioDelay(0.5)
         #expect(engine.audioDelay == 0.5)
@@ -218,8 +218,8 @@ struct AudioDelayPlaybackTests {
         #expect(firstFed + 0.5 < clockBefore + 0.2, "Audio resumed from \(firstFed)s of the media at \(clockBefore)s")
         #expect(engine.seekGeneration.current == seekId, "The delay change seeked")
         #expect(!engine.isBuffering)
-        #expect(engine.synchronizer.currentTime().seconds > clockBefore, "The clock stopped")
-        #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
+        #expect(engine.playbackClock.currentTime().seconds > clockBefore, "The clock stopped")
+        #expect(await engine.waitForClock(toPass: engine.playbackClock.currentTime().seconds + 0.5))
     }
 
     @Test("A delay change while paused takes effect when playback resumes")
@@ -231,7 +231,7 @@ struct AudioDelayPlaybackTests {
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
         engine.pause()
         let seekId = engine.seekGeneration.current
-        let pausedAt = engine.synchronizer.currentTime().seconds
+        let pausedAt = engine.playbackClock.currentTime().seconds
 
         engine.setAudioDelay(0.5)
         #expect(await engine.waitUntil(timeout: .seconds(3)) { engine.audioSink.bufferedEnd == nil })
@@ -241,7 +241,7 @@ struct AudioDelayPlaybackTests {
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
         #expect(firstFed + 0.5 < pausedAt + 0.2, "Audio resumed from \(firstFed)s of the media at \(pausedAt)s")
         #expect(engine.seekGeneration.current == seekId, "The delay change seeked")
-        #expect(await engine.waitForClock(toPass: engine.synchronizer.currentTime().seconds + 0.5))
+        #expect(await engine.waitForClock(toPass: engine.playbackClock.currentTime().seconds + 0.5))
     }
 
     @Test("A seek reads audio from the target minus the delay")
@@ -257,8 +257,12 @@ struct AudioDelayPlaybackTests {
         try #require(await engine.waitForPlayback())
         // Audio played half a second early starts with the media's audio at 3.5 s, scheduled at 3 s; read from 3 s
         // as without a delay, it would be scheduled at 2.5 s and dropped as late. `firstFedAudioPTS` is media time.
+        // The picture has run on while the audio came back, and what it passed is cut (`AudioJoin`): from 3.5 s on,
+        // not much later.
+        try #require(await engine.waitUntil(timeout: .seconds(3)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
-        #expect(abs(firstFed - 3.5) < 0.1, "First audio fed from \(firstFed)s of the media")
+        #expect(firstFed > 3.5 - 0.1, "First audio fed from \(firstFed)s of the media, before the shifted position")
+        #expect(firstFed < 3.5 + 1.0, "First audio fed from \(firstFed)s of the media, long after the seek")
     }
 
     @Test("A keyframe seek with audio played late starts audio before the keyframe")
@@ -277,9 +281,11 @@ struct AudioDelayPlaybackTests {
         let keyframe = engine.currentTime
         engine.play()
         try #require(await engine.waitForPlayback())
+        // From half a second before the keyframe, less what the picture has passed while the audio came back.
+        try #require(await engine.waitUntil(timeout: .seconds(3)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
         let firstFed = try #require(engine.firstFedAudioPTS.withLock { $0 }?.seconds)
         #expect(
-            abs(firstFed - (keyframe - 0.5)) < 0.1,
+            firstFed > keyframe - 0.5 - 0.1 && firstFed < keyframe - 0.5 + 1.0,
             "Landed on \(keyframe)s; first audio fed from \(firstFed)s of the media")
     }
 

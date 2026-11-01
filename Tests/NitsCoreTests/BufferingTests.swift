@@ -24,9 +24,9 @@ struct BufferingTests {
 
     /// Clock position after it has held still for a moment, or `nil` if it kept moving.
     private func heldClock(of engine: PlayerEngine) async -> Double? {
-        let before = engine.synchronizer.currentTime().seconds
+        let before = engine.playbackClock.currentTime().seconds
         try? await Task.sleep(for: .milliseconds(400))
-        let after = engine.synchronizer.currentTime().seconds
+        let after = engine.playbackClock.currentTime().seconds
         return abs(after - before) < 0.01 ? after : nil
     }
 
@@ -58,7 +58,7 @@ struct BufferingTests {
             try? await Task.sleep(for: .milliseconds(50))
             #expect(!engine.isBuffering, "Buffering started again right after resuming")
         }
-        let position = engine.synchronizer.currentTime().seconds
+        let position = engine.playbackClock.currentTime().seconds
         if let held {
             #expect(
                 position > held && position < held + 2 * rate,
@@ -91,7 +91,7 @@ struct BufferingTests {
         ])
     func audioEndingEarlyKeepsPlaying(preset: SyntheticTestMediaFactory.Preset, rate: Double) async {
         guard let engine = await startPlayback(preset, rate: rate) else { return }
-        let start = engine.synchronizer.currentTime().seconds
+        let start = engine.playbackClock.currentTime().seconds
         engine.stopFeedingAudio()
 
         // Long enough for the ~1 s of queued playback audio to run out well before the end.
@@ -99,7 +99,7 @@ struct BufferingTests {
             try? await Task.sleep(for: .milliseconds(100))
             #expect(!engine.isBuffering, "Buffering started although video kept playing")
         }
-        #expect(engine.synchronizer.currentTime().seconds > start + 2.5 * rate, "The clock did not keep running")
+        #expect(engine.playbackClock.currentTime().seconds > start + 2.5 * rate, "The clock did not keep running")
         engine.stop()
     }
 
@@ -108,7 +108,7 @@ struct BufferingTests {
         guard let engine = await startPlayback() else { return }
         stopFeeding(engine)
         #expect(await engine.waitUntil(timeout: .seconds(5)) { engine.isBuffering }, "Buffering did not start")
-        let held = engine.synchronizer.currentTime().seconds
+        let held = engine.playbackClock.currentTime().seconds
 
         engine.pause()
         #expect(!engine.isBuffering)
@@ -117,7 +117,7 @@ struct BufferingTests {
         engine.play()
         #expect(await engine.waitForPlayback(advancingBy: 0.5), "Playback did not resume after pause")
         #expect(!engine.isBuffering)
-        let position = engine.synchronizer.currentTime().seconds
+        let position = engine.playbackClock.currentTime().seconds
         #expect(position > held && position < held + 2, "Resumed at \(position)s, the clock held at \(held)s")
         engine.stop()
     }

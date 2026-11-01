@@ -1,4 +1,5 @@
 import CoreMedia
+import QuartzCore
 import Testing
 
 @testable import NitsCore
@@ -87,5 +88,72 @@ struct PlaybackClockTests {
         // The change is queued, yet the clock is read as it runs: past the position of the request, not on it.
         try await Task.sleep(for: .milliseconds(50))
         #expect(clock.currentTime().seconds > before.seconds)
+    }
+
+    // MARK: - Provisional clock
+
+    @Test("A provisional clock runs on host time at once, with the synchronizer held")
+    func provisionalRunsAtOnce() async throws {
+        let clock = PlaybackClock()
+        clock.startProvisional(at: Self.seconds(100), rate: 1)
+        #expect(clock.isProvisional)
+        #expect(clock.rate == 1)
+        let hostBefore = CACurrentMediaTime()
+        let first = clock.currentTime().seconds
+        #expect(first >= 100 && first < 100.05)
+        try await Task.sleep(for: .milliseconds(200))
+        let later = clock.currentTime().seconds
+        // Against the host time that passed (a loaded machine stretches a sleep), not the sleep.
+        let elapsed = CACurrentMediaTime() - hostBefore
+        #expect(abs((later - first) - elapsed) < 0.05, "Moved \(later - first)s in \(elapsed)s")
+        clock.waitUntilApplied()
+        #expect(CMTimebaseGetRate(clock.synchronizer.timebase) == 0)
+    }
+
+    @Test("A new rate before the join takes over goes on from the position, at the new rate")
+    func provisionalRateChange() async throws {
+        let clock = PlaybackClock()
+        clock.startProvisional(at: Self.seconds(10), rate: 1)
+        try await Task.sleep(for: .milliseconds(100))
+        let before = clock.currentTime().seconds
+        #expect(clock.changeProvisionalRate(to: 2))
+        #expect(clock.isProvisional)
+        #expect(clock.readRate == 2)
+        let after = clock.currentTime().seconds
+        let hostAfter = CACurrentMediaTime()
+        #expect(abs(after - before) < 0.05, "Stepped from \(before)s to \(after)s")
+        try await Task.sleep(for: .milliseconds(200))
+        let moved = clock.currentTime().seconds - after
+        let elapsed = CACurrentMediaTime() - hostAfter
+        #expect(abs(moved - 2 * elapsed) < 0.1, "Moved \(moved)s in \(elapsed)s at 2x")
+    }
+
+    @Test("The join takes the position over at its host time without a step")
+    func handOverDoesNotStep() async throws {
+        let clock = PlaybackClock()
+        clock.startProvisional(at: Self.seconds(10), rate: 1)
+        try await Task.sleep(for: .milliseconds(50))
+        let host = try #require(clock.handOver(after: 0.1))
+        var previous = clock.currentTime().seconds
+        while CACurrentMediaTime() < host + 0.6 {
+            try await Task.sleep(for: .milliseconds(5))
+            let reading = clock.currentTime().seconds
+            #expect(reading >= previous - 0.002, "Stepped back from \(previous)s to \(reading)s")
+            previous = reading
+        }
+        // Past the take-over the synchronizer is the clock.
+        #expect(!clock.isProvisional)
+        #expect(clock.rate == 1)
+    }
+
+    @Test("A hold or a new start replaces a provisional clock, and it cannot be joined or re-rated then")
+    func provisionalEndsWithTheNextChange() {
+        let clock = PlaybackClock()
+        clock.startProvisional(at: Self.seconds(10), rate: 1)
+        clock.setRate(0, time: Self.seconds(12))
+        #expect(!clock.isProvisional)
+        #expect(clock.currentTime().seconds == 12)
+        #expect(clock.handOver(after: 0.1) == nil)
+        #expect(!clock.changeProvisionalRate(to: 2))
     }
 }

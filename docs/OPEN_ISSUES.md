@@ -3,6 +3,31 @@
 Problems that still need data or a real-world check. Fixed issues live on in the code, `docs/ARCHITECTURE.md`,
 `AGENTS.md` and git history; remove an entry here once it is resolved.
 
+## PRIORITY: changing the audio delay while playing external audio starts buffering, and it can stay on
+
+**Observed by hand (2026-11-01)**: playing a video with an external audio track (an added audio file) and turning the
+audio delay (`stepAudioDelay` / `setAudioDelay`) shows the preloader, and sometimes everything stops: pause / play or a
+seek helps. Seeks with external audio are fine. **Not caused by the seek / `AudioJoin` rework of that day**: reproduced
+the same on the last commit before it (`c1917d3`). With the audio inside the video file it does not happen.
+
+**Reproduction** (a test, not committed; the file is in `.agents/scratch/ExternalAudioDelayRepro.swift.txt`, to be
+copied to `Tests/NitsCoreTests/` as a `.swift`; `.agents` is untracked, so only on this machine): `wideGOPH264` as the video, `multiTrackH264` attached as external
+audio and selected, `waitForPlayback`, then 10 steps of ±0.1 s of delay, 150 ms apart, and poll `isBuffering` for 8 s.
+Four trials: buffering in 4 of 4, still on after 6 s with the clock advanced 0.1–0.2 s in 1 of 4 (on both the current
+code and `c1917d3`); the same with the audio inside the video: none.
+
+**What is known, not verified:** for audio on an input of its own `BufferingPolicy.isStarved` takes the renderer running
+dry as enough (`isAudioDry`), where for shared audio the frame queue has to be low too; `applyAudioDelay` flushes the
+renderer under the running clock (`DelayedAudioSink.changeDelay`) and puts the held audio back, so the renderer is empty
+for a moment and the check holds the clock. Why buffering does not end: unknown. Suspects: a second step of the delay
+flushing again while the first replay is on its way (`decoder.requeue(_, generation:)` drops a replay of an older
+generation), so the audio from the held position is not there when `isReadyToResume` wants `audioResume` seconds ahead of
+it; or the feeder run being restarted while the clock is held.
+
+**Directions:** the renderer emptied by a delay change is not a shortage (hold the starvation check, or the separate-audio
+rule, for the length of the replay); and find why the resume does not come, starting from the reproduction above with
+`NITS`-level logging of `bufferedEnd` and the held clock.
+
 ## Root cause of the hardware VP9 decoder stall
 
 **Observed once** (October 2026) playing a 1080p50 VP9 MP4 with hardware decoding (supplemental decoder), after
@@ -34,6 +59,25 @@ which fails a test after 20 s instead of holding a thread of the run.
 
 **If it recurs:** the `libass has been stuck in a call for …` log line; `sample` the process and check whether `fontd`
 was started at about the same time (`ps -o lstart -p $(pgrep fontd)`).
+
+## The line between a Bluetooth device's start and its switch from a placeholder
+
+`AudioOutputInterruptionDetector` re-anchors the clock when a Bluetooth output stops its IO under the started clock after
+running `minimumRunDuration` (30 ms): that is how a start that waits for the real A2DP stream (a restart within ~10 ms,
+or 24 ms on the built-in speakers, which the Bluetooth-only gate leaves out) is told from the switch away from a
+placeholder (AirPods last used by an iPhone). The line is **empirical and drawn from one pair of AirPods**: the switch
+came ~100 ms after the run began on 2026-10-24 and 41–43 ms on 2026-11-01 (four starts in a row), so 50 ms missed it,
+and what it will be on the next macOS or other earbuds is not known.
+
+A better criterion would be a property of the device that changes only at the switch. The HAL properties watched on
+2026-10-24 (`livn`, `goin`, `gone`, `stpd`, `nsrt`, `fsiz`, `ltnc`, `saft`, `stm#`, `slay`) gave `goin` alone, and the
+BT plugin reports the A2DP latency on the placeholder already (7680 frames), so the device latency tells nothing. The
+IO gap does not separate them either (healthy restarts returned after 200–480 ms, switches after 660–900 ms).
+Captures: `.agents/bluetooth-audio-logs/`.
+
+**If choppy Bluetooth audio returns:** find the stop in `player.log` (`Output device N started its IO` → `stopped its
+IO`), compare its run length with the line, and look for `Audio output restarted its IO under the running clock`;
+record the run length here before moving the line.
 
 ## Buffering needs a real-world check
 

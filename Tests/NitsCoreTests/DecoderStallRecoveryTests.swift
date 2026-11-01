@@ -101,7 +101,7 @@ struct DecoderStallRecoveryTests {
         #expect(
             await engine.waitUntil(timeout: .seconds(15)) { engine.decoder !== stalling },
             "The stalled decoder was not replaced")
-        let clockAtRecovery = engine.synchronizer.currentTime().seconds
+        let clockAtRecovery = engine.playbackClock.currentTime().seconds
         #expect(
             clockAtRecovery > frozenAt + 1,
             "The stall did not freeze video (frame \(frozenAt)s, clock \(clockAtRecovery)s)")

@@ -131,6 +131,8 @@ struct SeekSpinnerTimelineTests {
         guard let custom = ProcessInfo.processInfo.environment["NITS_TIMELINE_MEDIA"] else { return }
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         engine.load(path: custom)
+        // A network source opens in the background.
+        _ = await engine.waitUntil(timeout: .seconds(60)) { engine.isLoaded }
         guard engine.isLoaded, engine.media.duration > 600 else { return }
         engine.play()
         _ = await engine.waitForPlayback()
@@ -139,7 +141,10 @@ struct SeekSpinnerTimelineTests {
         for exact in [false, true] {
             for (direction, step) in [("fwd", 10.0), ("back", -10.0)] {
                 for burst in [false, true] {
-                    let label = "exact=\(exact) \(direction) \(burst ? "burst x25" : "single")"
+                    // `NITS_BURST_PRESSES=<n>`: only bursts, of n presses (a long series, as on a slow source).
+                    let burstPresses = ProcessInfo.processInfo.environment["NITS_BURST_PRESSES"].flatMap { Int($0) }
+                    if burstPresses != nil && !burst { continue }
+                    let label = "exact=\(exact) \(direction) \(burst ? "burst x\(burstPresses ?? 25)" : "single")"
                     engine.exactSeekOnSinglePress = exact
                     for round in 0..<(burst ? 4 : 6) {
                         engine.seek(to: 1200 + Double(round) * 37, exact: true)
@@ -151,7 +156,7 @@ struct SeekSpinnerTimelineTests {
                             let d = clock.now - start
                             return Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
                         }
-                        let presses = burst ? 25 : 1
+                        let presses = burst ? (burstPresses ?? 25) : 1
                         var busyAfterLastPress = 0.0
                         var slowestCall = 0.0
                         for press in 0..<presses {
@@ -161,7 +166,6 @@ struct SeekSpinnerTimelineTests {
                             if press < presses - 1 { try? await Task.sleep(for: .milliseconds(60)) }
                         }
                         let lastPress = ms()
-                        if burst { engine.endSeekBurst() }  // what the key release does
                         var landed: Double?
                         var clockStarted: Double?
                         var moved: Double?
@@ -228,6 +232,228 @@ struct SeekSpinnerTimelineTests {
                                 + "spinner \(String(format: "%.0f", visibleTotal)) ms total, "
                                 + "\(String(format: "%.0f", visibleAfterLast)) ms after the last press")
                     }
+                }
+            }
+        }
+        engine.stop()
+    }
+
+    // MARK: - Rapid taps
+
+    /// Arrow taps, each a press and its release (which ends nothing), one after another at a pace: how the picture follows
+    /// them (press to a changed picture), how often the clock is started and the spinner shows. Needs `NITS_TIMELINE_MEDIA`.
+    @Test(
+        "Rapid arrow taps: clock starts and spinner",
+        .enabled(if: ProcessInfo.processInfo.environment["NITS_TIMELINE_MEDIA"] != nil))
+    @MainActor
+    func rapidTaps() async {
+        guard let custom = ProcessInfo.processInfo.environment["NITS_TIMELINE_MEDIA"] else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        engine.load(path: custom)
+        // A network source opens in the background.
+        _ = await engine.waitUntil(timeout: .seconds(60)) { engine.isLoaded }
+        guard engine.isLoaded, engine.media.duration > 600 else { return }
+        Self.printStand(engine, path: custom)
+        engine.play()
+        _ = await engine.waitForPlayback()
+        let clock = ContinuousClock()
+
+        for gapMs in [120.0, 200.0, 350.0] {
+            for direction in [10.0, -10.0] {
+                engine.seek(to: 1200, exact: true)
+                _ = await engine.waitForPlayback()
+                try? await Task.sleep(for: .milliseconds(1500))
+                let start = clock.now
+                func ms() -> Double { Self.ms(clock.now - start) }
+                let taps = 12
+                var nextTap = 0.0
+                var tapped = 0
+                var pressAt: Double?
+                var releaseAt: Double?
+                var picturePTS = engine.currentFramePTS
+                var latencies: [Double] = []
+                var clockStarts = 0
+                var wasAwaiting = engine.isAwaitingClockStart
+                var maxTickGap = 0.0
+                var lastTick = ms()
+                var visible = false
+                var visibleSince = 0.0
+                var visibleTotal = 0.0
+                var pendingSince: Double?
+                var hideAt: Double?
+                var endAt = Double.infinity
+                while ms() < endAt {
+                    try? await Task.sleep(for: .milliseconds(2))
+                    let now = ms()
+                    maxTickGap = max(maxTickGap, now - lastTick)
+                    lastTick = now
+                    if tapped < taps, now >= nextTap {
+                        engine.seekRelative(by: direction)
+                        pressAt = now
+                        releaseAt = now + 40
+                        nextTap = now + gapMs
+                        tapped += 1
+                        if tapped == taps { endAt = now + 3000 }
+                    }
+                    // A tap and its release: nothing happens on the release.
+                    if let release = releaseAt, now >= release { releaseAt = nil }
+                    if let press = pressAt, engine.currentFramePTS != picturePTS {
+                        latencies.append(now - press)
+                        pressAt = nil
+                    }
+                    picturePTS = engine.currentFramePTS
+                    if wasAwaiting, !engine.isAwaitingClockStart { clockStarts += 1 }
+                    wasAwaiting = engine.isAwaitingClockStart
+                    let inFlight = engine.isSeeking || (visible && engine.isAwaitingClockStart)
+                    if inFlight {
+                        hideAt = nil
+                        if !visible {
+                            if pendingSince == nil {
+                                pendingSince = now
+                            } else if now - (pendingSince ?? now) >= Self.spinnerDelayMs, engine.isSeeking {
+                                visible = true
+                                visibleSince = now
+                            }
+                        }
+                    } else {
+                        pendingSince = nil
+                        if visible {
+                            if hideAt == nil {
+                                hideAt = now + Self.spinnerHoldMs
+                            } else if now >= (hideAt ?? now) {
+                                visible = false
+                                visibleTotal += now - visibleSince
+                            }
+                        }
+                    }
+                }
+                let sorted = latencies.sorted()
+                func fmt(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "-" }
+                print(
+                    "[seek-timeline] taps every \(Int(gapMs)) ms \(direction > 0 ? "fwd" : "back"): "
+                        + "\(latencies.count)/\(taps) taps changed the picture, press to picture median "
+                        + "\(fmt(sorted.isEmpty ? nil : sorted[sorted.count / 2])) ms, worst \(fmt(sorted.last)) ms, "
+                        + "clock started \(clockStarts)x, spinner \(fmt(visibleTotal)) ms, "
+                        + "worst main-actor tick gap \(fmt(maxTickGap)) ms, landed at \(String(format: "%.1f", engine.currentTime))s"
+                )
+            }
+        }
+        engine.stop()
+    }
+
+    // MARK: - Held key
+
+    /// An arrow key held down at the system's repeat rhythm (`InitialKeyRepeat` before the first repeat, `KeyRepeat`
+    /// between the rest), released after `repeats` repeats: when the spinner shows and goes, and when the clock starts.
+    /// Needs `NITS_TIMELINE_MEDIA`.
+    @Test(
+        "Held arrow key: spinner and clock start by the system repeat rhythm",
+        .enabled(if: ProcessInfo.processInfo.environment["NITS_TIMELINE_MEDIA"] != nil))
+    @MainActor
+    func heldKey() async {
+        guard let custom = ProcessInfo.processInfo.environment["NITS_TIMELINE_MEDIA"] else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        engine.load(path: custom)
+        // A network source opens in the background.
+        _ = await engine.waitUntil(timeout: .seconds(60)) { engine.isLoaded }
+        guard engine.isLoaded, engine.media.duration > 600 else { return }
+        Self.printStand(engine, path: custom)
+        engine.play()
+        _ = await engine.waitForPlayback()
+        let clock = ContinuousClock()
+        let defaults = UserDefaults.standard
+        let initialDelay = Double(defaults.object(forKey: "InitialKeyRepeat") as? Int ?? 25) * 15
+        let interval = Double(defaults.object(forKey: "KeyRepeat") as? Int ?? 6) * 15
+
+        for repeats in [3, 10, 25] {
+            for direction in [10.0, -10.0] {
+                engine.exactSeekOnSinglePress = false
+                engine.seek(to: 1200, exact: true)
+                _ = await engine.waitForPlayback()
+                try? await Task.sleep(for: .milliseconds(1500))
+                let start = clock.now
+                let startUptime = DispatchTime.now().uptimeNanoseconds / 1_000_000
+                func ms() -> Double { Self.ms(clock.now - start) }
+                var nextPress = 0.0
+                var presses = 0
+                var releasedAt: Double?
+                var clockStarts: [Double] = []
+                var wasAwaiting = engine.isAwaitingClockStart
+                var visible = false
+                var lastState = ""
+                var stalls: [String] = []
+                var lastTickAt = 0.0
+                var transitions: [String] = []
+                var spinnerShownAt: [Double] = []
+                var spinnerGoneAt: [Double] = []
+                var pendingSince: Double?
+                var hideAt: Double?
+                var endAt = Double.infinity
+                while ms() < endAt {
+                    try? await Task.sleep(for: .milliseconds(2))
+                    let now = ms()
+                    if now - lastTickAt > 30, lastTickAt > 0 {
+                        stalls.append(String(format: "main actor stalled %.0f-%.0f ms", lastTickAt, now))
+                    }
+                    lastTickAt = now
+                    if presses <= repeats, now >= nextPress {
+                        engine.seekRelative(by: direction)
+                        nextPress = now + (presses == 0 ? initialDelay : interval)
+                        presses += 1
+                        if presses > repeats {
+                            releasedAt = now + 30
+                        }
+                    }
+                    if let release = releasedAt, now >= release {
+                        releasedAt = nil
+                        endAt = now + 3000
+                    }
+                    if wasAwaiting, !engine.isAwaitingClockStart { clockStarts.append(now) }
+                    wasAwaiting = engine.isAwaitingClockStart
+                    let state =
+                        "seeking \(engine.isSeeking ? 1 : 0) awaiting \(engine.isAwaitingClockStart ? 1 : 0) "
+                        + "buffering \(engine.isBuffering ? 1 : 0) playing \(engine.isPlaying ? 1 : 0)"
+                    if repeats == 10, direction > 0, state != lastState {
+                        transitions.append(String(format: "%.0f ms: ", now) + state)
+                        lastState = state
+                    }
+                    let inFlight = engine.isSeeking || (visible && engine.isAwaitingClockStart)
+                    if inFlight {
+                        hideAt = nil
+                        if !visible {
+                            if pendingSince == nil {
+                                pendingSince = now
+                            } else if now - (pendingSince ?? now) >= Self.spinnerDelayMs, engine.isSeeking {
+                                visible = true
+                                spinnerShownAt.append(now)
+                            }
+                        }
+                    } else {
+                        pendingSince = nil
+                        if visible {
+                            if hideAt == nil {
+                                hideAt = now + Self.spinnerHoldMs
+                            } else if now >= (hideAt ?? now) {
+                                visible = false
+                                spinnerGoneAt.append(now)
+                            }
+                        }
+                    }
+                }
+                func list(_ values: [Double]) -> String {
+                    values.isEmpty ? "-" : values.map { String(format: "%.0f", $0) }.joined(separator: ", ")
+                }
+                print(
+                    "[seek-timeline] held \(direction > 0 ? "fwd" : "back") x\(repeats) repeats (first repeat at "
+                        + "\(Int(initialDelay)) ms, then every \(Int(interval)) ms), release at "
+                        + "\(String(format: "%.0f", initialDelay + Double(repeats) * interval)) ms: "
+                        + "spinner shown at [\(list(spinnerShownAt))] ms, gone at [\(list(spinnerGoneAt))] ms, "
+                        + "clock started at [\(list(clockStarts))] ms")
+                if !stalls.isEmpty { print("[seek-timeline] " + stalls.joined(separator: "; ")) }
+                if !transitions.isEmpty {
+                    print(
+                        "[seek-timeline] test started at \(startUptime) ms; states: "
+                            + transitions.joined(separator: " | "))
                 }
             }
         }
@@ -340,7 +566,7 @@ struct SeekSpinnerTimelineTests {
     // MARK: - Play after a seek that did not resume
 
     /// `play()` after a seek the user paused during, and after a seek made on pause: the audio renderer was flushed and
-    /// nothing has fed it, and the resume has no `ChaseSettling` grace. Prints when the picture moves and whether
+    /// nothing has fed it, and `play()` joins the audio to the picture (`AudioJoin`). Prints when the picture moves and whether
     /// buffering shows. Needs `NITS_TIMELINE_MEDIA`.
     @Test(
         "Play after seek then pause, and after a seek on pause",

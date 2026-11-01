@@ -4,7 +4,8 @@ import Testing
 @testable import NitsCore
 
 /// A clock that starts on a renderer a seek flushed, before the audio is back, runs on an empty queue, and
-/// `checkForStarvation` holds it again with a spinner (`isBuffering`). The start waits for the audio instead.
+/// `checkForStarvation` holds it again with a spinner (`isBuffering`). Playing on after such a seek joins the audio to
+/// the picture's clock instead (`AudioJoin`).
 @Suite("Audio before the clock starts", .serialized, .realtimePlayback, .hostDependent)
 struct AudioPrerollTests {
     /// Plays after a seek made on pause and reports whether buffering showed within the second that follows.

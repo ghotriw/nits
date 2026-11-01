@@ -58,7 +58,8 @@ extension PlayerEngine {
         saveCurrentPlaybackProgress()
         resolvedSource = nil
         resetRelativeSeekBurst()
-        chaseSettling.reset()
+        audioJoin.cancel()
+        audioJoin.isRendererStale = false
         seekGeneration.advance()
         isSeeking = false
         isLoadStartPending = false

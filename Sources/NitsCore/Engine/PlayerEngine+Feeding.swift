@@ -31,7 +31,29 @@ extension PlayerEngine {
         audioFeedingTask?.cancel()
     }
 
-    func startFeeding() {
+    /// - Parameter audio: Also start feeding audio. A seek that resumes leaves it to `AudioJoin`, which flushes the
+    ///   renderer first and feeds from where the picture is by then.
+    /// How long a seek waits for the cancelled video feeder to unwind: it finishes the decode it is in, which returns in
+    /// milliseconds. Longer than `decoderStallTimeout`, which bounds a decode that does not: the wait ends only when the
+    /// feeder has left, or when the stall guard has given the decoder up (and it is being replaced), never while a slow
+    /// but live decoder could still emit a frame from the old position into the seek's preview.
+    nonisolated static let feederUnwindTimeout: Duration = decoderStallTimeout + .milliseconds(500)
+
+    /// Blocks the calling thread (`seekQueue`, which blocks on decoders anyway) until `task` has finished.
+    nonisolated static func waitForUnwind(of task: Task<Void, Never>) {
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached {
+            await task.value
+            finished.signal()
+        }
+        let timeout = feederUnwindTimeout.components
+        let milliseconds = Int(timeout.seconds * 1000 + timeout.attoseconds / 1_000_000_000_000_000)
+        if finished.wait(timeout: .now() + .milliseconds(milliseconds)) == .timedOut {
+            AppLog.warning(.engine, "The video feeder did not unwind within \(feederUnwindTimeout); seeking on")
+        }
+    }
+
+    func startFeeding(audio: Bool = true) {
         guard let demuxer = self.demuxer else { return }
         // Feeding will consume packets forward from the current position, so the standalone-step
         // contiguity invariant no longer holds once playback resumes; release the step window too.
@@ -42,15 +64,7 @@ extension PlayerEngine {
         if demuxer.hasVideo {
             startFeedingVideo()
         }
-        // The renderer's flush restarts its audio queue: off the main thread, in the run that is about to feed it.
-        let sink = audioSink
-        if chaseSettling.isAudioFlushPending {
-            chaseSettling.isAudioFlushPending = false
-            sink.expectFlush()
-            if !startFeedingAudio(prepare: { sink.flush() }) { sink.withdrawExpectedFlush() }
-        } else {
-            startFeedingAudio()
-        }
+        if audio { startFeedingAudio() }
     }
 
     func startFeedingVideo() {
@@ -77,7 +91,7 @@ extension PlayerEngine {
 
     /// How long a decoder call may take before the decoder counts as stalled. Calls return in milliseconds even
     /// for software decoders; VideoToolbox decodes asynchronously, so one that takes seconds is not coming back.
-    static let decoderStallTimeout: Duration = .seconds(3)
+    nonisolated static let decoderStallTimeout: Duration = .seconds(3)
 
     /// The engine's decoder with its blocking calls limited to `decoderStallTimeout`, for the video feeder and for
     /// work on `seekQueue` (seek previews, frame-step pumps, the flush after a load).
@@ -218,10 +232,13 @@ extension PlayerEngine {
         }
     }
 
-    /// - Parameter prepare: Runs once the previous run has unwound and before this one enqueues anything (also when
-    ///   nothing is fed because playback is paused), so it can flush the renderer with no enqueue in flight.
+    /// - Parameters:
+    ///   - prepare: Runs once the previous run has unwound and before this one enqueues anything (also when
+    ///     nothing is fed because playback is paused), so it can flush the renderer with no enqueue in flight.
+    ///   - cut: The position before which audio is not played, read for each buffer; the run drops what ends before
+    ///     it and shortens the buffer that straddles it (`AudioSampleTrim`). `nil` feeds everything.
     @discardableResult
-    func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil) -> Bool {
+    func startFeedingAudio(prepare: (@Sendable () -> Void)? = nil, cut: (@Sendable () -> CMTime?)? = nil) -> Bool {
         guard let source = inputs?.audioSource, let aDecoder = self.audioDecoder,
             let audioTimebase = source.audioDecoderInput()?.timebase
         else { return false }
@@ -244,7 +261,8 @@ extension PlayerEngine {
                 sink: sink,
                 feedingLock: feedingLock,
                 audioTimebase: audioTimebase,
-                firstFedPTS: firstFedPTS
+                firstFedPTS: firstFedPTS,
+                cut: cut
             )
         }
         return true
@@ -261,7 +279,8 @@ extension PlayerEngine {
         sink: any AudioRendererSink,
         feedingLock: OSAllocatedUnfairLock<Bool>,
         audioTimebase: AVRational,
-        firstFedPTS: OSAllocatedUnfairLock<CMTime?>
+        firstFedPTS: OSAllocatedUnfairLock<CMTime?>,
+        cut: (@Sendable () -> CMTime?)? = nil
     ) async {
         var hasLoggedFirstAudioBuffer = false
         var pendingGeneration = audioDecoder.generation
@@ -286,8 +305,20 @@ extension PlayerEngine {
                     ))
                 continue
             }
+            var toEnqueue = buf
+            if let cut = cut?() {
+                switch AudioSampleTrim.trim(buf, before: cut) {
+                case .dropped:
+                    pending.removeFirst()
+                    continue
+                case .whole(let whole):
+                    toEnqueue = whole
+                case .trimmed(let shortened):
+                    toEnqueue = shortened
+                }
+            }
             do {
-                try await sink.enqueue(buf)
+                try await sink.enqueue(toEnqueue)
             } catch is CancellationError {
                 break  // not accepted by the renderer; stays pending
             } catch {
@@ -296,7 +327,7 @@ extension PlayerEngine {
             pending.removeFirst()
             if !hasLoggedFirstAudioBuffer {
                 hasLoggedFirstAudioBuffer = true
-                let pts = CMSampleBufferGetPresentationTimeStamp(buf)
+                let pts = CMSampleBufferGetPresentationTimeStamp(toEnqueue)
                 firstFedPTS.withLock { $0 = pts }
                 AppLog.debug(
                     .audio,

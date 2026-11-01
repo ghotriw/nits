@@ -193,6 +193,11 @@ final class DelayedAudioSink: AudioRendererSink {
         self.wrapped = wrapped
     }
 
+    /// The shift audio is enqueued with now: audio heard at the clock `t` is the media's audio at `t - delay`.
+    var currentDelay: CMTime {
+        state.withLock { $0.delay }
+    }
+
     /// End of the latest audio enqueued since the last flush, on the clock's timeline (delay included).
     var bufferedEnd: CMTime? {
         wrapped.bufferedEnd

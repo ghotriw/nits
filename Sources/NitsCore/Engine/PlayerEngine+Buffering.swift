@@ -61,20 +61,28 @@ extension PlayerEngine {
         else { return }
         let clock = playbackClock.currentTime()
         guard clock.isNumeric else { return }
-        let levels = bufferingLevels(at: clock, inputs: inputs)
+        var levels = bufferingLevels(at: clock, inputs: inputs)
+        // The audio is on its way back (`AudioJoin`, which gives up on its own timeout): only the picture can run out.
+        if audioJoin.isActive { levels.hasAudio = false }
         guard BufferingPolicy.isStarved(levels, rate: Double(playbackClock.rate)) else { return }
 
+        holdForBuffering(
+            at: clock,
+            because: "audio \(String(format: "%.3f", levels.audioAhead))s ahead, \(levels.queuedFrames) frame(s) queued"
+        )
+    }
+
+    /// Holds the clock at `clock` and waits for data to build up, then restarts it there.
+    func holdForBuffering(at clock: CMTime, because reason: String) {
+        // (A join that gives up to buffering ends itself and keeps its cut, which holds the renderer to the audio from
+        // here; the resume's `cancelPreroll()` lifts it.)
         playbackClock.setRate(0, time: clock)
         // Holds the clock without `cancelPreroll()`, which would end this buffering: an IO stop from here on is the
         // engine's own.
         clockDidStop()
         isBuffering = true
         AppLog.info(
-            .engine,
-            "Buffering at \(String(format: "%.3f", clock.seconds))s: audio "
-                + "\(String(format: "%.3f", levels.audioAhead))s ahead, \(levels.queuedFrames) frame(s) queued; "
-                + "holding the clock"
-        )
+            .engine, "Buffering at \(String(format: "%.3f", clock.seconds))s: \(reason); holding the clock")
         bufferingResumeTask = Task { @MainActor [weak self] in
             await self?.waitToResumeAfterBuffering(heldAt: clock)
         }
@@ -101,6 +109,9 @@ extension PlayerEngine {
             )
             // Cancels this task and clears `isBuffering` (through `cancelPreroll`) before restarting the clock.
             startSynchronizerClockAfterPreroll(at: clock, alignWithBufferedAudio: true)
+            // The renderer holds the audio for this position now (it was fed from here while the clock was held), which
+            // a join that gave up to buffering never marked.
+            audioJoin.isRendererStale = false
             return
         }
     }

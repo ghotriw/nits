@@ -302,8 +302,10 @@ extension PlaybackStressTests {
             engine.selectAudioTrack(id: track.id)
             #expect(await engine.waitUntil { engine.firstFedAudioPTS.withLock { $0 } != nil })
             let audioStart = engine.firstFedAudioPTS.withLock { $0 }?.seconds ?? -1
+            // The audio joins the picture's clock after the switch (`AudioJoin`): from where the picture is by then, which
+            // is a little after the switch, and never ahead of it by what is buffered.
             #expect(
-                abs(audioStart - switchedAt) < 0.3,
+                audioStart > switchedAt - 0.3 && audioStart < switchedAt + 1.5,
                 "Track \(track.id) audio resumed at \(audioStart)s, switched at frame \(switchedAt)s")
             #expect(await engine.waitForPlayback(), "Playback did not resume after switching to track \(track.id)")
         }
@@ -490,7 +492,7 @@ extension PlaybackStressTests {
         // Play again; the clock must restart from 0.0s, not continue from the previous run (stale clock ≥ 1.0s)
         engine.play()
         #expect(await engine.waitForClock(toPass: 0.0), "Clock did not start after reload")
-        let restartedAt = engine.synchronizer.currentTime().seconds
+        let restartedAt = engine.playbackClock.currentTime().seconds
         #expect(restartedAt < 0.3, "Clock resumed from the previous run at \(restartedAt)s")
         #expect(await engine.waitForClock(toPass: 0.5))
 
@@ -562,7 +564,7 @@ extension PlaybackStressTests {
         #expect(await engine.waitForClock(toPass: 1.0), "Clock did not advance past 1.0s")
 
         // What a backward seek while playing does: pause the clock where it is, then restart it at the target.
-        engine.playbackClock.setRate(0, time: engine.synchronizer.currentTime())
+        engine.playbackClock.setRate(0, time: engine.playbackClock.currentTime())
         engine.startSynchronizerClock(at: .zero, rate: 1.0)
         // The clock everyone reads (`PlaybackClock`) stands at the start at once, and while the change is applied and the
         // synchronizer comes to it. The synchronizer itself may show the paused position for a while.
@@ -579,11 +581,11 @@ extension PlaybackStressTests {
     /// Samples the master clock every 20ms and reports whether it never moved backwards.
     @MainActor
     private static func isClockMonotonic(_ engine: PlayerEngine, samples: Int) async -> Bool {
-        var previous = engine.synchronizer.currentTime().seconds
+        var previous = engine.playbackClock.currentTime().seconds
         var isMonotonic = true
         for _ in 0..<samples {
             try? await Task.sleep(nanoseconds: 20_000_000)
-            let now = engine.synchronizer.currentTime().seconds
+            let now = engine.playbackClock.currentTime().seconds
             if now < previous { isMonotonic = false }
             previous = now
         }
@@ -628,7 +630,7 @@ extension PlaybackStressTests {
         for cycle in 0..<3 {
             engine.pause()
             try? await Task.sleep(nanoseconds: 600_000_000)
-            let pausedClock = engine.synchronizer.currentTime().seconds
+            let pausedClock = engine.playbackClock.currentTime().seconds
             let droppedBefore = engine.pipelineDroppedFramesCount
 
             engine.play()
@@ -660,13 +662,13 @@ extension PlaybackStressTests {
         // the last periodic time update and hold it for the output latency; the timebase applies that a moment
         // later, so compare readings across calls, not around one.
         let wallStart = ContinuousClock.now
-        let clockStart = engine.synchronizer.currentTime().seconds
+        let clockStart = engine.playbackClock.currentTime().seconds
         var readings = [clockStart]
         for _ in 0..<10 {
             engine.play()
             #expect(engine.isPrerolling == false)
             try? await Task.sleep(for: .milliseconds(40))
-            readings.append(engine.synchronizer.currentTime().seconds)
+            readings.append(engine.playbackClock.currentTime().seconds)
         }
         let elapsed = (ContinuousClock.now - wallStart).components
         let wallElapsed = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
@@ -717,7 +719,7 @@ extension PlaybackStressTests {
         #expect(
             clockStartedAfter < PlayerEngine.prerollTimeout,
             "Clock started after \(clockStartedAfter): the preroll waited for its timeout")
-        #expect(engine.synchronizer.currentTime().seconds < 1, "Clock skipped the audio before the video")
+        #expect(engine.playbackClock.currentTime().seconds < 1, "Clock skipped the audio before the video")
 
         engine.stop()
     }

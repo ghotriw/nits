@@ -277,7 +277,7 @@ extension PlayerEngine {
         // While the synchronizer waits for audio after a start, its clock stands still at a running rate: treat it as
         // stopped, so it is neither projected forward nor smoothed into motion, and the filter starts on the first
         // tick it moves.
-        let clockRate = clockAdvanced ? CMTimebaseGetRate(synchronizer.timebase) : 0
+        let clockRate = clockAdvanced ? Double(playbackClock.readRate) : 0
         let projectedSyncTime = clockNow + CMTime(seconds: lookahead * clockRate, preferredTimescale: 1_000_000)
         let (pickSeconds, discontinuity) = displayClockSmootherLock.withLock {
             $0.pickTime(rawTime: projectedSyncTime.seconds, hostTime: targetTimestamp, rate: clockRate)

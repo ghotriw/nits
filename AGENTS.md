@@ -113,7 +113,9 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   `DisplayLinkThread`, never the main run loop (UI stalls there dropped frames); the tick may only touch
   lock-guarded state, and display-layer enqueues / flushes go through `displayLayerLock`.
 - **Seeks** run on the serial `seekQueue` with a `SeekGeneration` token; stale seeks are
-  dropped. Seek and render-mode switches clear `FrameQueue` and flush decoder and renderer.
+  dropped. Seek and render-mode switches clear `FrameQueue` and flush decoder and renderer. A seek waits for the
+  cancelled video feeder to unwind (`waitForUnwind(of:)`) before it flushes the decoder or moves the demuxer: a decode
+  still in flight would emit a frame from the old position into the preview.
 - **Don't tear down `VTDecompressionSession` on seek** — flush it. Before any invalidate/reset,
   call `VTDecompressionSessionWaitForAsynchronousFrames`; session, format description and output
   handler stay behind a lock.
@@ -145,13 +147,15 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   polling with `Task.sleep` on 15–26). Never block threads.
 - **Code that stops or re-anchors the synchronizer clock goes through `cancelPreroll()`** (directly or via
   `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`): it also ends a pending preroll and
-  buffering, whose tasks would otherwise restart the clock at a stale position.
+  buffering and an audio join, whose tasks would otherwise restart the clock at a stale position.
 - **The master clock is `PlaybackClock`.** Change its rate through `playbackClock.setRate`, never `synchronizer.setRate`
   (a rate change waits for the audio renderer's queue and blocked the main thread and the display link for up to 700
   ms), and read the position the engine decides on through `playbackClock.currentTime()`, which reads as the latest
-  change makes it. Never read the synchronizer under a lock. A seek that resumes leaves the audio renderer unflushed
-  until its resume, which flushes it once and makes the start wait for the audio to come back
-  (`isAudioReadyToStart`); see "The master clock and resuming after a seek" in `docs/ARCHITECTURE.md`.
+  change makes it. Never read the synchronizer under a lock. A seek that resumes starts the clock on host time at once
+  (`startProvisional`) and `AudioJoin` flushes the renderer (with the synchronizer held), feeds from the picture's
+  position and hands the clock to the synchronizer (`handOver`): never put a wait for the audio on the picture's path,
+  and never ask the HAL (`currentOutputLatency()`) on the main actor while the device starts or stops. See "The master
+  clock and resuming after a seek" in `docs/ARCHITECTURE.md`.
 - **Picture in Picture** mirrors the display layer 1:1 (macOS AVKit bug), so while it is active the
   layer's geometry comes from `pictureInPictureLayerGeometry`, not the host view's bounds. Keep the
   AVKit workarounds guarded (act only on a broken layout) and don't give PiP a controlTimebase of its
