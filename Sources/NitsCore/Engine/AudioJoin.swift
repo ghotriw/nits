@@ -24,6 +24,10 @@ final class AudioJoin {
     /// How long the audio may take to come back before playback goes to buffering.
     static let timeout: Duration = .milliseconds(1500)
     static let pollInterval: Duration = .milliseconds(10)
+    /// How long an enqueue may wait on the renderer before it counts as full; an enqueue with room returns at once.
+    static let fullAfter: Duration = .milliseconds(50)
+    /// How long after the hand-over the join waits for the new audio to get ahead of the clock (see the end of `run`).
+    static let settleTimeout: Duration = .seconds(1)
 
     private var task: Task<Void, Never>?
     /// The cut of the join under way; lifted when it ends, for the feeding run goes on feeding.
@@ -33,7 +37,8 @@ final class AudioJoin {
 
     /// What the renderer holds is not the audio for the position: a seek moved the position (and flushed the renderer, or
     /// will), and no join has completed since. Playing on from there is a join as well, or the clock would start over an
-    /// empty or stale queue and `checkForStarvation` would hold it again. Set by a seek, cleared by a join that ends.
+    /// empty or stale queue and `checkForStarvation` would hold it again. Set by a seek, cleared once a join's new audio
+    /// is ahead of the clock (or the audio has ended), or a buffering resume.
     var isRendererStale = false
 
     func cancel() {
@@ -83,9 +88,23 @@ final class AudioJoin {
         }.value
         guard !Task.isCancelled else { return false }
 
-        // Nothing fed since the last flush, nothing to flush: a series of seeks flushes once.
-        let needsFlush = sink.bufferedEnd != nil || sink.isFlushOwed || sink.pendingStart != nil
+        // Flushed only when the audio it holds reaches past where the new audio starts (on the clock's timeline): a
+        // flush restarts the output's IO on some routes (multichannel to AirPods: ~0.5 s before the device runs again).
+        // Audio that ends before the start is dropped by the synchronizer as late once the clock runs, so a seek forward
+        // past it, or a series of them, keeps the device running. The start only moves on from here.
+        let startsAt =
+            hasPicture
+            ? clock.currentTime() + CMTime(seconds: latency * Double(clock.readRate), preferredTimescale: 1_000_000)
+            : target
+        let needsFlush = Self.needsFlush(
+            bufferedEnd: sink.bufferedEnd, startsAt: startsAt, isFlushOwed: sink.isFlushOwed,
+            isEnqueuePending: sink.pendingStart != nil)
         if needsFlush { sink.expectFlush() }
+        AppLog.debug(
+            .engine,
+            "Audio join \(needsFlush ? "flushes" : "keeps") the renderer: its audio ends at "
+                + "\(sink.bufferedEnd.map { String(format: "%.3f", $0.seconds) } ?? "-")s, the new starts at "
+                + "\(String(format: "%.3f", startsAt.seconds))s")
         // Not played before the clock gets to where the audio will be heard: the clock's position, one latency on (at
         // the rate it runs at, which a change of speed moves). In the media's time, which the audio delay shifts from
         // the clock's. Without a picture the clock starts at `target`, and all of the audio from there is heard.
@@ -111,11 +130,22 @@ final class AudioJoin {
         // The wait for the audio counts from the picture's start (its first frame can take a while on a slow source),
         // and from the beginning without a picture.
         var waitStart: ContinuousClock.Instant? = hasPicture ? nil : .now
+        // The enqueue waiting on the renderer, and since when: one that waits `fullAfter` has met a full renderer (an
+        // enqueue with room returns at once).
+        var blocked: (start: CMTime, since: ContinuousClock.Instant)?
         while !Task.isCancelled {
             try? await Task.sleep(for: pollInterval)
             guard !Task.isCancelled else { return false }
             if hasPicture, waitStart == nil, clock.isProvisional { waitStart = .now }
-            if isReady(engine, clock: clock, latency: latency, target: target, hasPicture: hasPicture) { break }
+            if let pending = sink.pendingStart {
+                if blocked?.start != pending { blocked = (pending, .now) }
+            } else {
+                blocked = nil
+            }
+            let isFull = blocked.map { ContinuousClock.now - $0.since >= fullAfter } ?? false
+            if isReady(engine, clock: clock, latency: latency, target: target, hasPicture: hasPicture, isFull: isFull) {
+                break
+            }
             if let waitStart, ContinuousClock.now - waitStart >= timeout {
                 let held = hasPicture ? clock.currentTime() : target
                 heldAt.withLock { $0 = held }
@@ -125,7 +155,8 @@ final class AudioJoin {
         }
         guard !Task.isCancelled else { return false }
 
-        isCutActive.withLock { $0 = false }
+        // The cut stays on until the join ends (`begin` lifts it): what a kept renderer takes only after the hand-over is
+        // still cut to where the clock is by then.
         if hasPicture {
             // The output latency as it is when the clock is handed over, not as it was when the join began: the route can
             // have changed since (AirPods connected, the device's profile switched).
@@ -142,10 +173,8 @@ final class AudioJoin {
                 engine.audioOutputInterruptionLock.withLock { $0.clockStopped() }
                 return false
             }
-            engine.audioJoin.isRendererStale = false
             AppLog.debug(.engine, "Audio joined the clock \(String(format: "%.0f", handOverLatency * 1000)) ms ahead")
         } else {
-            engine.audioJoin.isRendererStale = false
             let startLatency = await Task.detached {
                 min(PlatformAudioOutputRoute.currentOutputLatency() ?? 0, maxLatency)
             }.value
@@ -153,18 +182,51 @@ final class AudioJoin {
             engine.startSynchronizerClock(at: target, rate: engine.playbackRate, startDelay: startLatency)
             AppLog.debug(.engine, "Audio ready; starting the clock at \(String(format: "%.3f", target.seconds))s")
         }
+
+        // A renderer kept full of the old audio takes the new only once the clock runs and drops the old as late: until
+        // the new is ahead of the clock, the join stays on, so `checkForStarvation` does not take the gap for media
+        // run out (without a picture, it would hold the clock on a renderer that, held, never makes room).
+        // The renderer holds the audio for the position only from then on (`isRendererStale`): a pause before it, with
+        // the old audio still in, plays on through a join again, not over a renderer that a held clock never empties.
+        let settleStart = ContinuousClock.now
+        while !Task.isCancelled, ContinuousClock.now - settleStart < settleTimeout {
+            let now = clock.currentTime()
+            if engine.inputs?.isAudioEOF ?? true
+                || (now.isNumeric
+                    && engine.audioAhead(of: now) >= BufferingPolicy.audioLowWatermark * engine.playbackRate)
+            {
+                engine.audioJoin.isRendererStale = false
+                break
+            }
+            try? await Task.sleep(for: pollInterval)
+        }
         return false
     }
 
+    /// Whether the renderer must be flushed before audio from `startsAt` (the clock's timeline) is fed: it holds audio
+    /// that reaches past it (a seek back, or forward within what was fed), a flush is owed, or an enqueue is still in
+    /// flight (its buffer may yet land after the decision). Audio that ends by `startsAt` is late once the clock gets
+    /// there, and the synchronizer drops it.
+    nonisolated static func needsFlush(
+        bufferedEnd: CMTime?, startsAt: CMTime, isFlushOwed: Bool, isEnqueuePending: Bool
+    ) -> Bool {
+        if isFlushOwed || isEnqueuePending { return true }
+        guard let bufferedEnd else { return false }
+        guard bufferedEnd.isNumeric, startsAt.isNumeric else { return true }
+        return bufferedEnd > startsAt
+    }
+
     private static func isReady(
-        _ engine: PlayerEngine, clock: PlaybackClock, latency: TimeInterval, target: CMTime, hasPicture: Bool
+        _ engine: PlayerEngine, clock: PlaybackClock, latency: TimeInterval, target: CMTime, hasPicture: Bool,
+        isFull: Bool
     ) -> Bool {
         // The picture's start comes first: its clock is the one the audio joins.
         if hasPicture, !clock.isProvisional { return false }
         guard let inputs = engine.inputs else { return true }
         if inputs.isAudioEOF { return true }
-        // The renderer takes only so much with the synchronizer held: full is as much as there is room for.
-        if engine.audioSink.pendingStart != nil { return true }
+        // The renderer takes only so much with the synchronizer held: full (of the new audio, or of the old that a kept
+        // renderer drops as late once the clock runs) is as much as there is room for.
+        if isFull { return true }
         let rate = Double(hasPicture ? clock.readRate : Float(engine.playbackRate))
         let startsAt =
             hasPicture

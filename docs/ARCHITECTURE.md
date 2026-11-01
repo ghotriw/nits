@@ -262,14 +262,28 @@ frames were running again). The rules that replaced it:
   video preroll), not for the audio. A series of seeks costs the picture and nothing else; the key's release or a wait
   for repeats is not needed (`ChaseSettling`, `burstDebounce` and `endSeekBurst()` are gone).
 - **`AudioJoin` brings the audio back behind it** (`AudioJoin.swift`; one per engine, cancelled by `cancelPreroll()`):
-  1. It waits until the change to rate 0 is applied, then flushes the renderer. Flushing under a held synchronizer took
-     60–80 ms on AirPods, under a running one ~350 ms. A series of seeks flushes once: with nothing fed since the last flush
-     there is nothing to flush.
+  1. It waits until the change to rate 0 is applied, then flushes the renderer, **only if what it holds reaches past
+     where the new audio starts** (`AudioJoin.needsFlush`: the renderer's `bufferedEnd` against `clock + latency`, both on
+     the clock's timeline; a seek on pause applies the same rule from where the picture landed). Audio that ends before the
+     start is late once the clock gets there, and the synchronizer drops it without a sound; so a seek forward past what
+     was fed, or a series of them, keeps the renderer, and a seek back or a short step forward within it flushes.
+     The flush is what costs: with 5.1 to AirPods (the engine's renderer settings) it stops the output device's IO about
+     100 ms later, and the device runs again ~0.5 s after that, so the sound came back up to a second after the last
+     seek of a series. Holding the clock at rate 0 does not stop it (0.6 s held, IO running), nor does a flush of stereo
+     with the renderer's default settings; forbidding spatialization in code (`allowedAudioSpatializationFormats = []`)
+     did not avoid it either (probes of 2026-11-01; turning spatial audio off in Control Center did, not investigated).
+     `flush(fromSourceTime:)` is no way around it for a seek back: it refused every time, even with the clock still at
+     the old position, and the old audio played on. Flushing under a held synchronizer took 60–80 ms on AirPods,
+     under a running one ~350 ms.
   2. It feeds audio from where the picture is *now*, not from the seek's target: buffers that end before
      `clock + latency` are dropped and the one that straddles it is shortened to the sample (`AudioSampleTrim`; an AAC
      packet is 21 ms, AC-3 32 ms, and whole-buffer cuts would put the audio off by that much from seek to seek).
   3. When the renderer holds `BufferingPolicy.audioAheadToStart` past the point it will start at (`clock + latency`), or is
-     full (a held synchronizer takes only so much), or the audio has ended, the synchronizer takes the clock over:
+     full (a held synchronizer takes only so much: an enqueue that waits on it `fullAfter`, 50 ms; one with room returns
+     at once), or the audio has ended, the synchronizer takes the clock over. A renderer kept (step 1) is usually full of
+     the old audio, which it drops as late only once the clock runs: the new gets in after the hand-over, so the join
+     stays on until it is ahead of the clock (`settleTimeout`, 1 s), and `checkForStarvation` leaves the audio out
+     meanwhile (without a picture it would hold the clock on a renderer that, held, never makes room). The hand-over:
      `PlaybackClock.handOver(after:)` gives it `setRate(rate, time: T(H1), atHostTime: H1)` with `H1 = now + latency`,
      `T(H1)` the position the provisional clock holds then. From `H1` on `currentTime()` reads the synchronizer, once it
      reads where the provisional clock is (or `settlingTimeout` has passed); until then it keeps projecting, so the clock
@@ -323,8 +337,9 @@ with a flash and a click on every second.
 pulls audio from an AudioUnit and on a seek only calls `AudioUnitReset`, which empties its buffers and leaves the unit
 running (it is stopped later, after an idle timeout; restarting it "takes a noticeable amount of time", with a wireless
 device most of all). `AVSampleBufferAudioRenderer` has no such operation: the only way to empty it is `flush()`, which
-restarts its audio queue and, with it, the output device's IO (see `BufferTrackingAudioSink`). That is the cost of this
-stack, and mpv's playloop, which restarts after a seek only when the first frame and the audio are ready, does not carry
+restarts its audio queue and, on some routes (multichannel to AirPods), the output device's IO with it (see
+`BufferTrackingAudioSink` and step 1 above). That is the cost of this stack, paid now only when the renderer holds audio
+past the new start, and mpv's playloop, which restarts after a seek only when the first frame and the audio are ready, does not carry
 over to it. So the audio is kept off the picture's path. (What is verified here is the `ao_coreaudio.c` code and our
 measurements; how `ao_avfoundation` feels in IINA is not.)
 

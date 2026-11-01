@@ -152,7 +152,8 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   (a rate change waits for the audio renderer's queue and blocked the main thread and the display link for up to 700
   ms), and read the position the engine decides on through `playbackClock.currentTime()`, which reads as the latest
   change makes it. Never read the synchronizer under a lock. A seek that resumes starts the clock on host time at once
-  (`startProvisional`) and `AudioJoin` flushes the renderer (with the synchronizer held), feeds from the picture's
+  (`startProvisional`) and `AudioJoin` flushes the renderer (with the synchronizer held) only when it holds audio past
+  the new start (`AudioJoin.needsFlush`: a flush stops the output's IO for ~0.5 s with multichannel on AirPods), feeds from the picture's
   position and hands the clock to the synchronizer (`handOver`): never put a wait for the audio on the picture's path,
   and never ask the HAL (`currentOutputLatency()`) on the main actor while the device starts or stops. See "The master
   clock and resuming after a seek" in `docs/ARCHITECTURE.md`.

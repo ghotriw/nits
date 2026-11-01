@@ -59,6 +59,9 @@ extension PlayerEngine {
             self.audioDecoder = nil
         }
 
+        // The renderer goes empty whatever the seek finds there: the old track's audio, in a format of its own maybe, is
+        // not left to play out as late (see `AudioJoin.needsFlush`).
+        audioSink.expectFlush()
         seek(to: rereadPosition, exact: true)
     }
 

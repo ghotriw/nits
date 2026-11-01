@@ -23,8 +23,10 @@ extension PlayerEngine {
         // Audio about to play counts as due: the renderer needs it in its queue well before the clock reaches it.
         let dueBy = clock.seconds + BufferingPolicy.audioLowWatermark * playbackRate
         let isPendingDue = pending.map { $0.isNumeric && $0.seconds < dueBy } ?? false
+        // Not while the audio joins the clock after a seek (`AudioJoin`, bounded by its own timeouts): a renderer kept
+        // full of the old audio holds the new back until the running clock has dropped the old as late.
         let isLagging =
-            isPlaying && !isBuffering && !isSeeking && chase == nil && !isPrerolling
+            isPlaying && !isBuffering && !isSeeking && chase == nil && !isPrerolling && !audioJoin.isActive
             && playbackClock.rate > 0 && clock.isNumeric && isPendingDue
         guard let heldFor = audioLagDetector.observe(isLagging: isLagging, at: .now), let pending else { return }
 

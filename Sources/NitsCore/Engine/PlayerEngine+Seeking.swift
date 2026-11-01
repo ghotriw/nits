@@ -210,8 +210,17 @@ extension PlayerEngine {
             // Expensive audio reset only for the seek that is still current (final chase target).
             if !isSuperseded() {
                 audioDecoder?.flush()
-                // Resuming: flushed by `AudioJoin`, once, however many seeks the burst took.
-                if !shouldResume { audioSink.flush() }
+                // Resuming: `AudioJoin` flushes, when it must, however many seeks the burst took. Paused: by the same
+                // rule, from where the picture landed (audio that ends before it is dropped as late once playing).
+                if !shouldResume {
+                    let landing = CMTime(seconds: previewFrame?.pts ?? targetSeconds, preferredTimescale: 1_000_000)
+                    if AudioJoin.needsFlush(
+                        bufferedEnd: audioSink.bufferedEnd, startsAt: landing, isFlushOwed: audioSink.isFlushOwed,
+                        isEnqueuePending: audioSink.pendingStart != nil)
+                    {
+                        audioSink.flush()
+                    }
+                }
             }
 
             signposter.emitEvent("Audio reset", id: signpostID)
