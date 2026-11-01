@@ -91,6 +91,18 @@ rm -rf "ffmpeg-$FFMPEG_VERSION"
 tar -xf "ffmpeg-$FFMPEG_VERSION.tar.xz"
 cd "ffmpeg-$FFMPEG_VERSION"
 
+# The DASH demuxer reads its manifest with libxml2 (MIT), which macOS ships: linked from the SDK, not bundled. FFmpeg's
+# configure finds it through pkg-config; the file goes into the prefix, first in the search path, so a Homebrew libxml2
+# is not picked. It has no Cflags: the SDK's path must not end up in the archive (the headers come from --extra-cflags).
+SDK_PATH="$(xcrun --show-sdk-path)"
+mkdir -p "$PREFIX/lib/pkgconfig"
+cat > "$PREFIX/lib/pkgconfig/libxml-2.0.pc" <<EOF
+Name: libXML
+Description: libxml2 of the macOS SDK
+Version: 2.9.13
+Libs: -lxml2
+EOF
+
 FFMPEG_CONFIGURE_FLAGS=(
     --prefix="$PREFIX"
     --arch="$DEPS_ARCH"
@@ -105,6 +117,7 @@ FFMPEG_CONFIGURE_FLAGS=(
     --disable-gpl
     --disable-nonfree
     --enable-libdav1d
+    --enable-libxml2
     --enable-audiotoolbox
     --enable-videotoolbox
     --enable-network
@@ -112,7 +125,7 @@ FFMPEG_CONFIGURE_FLAGS=(
     --disable-sdl2
     --disable-avdevice
     --disable-avfilter
-    --extra-cflags="$COMMON_CFLAGS -I$PREFIX/include"
+    --extra-cflags="$COMMON_CFLAGS -I$PREFIX/include -I$SDK_PATH/usr/include/libxml2"
     --extra-ldflags="$COMMON_LDFLAGS -L$PREFIX/lib"
 )
 ./configure "${FFMPEG_CONFIGURE_FLAGS[@]}"
