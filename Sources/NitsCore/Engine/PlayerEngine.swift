@@ -470,6 +470,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var isLoadStartPending = false
     @ObservationIgnored
     var chaseSettleTask: Task<Void, Never>? = nil
+    /// A key (or a host's scrubber) is held, from its press (`beginScrubbing`): seeks land and show their frame, and
+    /// playback resumes once, at `endScrubbing`. Cleared in `resetMediaState`.
+    @ObservationIgnored
+    var isScrubbing = false
     static let relativeSeekBurstTimeout: Duration = .milliseconds(300)
     static let relativeSeekBurstWatchdogTimeout: Duration = .seconds(3)
 

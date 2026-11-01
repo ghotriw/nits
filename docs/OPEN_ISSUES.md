@@ -133,6 +133,10 @@ Accepted for now, noted for later.
   exact seek. Suspected: the pause did not hold (the seek ran as a resuming seek, which does not seed the cache) or
   feeding restarted after it (`startFeeding()` clears the cache). The failure message reports cache size, play
   state and current frame to tell these apart.
+- **`ExternalAudioTests` "A dub next to the media is a track of it…"** failed once in a full local run (2026-11-01):
+  the dub's first audio fed at 1.04 s against `fed < 1`; it passes alone. The dub is joined to the picture's clock
+  (`AudioJoin`), which cuts the audio to where the clock is plus the output latency, so under load the first buffer
+  moves on with the clock. If it recurs, judge it against the clock at the selection, not a fixed second.
 - **`FormatDescriptionCacheTests`** failed twice on CI with VideoToolbox returning 1–3 frames of 30 (always 30
   locally). The failure message now reports fed samples, session creation status, decode error statuses and the
   last callback status.

@@ -572,6 +572,14 @@ extension PlayerWindowController: PlayerActions {
         uiState.osd.show(.frameStep(forward: false))
     }
 
+    public func beginScrubbing() {
+        engine.beginScrubbing()
+    }
+
+    public func endScrubbing() {
+        engine.endScrubbing()
+    }
+
     public func seekRelative(by seconds: Double) {
         let honestOffset = engine.seekRelative(by: seconds)
         let targetPos = engine.pendingSeekTime ?? engine.currentTime

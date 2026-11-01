@@ -85,6 +85,11 @@ public protocol PlayerPlaybackControlling: PlayerMediaDescribing {
     @MainActor func seek(to seconds: Double, exact: Bool)
     @MainActor @discardableResult func seekRelative(by seconds: Double) -> Double
     @MainActor func seekRelative(by seconds: Double, exact: Bool)
+    /// Seeks from here on are made while a key (or a scrubber) is held: each shows its frame, and playback resumes once,
+    /// at `endScrubbing()`. Hosts call it at the press; a seek made without it resumes as it lands.
+    @MainActor func beginScrubbing()
+    /// The series is over (the key released, the window lost focus): playback resumes from the last landing.
+    @MainActor func endScrubbing()
     @MainActor func stepFrameForward()
     @MainActor func stepFrameBackward()
     @MainActor func stepVolume(by delta: Float)
@@ -212,6 +217,12 @@ public protocol PlayerEngineProtocol:
 // MARK: - Default Implementations & Convenience Extensions
 
 extension PlayerPlaybackControlling {
+    @MainActor
+    public func beginScrubbing() {}
+
+    @MainActor
+    public func endScrubbing() {}
+
     @MainActor
     public var onMediaLoaded:
         ((_ request: MediaLoadRequest, _ historyKey: String, _ title: String, _ duration: Double) -> Void)?

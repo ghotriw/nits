@@ -159,12 +159,16 @@ struct SeekSpinnerTimelineTests {
                         let presses = burst ? (burstPresses ?? 25) : 1
                         var busyAfterLastPress = 0.0
                         var slowestCall = 0.0
+                        // As `PlayerWindow` does: the key scrubs from its press to its release.
+                        engine.beginScrubbing()
                         for press in 0..<presses {
                             let callStart = ms()
                             engine.seekRelative(by: step)
                             slowestCall = max(slowestCall, ms() - callStart)
                             if press < presses - 1 { try? await Task.sleep(for: .milliseconds(60)) }
                         }
+                        try? await Task.sleep(for: .milliseconds(40))
+                        engine.endScrubbing()
                         let lastPress = ms()
                         var landed: Double?
                         var clockStarted: Double?
@@ -288,6 +292,8 @@ struct SeekSpinnerTimelineTests {
                     maxTickGap = max(maxTickGap, now - lastTick)
                     lastTick = now
                     if tapped < taps, now >= nextTap {
+                        // As `PlayerWindow` does: the press scrubs, its release ends it.
+                        engine.beginScrubbing()
                         engine.seekRelative(by: direction)
                         pressAt = now
                         releaseAt = now + 40
@@ -295,8 +301,10 @@ struct SeekSpinnerTimelineTests {
                         tapped += 1
                         if tapped == taps { endAt = now + 3000 }
                     }
-                    // A tap and its release: nothing happens on the release.
-                    if let release = releaseAt, now >= release { releaseAt = nil }
+                    if let release = releaseAt, now >= release {
+                        releaseAt = nil
+                        engine.endScrubbing()
+                    }
                     if let press = pressAt, engine.currentFramePTS != picturePTS {
                         latencies.append(now - press)
                         pressAt = nil
@@ -397,6 +405,8 @@ struct SeekSpinnerTimelineTests {
                     }
                     lastTickAt = now
                     if presses <= repeats, now >= nextPress {
+                        // As `PlayerWindow` does: the press scrubs, the release ends it.
+                        engine.beginScrubbing()
                         engine.seekRelative(by: direction)
                         nextPress = now + (presses == 0 ? initialDelay : interval)
                         presses += 1
@@ -406,6 +416,7 @@ struct SeekSpinnerTimelineTests {
                     }
                     if let release = releasedAt, now >= release {
                         releasedAt = nil
+                        engine.endScrubbing()
                         endAt = now + 3000
                     }
                     if wasAwaiting, !engine.isAwaitingClockStart { clockStarts.append(now) }

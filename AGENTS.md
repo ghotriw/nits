@@ -201,7 +201,8 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   disabled item swallows them.
 - Unmodified player keys (`Space`, arrows, `m`, `d`, `z` / `x`, `j` / `k`, `a` / `w`, `esc`) are handled in
   `PlayerWindow.sendEvent` by physical key code, so they work on any keyboard layout and while focus is
-  in a panel (text fields excepted).
+  in a panel (text fields excepted). The press of ←/→ begins scrubbing (`beginScrubbing()`), any key-up or the window
+  resigning key ends it (`endScrubbing()`): seeks while scrubbing only show frames; never end it on a timer.
 
 ## Tests
 

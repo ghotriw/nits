@@ -24,6 +24,9 @@ extension PlayerEngine {
         relativeSeekBurstResetTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.relativeSeekBurstTimeout)
             guard !Task.isCancelled, let self else { return }
+            // A held key's presses are one burst however long its repeats take to start: `endScrubbing` arms the
+            // timer again.
+            if self.isScrubbing { return }
             if (!self.isSeeking && self.chase == nil) || !self.relativeSeekBurst.isInFlight {
                 self.resetRelativeSeekBurst()
             } else {
@@ -305,7 +308,40 @@ extension PlayerEngine {
         }
 
         chase = target.landed(at: completedSeconds)
+        // Scrubbing: the frame is up and the clock stays held there; `endScrubbing` resumes from the last landing. The
+        // picture would otherwise play a few frames between a held key's repeats, and the feeders and the audio join
+        // would start and be cancelled for each.
+        if isScrubbing {
+            playbackClock.setRate(0.0, time: targetTime)
+            AppLog.debug(.engine, "Chase seek landed at \(completedSeconds)s while scrubbing; held")
+            return
+        }
         resumeAfterChase(seekId: seekId, at: completedSeconds)
+    }
+
+    /// Seeks from here on are made while a key (or a scrubber) is held: each shows its frame, and playback, if it was on,
+    /// resumes only at `endScrubbing()`, the release. A seek made without either resumes as it lands.
+    public func beginScrubbing() {
+        isScrubbing = true
+    }
+
+    /// The series of seeks is over: playback resumes from where the last one landed, at once (or when the one in flight
+    /// lands). Without a call, the series lasts until the next load; hosts end it when the key is released or the
+    /// window loses focus.
+    public func endScrubbing() {
+        guard isScrubbing else { return }
+        isScrubbing = false
+        // The burst (the offset the OSD reports) goes on for a tap that follows soon, as between taps.
+        armRelativeSeekBurstTimer()
+        // A seek in flight resumes itself as it lands; one that landed while scrubbing waits here.
+        guard !isSeeking, let landed = chase else { return }
+        if resumePlaybackAfterChase {
+            resumeAfterChase(seekId: seekGeneration.current, at: landed.seconds)
+        } else {
+            // Paused meanwhile (`pause()` cleared the intent): the landing settles as a paused seek's does, or `play()`
+            // would take the chase left behind for one still on its way.
+            chase = nil
+        }
     }
 
     /// Resumes playback at `completedSeconds`, where seek `seekId` landed, at once: the picture runs on a clock of its own
@@ -371,8 +407,12 @@ extension PlayerEngine {
         // (and on HLS reading it again) for each key repeat. Playing, the pending settle (which ends the media) waits
         // for the presses to stop, as their seeks would have it; paused or ended on the last frame, nothing is left.
         if seconds > 0, !isSeeking {
-            if let settled = chase, chaseSettleTask != nil, isAtEndOfMedia(settled.seconds) {
-                scheduleEndOfMediaAfterChase(seekId: seekGeneration.current, at: settled.seconds)
+            // A chase with no seek in flight has landed: it waits to end the media (`chaseSettleTask`) or is held by
+            // scrubbing, whose end resumes, and so ends, it there.
+            if let settled = chase, isAtEndOfMedia(settled.seconds) {
+                if chaseSettleTask != nil {
+                    scheduleEndOfMediaAfterChase(seekId: seekGeneration.current, at: settled.seconds)
+                }
                 return relativeSeekBurst.offset(landingAt: settled.seconds) ?? 0
             }
             if chase == nil, !isPlaying, isOnLastFrame {

@@ -32,7 +32,19 @@ public final class PlayerWindow: NSWindow {
         if event.type == .keyDown, handleHardwareKey(event) {
             return
         }
+        // An arrow key scrubs while down (see `handleHardwareKey`). Any key's release ends it: the arrow's own may come
+        // with another key code (fn pressed meanwhile turns ← / → into Home / End), and another key pressed meanwhile has
+        // stopped the arrow's repeats anyway.
+        if event.type == .keyUp {
+            actionHandler?.endScrubbing()
+        }
         super.sendEvent(event)
+    }
+
+    /// The key-up of an arrow held while the window loses focus goes to another window.
+    public override func resignKey() {
+        super.resignKey()
+        actionHandler?.endScrubbing()
     }
 
     private func handleHardwareKey(_ event: NSEvent) -> Bool {
@@ -73,11 +85,16 @@ public final class PlayerWindow: NSWindow {
         case 0x2F:  // Physical '.' (ANSI Period, 0x2F / 47) -> Step 1 Frame Forward
             actionHandler.stepFrameForward()
             return true
-        case 0x7B:  // Left Arrow
-            actionHandler.seekBackward()
-            return true
-        case 0x7C:  // Right Arrow
-            actionHandler.seekForward()
+        case 0x7B, 0x7C:  // Left / Right Arrow
+            // From the press to the release the seeks show frames, and playback resumes once, on release: a tap resumes
+            // as the finger lifts (or as its seek lands, if later), a held key after its last repeat. Begun at the press,
+            // not the first repeat, so the presses of a held key are one burst however long the system waits to repeat.
+            actionHandler.beginScrubbing()
+            if event.keyCode == 0x7B {
+                actionHandler.seekBackward()
+            } else {
+                actionHandler.seekForward()
+            }
             return true
         case 0x79:  // Page Down (fn+↓ on laptop keyboards) -> Next Chapter
             guard actionHandler.hasChapters else { return false }

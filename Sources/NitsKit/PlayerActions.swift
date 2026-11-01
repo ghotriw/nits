@@ -37,6 +37,10 @@ public protocol PlayerActions: AnyObject {
     func seekRelative(by seconds: Double)
     func seekForward()
     func seekBackward()
+    /// An arrow key is pressed: its seeks (and its repeats') show frames, and playback resumes at `endScrubbing()`.
+    func beginScrubbing()
+    /// A key is released, or the window lost focus while the arrow was held.
+    func endScrubbing()
     func stepVolume(by delta: Float)
     func toggleMute()
     func setPlaybackRate(_ rate: Double)
@@ -101,6 +105,8 @@ public protocol PlayerActions: AnyObject {
 }
 
 extension PlayerActions {
+    public func beginScrubbing() {}
+    public func endScrubbing() {}
     public var playbackRate: Double {
         get { 1.0 }
         set {}

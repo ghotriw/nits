@@ -82,9 +82,9 @@ extension PlayerEngine {
         isFeeding.withLock { $0 = false }
         stopFeedingVideo()
         stopFeedingAudio()
-        // A seek that has decoded its target and only waits to resume settles here, at its target; left pending,
-        // it would keep reporting a seek and make `play()` wait for it forever.
-        if chaseSettleTask != nil, !isSeeking, let settledSeconds = chase?.seconds {
+        // A seek that has decoded its target and only waits to resume (its end-of-media wait, or scrubbing) settles here,
+        // at its target; left pending, it would keep reporting a seek and make `play()` wait for it.
+        if !isSeeking, let settledSeconds = chase?.seconds {
             chase = nil
             playbackClock.setRate(0.0, time: CMTime(seconds: settledSeconds, preferredTimescale: 1000))
         }

@@ -259,8 +259,19 @@ frames were running again). The rules that replaced it:
 - **The picture does not wait for the audio.** The seek that resumes starts the clock on host time alone
   (`PlaybackClock.startProvisional`): `currentTime()` reads `target + (host − start) · rate`, the synchronizer stays held at
   rate 0, and the display link picks frames from it as from any clock. The start still waits for the anchor frame (the
-  video preroll), not for the audio. A series of seeks costs the picture and nothing else; the key's release or a wait
-  for repeats is not needed (`ChaseSettling`, `burstDebounce` and `endSeekBurst()` are gone).
+  video preroll), not for the audio. A series of seeks costs the picture and nothing else; no wait for repeats
+  (`ChaseSettling`, `burstDebounce` and `endSeekBurst()` are gone).
+- **A held key scrubs** (`beginScrubbing()` / `endScrubbing()`, from `PlayerWindow`). Resumed at once, the picture
+  played a few frames between a held key's repeats (every ~75 ms) and the feeders and the audio join started and were
+  cancelled for each. mpv shows only frames there because its restart waits for the audio and skips playback when the
+  next seek is already queued (`handle_playback_restart`); here the restart no longer waits, so the window says what
+  mpv infers: the press of ← / → begins scrubbing, its seeks (and its repeats') land and hold the clock at their frame,
+  and the release of any key (fn turns the arrow's key-up into Home / End; another key stops its repeats) or the window
+  losing focus resumes once from the last landing. Not a timer. A tap resumes as the finger lifts, or as its seek lands
+  if that comes later. Begun at the press, not at the first repeat: the system waits ~225 ms to 1.8 s before repeating,
+  and the burst (exact first press, keyframe repeats, the offset the OSD reports) must not end in that gap, so the burst
+  timer does not run while scrubbing. A landing at the end held by scrubbing drops further presses forward, which would
+  only decode the last GOP again.
 - **`AudioJoin` brings the audio back behind it** (`AudioJoin.swift`; one per engine, cancelled by `cancelPreroll()`):
   1. It waits until the change to rate 0 is applied, then flushes the renderer, **only if what it holds reaches past
      where the new audio starts** (`AudioJoin.needsFlush`: the renderer's `bufferedEnd` against `clock + latency`, both on
