@@ -309,6 +309,9 @@ extension PlayerEngine {
         // The streams given are used until they fail to open: they may have expired since they were found, and the
         // resolver is then asked, for the picture that was chosen.
         var known = preResolved
+        // When the resolver last answered here (not `preResolved`, whose streams may be old): the streams are young
+        // for a few seconds, during which a CDN may still refuse them.
+        var resolvedAt: ContinuousClock.Instant?
         let wantedFormat = preResolved?.selectedVideoFormatID
 
         enum Resolution { case resolved, declined, ended }
@@ -321,6 +324,7 @@ extension PlayerEngine {
                     resolved = known
                 } else if let resolver, let pageURL {
                     let found = try await resolver.resolve(pageURL, headers: request.headers)
+                    resolvedAt = .now
                     resolved = found.map { media in wantedFormat.flatMap(media.selecting(videoFormat:)) ?? media }
                 } else {
                     resolved = nil
@@ -395,14 +399,20 @@ extension PlayerEngine {
                 }.value
                 if let opened { return opened }
                 if currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled { return nil }
-                guard let err = interruptContext.lastError, Self.isTransientNetworkError(err.code),
-                    attempt < maxAttempts
-                else { return nil }
+                guard let err = interruptContext.lastError, attempt < maxAttempts else { return nil }
+                // A stream the resolver just gave is refused (403) for its first seconds on some CDNs (YouTube's:
+                // measured 403 up to ~1 s, a redirect, then accepted from ~2-3 s): the same URL is tried again, not
+                // another one, whose wait would start over. Not for an old one (403: refused for good) nor a direct
+                // link.
+                let isSettling =
+                    Self.isForbiddenError(err.code) && resolvedAt.map { .now - $0 < .seconds(10) } == true
+                guard isSettling || Self.isTransientNetworkError(err.code) else { return nil }
+                let delay = isSettling ? 1000 : attempt * 250
                 AppLog.warning(
                     .engine,
-                    "Transient network failure (\(err.message), code \(err.code)) opening '\(sourcePath)' on attempt \(attempt)/\(maxAttempts). Retrying in \(attempt * 250)ms..."
+                    "\(isSettling ? "Fresh stream not yet accepted" : "Transient network failure") (\(err.message), code \(err.code)) opening '\(sourcePath)' on attempt \(attempt)/\(maxAttempts). Retrying in \(delay)ms..."
                 )
-                try? await Task.sleep(for: .milliseconds(attempt * 250))
+                try? await Task.sleep(for: .milliseconds(delay))
             }
             return nil
         }
@@ -542,6 +552,11 @@ extension PlayerEngine {
     /// EHOSTDOWN, ECONNRESET, ENETDOWN (negated, as FFmpeg returns them).
     nonisolated static func isTransientNetworkError(_ code: Int32) -> Bool {
         [-65, -61, -51, -60, -64, -54, -50].contains(code)
+    }
+
+    /// `AVERROR_HTTP_FORBIDDEN` (`FFERRTAG(0xF8, '4', '0', '3')`, a macro Swift doesn't import).
+    nonisolated static func isForbiddenError(_ code: Int32) -> Bool {
+        code == -0x3330_34F8
     }
 
     func loadSync(
