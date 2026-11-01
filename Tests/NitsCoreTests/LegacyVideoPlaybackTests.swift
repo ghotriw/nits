@@ -16,6 +16,8 @@ struct LegacyVideoPlaybackTests {
         var sampleAspectRatio: RationalAspectRatio = .square
         /// None of the presets signal colorimetry, so every one gets the BT.601 SD defaults.
         var primaries: String = kCVImageBufferColorPrimaries_SMPTE_C as String
+        /// Likewise for the matrix, unless the stream signals its own matrix (DNxHR does).
+        var matrix: String = kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String
 
         var testDescription: String { preset.rawValue }
     }
@@ -51,7 +53,9 @@ struct LegacyVideoPlaybackTests {
             sampleAspectRatio: RationalAspectRatio(numerator: 8, denominator: 9)),
         Case(
             preset: .cinepakMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_CINEPAK.rawValue), width: 320, height: 240),
-        Case(preset: .proresMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_PRORES.rawValue), width: 640, height: 360),
+        Case(
+            preset: .dnxhrHQXMOV, codec: .software(ffmpegCodecID: AV_CODEC_ID_DNXHD.rawValue), width: 640, height: 360,
+            matrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String),
         // Field-coded H.264: hardware can't decode it, so it plays in software.
         Case(
             preset: .h264InterlacedTS, codec: .h264, width: 720, height: 576,
@@ -77,7 +81,7 @@ struct LegacyVideoPlaybackTests {
         #expect(demuxer.sampleAspectRatio == testCase.sampleAspectRatio)
         #expect(demuxer.formatDescription != nil)
         #expect(demuxer.colorPrimaries as String == testCase.primaries)
-        #expect(demuxer.yCbCrMatrix == kCVImageBufferYCbCrMatrix_ITU_R_601_4)
+        #expect(demuxer.yCbCrMatrix as String == testCase.matrix)
 
         let decoder = VideoDecoderFactory.makeDecoder(for: demuxer.codec, demuxer: demuxer)
         #expect(decoder is FFmpegVideoDecoder)

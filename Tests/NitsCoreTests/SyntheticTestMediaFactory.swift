@@ -72,6 +72,13 @@ public enum SyntheticTestMediaFactory {
         case cinepakMOV
         /// Apple ProRes 422 10-bit 4:2:2 (3s, 640x360 @ 24fps) in QuickTime
         case proresMOV
+        /// Apple ProRes 4444 10-bit 4:4:4 with an alpha plane (3s, 640x360 @ 24fps) in QuickTime
+        case prores4444MOV
+        /// Avid DNxHR HQX 10-bit 4:2:2 (3s, 640x360 @ 24fps) in QuickTime
+        case dnxhrHQXMOV
+        /// Interlaced ProRes 422 HQ (2s, 720x576 @ 25i, top field first) in NUT, which stores no field order: only
+        /// the frame headers say the pictures are interlaced.
+        case proresInterlacedNUT
         /// Interlaced H.264 (MBAFF, top field first) as DVB broadcasts it (3s, 720x576 4:3 @ 25i from 50p, so moving
         /// areas comb) with MP2 audio in MPEG-TS. VideoToolbox can't decode field-coded H.264.
         case h264InterlacedTS
@@ -206,6 +213,12 @@ public enum SyntheticTestMediaFactory {
                 return "synth_cinepak_rgb.mov"
             case .proresMOV:
                 return "synth_prores_422_10bit.mov"
+            case .prores4444MOV:
+                return "synth_prores_4444.mov"
+            case .proresInterlacedNUT:
+                return "synth_prores_576i.nut"
+            case .dnxhrHQXMOV:
+                return "synth_dnxhr_hqx.mov"
             case .h264InterlacedTS:
                 return "synth_h264_576i.ts"
             case .interlacedStaticDetailTS:
@@ -960,6 +973,31 @@ public enum SyntheticTestMediaFactory {
                 "-y",
                 "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
                 "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
+                outputPath,
+            ]
+
+        case .prores4444MOV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
+                outputPath,
+            ]
+
+        case .proresInterlacedNUT:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=720x576:rate=25:duration=2",
+                "-vf", "tinterlace=mode=interleave_top,setfield=tff",
+                "-c:v", "prores_ks", "-profile:v", "3", "-flags", "+ildct", "-pix_fmt", "yuv422p10le",
+                outputPath,
+            ]
+
+        case .dnxhrHQXMOV:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+                "-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le",
                 outputPath,
             ]
 

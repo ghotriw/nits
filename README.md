@@ -46,7 +46,7 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
 - [x] Bitmap subtitles (PGS / VOBSUB)
 - [x] Audio sync delay adjustment
 - [x] Subtitle sync delay adjustment
-- [ ] Apple ProRes support
+- [x] Apple ProRes support
 - [x] Timeline thumbnails
 - [x] Timeline chapters
 - [x] Picture-in-Picture

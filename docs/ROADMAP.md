@@ -164,10 +164,11 @@ flowchart TD
   - VideoToolbox hardware decode path for VP9 Profile 0 (8-bit) and Profile 2 (10-bit HDR) where supported.
   - Software decoding fallback via `FFmpegVideoDecoder` (`libvpx-vp9` / native FFmpeg VP9).
   - Mapping of WebM container metadata (Color config, mastering display metadata, MaxCLL/FALL).
-- [ ] **1.8.2. Professional Production Codecs (Apple ProRes & Avid DNxHR):**
-  - Native hardware/framework VideoToolbox decoding for Apple ProRes family (`kCMVideoCodecType_AppleProRes422`, `ProRes422HQ`, `ProRes422LT`, `ProRes422Proxy`, `ProRes4444`, `ProRes4444XQ`).
-  - FFmpeg software decoding for Avid DNxHD / DNxHR with high-bitdepth P010/NV12 pool allocation.
-  - Until then ProRes and DNxHD play through `FFmpegVideoDecoder` (2.5.8), with chroma reduced to 4:2:0.
+- [x] **1.8.2. Professional Production Codecs (Apple ProRes & Avid DNxHR):**
+  - Apple ProRes decodes in VideoToolbox (hardware where the chip has the block, VT's software decoder otherwise): `VideoCodec.proRes(fourCC:)` names the profile (`kCMVideoCodecType_AppleProRes422Proxy` / `422LT` / `422` / `422HQ` / `4444` / `4444XQ`) from the container's tag, else FFmpeg's profile; the stream info panel shows it ("ProRes 422 HQ"). `VTVideoDecoder` asks for 10-bit 4:2:0 biplanar output and VT converts the 4:2:2 / 4:4:4 (alpha is dropped).
+  - `VideoDecoderFactory` probes a VT session first and falls back to `FFmpegVideoDecoder` when it can't be made; interlaced ProRes goes to FFmpeg so it is deinterlaced like every interlaced stream.
+  - Avid DNxHD / DNxHR decode in `FFmpegVideoDecoder` (10-bit 4:2:2 → P010 through `FrameFormatNormalizer`).
+  - Chroma is still reduced to 4:2:0: the renderer, luminance meter and capture take biplanar 4:2:0 only. Native 4:2:2 / 4:4:4 would be a renderer change of its own.
 - [x] **1.8.3. Metal Compute Deinterlacing:**
   - Interlaced frames (`AV_FRAME_FLAG_INTERLACED` / `TOP_FIELD_FIRST`) are deinterlaced in `FFmpegVideoDecoder` by `MetalDeinterlacer` (`Deinterlace.metal`) before they reach the frame queue, seek preview or step cache: one progressive frame per interlaced frame, keeping the first field, weaving the second where it fits between its neighbours and interpolating along edges where it combs. No frame history, so no added latency.
   - Interlaced H.264 (1080i broadcast, AVCHD) is decoded by FFmpeg: Apple Silicon's VideoToolbox rejects field-coded H.264 (`kVTVideoDecoderBadDataErr`). `FFmpegVideoDecoder` takes the `avcC` / `hvcC` from the format description because samples arrive length-prefixed.
@@ -759,7 +760,7 @@ flowchart TD
 | **AV1 Hybrid Decoder** | `NitsCore` | Completed ✓ | M3/M4+ VideoToolbox, M1/M2 fallback to `libdav1d` NEON |
 | **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263, FLV1, VP6, VP8, Theora, RealVideo 1–4 and any other FFmpeg video codec (libswscale fallback) into `CVPixelBufferPool` |
 | **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
-| **Professional Production Codecs** | `NitsCore` | Planned 📋 | Apple ProRes VideoToolbox, Avid DNxHR |
+| **Professional Production Codecs** | `NitsCore` | Completed ✓ | Apple ProRes VideoToolbox (FFmpeg fallback), Avid DNxHR via FFmpeg; chroma reduced to 4:2:0 |
 | **Metal Deinterlacer** | `NitsCore` | Completed ✓ | Single-frame motion-adaptive deinterlacing for 1080i/576i; field-rate output planned |
 | **Audio Engine & Master Sync** | `NitsCore` | Completed ✓ | CoreAudio hardware clock, Spatial Audio 5.1/7.1, 48kHz Float32 |
 | **Audio-Only Playback** | `NitsCore` / `NitsUI` | Completed ✓ | FLAC, MP3, AAC, OGG, Opus, ALAC, WAV; music UI |

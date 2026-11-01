@@ -174,6 +174,9 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
             || transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
             || mediaSubType == kCMVideoCodecType_HEVC || mediaSubType == kCMVideoCodecType_HEVCWithAlpha
             || mediaSubType == kCMVideoCodecType_DolbyVisionHEVC
+            // ProRes is 10 bits or more at every profile. VideoToolbox converts its 4:2:2 / 4:4:4 output to the
+            // 4:2:0 biplanar format the renderer takes (the chroma reduction FFmpeg's path makes too).
+            || VideoCodec.proResFourCCs.contains(mediaSubType)
 
         if is10Bit {
             pixelFormat =

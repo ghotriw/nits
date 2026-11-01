@@ -27,7 +27,11 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
     case rv20
     case rv30
     case rv40
-    /// Any other video codec FFmpeg can decode (Motion JPEG, DV, Cinepak, ProRes…), by its raw `AVCodecID`.
+    /// Apple ProRes, by the FourCC of its profile (`apco` Proxy, `apcs` LT, `apcn` 422, `apch` 422 HQ, `ap4h` 4444,
+    /// `ap4x` 4444 XQ). Decoded by VideoToolbox, which has a ProRes decoder (in hardware on Pro / Max / Ultra chips)
+    /// on every Mac; `FFmpegVideoDecoder` takes over when a session can't be made, and for interlaced streams.
+    case proRes(fourCC: UInt32)
+    /// Any other video codec FFmpeg can decode (Motion JPEG, DV, Cinepak…), by its raw `AVCodecID`.
     /// Decoded by `FFmpegVideoDecoder`; frames that aren't 4:2:0 are converted with libswscale.
     case software(ffmpegCodecID: UInt32)
     case unknown
@@ -58,6 +62,7 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
         case .rv20: "RealVideo 2.0"
         case .rv30: "RealVideo 3.0"
         case .rv40: "RealVideo 4.0"
+        case .proRes: "Apple \(displayName)"
         case .software: "\(displayName) (FFmpeg \(Self.ffmpegName(of: ffmpegCodecID)))"
         case .unknown: "Unknown"
         }
@@ -130,6 +135,8 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
         case .rv40:
             // 'rv40' = 0x72763430
             return 0x7276_3430
+        case .proRes(let fourCC):
+            return fourCC
         case .software:
             // 'ffsw' = 0x66667377
             return 0x6666_7377
@@ -164,6 +171,7 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
         case .rv20: "RealVideo 2"
         case .rv30: "RealVideo 3"
         case .rv40: "RealVideo 4"
+        case .proRes(let fourCC): Self.proResProfileName(fourCC)
         case .software(let id): Self.ffmpegLongName(of: AVCodecID(rawValue: id))
         case .unknown: "Unknown"
         }
@@ -232,6 +240,8 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
             return AV_CODEC_ID_RV30
         case .rv40:
             return AV_CODEC_ID_RV40
+        case .proRes:
+            return AV_CODEC_ID_PRORES
         case .software(let id):
             return AVCodecID(rawValue: id)
         case .unknown:
@@ -249,9 +259,53 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
             return Self.isAV1HardwareSupported
         case .vp9:
             return Self.isVP9HardwareSupported
+        case .proRes:
+            // VideoToolbox's ProRes decoder runs in hardware where the chip has the media engine block and in
+            // software otherwise; either way it is faster than FFmpeg's, and the factory probes the session.
+            return true
         default:
             return false
         }
+    }
+
+    /// The FourCCs of the ProRes profiles (`CMVideoCodecType`s), in FFmpeg's profile order.
+    package static let proResFourCCs: [UInt32] = [
+        kCMVideoCodecType_AppleProRes422Proxy, kCMVideoCodecType_AppleProRes422LT, kCMVideoCodecType_AppleProRes422,
+        kCMVideoCodecType_AppleProRes422HQ, kCMVideoCodecType_AppleProRes4444, kCMVideoCodecType_AppleProRes4444XQ,
+    ]
+
+    private static func proResProfileName(_ fourCC: UInt32) -> String {
+        switch fourCC {
+        case kCMVideoCodecType_AppleProRes422Proxy: "ProRes 422 Proxy"
+        case kCMVideoCodecType_AppleProRes422LT: "ProRes 422 LT"
+        case kCMVideoCodecType_AppleProRes422: "ProRes 422"
+        case kCMVideoCodecType_AppleProRes422HQ: "ProRes 422 HQ"
+        case kCMVideoCodecType_AppleProRes4444: "ProRes 4444"
+        case kCMVideoCodecType_AppleProRes4444XQ: "ProRes 4444 XQ"
+        default: "ProRes"
+        }
+    }
+
+    /// The video codec of a stream. Like `from(codecId:)`, but names the ProRes profile, which the codec ID
+    /// doesn't: the container's tag (MOV, MXF, MKV with a `V_QUICKTIME` tag) says it, else FFmpeg's profile.
+    package static func from(parameters: UnsafePointer<AVCodecParameters>) -> VideoCodec? {
+        guard parameters.pointee.codec_id == AV_CODEC_ID_PRORES else {
+            return from(codecId: parameters.pointee.codec_id)
+        }
+        // FFmpeg's tags are little-endian FourCCs; CoreMedia's are big-endian.
+        let tag = parameters.pointee.codec_tag.byteSwapped
+        if proResFourCCs.contains(tag) {
+            return .proRes(fourCC: tag)
+        }
+        let profile = Int(parameters.pointee.profile)
+        if proResFourCCs.indices.contains(profile) {
+            return .proRes(fourCC: proResFourCCs[profile])
+        }
+        // Profile unknown (a bare stream): 4:4:4 content is 4444, anything else the common 422.
+        let is444 =
+            parameters.pointee.format == AV_PIX_FMT_YUV444P10LE.rawValue
+            || parameters.pointee.format == AV_PIX_FMT_YUVA444P10LE.rawValue
+        return .proRes(fourCC: is444 ? kCMVideoCodecType_AppleProRes4444 : kCMVideoCodecType_AppleProRes422)
     }
 
     /// Whether the video bitstream requires NAL unit parameter sets (SPS/PPS/VPS) for CMVideoFormatDescription.

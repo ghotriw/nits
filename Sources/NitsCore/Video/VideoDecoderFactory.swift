@@ -21,15 +21,22 @@ public enum VideoDecoderFactory {
         if isInterlacedH264 {
             AppLog.info(.video, "Interlaced H.264: VideoToolbox can't decode field-coded streams, using FFmpeg")
         }
-        if codec.isHardwareAccelerated && !isInterlacedH264 && !preferSoftware {
+        // Interlaced ProRes (broadcast, camera masters) is deinterlaced by FFmpegVideoDecoder like every
+        // interlaced stream; VideoToolbox would hand the fields over woven.
+        let isProRes = if case .proRes = codec { true } else { false }
+        let isInterlacedProRes = isProRes && isInterlaced
+        if isInterlacedProRes {
+            AppLog.info(.video, "Interlaced ProRes: VideoToolbox would weave the fields, using FFmpeg")
+        }
+        if codec.isHardwareAccelerated && !isInterlacedH264 && !isInterlacedProRes && !preferSoftware {
             // H.264 and HEVC have guaranteed VT hardware on Apple Silicon — no probe needed.
             // AV1 and VP9 report hardware support via VTIsHardwareDecodeSupported, but on
             // virtualised CI runners the hypervisor exposes the flag without the actual decoder
             // block, causing VTDecompressionSessionCreate to fail silently. Probe first and
             // fall through to FFmpeg when that happens.
-            let needsProbe = codec == .av1 || codec == .vp9
+            let needsProbe = codec == .av1 || codec == .vp9 || isProRes
             if !needsProbe || canCreateVTSession(for: codec, formatDescription: formatDescription) {
-                AppLog.info(.video, "Using Hardware VideoToolbox decoder for \(codec)")
+                AppLog.info(.video, "Using VideoToolbox decoder for \(codec)")
                 return VTVideoDecoder()
             }
             AppLog.warning(

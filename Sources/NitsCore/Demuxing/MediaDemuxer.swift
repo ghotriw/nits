@@ -28,8 +28,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// starts its video up to a GOP after its audio and subtitles. Read from the first keyframe when the file opens;
     /// 0 when the opening scan doesn't reach it.
     public internal(set) var videoStartTime: Double = 0
-    /// The stream is interlaced: it signals a field order (`field_order` TT / BB / TB / BT), or it is standard
-    /// definition DV, interlaced by format but without a field order. Frames may still be flagged interlaced
+    /// The stream is interlaced: it signals a field order (`field_order` TT / BB / TB / BT), it is standard
+    /// definition DV, interlaced by format, or its first ProRes frame header says so where the container gives no
+    /// field order (`ProResFrameHeader`). Frames may still be flagged interlaced
     /// individually when this is `false`.
     public internal(set) var isInterlaced: Bool = false
     public internal(set) var hasAudio: Bool = false
@@ -575,7 +576,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if codecType == AVMEDIA_TYPE_VIDEO && !isAttachedPic && self.videoStreamIndex < 0,
-                let detectedCodec = VideoCodec.from(codecId: stream.pointee.codecpar.pointee.codec_id)
+                let detectedCodec = VideoCodec.from(parameters: stream.pointee.codecpar)
             {
                 configureVideoStream(stream, index: i, codec: detectedCodec, in: formatCtx)
             } else if codecType == AVMEDIA_TYPE_AUDIO {

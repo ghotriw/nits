@@ -318,7 +318,10 @@ extension MediaDemuxer {
         let maxVideoPacketsToScan = 120
         // With parameter sets from extradata the scan only looks for HDR SEI and captions, which the first pictures
         // carry: a few packets do, and a remote source fetches no more than it needs to start.
-        let videoPacketsAfterParameters = hasExtradataParams ? 10 : 20
+        // ProRes has neither SEI nor captions, and every frame is a keyframe: its first packet gives the frame
+        // header and the start time, and a frame is megabytes.
+        var videoPacketsAfterParameters = hasExtradataParams ? 10 : 20
+        if case .proRes = codec { videoPacketsAfterParameters = 0 }  // the scan stops once one packet is past it
         let maxSkippedSpan = 30.0
         let maxSkippedBytes = 64 << 20
         var firstSkippedTime: Double?
@@ -341,16 +344,28 @@ extension MediaDemuxer {
                         ClosedCaptions.fields(
                             of: ClosedCaptions.cea608Triplets(in: packet, codec: codec, lengthSize: nalLengthSize)))
                 }
-                let data = Data(bytes: pkt.data, count: Int(pkt.size))
+                if videoPacketsScanned == 1, case .proRes = codec, !isInterlaced,
+                    codecParameters?.pointee.field_order == AV_FIELD_UNKNOWN, let bytes = pkt.data,
+                    ProResFrameHeader.isInterlaced(packet: UnsafeRawBufferPointer(start: bytes, count: Int(pkt.size)))
+                        == true
+                {
+                    isInterlaced = true
+                }
                 // If extradata was missing or empty, detect whether the stream is Annex B from the first video packet
-                if !hasExtradataParams && videoPacketsScanned == 1 && data.count >= 3 {
-                    if data[0] == 0 && data[1] == 0
-                        && (data[2] == 1 || (data.count > 3 && data[2] == 0 && data[3] == 1))
+                if !hasExtradataParams && videoPacketsScanned == 1, let bytes = pkt.data, pkt.size >= 3 {
+                    if bytes[0] == 0 && bytes[1] == 0
+                        && (bytes[2] == 1 || (pkt.size > 3 && bytes[2] == 0 && bytes[3] == 1))
                     {
                         self.isAnnexBStream = true
                     }
                 }
-                let nalus = NALUnitParser.extractNALUnits(from: data, isAnnexB: self.isAnnexBStream)
+                // Parameter sets live in NAL units only of H.264 / HEVC; copying every other codec's packet (a
+                // ProRes frame is megabytes) to look for them would be wasted.
+                let nalus =
+                    codec.requiresParameterSets
+                    ? NALUnitParser.extractNALUnits(
+                        from: Data(bytes: pkt.data, count: Int(pkt.size)), isAnnexB: self.isAnnexBStream)
+                    : []
                 for naluData in nalus {
                     guard !naluData.isEmpty else { continue }
                     if codec == .hevc {
