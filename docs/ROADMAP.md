@@ -29,14 +29,14 @@ flowchart TD
     M25 --> M3["Stage 3: Network & Remote Streaming (HTTP/HTTPS) ✓"]
     M3 --> M4["Stage 4: Subtitles Subsystem (SRT / WebVTT / Metal Outline) ✓"]
     M4 --> M5["Stage 5: Playlists, OSD, Seeking Architecture & UX ✓"]
-    M5 --> M6["Stage 6: Host Integration (Embeddable View & Engine API) ⏳"]
-    M6 --> M7["Stage 7: Standalone Distribution & Release Bundling"]
+    M5 --> M6["Stage 6: Host Integration (Embeddable View & Engine API) ✓"]
+    M6 --> M7["Stage 7: Standalone Distribution & Release Bundling ✓"]
     
-    M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing 📋"]
-    M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range 📋"]
-    M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) 📋"]
+    M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing ✓"]
+    M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range ⏳"]
+    M3 -.-> M3X["Stage 3.5: Adaptive Streaming (HLS / DASH) ⏳"]
     M4 -.-> M4X["Stage 4.6: Subtitle Timing Offset & Drag-and-Drop ✓"]
-    M5 -.-> M5X["Stage 5.10: Chapters, Hover Thumbnails & PiP 📋"]
+    M5 -.-> M5X["Stage 5.10: Chapters, Thumbnails, Screenshots & PiP ✓"]
     M5 -.-> M5Y["Stage 5.11: Skip Intro, Next Episode & Host Queue ✓"]
     M5 -.-> M5Z["Stage 5.12: Aspect Ratio, Crop, Zoom & Pan ⏳"]
 ```
@@ -156,7 +156,7 @@ flowchart TD
 
 ---
 
-### Stage 1.8: Extended Video Formats & Compute Deinterlacing — [PLANNED]
+### Stage 1.8: Extended Video Formats & Compute Deinterlacing — [COMPLETED] ✓
 
 > Broaden codec compatibility for web rips and broadcast media while eliminating interlacing combing artifacts.
 
@@ -183,7 +183,7 @@ flowchart TD
 
 ---
 
-### Stage 2.8: Audio Synchronization Offset & Dynamic Range Management — [PLANNED]
+### Stage 2.8: Audio Synchronization Offset & Dynamic Range Management — [IN PROGRESS] ⏳
 
 > Solve wireless audio latency and improve dialogue intelligibility during wide dynamic range film playback.
 
@@ -222,11 +222,11 @@ flowchart TD
 
 ---
 
-### Stage 3.5: Adaptive Bitrate Streaming (HLS & MPEG-DASH) — [PLANNED]
+### Stage 3.5: Adaptive Bitrate Streaming (HLS & MPEG-DASH) — [IN PROGRESS] ⏳
 
 > Support modern adaptive web media streams with multi-rendition quality switching.
 
-- [ ] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
+- [x] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
   Built on FFmpeg's HLS demuxer, which parses master playlists and exposes each variant as an `AVProgram` (its
   `BANDWIDTH` as `variant_bitrate`). A client of our own (as VLC's and GStreamer's) is left for DASH / LL-HLS.
   - [x] Variant selection: `MediaDemuxer.variants`, the highest bandwidth played, the other variants' streams
@@ -549,7 +549,7 @@ flowchart TD
 
 ---
 
-### Stage 5.10: Chapters, Timeline Thumbnails, Screenshots & Picture-in-Picture — [PLANNED]
+### Stage 5.10: Chapters, Timeline Thumbnails, Screenshots & Picture-in-Picture — [COMPLETED] ✓
 
 > Reference desktop player ergonomics: chapter jumps, visual timeline scrubbing, HDR screenshots, and floating window playback.
 
@@ -564,7 +564,7 @@ flowchart TD
 - [x] **5.10.2. Timeline Hover Seek Thumbnails:**
   - Low-priority background worker demuxing and decoding keyframes to generate thumbnail caches.
   - Floating preview popover over the timeline slider displaying frame imagery at the hovered timestamp.
-- [ ] **5.10.3. Color-Accurate Screenshot Capture (Frame Export):**
+- [x] **5.10.3. Color-Accurate Screenshot Capture (Frame Export):**
   - [x] Save Screenshot (`⌘S`, Video menu): the frame on screen as the active render mode shows it, with the
     on-screen crop, aspect ratio and zoom, at the source's resolution, to `~/Pictures/Nits` (`FrameCapture`,
     `FrameStillWriter`).
@@ -686,7 +686,7 @@ flowchart TD
 
 ---
 
-### Stage 6: Host Integration (Embeddable View & Engine API) — [IN PROGRESS] ⏳
+### Stage 6: Host Integration (Embeddable View & Engine API) — [COMPLETED] ✓
 
 > Embedding Nits as a high-performance native rendering core inside hybrid host applications (e.g., Emby / Jellyfin web shells).
 >
@@ -733,7 +733,7 @@ flowchart TD
 
 ---
 
-### Stage 7: Standalone Distribution & Release Bundling — [PLANNED]
+### Stage 7: Standalone Distribution & Release Bundling — [COMPLETED] ✓
 
 > Eliminate external dependencies on package managers (Homebrew FFmpeg) for zero-friction distribution on macOS 15+.
 
@@ -743,9 +743,14 @@ flowchart TD
   - Copy required shared libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`, `libdav1d`) and their dependencies into `Contents/Frameworks`.
   - Rewrite dynamic linker mach-o load commands via `install_name_tool`: replace Homebrew paths with `@rpath` (`@executable_path/../Frameworks`).
   - Configure executable `LC_RPATH` headers.
-- [ ] **7.3. CI/CD Automation & Release Artifacts:**
-  - Bundle dependency validation with `otool -L` (guaranteeing zero non-system references outside `/System/Library`, `/usr/lib`, and `@rpath`).
-  - Automated compilation, signing, and notarization of DMG/ZIP release archives via GitHub Actions.
+- [x] **7.3. CI/CD Automation & Release Artifacts:**
+  - Bundle dependency validation with `otool -L` in `bundle_app.sh` (no references outside `/System`, `/usr/lib`
+    and bundled `@rpath` libraries, no non-portable `LC_RPATH`).
+  - The LGPL FFmpeg / dav1d / libass built by `build-deps.yml` (run by hand) and published as a checksummed release
+    archive (`deps_config.sh`), which CI and releases restore.
+  - A `vX.Y.Z` tag builds, verifies and publishes a ZIP release (`release.yml`); the version comes from the tag.
+    Installed through the Homebrew cask `ghotriw/tap/nits`.
+  - [ ] Notarization: the app is ad-hoc signed; notarizing needs a Developer ID.
 
 ---
 
@@ -761,26 +766,26 @@ flowchart TD
 | **FFmpeg Software Video Decoder** | `NitsCore` | Completed ✓ | WMV1–3, VC-1, MPEG-1/2, MPEG-4 Part 2, MS-MPEG4 v1–3, H.263, FLV1, VP6, VP8, Theora, RealVideo 1–4 and any other FFmpeg video codec (libswscale fallback) into `CVPixelBufferPool` |
 | **Extended Formats: VP9** | `NitsCore` | Completed ✓ | VP9 Profile 0 (8-bit) & Profile 2 (10-bit HDR), multi-threaded software decoder |
 | **Professional Production Codecs** | `NitsCore` | Completed ✓ | Apple ProRes VideoToolbox (FFmpeg fallback), Avid DNxHR via FFmpeg; chroma reduced to 4:2:0 |
-| **Metal Deinterlacer** | `NitsCore` | Completed ✓ | Single-frame motion-adaptive deinterlacing for 1080i/576i; field-rate output planned |
+| **Metal Deinterlacer** | `NitsCore` | Completed ✓ | Motion-adaptive deinterlacing for 1080i / 576i, a frame per field (50 / 60 fps) |
 | **Audio Engine & Master Sync** | `NitsCore` | Completed ✓ | CoreAudio hardware clock, Spatial Audio 5.1/7.1, 48kHz Float32 |
 | **Audio-Only Playback** | `NitsCore` / `NitsUI` | Completed ✓ | FLAC, MP3, AAC, OGG, Opus, ALAC, WAV; music UI |
 | **CoreAudio Route Monitoring** | `NitsCore` | Completed ✓ | Real-time device listener, pipeline migration on change |
-| **A/V Sync Offset & Night Mode** | `NitsCore` / `NitsUI` | Planned 📋 | Audio delay calibration (`±1s`), DRC voice boost |
+| **A/V Sync Offset & Night Mode** | `NitsCore` / `NitsUI` | In Progress ⏳ | Audio delay (`±1 s`, remembered per file) done; DRC voice boost planned |
 | **Remote HTTP/HTTPS Streaming** | `NitsCore` | Completed ✓ | Auth headers, auto-reconnect, `AVIOInterruptCB` cancellation |
-| **Adaptive Streaming (HLS / DASH)** | `NitsCore` | Planned 📋 | Multi-rendition variant parsing and switching |
+| **Adaptive Streaming (HLS / DASH)** | `NitsCore` | In Progress ⏳ | HLS: read-ahead, renditions, adaptive bitrate, manual quality; MPEG-DASH planned |
 | **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
 | **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Completed ✓ | Subtitle delay offset (`±30s`), file drag-and-drop, sidecar discovery |
-| **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | In Progress ⏳ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 captions |
+| **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | Completed ✓ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 captions |
 | **Playlists & Folder Scanning** | `NitsCore` / `NitsUI` | Completed ✓ | M3U, PLS, XSPF, CUE, search, sorting, background durations, shuffle, repeat |
 | **Playback History & Recent Media** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | `PlaybackHistoryStore` (SHA-256), `RecentMediaStore`, Welcome window recent list, `Open Recent` menu, Dock items |
 | **OSD, Side Panel & Quick Settings** | `NitsUI` | Completed ✓ | HUD notifications, shared non-modal side panel, live tone-map & audio adjustments |
 | **Chapters, Thumbnails & PiP** | `NitsCore` / `NitsUI` | Completed ✓ | MKV/MP4 chapters, timeline preview hover and macOS PiP |
 | **Host Action Buttons & Queue** | `NitsCore` / `NitsUI` / `NitsKit` | Completed ✓ | "Skip Intro" / "Next Episode" spans and Up Next cards from the host, timed display, auto-press; host-driven Next / Previous; hiding controls |
 | **Video Geometry (Aspect, Crop, Zoom)** | `NitsCore` / `NitsUI` / `NitsKit` | In Progress ⏳ | Aspect override, crop to ratio, Fit / Fill / Stretch / Original, zoom & pan on both surfaces; XDR check and auto-crop pending |
-| **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Planned 📋 | Export 10-bit raw HDR and tonemapped SDR frames |
+| **Color-Accurate Screenshots** | `NitsCore` / `NitsKit` | Completed ✓ | The frame as shown: 16-bit P3 PNG (Metal), BT.2100 HEIC for HDR (system); raw export planned |
 | **Now Playing Integration** | `NitsKit` | Completed ✓ | `NowPlaying.framework` (macOS 27+) + `MPNowPlayingInfoCenter` |
 | **Windowing & Keycode Handling** | `NitsKit` | Completed ✓ | Layout-independent ANSI keys, autohiding cursor, fullscreen |
 | **Display Sleep Management** | `NitsCore` | Completed ✓ | IOKit power assertions during active video |
 | **Logging & Diagnostics** | `NitsCore` / `NitsKit` | Completed ✓ | `AppLog` categories, in-memory store, `LogViewerWindowController` |
-| **Host Integration API** | `NitsCore` | In Progress ⏳ | `NativeVideoHostView`, `PlayerEngineProtocol` with track, buffering, seeking and time events; overlay compositing to verify |
-| **Standalone Dylib Bundling** | Scripts / CI | Completed ✓ | Embed FFmpeg dylibs via `@rpath` in `Nits.app` |
+| **Host Integration API** | `NitsCore` | Completed ✓ | `NativeVideoHostView`, `PlayerEngineProtocol` with track, buffering, seeking, time and subtitle events; transparent overlays |
+| **Standalone Bundling & Releases** | Scripts / CI | Completed ✓ | LGPL FFmpeg / dav1d / libass via `@rpath` in `Nits.app`; tag-driven releases, Homebrew cask; not notarized |

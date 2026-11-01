@@ -4,9 +4,6 @@ A video player for macOS built on VideoToolbox, Metal and FFmpeg.
 
 ![Nits playing a video](docs/screenshot.webp)
 
-> [!NOTE]
-> Pre-1.0: the `NitsKit` / `NitsCore` API may change between minor versions.
-
 ## Install
 
 ```bash
@@ -17,45 +14,52 @@ Or download the zip from [Releases](https://github.com/ghotriw/nits/releases). T
 notarized: after unzipping, run `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
 System Settings → Privacy & Security → Open Anyway. The Homebrew cask does this for you.
 
-## Roadmap
+## Features
 
 **Video & HDR**
-- [x] Codecs: AV1, VP9, HEVC, H.264
-- [x] Legacy codecs: WMV/VC-1, MPEG-1/2, MPEG-4 Part 2 (DivX/Xvid), MS-MPEG4, H.263, Sorenson Spark, VP6, VP8, Theora, RealVideo, Motion JPEG, DV, Cinepak and any other video codec FFmpeg decodes
-- [x] HDR output on Apple XDR displays, custom tone mapping to SDR on standard screens
+- HDR10, HDR10+, HLG and Dolby Vision on XDR displays; BT.2390 tone mapping to SDR on other screens, scene-adaptive
+  from Dolby Vision (Profiles 5, 8.1, 8.4) and HDR10+ dynamic metadata
+- HEVC, H.264, AV1, VP9 and Apple ProRes decoded in VideoToolbox (in hardware where the chip has it, AV1 on M3 and
+  later, dav1d otherwise); DNxHR, VC-1, MPEG-1/2, MPEG-4 Part 2 (DivX / Xvid), VP8, Theora, RealVideo and any other
+  codec FFmpeg decodes in software
+- Interlaced video deinterlaced on the GPU, a frame per field (50 / 60 fps)
+- Aspect ratio override, crop, Fit / Fill / Stretch / Original Size, zoom and pan
+- Screenshots, timeline thumbnails, chapters, Picture in Picture
 
-**Dolby Vision**
-- [x] Profile 5 and Profile 8 (8.1, 8.4) playback
-- [x] Dynamic metadata (RPU L1 & L2) with scene-adaptive tone mapping
+**Audio**
+- Multichannel 5.1 / 7.1 and Spatial Audio, track switching, audio-only playback
+- External audio tracks: a dub or commentary in a file of its own, picked up next to the video or added by hand
+- Audio delay adjustment, remembered per file
 
-**Audio & subtitles**
-- [x] Audio: multichannel 5.1/7.1, Spatial Audio, track switching, audio-only playback
-- [x] External audio tracks: a dub or commentary in a file of its own, picked up next to the video or added by hand
-- [x] Subtitles: embedded and external SRT / WebVTT with customizable styling; subtitle files next to the video are picked up automatically
+**Subtitles**
+- SRT, WebVTT, MicroDVD, SAMI with customizable styling; ASS / SSA rendered by libass
+- Bitmap subtitles: PGS (Blu-ray), VobSub (DVD), DVB; CEA-608 closed captions
+- Subtitle files next to the video picked up automatically; drag and drop; a second track shown at once; delay,
+  position and scale
 
-**Player & system**
-- [x] Keyboard shortcuts, OSD, frame stepping, quick settings, playlists, customizable control bar
-- [x] macOS integration: Now Playing media keys, Control Center, sleep prevention
-- [x] Network streaming over HTTP/HTTPS with custom headers
-- [x] Video sites (YouTube and others) through yt-dlp, found on the system (`brew install yt-dlp deno`)
-- [x] Playback history: resume where you left off
-- [x] Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
+**Streaming**
+- HTTP / HTTPS with custom headers, read ahead
+- HLS with adaptive bitrate and a manual quality picker
+- Video sites (YouTube and others) through yt-dlp, found on the system (`brew install yt-dlp deno`), with
+  SponsorBlock skip buttons
 
-**Next**
-- [x] Styled ASS/SSA subtitles
-- [x] Bitmap subtitles (PGS / VOBSUB)
-- [x] Audio sync delay adjustment
-- [x] Subtitle sync delay adjustment
-- [x] Apple ProRes support
-- [x] Timeline thumbnails
-- [x] Timeline chapters
-- [x] Picture-in-Picture
-- [x] Embedding in web clients
-- [x] Standalone app bundle with embedded FFmpeg
+**Player**
+- Keyboard-first: layout-independent shortcuts, scrubbing with a held arrow key, frame stepping, playback speed
+- OSD, Quick Settings, customizable control bar
+- Playlists (M3U, PLS, XSPF, CUE) and folders; resume where you left off, recent media
+- macOS integration: Now Playing media keys, Control Center, sleep prevention
 
-Details: [docs/ROADMAP.md](docs/ROADMAP.md).
+**Embedding**
+- `NitsKit` / `NitsCore` for host apps: a player window or a bare video view with an engine API
+- Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
+
+Planned: MPEG-DASH, night mode (dynamic range compression), black-bar detection. Details and status:
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## API Usage
+
+> [!NOTE]
+> Pre-1.0: the `NitsKit` / `NitsCore` API may change between minor versions.
 
 Add `Nits` to your `Package.swift`:
 
