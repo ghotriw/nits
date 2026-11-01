@@ -382,7 +382,7 @@ extension PlayerEngine {
         func openSource() async -> MediaDemuxer? {
             let (sourcePath, sourceHeaders, requestSize) = (source.path, source.headers, source.httpRequestSize)
             // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
-            var isNetwork = MediaURL.isNetworkURL(sourcePath)
+            var isNetwork = MediaURL.isNetworkURL(sourcePath) || MediaURL.isInlineDASHManifest(sourcePath)
             if !isNetwork {
                 isNetwork = await Task.detached(priority: .userInitiated) {
                     MediaURL.isHLSManifestWithRemoteMedia(atPath: sourcePath)
@@ -410,7 +410,7 @@ extension PlayerEngine {
                 let delay = isSettling ? 1000 : attempt * 250
                 AppLog.warning(
                     .engine,
-                    "\(isSettling ? "Fresh stream not yet accepted" : "Transient network failure") (\(err.message), code \(err.code)) opening '\(sourcePath)' on attempt \(attempt)/\(maxAttempts). Retrying in \(delay)ms..."
+                    "\(isSettling ? "Fresh stream not yet accepted" : "Transient network failure") (\(err.message), code \(err.code)) opening '\(MediaURL.loggable(sourcePath))' on attempt \(attempt)/\(maxAttempts). Retrying in \(delay)ms..."
                 )
                 try? await Task.sleep(for: .milliseconds(delay))
             }
@@ -456,7 +456,9 @@ extension PlayerEngine {
             } else {
                 errorDetail = "Failed to open stream or media file."
             }
-            fail(errorDetail, logging: "Failed to open file or network stream '\(source.path)': \(errorDetail)")
+            fail(
+                errorDetail,
+                logging: "Failed to open file or network stream '\(MediaURL.loggable(source.path))': \(errorDetail)")
             return
         }
 

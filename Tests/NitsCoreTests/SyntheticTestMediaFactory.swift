@@ -141,6 +141,10 @@ public enum SyntheticTestMediaFactory {
         /// HLS master playlist (6s) with two H.264 variants (320x180, 640x360) and their audio and subtitles as
         /// renditions (`EXT-X-MEDIA`) both share: English and Ukrainian AAC, two WebVTT subtitle playlists in one group
         case hlsRenditions
+        /// Four one-second segments (4s) of an H.264 picture (320x180, 25 fps, keyframe each) and AAC audio, as segments
+        /// of one URL a DASH manifest lists (`SegmentedDASHManifest`): `video/N` and `audio/N` from 0, no extension,
+        /// each with the initialization data before its media. Made as a directory; `filename` is `video/0`
+        case dashSegments
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
         var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
@@ -267,9 +271,14 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_variants_single_file/master.m3u8"
             case .hlsLadder:
                 return "synth_hls_ladder/master.m3u8"
+            case .dashSegments:
+                return "synth_dash_segments/video/0"
             }
         }
     }
+
+    /// `dashSegments`' segment count.
+    static let dashSegmentCount = 4
 
     /// Chapters muxed into the chapter presets: (start, end, title) in seconds; the third has no title.
     public static let chapterMarkers: [(start: Double, end: Double, title: String?)] = [
@@ -391,6 +400,19 @@ public enum SyntheticTestMediaFactory {
                 print("[SyntheticTestMediaFactory] Failed to write the SCC captions for \(preset.rawValue)")
                 return nil
             }
+        }
+
+        if preset == .dashSegments {
+            let directory = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-dash")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            guard makeDASHSegments(ffmpeg, in: directory, preset: preset) else { return nil }
+            let published = URL(fileURLWithPath: targetPath).deletingLastPathComponent().deletingLastPathComponent()
+                .path
+            guard rename(directory.path, published) == 0 || FileManager.default.fileExists(atPath: targetPath) else {
+                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
+                return nil
+            }
+            return targetPath
         }
 
         if preset.isHLS {
@@ -549,6 +571,39 @@ public enum SyntheticTestMediaFactory {
         }
     }
 
+    /// `dashSegments`: FFmpeg's DASH muxer makes the segments of the picture and of the audio, which are put in
+    /// `video/N` and `audio/N` (from 0), each after its stream's initialization data.
+    private static func makeDASHSegments(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let made = directory.appendingPathComponent("made", isDirectory: true)
+        try? FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        let seconds = dashSegmentCount
+        let arguments = [
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=\(seconds)",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=\(seconds)",
+            "-c:v", "libx264", "-g", "25", "-keyint_min", "25", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-map", "0:v", "-map", "1:a", "-f", "dash", "-seg_duration", "1", "-use_template", "1",
+            "-use_timeline", "0", "-adaptation_sets", "id=0,streams=v id=1,streams=a",
+            "-init_seg_name", "init-$RepresentationID$.mp4", "-media_seg_name", "chunk-$RepresentationID$-$Number$.m4s",
+            made.appendingPathComponent("out.mpd").path,
+        ]
+        guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+        for (name, stream) in [("video", 0), ("audio", 1)] {
+            let folder = directory.appendingPathComponent(name, isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard let initialization = try? Data(contentsOf: made.appendingPathComponent("init-\(stream).mp4")) else {
+                return false
+            }
+            for number in 0..<seconds {
+                guard
+                    let media = try? Data(contentsOf: made.appendingPathComponent("chunk-\(stream)-\(number + 1).m4s")),
+                    (try? (initialization + media).write(to: folder.appendingPathComponent("\(number)"))) != nil
+                else { return false }
+            }
+        }
+        try? FileManager.default.removeItem(at: made)
+        return true
+    }
+
     /// Runs FFmpeg to completion. stderr is drained while the process runs (a full pipe would block it)
     /// and only errors are logged, so the output stays small.
     private static func runFFmpeg(_ ffmpeg: String, arguments: [String], preset: Preset) -> Bool {
@@ -589,7 +644,7 @@ public enum SyntheticTestMediaFactory {
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
-            .hlsRenditions, .hlsLadder:
+            .hlsRenditions, .hlsLadder, .dashSegments:
             return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [

@@ -51,6 +51,24 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         context?.pointee.iformat.map { String(cString: $0.pointee.name) == "hls" } ?? false
     }
 
+    /// The HTTP options (headers, user agent, timeouts) of the requests a DASH demuxer makes for its segments. It copies
+    /// them from the HTTP input its manifest was read from, which an inline manifest isn't, so they are added to each
+    /// request here (`MediaURL.requestOptions`). Empty for other sources.
+    var segmentRequestOptions: [(name: String, value: String)] = []
+
+    /// Adds `segmentRequestOptions` to the request for `url` a DASH demuxer is opening, unless it carries them.
+    private func addSegmentRequestOptions(
+        _ s: UnsafeMutablePointer<AVFormatContext>?, _ url: UnsafePointer<CChar>?,
+        _ options: UnsafeMutablePointer<OpaquePointer?>?
+    ) {
+        guard !segmentRequestOptions.isEmpty, let options, let url, let format = s?.pointee.iformat,
+            String(cString: format.pointee.name) == "dash", MediaURL.isNetworkURL(String(cString: url))
+        else { return }
+        for option in segmentRequestOptions {
+            _ = av_dict_set(options, option.name, option.value, AV_DICT_DONT_OVERWRITE)
+        }
+    }
+
     /// Bytes read so far by every input the context opened.
     var total: Int64 {
         open.reduce(closedBytes) { $0 + $1.pointee.bytes_read }
@@ -88,6 +106,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
                 case .failed(let code)?:
                     ret = code
                 case nil:
+                    counter.addSegmentRequestOptions(s, url, options)
                     ret = open(s, pb, url, flags, options)
                 }
             }

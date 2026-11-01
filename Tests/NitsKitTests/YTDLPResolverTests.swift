@@ -260,6 +260,66 @@ struct YTDLPResolverTests {
         #expect(try info(direct).resolvedMedia(for: file) == nil)
     }
 
+    /// The recording of a live stream that just ended, as YouTube lists it: segments of one URL, a second each.
+    static let recording = """
+        {"id": "rec", "title": "Stream", "extractor_key": "Youtube", "duration": 4097, "is_live": false,
+         "requested_formats": [
+           {"format_id": "137", "url": "https://rr1.googlevideo.example/videoplayback?id=a&itag=137",
+            "protocol": "http_dash_segments", "ext": "mp4", "vcodec": "avc1.4D4028", "acodec": "none", "width": 1920,
+            "height": 1080, "fps": 30, "tbr": 4200.5, "target_duration": 1,
+            "fragments": [{"fragment_count": 4095}, {"fragment_count": 4095}],
+            "http_headers": \(headers)},
+           {"format_id": "140", "url": "https://rr1.googlevideo.example/videoplayback?id=a&itag=140",
+            "protocol": "http_dash_segments", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "asr": 44100,
+            "abr": 144, "target_duration": 1, "http_headers": \(headers)}
+         ]}
+        """
+
+    @Test("Segments of one URL play from a manifest of the picture and its audio, built from the page's answer")
+    func readsSegmentedRecording() throws {
+        let resolved = try #require(try info(Self.recording).resolvedMedia(for: Self.page))
+        #expect(MediaURL.isInlineDASHManifest(resolved.path))
+        #expect(resolved.headers["User-Agent"] == "Mozilla/5.0")
+        #expect(resolved.audioFiles.isEmpty, "The audio is in the manifest")
+        #expect(resolved.historyKey == "youtube:rec")
+        let encoded = String(resolved.path.dropFirst("data:application/dash+xml;base64,".count))
+        let manifest = String(decoding: try #require(Data(base64Encoded: encoded)), as: UTF8.self)
+        // The count YouTube lists, not the page's length; the picture first.
+        #expect(manifest.contains(#"mediaPresentationDuration="PT4095.0S""#))
+        let video = try #require(manifest.range(of: #"mimeType="video/mp4""#))
+        let audio = try #require(manifest.range(of: #"mimeType="audio/mp4""#))
+        #expect(video.lowerBound < audio.lowerBound)
+        #expect(
+            manifest.contains(#"codecs="avc1.4D4028" width="1920" height="1080" frameRate="30.0" bandwidth="4200500""#))
+        #expect(manifest.contains(#"audioSamplingRate="44100""#))
+        #expect(
+            manifest.contains(
+                #"media="https://rr1.googlevideo.example/videoplayback?id=a&amp;itag=137&amp;sq=$Number$""#))
+        #expect(manifest.contains(#"startNumber="0""#))
+        #expect(manifest.contains(#"<S t="0" d="1000" r="4094"/>"#), "The timeline ends the stream at its last segment")
+        #expect(manifest.contains(#"audioSamplingRate="44100" bandwidth="144000""#), "The audio's bitrate is abr")
+    }
+
+    @Test(
+        "Without the count YouTube lists, the page's length makes it; a stream still on the air, or other URLs, don't play"
+    )
+    func readsSegmentedEdges() throws {
+        let unlisted = Self.recording.replacingOccurrences(
+            of: #""fragments": [{"fragment_count": 4095}, {"fragment_count": 4095}],"#, with: "")
+        let resolved = try #require(try info(unlisted).resolvedMedia(for: Self.page))
+        let encoded = String(resolved.path.dropFirst("data:application/dash+xml;base64,".count))
+        let manifest = String(decoding: try #require(Data(base64Encoded: encoded)), as: UTF8.self)
+        #expect(manifest.contains(#"mediaPresentationDuration="PT4097.0S""#))
+        let live = Self.recording.replacingOccurrences(of: #""is_live": false"#, with: #""is_live": true"#)
+        #expect(throws: MediaResolutionError.self) { try info(live).resolvedMedia(for: Self.page) }
+        let mixed = Self.recording.replacingOccurrences(
+            of: #""format_id": "140", "url": "https://rr1.googlevideo.example/videoplayback?id=a&itag=140","#,
+            with: #""format_id": "140", "url": "https://media.example/audio", "target_duration": null, "x": 1,"#
+        ).replacingOccurrences(
+            of: #""protocol": "http_dash_segments", "ext": "m4a""#, with: #""protocol": "https", "ext": "m4a""#)
+        #expect(throws: MediaResolutionError.self) { try info(mixed).resolvedMedia(for: Self.page) }
+    }
+
     @Test("HLS opens from its master playlist, for its variants, and the generic extractor's ids name no history")
     func readsHLSMasterAndGenericPages() throws {
         let variant = """
@@ -306,10 +366,12 @@ struct YTDLPResolverTests {
         #expect(!error("Traceback (most recent call last):\n  File \"yt_dlp\", line 1\nKeyError: 'x'\n").isAboutPage)
     }
 
-    @Test("The format selector keeps DASH out of every choice")
+    @Test("The format selector keeps DASH manifests out, and asks for segments of one URL last")
     func selectsPlayableFormats() {
         let choices = YTDLPResolver.formatSelector.split(separator: "/")
-        #expect(choices.allSatisfy { $0.contains("[protocol^=m3u8]") || $0.contains("[protocol!*=dash]") })
+        #expect(
+            choices.dropLast().allSatisfy { $0.contains("[protocol^=m3u8]") || $0.contains("[protocol!*=dash]") })
+        #expect(choices.last == "bv*[protocol=http_dash_segments]+ba[protocol=http_dash_segments]")
         let arguments = YTDLPResolver.arguments(for: Self.page, headers: ["Referer": "https://a.example/"])
         #expect(arguments.suffix(4) == ["--add-headers", "Referer:https://a.example/", "--", Self.page.absoluteString])
     }

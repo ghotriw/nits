@@ -23,9 +23,23 @@ struct YTDLPInfo: Decodable, Sendable {
         var manifestURL: String?
         var httpHeaders: [String: String]?
         var downloaderOptions: DownloaderOptions?
+        /// The container's extension ("mp4", "webm", "m4a").
+        var ext: String?
+        /// What a segmented format (`http_dash_segments`) lasts per segment, in seconds, and its segments: YouTube's
+        /// listing of a just ended live stream, each `url` the format's with `&sq=N`. Only the count is read.
+        var targetDuration: Double?
+        var fragments: [Fragment]?
+
+        struct Fragment: Decodable, Sendable {
+            var fragmentCount: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case fragmentCount = "fragment_count"
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
-            case url, `protocol`, vcodec, acodec, language
+            case url, `protocol`, vcodec, acodec, language, ext, fragments
             case formatNote = "format_note"
             case formatID = "format_id"
             case abr, tbr, width, height, fps
@@ -34,6 +48,7 @@ struct YTDLPInfo: Decodable, Sendable {
             case manifestURL = "manifest_url"
             case httpHeaders = "http_headers"
             case downloaderOptions = "downloader_options"
+            case targetDuration = "target_duration"
         }
 
         /// A stream of the picture (perhaps with sound); yt-dlp says "none" for a stream without one, and nothing
@@ -84,6 +99,8 @@ struct YTDLPInfo: Decodable, Sendable {
     /// A URL the generic extractor found to be media itself, not a page.
     var direct: Bool?
     var duration: Double?
+    /// Whether the stream is on the air; its segments are still being made, so a manifest of the ones listed ends early.
+    var isLive: Bool?
     /// The format chosen, when it is one (a site's muxed stream): the top level carries it.
     var url: String?
     var `protocol`: String?
@@ -101,6 +118,7 @@ struct YTDLPInfo: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type = "_type"
         case id, title, direct, url, `protocol`, duration, chapters, subtitles
+        case isLive = "is_live"
         case extractorKey = "extractor_key"
         case manifestURL = "manifest_url"
         case httpHeaders = "http_headers"
@@ -110,11 +128,26 @@ struct YTDLPInfo: Decodable, Sendable {
         case automaticCaptions = "automatic_captions"
     }
 
-    /// Protocols the demuxer reads: progressive HTTP and HLS. Not DASH manifests or fragments (FFmpeg's DASH demuxer
-    /// isn't built), nor Smooth Streaming or HDS.
+    /// Protocols the demuxer reads on their own: progressive HTTP and HLS. Not DASH's fragments (`isSegmented`), nor
+    /// Smooth Streaming or HDS.
     static func isPlayable(_ protocol: String?) -> Bool {
         guard let `protocol` else { return true }
         return `protocol` == "http" || `protocol` == "https" || `protocol`.hasPrefix("m3u8")
+    }
+
+    /// yt-dlp's protocol for formats it downloads as a list of segments.
+    static let segmentedProtocol = "http_dash_segments"
+
+    /// Whether Nits plays `format`, a list of segments, from a manifest of its own (`SegmentedDASHManifest`): one that
+    /// is numbered segments of one URL and ended (a just ended live stream's recording), told by the length of a
+    /// segment. Others, a manifest's representations with a list of URLs, are not read yet.
+    func isSegmented(_ format: Format) -> Bool {
+        format.protocol == Self.segmentedProtocol && format.url != nil && (format.targetDuration ?? 0) > 0
+            && isLive != true
+    }
+
+    private func isPlayable(_ format: Format) -> Bool {
+        Self.isPlayable(format.protocol) || isSegmented(format)
     }
 
     /// The streams to play the page from; `nil` when `pageURL` is media itself, to open as it is. `sponsorBlock`, the
@@ -134,7 +167,7 @@ struct YTDLPInfo: Decodable, Sendable {
                 downloaderOptions: downloaderOptions)
         guard let path = main.url else { throw MediaResolutionError("yt-dlp found no stream to play") }
         let chosen = formats.isEmpty ? [main] : formats
-        if let unplayable = chosen.first(where: { !Self.isPlayable($0.protocol) }) {
+        if let unplayable = chosen.first(where: { !isPlayable($0) }) {
             throw MediaResolutionError(
                 "Its streams need \(unplayable.protocol ?? "another protocol"), not supported yet")
         }
@@ -162,6 +195,16 @@ struct YTDLPInfo: Decodable, Sendable {
                 path: master, headers: headers, subtitleFiles: resolvedSubtitles, chapters: resolvedChapters,
                 title: title, historyKey: historyKey, actionButtons: buttons)
         }
+        // Segments of one URL play from a manifest that lists them, the picture and its audio in one demuxer.
+        if chosen.contains(where: { $0.protocol == Self.segmentedProtocol }) {
+            guard chosen.allSatisfy(isSegmented), let manifest = segmentedManifest(of: chosen) else {
+                throw MediaResolutionError("Its streams need another protocol, not supported yet")
+            }
+            return ResolvedMedia(
+                path: MediaURL.inlineDASHManifest(manifest.text()), headers: headers,
+                subtitleFiles: resolvedSubtitles, chapters: resolvedChapters, title: title, historyKey: historyKey,
+                actionButtons: buttons)
+        }
         let audio = formats.filter { $0.hasAudio && !$0.hasVideo && $0.url != nil }
         let pictures = otherPictures(like: picture)
         return ResolvedMedia(
@@ -178,6 +221,37 @@ struct YTDLPInfo: Decodable, Sendable {
             actionButtons: buttons,
             httpRequestSize: main.downloaderOptions?.httpChunkSize,
             videoFormats: pictures, selectedVideoFormatID: picture?.formatID)
+    }
+
+    /// The manifest playing `formats` (all `isSegmented`); `nil` when it can't tell how many segments there are.
+    func segmentedManifest(of formats: [Format]) -> SegmentedDASHManifest? {
+        // A picture first. A format with both is the picture alone: its sound is in its segments.
+        let ordered = formats.filter(\.hasVideo) + formats.filter { !$0.hasVideo }
+        let streams = ordered.compactMap { format -> SegmentedDASHManifest.Stream? in
+            guard let url = format.url else { return nil }
+            let container =
+                switch format.ext?.lowercased() {
+                case "m4a", "mp4", nil: "mp4"
+                case "weba", "webm": "webm"
+                case let other?: other
+                }
+            let codec = format.hasVideo ? format.vcodec : format.acodec
+            return .init(
+                kind: format.hasVideo ? .video : .audio, id: format.formatID ?? "0", container: container,
+                codecs: codec == "none" ? nil : codec, bandwidth: (format.tbr ?? format.abr).map { Int($0 * 1000) },
+                width: format.width, height: format.height, frameRate: format.fps, sampleRate: format.sampleRate,
+                url: url)
+        }
+        guard let segmentDuration = formats.first?.targetDuration, segmentDuration > 0, !streams.isEmpty else {
+            return nil
+        }
+        // The count yt-dlp lists; else what the page's length makes, which is only about it: the one recording seen had
+        // 4097 s for 4095 segments of 1 s, so the manifest asks for segments past the last. Those fail (a quick answer,
+        // or a wait for the timeout: not known) and the stream ends there. Not corrected by a margin without a
+        // second recording to tell how steady the difference is.
+        let listed = formats.compactMap { $0.fragments?.first?.fragmentCount }.min()
+        guard let count = listed ?? duration.map({ Int($0 / segmentDuration) }), count > 0 else { return nil }
+        return SegmentedDASHManifest(streams: streams, segmentDuration: segmentDuration, segmentCount: count)
     }
 
     /// The page's subtitle tracks: author-uploaded (`subtitles`) first, then original speech-to-text captions

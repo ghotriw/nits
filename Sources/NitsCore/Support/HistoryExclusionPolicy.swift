@@ -65,6 +65,8 @@ public struct HistoryExclusionPolicy: Sendable, Equatable {
 
     /// Checks if a given media resource string (POSIX path, `file://` URL, or network stream URL) is excluded.
     public func isExcluded(pathOrURL: String) -> Bool {
+        // The streams a resolver gave as one manifest are no place of their own: the page they came from is checked.
+        if MediaURL.isInlineDASHManifest(pathOrURL) { return false }
         if Self.hasNonFileScheme(pathOrURL) {
             if let url = URL(string: pathOrURL) {
                 return isExcluded(networkURL: url)

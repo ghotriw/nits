@@ -53,7 +53,7 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
 - `NitsKit` / `NitsCore` for host apps: a player window or a bare video view with an engine API
 - Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
 
-Planned: MPEG-DASH, night mode (dynamic range compression), black-bar detection. Details and status:
+Planned: night mode (dynamic range compression), black-bar detection. Details and status:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## API Usage

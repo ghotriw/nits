@@ -17,6 +17,9 @@ build details are in `Contents/Resources/ThirdPartyLicenses`.
 | [FriBidi](https://github.com/fribidi/fribidi) | LGPL-2.1-or-later | Same as above. Bidirectional text for libass. |
 | [libunibreak](https://github.com/adah1972/libunibreak) | zlib | Same as above. Line breaking for libass. |
 
+FFmpeg's DASH demuxer reads its manifests with libxml2 (MIT), the one macOS ships (`/usr/lib/libxml2.2.dylib`):
+linked, not bundled.
+
 FFmpeg is built without `--enable-gpl`, `--enable-version3` or `--enable-nonfree`. Being dynamically
 linked, the libraries can be replaced with your own builds of the same major versions (re-sign the
 app afterwards with `codesign --force --deep -s - Nits.app`).

@@ -21,6 +21,7 @@ extension MediaDemuxer {
         completeVariantSwitchBeforeSeek(in: ctx, at: seconds)
         // A track selected before the seek is read from its target (an audio track switch seeks for this).
         applyChangedStreamSelection(in: ctx)
+        reenableEndedDASHStreams(in: ctx)
         // Splices read ahead past the target are gone: the variant read now plays from it.
         reportVariant(at: seconds)
         audioQueue.removeAll()
@@ -86,6 +87,20 @@ extension MediaDemuxer {
             "av_seek_frame to targetPts: \(target) (exact: \(isExact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
         return isExact
+    }
+
+    /// FFmpeg's DASH demuxer, once a stream was read to its end, closes its input and sets the stream to
+    /// `AVDISCARD_ALL`, so that it stays closed: a seek back moves its segment number, but nothing opens the input
+    /// again, and the stream reads nothing. The streams playing are enabled again before the seek. Behind `lock` and
+    /// `queueLock`.
+    func reenableEndedDASHStreams(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard let format = ctx.pointee.iformat, String(cString: format.pointee.name) == "dash" else { return }
+        let subtitle = selectedSubtitleTrackId.flatMap { id in
+            subtitleTracks.first { $0.id == id && $0.closedCaptionField == nil }?.streamIndex
+        }
+        for index in [videoStreamIndex, audioStreamIndex, subtitle ?? -1] where index >= 0 {
+            ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_DEFAULT
+        }
     }
 
     /// Seeks to the keyframe at or before (`AVSEEK_FLAG_BACKWARD`) or after `rawTarget`, in the seek stream's time

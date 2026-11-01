@@ -32,12 +32,17 @@ public final class YTDLPResolver: MediaResolver {
     }
 
     /// Asks for the streams `-f` picks: the best picture and audio over progressive HTTP (what YouTube gives as
-    /// separate files), else a muxed one, else HLS (live). Not DASH manifests or fragments: `YTDLPInfo.isPlayable`.
+    /// separate files), else a muxed one, else HLS (live), else segments of one URL (a live stream's recording YouTube
+    /// has not turned into files yet: `YTDLPInfo.isSegmented`). Not DASH manifests: `YTDLPInfo.isPlayable`.
     static let formatSelector: String = {
         let progressive = "[protocol^=http][protocol!*=dash]"
         let hls = "[protocol^=m3u8]"
-        return ["bv*\(progressive)+ba\(progressive)", "b\(progressive)", "b\(hls)", "bv*\(hls)+ba\(hls)"]
-            .joined(separator: "/")
+        let segments = "[protocol=\(YTDLPInfo.segmentedProtocol)]"
+        return [
+            "bv*\(progressive)+ba\(progressive)", "b\(progressive)", "b\(hls)", "bv*\(hls)+ba\(hls)",
+            "bv*\(segments)+ba\(segments)",
+        ]
+        .joined(separator: "/")
     }()
 
     /// Extensions of media and playlists, which open without asking yt-dlp.

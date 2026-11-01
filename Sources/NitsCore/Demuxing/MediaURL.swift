@@ -33,9 +33,29 @@ public enum MediaURL {
         return PlaylistParser.isHLSManifest(content: text) && (text.contains("http://") || text.contains("https://"))
     }
 
-    /// Whether `path` is read over the network: a URL, or a saved HLS manifest of network media.
+    /// The location of a DASH manifest given inline, as a `data:` URL (`inlineDASHManifest(_:)`): FFmpeg's DASH demuxer
+    /// reads the manifest from it, and the media segments it lists from the network.
+    public static func isInlineDASHManifest(_ path: String) -> Bool {
+        path.range(of: inlineDASHPrefix, options: [.anchored, .caseInsensitive]) != nil
+    }
+
+    private static let inlineDASHPrefix = "data:application/dash+xml;base64,"
+
+    /// `manifest` (the text of an MPD) as a location the demuxer opens. For a manifest built here, e.g. from the
+    /// segments a site's extractor lists, whose own file would have to be kept somewhere and cleaned up.
+    package static func inlineDASHManifest(_ manifest: String) -> String {
+        inlineDASHPrefix + Data(manifest.utf8).base64EncodedString()
+    }
+
+    /// `path` as written to the log: an inline manifest holds the streams' signed URLs, kilobytes of them.
+    public static func loggable(_ path: String) -> String {
+        isInlineDASHManifest(path) ? "inline DASH manifest (\(path.utf8.count) bytes)" : path
+    }
+
+    /// Whether `path` is read over the network: a URL, an inline DASH manifest, or a saved HLS manifest of network
+    /// media.
     public static func isNetworkSource(_ path: String) -> Bool {
-        isNetworkURL(path) || isHLSManifestWithRemoteMedia(atPath: path)
+        isNetworkURL(path) || isInlineDASHManifest(path) || isHLSManifestWithRemoteMedia(atPath: path)
     }
 
     /// Adds the options `path` is opened with when it is a network source (`isNetworkSource`), and tells whether it
@@ -47,7 +67,10 @@ public enum MediaURL {
     ) -> Bool {
         guard isNetworkSource(path) else { return false }
         applyNetworkOptions(&options, headers: headers, httpRequestSize: httpRequestSize)
-        if !isNetworkURL(path) {
+        if isInlineDASHManifest(path) {
+            // The DASH demuxer opens what the manifest lists: the whitelist keeps it to HTTP(S), no files.
+            _ = av_dict_set(&options, "protocol_whitelist", "crypto,data,http,https,tcp,tls", 0)
+        } else if !isNetworkURL(path) {
             _ = av_dict_set(&options, "protocol_whitelist", "file,crypto,data,http,https,tcp,tls", 0)
         }
         return true
@@ -65,6 +88,28 @@ public enum MediaURL {
         return sanitized
     }
 
+    /// The options of an HTTP request: the custom headers (CRLF-sanitized; `User-Agent` as FFmpeg's own option), plus
+    /// reconnect and 10 s I/O timeout settings. Given to the input, and to the requests of a demuxer that opens its own
+    /// (DASH's segments, when its manifest is not an HTTP input they could be copied from).
+    static func requestOptions(headers: [String: String]) -> [(name: String, value: String)] {
+        var options: [(name: String, value: String)] = []
+        var headerString = ""
+        for (key, value) in sanitizedHeaders(headers).sorted(by: { $0.key < $1.key }) {
+            if key.lowercased() == "user-agent" {
+                options.append(("user_agent", value))
+            } else {
+                headerString += "\(key): \(value)\r\n"
+            }
+        }
+        if !headerString.isEmpty { options.append(("headers", headerString)) }
+        options += [
+            ("reconnect", "1"), ("reconnect_streamed", "1"), ("reconnect_delay_max", "5"),
+            // 10-second timeout in microseconds for network I/O
+            ("rw_timeout", "10000000"), ("timeout", "10000000"),
+        ]
+        return options
+    }
+
     /// Adds custom HTTP headers (CRLF-sanitized) plus reconnect and 10 s I/O timeout settings to
     /// `avformat_open_input` options for a network URL, and the size of its HTTP requests
     /// (`MediaLoadRequest.httpRequestSize`).
@@ -76,24 +121,9 @@ public enum MediaURL {
         if let httpRequestSize, httpRequestSize > 0 {
             _ = av_dict_set_int(&options, "request_size", Int64(httpRequestSize), 0)
         }
-        var headerString = ""
-        for (key, value) in sanitizedHeaders(headers) {
-            if key.lowercased() == "user-agent" {
-                _ = av_dict_set(&options, "user_agent", value, 0)
-            } else {
-                headerString += "\(key): \(value)\r\n"
-            }
+        for (name, value) in requestOptions(headers: headers) {
+            _ = av_dict_set(&options, name, value, 0)
         }
-        if !headerString.isEmpty {
-            _ = av_dict_set(&options, "headers", headerString, 0)
-        }
-
-        _ = av_dict_set(&options, "reconnect", "1", 0)
-        _ = av_dict_set(&options, "reconnect_streamed", "1", 0)
-        _ = av_dict_set(&options, "reconnect_delay_max", "5", 0)
-        // 10-second timeout in microseconds for network I/O
-        _ = av_dict_set(&options, "rw_timeout", "10000000", 0)
-        _ = av_dict_set(&options, "timeout", "10000000", 0)
         // HLS: one segment download at a time. By default FFmpeg opens the next segment while it reads one, to hide
         // the request's latency; over HTTP/1.1 its body comes with the answer and shares the link, so the segment
         // read, needed first, comes in at half the rate (`NetworkTransferMeter`), and after a variant switch the

@@ -50,6 +50,8 @@ final class TestHTTPServer: Sendable {
         var range: String?
         var acceptEncoding: String?
         var cookie: String?
+        /// Every header, by its lowercased name.
+        var headers: [String: String] = [:]
     }
 
     private struct State {
@@ -194,9 +196,12 @@ final class TestHTTPServer: Sendable {
                 return
             }
             let target = String(requestLine[1])
+            // A numbered segment of one URL (`video?sq=3`, as YouTube's recordings) is the file `video/3`.
+            let number = target.split(separator: "?", maxSplits: 1).dropFirst().first?
+                .split(separator: "&").first(where: { $0.hasPrefix("sq=") }).map { "/" + $0.dropFirst("sq=".count) }
             let path =
-                String(target.split(separator: "?").first ?? "").removingPercentEncoding?
-                .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+                (String(target.split(separator: "?").first ?? "").removingPercentEncoding?
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? "") + (number ?? "")
             var headers: [String: String] = [:]
             for line in lines.dropFirst() {
                 guard let colon = line.firstIndex(of: ":") else { continue }
@@ -205,7 +210,7 @@ final class TestHTTPServer: Sendable {
             }
             let request = Request(
                 path: path, time: .now, userAgent: headers["user-agent"], range: headers["range"],
-                acceptEncoding: headers["accept-encoding"], cookie: headers["cookie"])
+                acceptEncoding: headers["accept-encoding"], cookie: headers["cookie"], headers: headers)
             state.withLock { $0.requests.append(request) }
 
             let behavior = behavior(for: path, in: state)

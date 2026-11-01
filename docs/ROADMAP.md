@@ -301,10 +301,16 @@ flowchart TD
     the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the
     segment read (`AVERROR_EXIT`): find out first whether the playlist recovers from it.
 - [ ] **3.5.2. MPEG-DASH Integration:**
-  - Parsing `.mpd` manifests and segmented MP4/WebM initialization fragments.
-  - The bundled FFmpeg has no DASH demuxer: it needs `--enable-libxml2` (`scripts/build_dependencies.sh`, bump
-    `DEPS_VERSION`); a Homebrew FFmpeg may have it, so `swift run` and the bundle can differ. FFmpeg's DASH demuxer
-    has no adaptive bitrate of its own either.
+  - [x] FFmpeg's DASH demuxer in the bundled build (`--enable-libxml2`, the system's libxml2 linked from the SDK):
+    `.mpd` URLs open as any stream. Homebrew's FFmpeg has none, so a `swift run` / `swift test` without
+    `.build/dependencies` can't open a manifest. It has no adaptive bitrate of its own.
+  - [x] Segments of one URL that yt-dlp lists (`http_dash_segments` with `target_duration`: YouTube's recording of a
+    live stream that just ended, before it is turned into files) play from a manifest built from them
+    (`SegmentedDASHManifest`, given inline as a `data:` URL); the picture and its audio come out of one demuxer.
+  - [ ] yt-dlp's other DASH formats (a manifest's representations with lists of URLs): play the manifest
+    (`manifest_url`), choosing its representations.
+  - [ ] Quality choice and adaptive bitrate for DASH (`MediaDemuxer.variants` describes HLS only).
+  - [ ] A live (`type="dynamic"`) manifest.
 
 ---
 
@@ -772,7 +778,7 @@ flowchart TD
 | **CoreAudio Route Monitoring** | `NitsCore` | Completed ✓ | Real-time device listener, pipeline migration on change |
 | **A/V Sync Offset & Night Mode** | `NitsCore` / `NitsUI` | In Progress ⏳ | Audio delay (`±1 s`, remembered per file) done; DRC voice boost planned |
 | **Remote HTTP/HTTPS Streaming** | `NitsCore` | Completed ✓ | Auth headers, auto-reconnect, `AVIOInterruptCB` cancellation |
-| **Adaptive Streaming (HLS / DASH)** | `NitsCore` | In Progress ⏳ | HLS: read-ahead, renditions, adaptive bitrate, manual quality; MPEG-DASH planned |
+| **Adaptive Streaming (HLS / DASH)** | `NitsCore` | In Progress ⏳ | HLS: read-ahead, renditions, adaptive bitrate, manual quality; MPEG-DASH: manifests and YouTube recordings of ended live streams |
 | **Subtitles Engine (SRT / WebVTT)** | `NitsCore` / `NitsUI` | Completed ✓ | Embedded & external tracks, GPU Metal outline, styling UI |
 | **Subtitle Sync & Drag-and-Drop** | `NitsCore` / `NitsUI` | Completed ✓ | Subtitle delay offset (`±30s`), file drag-and-drop, sidecar discovery |
 | **Advanced Subtitles (ASS / PGS)** | `NitsCore` / `NitsUI` | Completed ✓ | libass, PGS / VobSub / DVB overlays; forced-only, smooth ASS animation, style override, CEA-608 captions |

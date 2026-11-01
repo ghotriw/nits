@@ -119,8 +119,18 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as `Process` is macOS-only), runs the yt-dlp
   installed on the system rather than a bundled one, which would age with the sites: `YTDLPLocator` searches `PATH`
   and the package managers' directories an app opened from the Finder lacks, and runs it with them on its `PATH`
-  (Deno, for YouTube). Its formats exclude DASH, which the bundled FFmpeg can't demux; HLS opens from its master
-  playlist (`manifest_url`), for its variants and adaptive bitrate. Progressive files are read in HTTP requests of
+  (Deno, for YouTube). Its formats exclude DASH manifests; HLS opens from its master
+  playlist (`manifest_url`), for its variants and adaptive bitrate. Segments of one URL (YouTube's recording of a live
+  stream that just ended, `http_dash_segments`) are the last choice of the selector: `SegmentedDASHManifest` makes a
+  manifest of them, given to the demuxer inline (`MediaURL.inlineDASHManifest`, a `data:` URL), where FFmpeg's DASH
+  demuxer reads the picture and its audio out of one input and seeks by segment. It copies the HTTP options of its
+  segments from the input the manifest came from, which a `data:` one isn't, so `FFmpegIOByteCounter` adds them to
+  each request (`segmentRequestOptions`). The manifest has a `SegmentTimeline`: from the duration alone FFmpeg counts
+  one segment too many and asks for it. And once a stream was read to its end the DASH demuxer closes its input and
+  sets the stream to `AVDISCARD_ALL`, which a seek back doesn't undo: `seek` enables the streams playing again
+  (`reenableEndedDASHStreams`). The manifest is the resolver's own format (`package` access, not for hosts to open),
+  so the thumbnails, the history and the logs treat it apart (`MediaURL.loggable`). Needs the bundled FFmpeg
+  (`--enable-libxml2`). Progressive files are read in HTTP requests of
   the size yt-dlp downloads them in (`http_chunk_size` → `httpRequestSize`, FFmpeg's `request_size`): YouTube throttles
   a request for the whole file to about twice its bitrate, which 2x playback outruns, and serves 10 MB ranges at the
   link's rate. The author's chapters stand in for a container without any. A YouTube video's SponsorBlock segments become skip

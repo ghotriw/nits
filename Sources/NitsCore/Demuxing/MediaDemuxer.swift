@@ -506,6 +506,9 @@ public final class MediaDemuxer: @unchecked Sendable {
 
         isNetworkSource = MediaURL.applySourceOptions(
             &avOptions, path: url, headers: headers, httpRequestSize: httpRequestSize)
+        if MediaURL.isInlineDASHManifest(url) {
+            ioBytes.segmentRequestOptions = MediaURL.requestOptions(headers: headers)
+        }
         // An HLS demuxer's requests go through `URLSession`, which tells their answers from their transfers and
         // keeps the connections open (`HTTPSessionTransport`, made for the first). FFmpeg's own keep-alive
         // (`http_persistent`, an option of the HLS demuxer, which other formats leave unused) would send the
@@ -535,7 +538,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         guard ret >= 0, let formatCtx = ctx else {
             let errorMsg = Self.ffmpegErrorDescription(ret)
             ctxContext.recordError(code: ret, message: errorMsg)
-            AppLog.error(.demuxer, "avformat_open_input failed with code \(ret) (\(errorMsg)) for '\(url)'")
+            AppLog.error(
+                .demuxer, "avformat_open_input failed with code \(ret) (\(errorMsg)) for '\(MediaURL.loggable(url))'")
             // Per FFmpeg avformat_open_input contract: user-allocated AVFormatContext is automatically freed on failure.
             return nil
         }
@@ -546,7 +550,9 @@ public final class MediaDemuxer: @unchecked Sendable {
             let errorMsg = Self.ffmpegErrorDescription(streamInfoRet)
             ctxContext.recordError(code: streamInfoRet, message: errorMsg)
             AppLog.error(
-                .demuxer, "avformat_find_stream_info failed with code \(streamInfoRet) (\(errorMsg)) for '\(url)'")
+                .demuxer,
+                "avformat_find_stream_info failed with code \(streamInfoRet) (\(errorMsg)) for '\(MediaURL.loggable(url))'"
+            )
             avformat_close_input(&self.formatCtx)
             return nil
         }

@@ -53,6 +53,12 @@ public final class ThumbnailManager {
             reset()
             return []
         }
+        // Read from the network all the same, with options the generator doesn't have (the segments' headers), and for
+        // as long as a recording lasts: none, whatever the policy.
+        guard !MediaURL.isInlineDASHManifest(path) else {
+            reset()
+            return []
+        }
 
         if currentPath == path && (!thumbnails.isEmpty || isGenerating) {
             return thumbnails
