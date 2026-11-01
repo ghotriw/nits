@@ -73,7 +73,9 @@
 
         /// Watched on the current output device and passed to `onRunningChange`: a Bluetooth device that restarts its
         /// IO right after playback starts (switching from a placeholder to the real A2DP stream) leaves the renderer's
-        /// audio queue behind the clock (see `AudioOutputInterruptionDetector`).
+        /// audio queue behind the clock (see `AudioOutputInterruptionDetector`). Only a Bluetooth device does that, so
+        /// only its events are passed on: on other devices a restart of the IO is the queue's own start (24 ms on the
+        /// built-in speakers in the log), within what the detector takes for the switch.
         nonisolated private static var deviceIsRunningAddress: AudioObjectPropertyAddress {
             AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyDeviceIsRunning, mScope: kAudioObjectPropertyScopeGlobal,
@@ -97,7 +99,8 @@
             guard let deviceID = Self.fetchDefaultOutputDeviceID(), let onRunningChange else { return }
             reportedDevice.withLock { $0 = deviceID }
             let block = Self.makeDeviceListener(
-                for: deviceID, reportedDevice: reportedDevice, onRunningChange: onRunningChange)
+                for: deviceID, reportedDevice: reportedDevice, reportsRunning: Self.isBluetooth(deviceID),
+                onRunningChange: onRunningChange)
             var address = Self.deviceIsRunningAddress
             _ = AudioObjectAddPropertyListenerBlock(deviceID, &address, Self.deviceListenerQueue, block)
             watchedDevice = deviceID
@@ -116,18 +119,30 @@
         /// Built outside the main actor: a closure formed in an isolated method would be main-actor isolated, and the
         /// runtime traps when the HAL calls it on `deviceListenerQueue`.
         nonisolated private static func makeDeviceListener(
-            for deviceID: AudioDeviceID, reportedDevice: OSAllocatedUnfairLock<AudioDeviceID?>,
+            for deviceID: AudioDeviceID, reportedDevice: OSAllocatedUnfairLock<AudioDeviceID?>, reportsRunning: Bool,
             onRunningChange: @escaping @Sendable (_ isRunning: Bool) -> Void
         ) -> AudioObjectPropertyListenerBlock {
             { @Sendable _, _ in
                 guard let isRunning = isDeviceRunning(deviceID) else { return }
                 AppLog.debug(.audio, "Output device \(deviceID) \(isRunning ? "started" : "stopped") its IO")
+                guard reportsRunning else { return }
                 // Held across the call, so a device change can't come in between the check and the report.
                 reportedDevice.withLock { current in
                     guard current == deviceID else { return }
                     onRunningChange(isRunning)
                 }
             }
+        }
+
+        /// Whether the device is reached over Bluetooth (classic or LE).
+        nonisolated private static func isBluetooth(_ deviceID: AudioDeviceID) -> Bool {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var value = UInt32(0)
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else { return false }
+            return value == kAudioDeviceTransportTypeBluetooth || value == kAudioDeviceTransportTypeBluetoothLE
         }
 
         nonisolated private static func isDeviceRunning(_ deviceID: AudioDeviceID) -> Bool? {

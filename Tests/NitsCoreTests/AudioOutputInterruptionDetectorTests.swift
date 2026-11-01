@@ -38,7 +38,8 @@ struct AudioOutputInterruptionDetectorTests {
     }
 
     @Test(
-        "IO stopping after a run on the placeholder re-anchors once the device runs again", arguments: [111, 192, 321])
+        "IO stopping after a run on the placeholder re-anchors once the device runs again",
+        arguments: [41, 43, 111, 192, 321])
     func placeholderSwitch(ranFor milliseconds: Int) {
         var detector = AudioOutputInterruptionDetector()
         detector.clockStarted(at: at(0))
@@ -53,7 +54,7 @@ struct AudioOutputInterruptionDetectorTests {
         #expect(confirm(&detector, current, milliseconds + 710))
     }
 
-    @Test("IO restarting within the queue start is a healthy start", arguments: [6, 11])
+    @Test("IO restarting within the queue start is a healthy start", arguments: [4, 6, 11, 24])
     func restartWithinQueueStart(ranFor milliseconds: Int) {
         var detector = AudioOutputInterruptionDetector()
         detector.clockStarted(at: at(0))

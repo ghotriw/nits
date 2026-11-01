@@ -13,7 +13,8 @@ protocol AudioOutputRoute: AnyObject {
     /// (AirPods connected, HDMI unplugged, …), before reporting the new one's running state.
     ///
     /// `onRunningChange` is called whenever the current output device starts or stops its IO, on a queue of the
-    /// route's own and never the main one: the synchronizer's `setRate` on the main thread can wait for the audio
+    /// route's own and never the main one, for the outputs that can swap their stream under a running audio queue
+    /// (Bluetooth; see `AudioOutputInterruptionDetector`) and for no other: the synchronizer's `setRate` on the main thread can wait for the audio
     /// queue to start, and the start for this notification to be delivered.
     func startMonitoring(
         binding renderer: AVSampleBufferAudioRenderer, onChange: @escaping @MainActor () -> Void,

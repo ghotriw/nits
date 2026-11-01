@@ -10,7 +10,9 @@ import Foundation
 ///
 /// Whether the clock is moving yet tells nothing: the synchronizer can hold it for a while after the queue has started.
 /// What tells is how long the device ran before stopping. Healthy starts that restart the IO stop it within ~10 ms of
-/// starting it, while the queue start still waits for it; the switch from a placeholder comes after 100 ms or more.
+/// starting it, while the queue start still waits for it (4 and 6 ms on AirPods, 24 ms on built-in speakers, in the
+/// log); the switch from a placeholder came after 100 ms or more on 2026-10-24 and after 41–43 ms on 2026-11-01
+/// (four starts in a row, each followed by 0.7–0.9 s without IO), so the line is drawn between those.
 /// The engine's own stops (pause, seek, track switch, buffering) stop the clock first, through `clockDidStop()` (from
 /// `cancelPreroll()` or buffering's start).
 ///
@@ -22,7 +24,7 @@ struct AudioOutputInterruptionDetector: Sendable {
     static let cooldown: Duration = .seconds(5)
     /// How long the device must have run for its IO stop to count: shorter runs stop within the queue start, which
     /// waits for the device and so starts the queue's timeline on the real stream.
-    static let minimumRunDuration: Duration = .milliseconds(50)
+    static let minimumRunDuration: Duration = .milliseconds(30)
 
     /// When the clock was started; `nil` while it is stopped. A rate change keeps it.
     private var clockStartedAt: ContinuousClock.Instant?
