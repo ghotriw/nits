@@ -106,6 +106,18 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   read-ahead limit (see "Network read-ahead"); for a local file, the few seconds the feeders asked for.
 - The demuxer accepts HTTP/HTTPS/HLS URLs with custom headers (`X-Emby-Token`, `Authorization`,
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
+- A DASH manifest (`.mpd`) is resolved by the engine's own `DASHManifestResolver`, asked before the host's
+  (`MediaResolverChain`; it ends in `.mpd`, a name like Unified Streaming's `/.mpd` too). It downloads the manifest
+  with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`): FFmpeg's DASH
+  demuxer opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,
+  in a timeline that repeats a segment to the end (`r="-1"`), seeks to the second segment. So it keeps one picture
+  (the best; the rest are `ResolvedMedia.videoFormats`, each a manifest of its own, which the quality menu switches
+  to as for a video site), the best audio of each language (not a codec FFmpeg has no decoder for: AC-4, MPEG-H;
+  `CodecFamily.canDecodeAudio`), and drops text and images, trick play and DRM streams;
+  gives timelines their repeats from the length of the period, and the manifest an absolute `BaseURL` of the address
+  after redirects. A manifest it can't handle (live, several periods, unreadable) returns `nil`: the address opens as it
+  is. Codec families are read by `CodecFamily`, shared with HLS. The segments' requests carry the headers through
+  `segmentRequestOptions` as for any inline manifest.
 - A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
   into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers, the page's
   subtitle files, chapters and action buttons). A host can give subtitle files of its own with any request

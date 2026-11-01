@@ -14,7 +14,7 @@ struct InlineDASHTests {
     private static var count: Int { SyntheticTestMediaFactory.dashSegmentCount }
 
     /// A server of the `dashSegments` preset's segments; nil when FFmpeg can't make them or can't read DASH.
-    private static func server() throws -> TestHTTPServer? {
+    static func server() throws -> TestHTTPServer? {
         guard av_find_input_format("dash") != nil,
             let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashSegments)
         else { return nil }

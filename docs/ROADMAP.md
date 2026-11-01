@@ -301,16 +301,28 @@ flowchart TD
     the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the
     segment read (`AVERROR_EXIT`): find out first whether the playlist recovers from it.
 - [ ] **3.5.2. MPEG-DASH Integration:**
-  - [x] FFmpeg's DASH demuxer in the bundled build (`--enable-libxml2`, the system's libxml2 linked from the SDK):
-    `.mpd` URLs open as any stream. Homebrew's FFmpeg has none, so a `swift run` / `swift test` without
-    `.build/dependencies` can't open a manifest. It has no adaptive bitrate of its own.
+  - [x] FFmpeg's DASH demuxer in the bundled build (`--enable-libxml2`, the system's libxml2 linked from the SDK).
+    Homebrew's FFmpeg has none, so a `swift run` / `swift test` without `.build/dependencies` can't open a manifest.
+    It has no adaptive bitrate of its own, and on its own it opens every representation of a manifest at once (slow),
+    fails the opening for one it can't read (a TTML track), plays the first picture it lists (the lowest), and seeks
+    wrongly in a timeline that repeats a segment to the end (`<S r="-1"/>`: it lands on the second segment).
+  - [x] `.mpd` addresses are read by `DASHManifestResolver` (`DASHManifest`) and the demuxer is given a rewritten
+    manifest inline: the best picture (the larger, HDR, the higher bitrate), the best audio of each language (the
+    main one's first), absolute `BaseURL`, timelines that end; without the tracks FFmpeg can't read (TTML and other
+    text, images, trick play) and the protected (DRM) streams. The other pictures are the quality menu
+    (`ResolvedMedia.videoFormats`, each a manifest of its own), the switch opening it again at the position, as a video
+    site's. A live manifest, one of several periods or one that can't be read is left to the demuxer as it is.
+  - [ ] Manifests at an address that doesn't end in `.mpd` (the demuxer opens them without the above: the first
+    picture, the seek of `r="-1"`); WebVTT sidecar subtitles of a manifest; thumbnails of a `.mpd` (none are made
+    of an inline manifest, whatever the network policy: the generator has no options for its segments).
   - [x] Segments of one URL that yt-dlp lists (`http_dash_segments` with `target_duration`: YouTube's recording of a
     live stream that just ended, before it is turned into files) play from a manifest built from them
     (`SegmentedDASHManifest`, given inline as a `data:` URL); the picture and its audio come out of one demuxer.
   - [ ] yt-dlp's other DASH formats (a manifest's representations with lists of URLs): play the manifest
     (`manifest_url`), choosing its representations.
-  - [ ] Quality choice and adaptive bitrate for DASH (`MediaDemuxer.variants` describes HLS only).
-  - [ ] A live (`type="dynamic"`) manifest.
+  - [ ] Adaptive bitrate for DASH (`AdaptiveBitrateLogic` shared with HLS; needs every representation in the manifest
+    and the requests through `HTTPSessionTransport`, `MediaDemuxer.variants` describes HLS only).
+  - [ ] A live (`type="dynamic"`) manifest, several periods.
 
 ---
 

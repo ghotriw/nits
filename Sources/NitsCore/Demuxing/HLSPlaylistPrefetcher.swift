@@ -287,13 +287,13 @@ final class HLSPlaylistPrefetcher: Sendable {
             attribute("BANDWIDTH", of: variant.attributes).flatMap(Int.init) ?? 0
         }
         guard let first = variants.first, let played = variants.max(by: { bandwidth($0) < bandwidth($1) }),
-            variants.allSatisfy({ attribute("CODECS", of: $0.attributes).flatMap(videoCodec) != nil })
+            variants.allSatisfy({ attribute("CODECS", of: $0.attributes).flatMap(CodecFamily.video) != nil })
         else { return [] }
         let groups = ["AUDIO", "VIDEO", "SUBTITLES"]
         let ladder = { (attributes: String) -> [String?] in
             [
-                attribute("CODECS", of: attributes).flatMap(videoCodec),
-                attribute("SUPPLEMENTAL-CODECS", of: attributes).flatMap(videoCodec),
+                attribute("CODECS", of: attributes).flatMap(CodecFamily.video),
+                attribute("SUPPLEMENTAL-CODECS", of: attributes).flatMap(CodecFamily.video),
                 attribute("VIDEO-RANGE", of: attributes),
             ] + groups.map { attribute($0, of: attributes) }
         }
@@ -306,18 +306,6 @@ final class HLSPlaylistPrefetcher: Sendable {
             Set(kept.map(\.uri) + [first.uri])
             .union(renditions.filter { keptGroups.contains("\($0.type) \($0.group)") }.map(\.uri))
         return Set(variants.map(\.uri) + renditions.map(\.uri)).subtracting(keep)
-    }
-
-    /// The video codec of a `CODECS` list, by family: the first entry that is a video codec's, its four-character
-    /// code with a profile's variants made one (`avc1` and `avc3`, `hvc1` and `hev1`, `dvh1` and `dvhe`).
-    private static func videoCodec(in codecs: String) -> String? {
-        let families = [
-            "avc1": "avc", "avc3": "avc", "hvc1": "hevc", "hev1": "hevc", "dvh1": "dvhevc", "dvhe": "dvhevc",
-            "dva1": "dvavc", "dvav": "dvavc", "av01": "av1", "dav1": "dvav1", "vp09": "vp9", "vp08": "vp8",
-        ]
-        return codecs.split(separator: ",").lazy.compactMap { entry in
-            families[String(entry.trimmingCharacters(in: .whitespaces).prefix { $0 != "." })]
-        }.first
     }
 
     /// What FFmpeg's probe of a media playlist opens: its init section (`EXT-X-MAP`) and the segment it starts from,
