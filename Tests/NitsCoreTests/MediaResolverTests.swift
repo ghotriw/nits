@@ -5,7 +5,7 @@ import os
 @testable import NitsCore
 
 /// Pages resolved into streams before the media opens (`PlayerEngine.mediaResolver`).
-@Suite("Media resolver", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Media resolver", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct MediaResolverTests {
     /// Resolves the pages under `/watch` into `resolved`, asked `order`; counts the pages it was asked for.

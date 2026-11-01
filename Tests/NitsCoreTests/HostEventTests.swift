@@ -5,7 +5,7 @@ import Testing
 @testable import NitsCore
 
 /// Events and state a host without access to observation (through `PlayerEngineProtocol`) relies on.
-@Suite("Host events", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Host events", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct HostEventTests {
     @Test("A load reports its tracks once, a track switch again, and a selection that changes nothing not at all")

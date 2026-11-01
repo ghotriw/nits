@@ -63,7 +63,7 @@ struct HostTrackNavigationTests {
     }
 }
 
-@Suite("Host track navigation during playback", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Host track navigation during playback", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct HostTrackNavigationPlaybackTests {
     private func makeHostEngine() -> (PlayerEngine, LockIsolated<[TrackNavigationDirection]>) {

@@ -295,7 +295,7 @@ extension HLSOverHTTPTests {
     }
 }
 
-@Suite("HLS over HTTP playback", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("HLS over HTTP playback", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct HLSOverHTTPPlaybackTests {
     @Test("The engine plays an HLS URL read ahead, and a switch reads the new variant from the current frame")

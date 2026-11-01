@@ -187,7 +187,7 @@ struct DelayedAudioSinkTests {
 
 /// Changing the delay during playback moves the queued audio without seeking; seeks start audio at the shifted
 /// position.
-@Suite("Audio delay during playback", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Audio delay during playback", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct AudioDelayPlaybackTests {
     /// Seconds of audio the renderer holds past the clock.

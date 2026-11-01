@@ -626,32 +626,6 @@ struct AssSubtitleTrackTests {
         #expect(engine.subtitles.isDrawingAuthored)
     }
 
-    @Test("A fade is drawn at the video's frame rate during playback, not at the 20 Hz time tick", .realtimePlayback)
-    @MainActor
-    func engineDrawsFadeAtFrameRate() async throws {
-        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assFadeSubtitlesMKV) else { return }
-        let engine = PlayerEngine.makeForTesting()
-        defer { engine.stop() }
-        engine.load(path: path)
-        try #require(engine.isLoaded)
-        let track = try #require(engine.subtitles.tracks.first)
-        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
-        engine.subtitles.select(trackId: track.id)
-        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
-        try #require(engine.subtitles.isDrawingAuthored)
-
-        engine.play()
-        // Distinct pictures shown during a second of the fade (0.75-1.75 s): about 60 at the frame rate, 20 at the tick.
-        var frames = Set<Int>()
-        let clock = ContinuousClock()
-        let deadline = clock.now + .seconds(5)
-        while clock.now < deadline, engine.currentTime < 1.75 {
-            if engine.currentTime >= 0.75, let image = engine.subtitles.images.first { frames.insert(image.id) }
-            try await Task.sleep(for: .milliseconds(2))
-        }
-        #expect(frames.count >= 35, "Pictures in a second of the fade: \(frames.count)")
-    }
-
     @Test(
         "The engine draws a selected ASS track with libass, keeps text cues for hosts, and the setting turns it off",
         .hostDependent)
@@ -724,5 +698,36 @@ struct AssSubtitleTrackTests {
 
         engine.subtitles.renderSize = CGSize(width: 640, height: 360)
         #expect(engine.subtitles.isDrawingAuthored, "A complete script file is drawn once the size is known")
+    }
+}
+
+// Plays in real time, so not in `AssSubtitleTrackTests`: its minute would count the wait for the other real-time tests
+// (see `RealtimePlaybackTrait`).
+@Suite("ASS subtitles during playback", .realtimePlayback, .backstopTimeLimit)
+struct AssSubtitlePlaybackTests {
+    @Test("A fade is drawn at the video's frame rate during playback, not at the 20 Hz time tick")
+    @MainActor
+    func engineDrawsFadeAtFrameRate() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assFadeSubtitlesMKV) else { return }
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(engine.isLoaded)
+        let track = try #require(engine.subtitles.tracks.first)
+        engine.subtitles.renderSize = CGSize(width: 640, height: 360)
+        engine.subtitles.select(trackId: track.id)
+        for _ in 0..<100 where engine.subtitles.activeDocument == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try #require(engine.subtitles.isDrawingAuthored)
+
+        engine.play()
+        // Distinct pictures shown during a second of the fade (0.75-1.75 s): about 60 at the frame rate, 20 at the tick.
+        var frames = Set<Int>()
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(5)
+        while clock.now < deadline, engine.currentTime < 1.75 {
+            if engine.currentTime >= 0.75, let image = engine.subtitles.images.first { frames.insert(image.id) }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(frames.count >= 35, "Pictures in a second of the fade: \(frames.count)")
     }
 }

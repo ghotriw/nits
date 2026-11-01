@@ -3,7 +3,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("End of media", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("End of media", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct EndOfMediaTests {
     @Test("Playing to the end completes")

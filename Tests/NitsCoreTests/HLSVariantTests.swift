@@ -189,7 +189,7 @@ struct HLSVariantTests {
     }
 }
 
-@Suite("HLS variant playback", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("HLS variant playback", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct HLSVariantPlaybackTests {
     @Test("A saved HLS manifest plays; an empty playlist opens nothing and reports no error")

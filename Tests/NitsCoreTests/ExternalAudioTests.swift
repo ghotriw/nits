@@ -5,7 +5,7 @@ import Testing
 @testable import NitsCore
 
 /// Audio from a file added to the media, read on an input of its own (`PlaybackInputs`).
-@Suite("External audio", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("External audio", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct ExternalAudioTests {
     /// Where the audio fed after the last start of feeding begins, in media seconds.

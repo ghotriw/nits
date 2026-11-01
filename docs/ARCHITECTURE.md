@@ -341,8 +341,13 @@ there is no sound at all.
 
 A probe of the take-over (`setRate(time:atHostTime:)` after a flush, margins of 0 to a latency and more, built-in speakers
 and AirPods) showed the synchronizer reading the provisional clock's position from `H1` on at every margin, and the call
-returning in 1 ms. That reading is the timebase, not the device: that the sound is in sync is judged by ear, on a file
-with a flash and a click on every second.
+returning in 1 ms. That reading is the timebase, not the device: that the sound is in sync is judged by ear, on the
+`flashClick` preset (a white frame and a click on every second; `flashClickAudio` is its sound alone, to add as a track).
+`SyncPatternTests` checks on it what a test can see: that the white frame is picked when the clock is at its second
+(within a frame: it is picked for the next vsync), after a load, keyframe seeks forward and back, an exact seek, an audio
+delay and with an added file's audio; and that the audio handed to the renderer has each click at its own timestamp, to
+a few samples. A 100 ms pick offset or a 1 ms audio timestamp offset fails it. The preset's FLAC comes in 100 ms packets:
+Matroska keeps milliseconds, and 1024-sample packets put the audio after a seek ~0.35 ms off its timestamps.
 
 **Why not "as in mpv / IINA"** (`.ref/mpv/audio/out`). mpv does not restart the audio device on a seek: `ao_coreaudio.c`
 pulls audio from an AudioUnit and on a seek only calls `AudioUnitReset`, which empties its buffers and leaves the unit

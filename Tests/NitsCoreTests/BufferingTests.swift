@@ -6,7 +6,7 @@ import Testing
 
 /// Stopping the feeders while the engine still counts as feeding looks to it like a demuxer that stopped delivering
 /// (a stalled network or disk): the queued audio and frames play out, then nothing follows.
-@Suite("Buffering when media data runs out", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Buffering when media data runs out", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct BufferingTests {
     private func startPlayback(

@@ -213,11 +213,14 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
   skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only
   to report, so run them locally before pushing.
-- Keep `.realtimePlayback` tests short (a few seconds each). They run one at a time through a queue shared across
-  suites, and a test's 60 s limit counts its wait in it: one long test (14 s of playback) pushed eleven unrelated tests
-  over the limit in a full run, which look like hangs and pass on their own. Tests that only measure (they need a
-  media file of one's own) take `.enabled(if:)` on the environment variable, so a run reports them as skipped.
-- Frame-freeze detection uses `PixelBufferAnalyzer`.
+- Keep `.realtimePlayback` tests short (a few seconds each): they run one at a time through a queue shared across
+  suites, and every second adds to a full run. Their 60 s limit is the trait's (`playTimeLimit`), counted from their
+  turn; their suites take `.backstopTimeLimit`, never `.timeLimit(.minutes(1))`, which counts the wait in the queue too
+  (once the queue reached a minute, each test added pushed the last ones over it). A real-time test in a suite with a
+  short `.timeLimit` goes to a suite of its own. Tests that only measure (they need a media file of one's own) take
+  `.enabled(if:)` on the environment variable, so a run reports them as skipped.
+- Frame-freeze detection uses `PixelBufferAnalyzer`. A/V sync uses the `flashClick` preset (`SyncPatternTests`); after
+  touching seeks, the clock, audio feeding or frame picking, run it too.
 - Media tests skip when `ffmpeg` is missing; CI installs it.
 - `TestHTTPServer` serves connections on its own queue (a `TaskExecutor`), never the cooperative pool: tests that
   open or read a network demuxer synchronously block pool threads, and a CI runner's three left it none to answer

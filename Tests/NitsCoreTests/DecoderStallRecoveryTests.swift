@@ -67,7 +67,7 @@ final class StallingVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     }
 }
 
-@Suite("Stalled video decoder recovery", .serialized, .realtimePlayback, .timeLimit(.minutes(1)))
+@Suite("Stalled video decoder recovery", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct DecoderStallRecoveryTests {
     /// Swaps in a decoder that stalls on demand while playback runs, so the feeder decodes through it.

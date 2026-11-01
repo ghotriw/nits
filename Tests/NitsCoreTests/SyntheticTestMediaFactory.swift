@@ -15,6 +15,12 @@ public enum SyntheticTestMediaFactory {
         /// H.264 video of 2 seconds with AAC audio of 10 seconds (MKV): the audio plays on 8 seconds past the
         /// last picture
         case videoEndsBeforeAudio
+        /// A/V sync pattern (30 seconds, MKV): black H.264 640x360 @ 30 fps with a white frame at every whole second
+        /// (frame 30·k), keyframes exactly there (GOP 30, no scenecut), and stereo FLAC 48 kHz, silent but for a 10 ms
+        /// 1 kHz click from every whole second. FLAC has no encoder delay, so a click sits on its second to the sample.
+        case flashClick
+        /// The audio of `flashClick` alone (stereo FLAC in MKA, 30 seconds), to add as an external track.
+        case flashClickAudio
         /// Audio-only multi-channel FLAC (15 seconds)
         case audioOnlyFLAC
         /// HEVC 10-bit HDR video with BT.2020 color primaries and PQ transfer function (10 seconds)
@@ -148,6 +154,10 @@ public enum SyntheticTestMediaFactory {
                 return "synth_h264_video_only.mp4"
             case .videoEndsBeforeAudio:
                 return "synth_video_ends_before_audio.mkv"
+            case .flashClick:
+                return "synth_flash_click.mkv"
+            case .flashClickAudio:
+                return "synth_flash_click_audio.mka"
             case .audioOnlyFLAC:
                 return "synth_audio_flac_51.flac"
             case .hevc10BitHDR:
@@ -555,6 +565,14 @@ public enum SyntheticTestMediaFactory {
         return true
     }
 
+    /// `flashClick`'s sound: a 10 ms 1 kHz click from every whole second, silence between (mono, 48 kHz, 30 s).
+    private static let flashClickAudioSource =
+        "aevalsrc=exprs='0.5*sin(2*PI*1000*t)*lt(mod(t\\,1)\\,0.01)':s=48000:d=30"
+
+    /// FLAC (no encoder delay) in packets of 4800 samples, 100 ms: Matroska keeps timestamps in milliseconds, and the
+    /// default 1024 samples (21.33 ms) would put the first packet after a seek up to half a millisecond off its audio.
+    private static let flashClickAudioCodec = ["-c:a", "flac", "-frame_size", "4800"]
+
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
@@ -670,6 +688,26 @@ public enum SyntheticTestMediaFactory {
                 "-an",
                 outputPath,
             ]
+
+        case .flashClick:
+            // Commas inside filter expressions are escaped (`\,`): unescaped, they separate filters.
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=30:duration=30",
+                "-f", "lavfi", "-i", flashClickAudioSource,
+                "-filter_complex",
+                "[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\\,30)\\,0)'[v];"
+                    + "[1:a]aformat=channel_layouts=stereo[a]",
+                "-map", "[v]", "-map", "[a]",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+            ] + flashClickAudioCodec + [outputPath]
+
+        case .flashClickAudio:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", flashClickAudioSource,
+                "-af", "aformat=channel_layouts=stereo",
+            ] + flashClickAudioCodec + [outputPath]
 
         case .audioOnlyFLAC:
             // 15 seconds 5.1 Surround FLAC
