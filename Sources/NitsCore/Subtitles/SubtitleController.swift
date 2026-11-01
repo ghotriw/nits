@@ -47,10 +47,27 @@ public struct SubtitleStyle: Equatable, Sendable {
     public var textColorHex: String
     public var backgroundColorHex: String
     public var backgroundOpacity: Double
+    /// Gap added after each letter, in em (a fraction of the font size); negative tightens.
+    public var letterSpacing: Double
+    /// Width of the outline against the usual one (1), 0 for none.
+    public var outlineWidth: Double
+
+    /// The defaults: plain system text, medium, with no box (the outline and shadow keep it legible).
+    public nonisolated static let defaultFontName = SubtitleSystemFont.standard.rawValue
+    public nonisolated static let defaultFontSize: Double = 30
+    public nonisolated static let defaultFontWeight = "Medium"
+    public nonisolated static let defaultBackgroundOpacity: Double = 0
+    public nonisolated static let defaultLetterSpacing: Double = 0
+    public nonisolated static let defaultOutlineWidth: Double = 1
+    public nonisolated static let letterSpacingRange: ClosedRange<Double> = -0.02...0.1
+    public nonisolated static let outlineWidthRange: ClosedRange<Double> = 0...3
 
     public init(
-        fontName: String = SubtitleSystemFont.rounded.rawValue, fontSize: Double = 24, fontWeight: String = "Semibold",
-        textColorHex: String = "#FFFFFF", backgroundColorHex: String = "#000000", backgroundOpacity: Double = 0.65
+        fontName: String = SubtitleStyle.defaultFontName, fontSize: Double = SubtitleStyle.defaultFontSize,
+        fontWeight: String = SubtitleStyle.defaultFontWeight, textColorHex: String = "#FFFFFF",
+        backgroundColorHex: String = "#000000", backgroundOpacity: Double = SubtitleStyle.defaultBackgroundOpacity,
+        letterSpacing: Double = SubtitleStyle.defaultLetterSpacing,
+        outlineWidth: Double = SubtitleStyle.defaultOutlineWidth
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -58,6 +75,8 @@ public struct SubtitleStyle: Equatable, Sendable {
         self.textColorHex = textColorHex
         self.backgroundColorHex = backgroundColorHex
         self.backgroundOpacity = backgroundOpacity
+        self.letterSpacing = letterSpacing
+        self.outlineWidth = outlineWidth
     }
 }
 
@@ -189,9 +208,10 @@ public final class SubtitleController {
         didSet { if oldValue != scale { redrawAuthored() } }
     }
     public static let scaleRange: ClosedRange<Double> = 0.5...2.0
-    /// Height of bottom subtitles in percent of the picture from its top (0-100): 100 keeps them where they are, lower
-    /// raises them (mpv's `sub-pos`). Applies to every kind of subtitle.
-    public var position: Double = 100 {
+    /// Height of bottom subtitles in percent of the picture from its top (0-100, mpv's `sub-pos`): 100 is the bottom
+    /// edge, lower raises them. Plain text sits at exactly that distance from the edge; ASS and picture subtitles keep
+    /// their own position and rise only past `defaultPosition`.
+    public var position: Double = SubtitleController.defaultPosition {
         didSet { if oldValue != position { redrawAuthored() } }
     }
     /// `scale` as applied: clamped to `scaleRange`, 1 when it isn't a number.
@@ -199,9 +219,18 @@ public final class SubtitleController {
         let range = Self.scaleRange
         return scale.isFinite ? min(max(scale, range.lowerBound), range.upperBound) : 1
     }
+    /// The position plain text starts at: a margin of 5% of the picture's height above the bottom edge.
+    public nonisolated static let defaultPosition: Double = 95
+    /// `defaultPosition` as a fraction of the picture's height above its bottom edge.
+    public nonisolated static var defaultRaise: Double { (100 - defaultPosition) / 100 }
+
     /// How far bottom subtitles are raised, as a fraction of the picture's height (`position`).
     public var raise: Double {
         position.isFinite ? (100 - min(max(position, 0), 100)) / 100 : 0
+    }
+    /// `raise` as ASS and picture subtitles take it: what lies past the default margin, as they have their own.
+    public var authoredRaise: Double {
+        max(0, raise - Self.defaultRaise)
     }
     /// Size in pixels of the area subtitles are drawn on (the visible picture), reported by the view that draws them.
     /// Until it is set, ASS subtitles show as plain text, as for a host that draws its own.
@@ -508,12 +537,14 @@ extension SubtitleController {
         style = SubtitleStyle(
             fontName: configuration.subtitleFontName, fontSize: configuration.subtitleFontSize,
             fontWeight: configuration.subtitleFontWeight, textColorHex: configuration.subtitleTextColorHex,
-            backgroundColorHex: configuration.subtitleBgColorHex, backgroundOpacity: configuration.subtitleBgOpacity)
+            backgroundColorHex: configuration.subtitleBgColorHex, backgroundOpacity: configuration.subtitleBgOpacity,
+            letterSpacing: configuration.subtitleLetterSpacing, outlineWidth: configuration.subtitleOutlineWidth)
         usesAuthoredStyles = configuration.usesAuthoredSubtitleStyles
         showsOnlyForced = configuration.showsOnlyForcedSubtitles
         assStyleOverride = configuration.assStyleOverride
         scale = configuration.subtitleScale
         position = configuration.subtitlePosition
+        secondary.inset = configuration.secondarySubtitleInset
         settings.trackLanguages = configuration.trackLanguages
         // Through the change, so the files open are read in it too.
         setDefaultEncoding(configuration.subtitleEncoding)

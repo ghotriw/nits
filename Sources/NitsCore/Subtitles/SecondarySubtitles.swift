@@ -19,6 +19,19 @@ public final class SecondarySubtitles {
 
     public var isActive: Bool { selectedTrackId != nil }
 
+    /// Distance of the track from the picture's top edge, as a fraction of its height (0-0.5).
+    public var inset: Double = SecondarySubtitles.defaultInset {
+        didSet {
+            // A value from outside (defaults, a host) stays on the picture.
+            let clamped =
+                inset.isFinite
+                ? min(max(inset, Self.insetRange.lowerBound), Self.insetRange.upperBound) : Self.defaultInset
+            if clamped != inset { inset = clamped }
+        }
+    }
+    public nonisolated static let defaultInset: Double = 0.05
+    public nonisolated static let insetRange: ClosedRange<Double> = 0...0.5
+
     /// Seconds the track is shifted by, as `SubtitleController.delay` is the selected one's: its own, kept for the file.
     public internal(set) var delay: Double = 0
 

@@ -363,7 +363,7 @@ flowchart TD
 - [x] **4.4. GPU-Accelerated Outline Shader & Styling (Metal + SwiftUI):**
   - Custom stitchable Metal shader (`SubtitleOutlineModifier` / `SubtitleShaders.metal`) generating crisp, omnidirectional text outlines without blur artifacts.
   - Proportional font scaling dynamically adapting text sizes to video dimensions.
-  - Comprehensive styling settings: font family, weight, point size (16–54 pt), text color, background box color, and opacity with live interactive previews.
+  - Comprehensive styling settings: font family, weight, point size (16–48 pt), text color, background box color and opacity, letter spacing (−2…+10% of the size) and outline width (0–300%; `SubtitleStyle`), each slider with its own reset. The defaults are the system font, 30 pt, Medium, no box (the outline and shadow keep it legible); `SubtitleStyle` holds them for the configuration and the overlay.
   - Persistence across sessions via `UserDefaults`.
 - [x] **4.5. Advanced ASS/SSA Typesetting & Bitmap Subtitles:**
   - [x] ASS / SSA drawn by libass (`AssSubtitleRenderer`): styles, positioning, animations, karaoke, vector drawings and
@@ -381,7 +381,8 @@ flowchart TD
     Size and Colors from the subtitle style, through libass' selective override (`ass_set_selective_style_override`),
     which leaves positioned text (signs) alone. The system's rounded, serif and monospaced designs, which Core Text
     hides from libass, are handed to it as files. The style's weight isn't applied (it would take the script's
-    italics with it).
+    italics with it). The outline width applies in Font, Size and Colors (libass' border override) and the letter
+    spacing in both modes (`Spacing` is among the size fields).
   - [x] The pixel aspect given to libass is the one the picture is shown with: a forced display aspect ratio
     stretches the video's pixels (`VideoGeometry.frameAspectRatio`), a crop doesn't; changing it redraws.
   - [x] Bitmap subtitle overlays: PGS (Blu-ray `hdmv_pgs_subtitle`), VobSub (DVD) and DVB, decoded by `BitmapSubtitleDecoder`
@@ -453,10 +454,15 @@ flowchart TD
     track flagged default; with no subtitle languages the system's only rank them, so a full track in the user's
     language shows only when flagged default (as in mpv). An automatic choice isn't saved to the history, so later
     settings apply to files already played.
-  - [x] Position and scale (mpv's `sub-pos` / `sub-scale`; Quick Settings → Placement, remembered): `SubtitleController.position`
-    raises bottom subtitles of every kind, `SubtitleController.scale` sizes ASS dialogue (libass' font scale and line position,
-    dialogue only) and picture subtitles (each half of the frame as a block, from the edge it is near); plain text
-    keeps its font size.
+  - [x] Position and scale (mpv's `sub-pos` / `sub-scale`, remembered): `SubtitleController.position` is the distance of
+    bottom subtitles from the bottom edge (Quick Settings → Placement, "Distance from Bottom", default 5% of the
+    picture's height; 0 puts plain text at the edge). Plain text takes it whole; ASS and picture subtitles keep their
+    own position and rise only past the default (`authoredRaise`). "Distance from Top" (`SecondarySubtitles.inset`,
+    default 5%, 0-50%) is the distance of the second track and of any line a track places at the top from the top
+    edge. `SubtitleController.scale` sizes ASS dialogue (libass' font scale and line position, dialogue only) and
+    picture subtitles (each half of the frame as a block, from the edge it is near); plain text keeps its font size.
+    The three groups of text cues (top, centre, bottom) are layers of their own, so a margin past a third of the frame
+    doesn't cut a line to "…".
   - [x] A second subtitle track shown at once (`SecondarySubtitles`, mpv's `secondary-sid`): plain text at the top, whatever
     position its cues ask for; while it is on, the main track's text sits at the bottom and an ASS track is drawn as
     text instead of by libass (which places its dialogue itself), so positioned cues don't overlap. Chosen in Quick

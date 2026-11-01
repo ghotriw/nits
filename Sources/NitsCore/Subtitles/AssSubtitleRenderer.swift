@@ -52,10 +52,15 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
         public var backgroundColor: UInt32
         /// 0 draws an outline without a box.
         public var backgroundOpacity: Double
+        /// The outline against the usual one (1).
+        public var outlineScale: Double
+        /// Gap after each letter in em; libass takes it in script pixels (`FONT_SIZE_FIELDS` overrides `Spacing` too).
+        public var letterSpacing: Double
 
         public init(
             mode: AssStyleOverride, fontName: String, fontFile: URL? = nil, fontSize: Double, textColor: UInt32,
-            textOpacity: Double = 1, backgroundColor: UInt32, backgroundOpacity: Double
+            textOpacity: Double = 1, backgroundColor: UInt32, backgroundOpacity: Double,
+            outlineScale: Double = 1, letterSpacing: Double = 0
         ) {
             self.mode = mode
             self.fontName = fontName
@@ -65,13 +70,16 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
             self.textOpacity = textOpacity
             self.backgroundColor = backgroundColor
             self.backgroundOpacity = backgroundOpacity
+            self.outlineScale = outlineScale
+            self.letterSpacing = letterSpacing
         }
 
         /// The user's subtitle style (as `PlayerEngine` keeps it) for libass: the font through `libassFont`, colors
         /// with the alpha a `#RRGGBBAA` gives them, as the text overlay draws them.
         public init(
             mode: AssStyleOverride, subtitleFontName: String, fontSize: Double, textColorHex: String,
-            backgroundColorHex: String, backgroundOpacity: Double
+            backgroundColorHex: String, backgroundOpacity: Double, outlineScale: Double = 1,
+            letterSpacing: Double = 0
         ) {
             let font = Self.libassFont(for: subtitleFontName)
             let text = Self.rgba(hex: textColorHex) ?? (0xFF_FFFF, 1)
@@ -79,7 +87,8 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
             self.init(
                 mode: mode, fontName: font.name, fontFile: font.file, fontSize: fontSize, textColor: text.rgb,
                 textOpacity: text.alpha, backgroundColor: background.rgb,
-                backgroundOpacity: backgroundOpacity * background.alpha)
+                backgroundOpacity: backgroundOpacity * background.alpha, outlineScale: outlineScale,
+                letterSpacing: letterSpacing)
         }
 
         /// SF Pro, as Core Text lists it to libass.
@@ -158,13 +167,14 @@ public final class AssSubtitleRenderer: @unchecked Sendable {
                 style.FontSize = fontSize * scale
                 style.ScaleX = 1
                 style.ScaleY = 1
+                style.Spacing = letterSpacing * style.FontSize
                 style.PrimaryColour = Self.assColor(textColor, opacity: textOpacity)
                 style.SecondaryColour = style.PrimaryColour
                 style.OutlineColour = Self.assColor(0, opacity: 1)
                 style.BackColour = Self.assColor(backgroundColor, opacity: hasBox ? backgroundOpacity : 0.5)
                 // Outline and a background box behind the line (libass' style 4), as the plain-text overlay draws.
                 style.BorderStyle = hasBox ? 4 : 1
-                style.Outline = 1.5 * scale
+                style.Outline = 1.5 * scale * max(0, outlineScale)
                 style.Shadow = hasBox ? 0 : 1 * scale
                 style.Alignment = 2
                 ass_set_selective_style_override(renderer, &style)

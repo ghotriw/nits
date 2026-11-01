@@ -76,7 +76,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// keeping the UI responsive, while applying demuxer state remains on the main actor.
     public var synchronousLocalLoads: Bool
 
-    /// Font size for text subtitles (default 24.0).
+    /// Font size for text subtitles (`SubtitleStyle.defaultFontSize`).
     public var subtitleFontSize: Double
 
     /// Subtitle text color as hex string (default "#FFFFFF").
@@ -85,8 +85,14 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Subtitle background box color as hex string (default "#000000").
     public var subtitleBgColorHex: String
 
-    /// Subtitle background opacity (0.0 ... 1.0, default 0.65).
+    /// Subtitle background opacity (0.0 ... 1.0, default 0: no box).
     public var subtitleBgOpacity: Double
+
+    /// Gap between subtitle letters in em (`SubtitleStyle.letterSpacing`).
+    public var subtitleLetterSpacing: Double
+
+    /// Subtitle outline width against the usual one (`SubtitleStyle.outlineWidth`).
+    public var subtitleOutlineWidth: Double
 
     /// Draw ASS / SSA subtitles with libass as their authors styled and positioned them (default), rather than as
     /// plain text in the subtitle style above.
@@ -100,14 +106,17 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Size of ASS dialogue and picture subtitles (PGS, VobSub, DVB) against the script's or the disc's, 0.5-2;
     /// plain text has its own font size.
     public var subtitleScale: Double
-    /// Height of bottom subtitles in percent of the picture from its top: 100 keeps them where they are, lower raises
-    /// them (mpv's `sub-pos`). Applies to every kind of subtitle.
+    /// Height of bottom subtitles in percent of the picture from its top (mpv's `sub-pos`): 100 is the picture's bottom
+    /// edge, lower raises them. Plain text sits exactly there, so its default isn't 100 (`SubtitleController.defaultPosition`);
+    /// ASS and picture subtitles keep their own position and rise only past that default.
     public var subtitlePosition: Double
+    /// Distance of the second track from the picture's top edge, as a fraction of its height.
+    public var secondarySubtitleInset: Double
 
-    /// Subtitle font family / design (default "System Rounded").
+    /// Subtitle font family / design (default the system font).
     public var subtitleFontName: String
 
-    /// Subtitle font weight (e.g. "Regular", "Medium", "Semibold", "Bold", "Heavy", default "Semibold").
+    /// Subtitle font weight (e.g. "Regular", "Medium", "Semibold", "Bold", "Heavy", default "Medium").
     public var subtitleFontWeight: String
 
     /// Whether to automatically discover and add sibling media files in the folder to the playlist (default true).
@@ -165,17 +174,20 @@ public struct PlayerConfiguration: Sendable, Equatable {
         resumeEndThresholdRatio: Double = 0.95,
         synchronousLocalLoads: Bool = false,
         carriesPlaybackRate: Bool = false,
-        subtitleFontSize: Double = 24.0,
-        subtitleFontName: String = SubtitleSystemFont.rounded.rawValue,
-        subtitleFontWeight: String = "Semibold",
+        subtitleFontSize: Double = SubtitleStyle.defaultFontSize,
+        subtitleFontName: String = SubtitleStyle.defaultFontName,
+        subtitleFontWeight: String = SubtitleStyle.defaultFontWeight,
         subtitleTextColorHex: String = "#FFFFFF",
         subtitleBgColorHex: String = "#000000",
-        subtitleBgOpacity: Double = 0.65,
+        subtitleBgOpacity: Double = SubtitleStyle.defaultBackgroundOpacity,
+        subtitleLetterSpacing: Double = SubtitleStyle.defaultLetterSpacing,
+        subtitleOutlineWidth: Double = SubtitleStyle.defaultOutlineWidth,
         usesAuthoredSubtitleStyles: Bool = true,
         showsOnlyForcedSubtitles: Bool = false,
         assStyleOverride: AssStyleOverride = .none,
         subtitleScale: Double = 1.0,
-        subtitlePosition: Double = 100,
+        subtitlePosition: Double = SubtitleController.defaultPosition,
+        secondarySubtitleInset: Double = SecondarySubtitles.defaultInset,
         autoLoadFolderMedia: Bool = true,
         seekStepSeconds: Double = 5.0,
         exactSeekOnSinglePress: Bool = true,
@@ -208,11 +220,14 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleTextColorHex = subtitleTextColorHex
         self.subtitleBgColorHex = subtitleBgColorHex
         self.subtitleBgOpacity = subtitleBgOpacity
+        self.subtitleLetterSpacing = subtitleLetterSpacing
+        self.subtitleOutlineWidth = subtitleOutlineWidth
         self.usesAuthoredSubtitleStyles = usesAuthoredSubtitleStyles
         self.showsOnlyForcedSubtitles = showsOnlyForcedSubtitles
         self.assStyleOverride = assStyleOverride
         self.subtitleScale = subtitleScale
         self.subtitlePosition = subtitlePosition
+        self.secondarySubtitleInset = secondarySubtitleInset
         self.autoLoadFolderMedia = autoLoadFolderMedia
         self.seekStepSeconds = seekStepSeconds
         self.exactSeekOnSinglePress = exactSeekOnSinglePress
@@ -244,11 +259,14 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keySubtitleTextColorHex = "Nits.subtitleTextColorHex"
     public static let keySubtitleBgColorHex = "Nits.subtitleBgColorHex"
     public static let keySubtitleBgOpacity = "Nits.subtitleBgOpacity"
+    public static let keySubtitleLetterSpacing = "Nits.subtitleLetterSpacing"
+    public static let keySubtitleOutlineWidth = "Nits.subtitleOutlineWidth"
     public static let keyAuthoredSubtitleStyles = "Nits.subtitleAuthoredStyles"
     public static let keyForcedSubtitlesOnly = "Nits.subtitleForcedOnly"
     public static let keyAssStyleOverride = "Nits.subtitleAssStyleOverride"
     public static let keySubtitleScale = "Nits.subtitleScale"
     public static let keySubtitlePosition = "Nits.subtitlePosition"
+    public static let keySecondarySubtitleInset = "Nits.secondarySubtitleInset"
     public static let keyAutoLoadFolderMedia = "Nits.autoLoadFolderMedia"
     public static let keySeekStepSeconds = "Nits.seekStepSeconds"
     public static let keyExactSeekOnSinglePress = "Nits.exactSeekOnSinglePress"
@@ -326,8 +344,17 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if let position = userDefaults.object(forKey: keySubtitlePosition) as? NSNumber {
             config.subtitlePosition = position.doubleValue
         }
+        if let inset = userDefaults.object(forKey: keySecondarySubtitleInset) as? NSNumber {
+            config.secondarySubtitleInset = inset.doubleValue
+        }
         if let bgOpacity = userDefaults.object(forKey: keySubtitleBgOpacity) as? NSNumber {
             config.subtitleBgOpacity = bgOpacity.doubleValue
+        }
+        if let spacing = userDefaults.object(forKey: keySubtitleLetterSpacing) as? NSNumber {
+            config.subtitleLetterSpacing = spacing.doubleValue
+        }
+        if let outline = userDefaults.object(forKey: keySubtitleOutlineWidth) as? NSNumber {
+            config.subtitleOutlineWidth = outline.doubleValue
         }
         if userDefaults.object(forKey: keyAutoLoadFolderMedia) != nil {
             config.autoLoadFolderMedia = userDefaults.bool(forKey: keyAutoLoadFolderMedia)
@@ -400,11 +427,14 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(subtitleTextColorHex, forKey: Self.keySubtitleTextColorHex)
         userDefaults.set(subtitleBgColorHex, forKey: Self.keySubtitleBgColorHex)
         userDefaults.set(subtitleBgOpacity, forKey: Self.keySubtitleBgOpacity)
+        userDefaults.set(subtitleLetterSpacing, forKey: Self.keySubtitleLetterSpacing)
+        userDefaults.set(subtitleOutlineWidth, forKey: Self.keySubtitleOutlineWidth)
         userDefaults.set(usesAuthoredSubtitleStyles, forKey: Self.keyAuthoredSubtitleStyles)
         userDefaults.set(showsOnlyForcedSubtitles, forKey: Self.keyForcedSubtitlesOnly)
         userDefaults.set(assStyleOverride.rawValue, forKey: Self.keyAssStyleOverride)
         userDefaults.set(subtitleScale, forKey: Self.keySubtitleScale)
         userDefaults.set(subtitlePosition, forKey: Self.keySubtitlePosition)
+        userDefaults.set(secondarySubtitleInset, forKey: Self.keySecondarySubtitleInset)
         userDefaults.set(autoLoadFolderMedia, forKey: Self.keyAutoLoadFolderMedia)
         userDefaults.set(seekStepSeconds, forKey: Self.keySeekStepSeconds)
         userDefaults.set(exactSeekOnSinglePress, forKey: Self.keyExactSeekOnSinglePress)

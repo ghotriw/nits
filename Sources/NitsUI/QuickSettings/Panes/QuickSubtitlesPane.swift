@@ -112,6 +112,8 @@ public struct QuickSubtitlesPane: View {
                         defaults.set(style.textColorHex, forKey: PlayerConfiguration.keySubtitleTextColorHex)
                         defaults.set(style.backgroundColorHex, forKey: PlayerConfiguration.keySubtitleBgColorHex)
                         defaults.set(style.backgroundOpacity, forKey: PlayerConfiguration.keySubtitleBgOpacity)
+                        defaults.set(style.letterSpacing, forKey: PlayerConfiguration.keySubtitleLetterSpacing)
+                        defaults.set(style.outlineWidth, forKey: PlayerConfiguration.keySubtitleOutlineWidth)
                     }
                 }
                 .buttonStyle(.plain)
@@ -205,39 +207,54 @@ public struct QuickSubtitlesPane: View {
                     }
                 }
 
-                // Font Size Slider
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Font Size")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.8))
-                        Spacer()
-                        Text("\(Int(engine.subtitles.style.fontSize)) pt")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    QuickSettingsSlider(value: subtitles.style.fontSize, in: 16...48, step: 1)
-                        .onChange(of: engine.subtitles.style.fontSize) { _, newSize in
-                            UserDefaults.standard.set(newSize, forKey: PlayerConfiguration.keySubtitleFontSize)
-                        }
-                }
+                sliderRow(
+                    "Font Size", valueText: "\(Int(engine.subtitles.style.fontSize)) pt",
+                    isDefault: engine.subtitles.style.fontSize == SubtitleStyle.defaultFontSize,
+                    reset: { engine.subtitles.style.fontSize = SubtitleStyle.defaultFontSize },
+                    slider: {
+                        QuickSettingsSlider(value: subtitles.style.fontSize, in: 16...48, step: 1)
+                            .onChange(of: engine.subtitles.style.fontSize) { _, newSize in
+                                UserDefaults.standard.set(newSize, forKey: PlayerConfiguration.keySubtitleFontSize)
+                            }
+                    })
 
-                // Background Opacity Slider
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Box Opacity")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.8))
-                        Spacer()
-                        Text("\(Int(engine.subtitles.style.backgroundOpacity * 100))%")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    QuickSettingsSlider(value: subtitles.style.backgroundOpacity, in: 0.0...1.0)
-                        .onChange(of: engine.subtitles.style.backgroundOpacity) { _, newOpacity in
-                            UserDefaults.standard.set(newOpacity, forKey: PlayerConfiguration.keySubtitleBgOpacity)
+                sliderRow(
+                    "Box Opacity", valueText: "\(Int((engine.subtitles.style.backgroundOpacity * 100).rounded()))%",
+                    isDefault: engine.subtitles.style.backgroundOpacity == SubtitleStyle.defaultBackgroundOpacity,
+                    reset: { engine.subtitles.style.backgroundOpacity = SubtitleStyle.defaultBackgroundOpacity },
+                    slider: {
+                        QuickSettingsSlider(value: subtitles.style.backgroundOpacity, in: 0.0...1.0)
+                            .onChange(of: engine.subtitles.style.backgroundOpacity) { _, newOpacity in
+                                UserDefaults.standard.set(
+                                    newOpacity, forKey: PlayerConfiguration.keySubtitleBgOpacity)
+                            }
+                    })
+
+                sliderRow(
+                    "Letter Spacing", valueText: String(format: "%+.1f%%", engine.subtitles.style.letterSpacing * 100),
+                    isDefault: engine.subtitles.style.letterSpacing == SubtitleStyle.defaultLetterSpacing,
+                    reset: { engine.subtitles.style.letterSpacing = SubtitleStyle.defaultLetterSpacing },
+                    slider: {
+                        QuickSettingsSlider(
+                            value: subtitles.style.letterSpacing, in: SubtitleStyle.letterSpacingRange, step: 0.005
+                        )
+                        .onChange(of: engine.subtitles.style.letterSpacing) { _, spacing in
+                            UserDefaults.standard.set(spacing, forKey: PlayerConfiguration.keySubtitleLetterSpacing)
                         }
-                }
+                    })
+
+                sliderRow(
+                    "Outline Width", valueText: "\(Int((engine.subtitles.style.outlineWidth * 100).rounded()))%",
+                    isDefault: engine.subtitles.style.outlineWidth == SubtitleStyle.defaultOutlineWidth,
+                    reset: { engine.subtitles.style.outlineWidth = SubtitleStyle.defaultOutlineWidth },
+                    slider: {
+                        QuickSettingsSlider(
+                            value: subtitles.style.outlineWidth, in: SubtitleStyle.outlineWidthRange, step: 0.05
+                        )
+                        .onChange(of: engine.subtitles.style.outlineWidth) { _, width in
+                            UserDefaults.standard.set(width, forKey: PlayerConfiguration.keySubtitleOutlineWidth)
+                        }
+                    })
             }
         }
     }
@@ -248,58 +265,40 @@ public struct QuickSubtitlesPane: View {
             .foregroundStyle(.white.opacity(0.7))
     }
 
-    /// Position for every kind of subtitle; scale for the ones the text style doesn't size (ASS, pictures).
-    private var placementSection: some View {
-        QuickSettingsSection("Placement", systemImage: "arrow.up.and.down.text.horizontal") {
-            if engine.subtitles.position != 100 || engine.subtitles.scale != 1 {
-                Button("Reset") {
-                    engine.subtitles.position = 100
-                    engine.subtitles.scale = 1
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+    /// A labelled slider with its value, and a Reset when it isn't at its default.
+    private func sliderRow(
+        _ title: String, valueText: String, isDefault: Bool, reset: @escaping () -> Void, slider: () -> some View
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                resetIcon(reset)
+                    .opacity(isDefault ? 0 : 1)
+                    .disabled(isDefault)
+                    .accessibilityHidden(isDefault)
+                Text(valueText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
             }
-        } content: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Raise")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.8))
-                    Spacer()
-                    Text("\(Int((100 - engine.subtitles.position).rounded()))%")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-                // Raised by moving left to right; stored as mpv's `sub-pos` (100 at the bottom).
-                QuickSettingsSlider(
-                    value: Binding(
-                        get: { 100 - engine.subtitles.position }, set: { engine.subtitles.position = 100 - $0 }),
-                    in: 0...50, step: 1
-                )
-                .onChange(of: engine.subtitles.position) { _, position in
-                    UserDefaults.standard.set(position, forKey: PlayerConfiguration.keySubtitlePosition)
-                }
-            }
-
-            if engine.subtitles.tracks.contains(where: { $0.format == .ass || $0.format == .bitmap }) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Scale (ASS and Picture Subtitles)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.8))
-                        Spacer()
-                        Text("\(Int((engine.subtitles.scale * 100).rounded()))%")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    QuickSettingsSlider(value: subtitles.scale, in: SubtitleController.scaleRange, step: 0.05)
-                        .onChange(of: engine.subtitles.scale) { _, scale in
-                            UserDefaults.standard.set(scale, forKey: PlayerConfiguration.keySubtitleScale)
-                        }
-                }
-            }
+            slider()
         }
+    }
+
+    /// A small reset for one setting. Always laid out (hidden at the default), so a row keeps its height.
+    private func resetIcon(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Reset to default")
+        .accessibilityLabel("Reset")
     }
 
     private func resetButton(_ action: @escaping () -> Void) -> some View {
@@ -341,6 +340,7 @@ public struct QuickSubtitlesPane: View {
                     "Delay", value: subtitles.delay, set: { subtitles.setDelay($0) },
                     step: { subtitles.stepDelay(by: $0) })
                 hint("Positive shows subtitles later. Z / X shift by 0.1 s while playing.")
+                scaleSlider
             }
         }
     }
@@ -407,5 +407,63 @@ public struct QuickSubtitlesPane: View {
         .buttonStyle(.plain)
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(Color.accentColor)
+    }
+}
+
+// MARK: - Placement
+
+extension QuickSubtitlesPane {
+    /// The size of the kinds the text style doesn't size (ASS, pictures).
+    @ViewBuilder
+    fileprivate var scaleSlider: some View {
+        let subtitles = engine.subtitles
+        if subtitles.tracks.contains(where: { $0.format == .ass || $0.format == .bitmap }) {
+            sliderRow(
+                "Scale (ASS and Picture Subtitles)", valueText: "\(Int((subtitles.scale * 100).rounded()))%",
+                isDefault: subtitles.scale == 1, reset: { subtitles.scale = 1 },
+                slider: {
+                    QuickSettingsSlider(
+                        value: Bindable(subtitles).scale, in: SubtitleController.scaleRange, step: 0.05
+                    )
+                    .onChange(of: subtitles.scale) { _, scale in
+                        UserDefaults.standard.set(scale, forKey: PlayerConfiguration.keySubtitleScale)
+                    }
+                })
+        }
+    }
+
+    /// Where subtitles stand: from the top edge (the second track, and any line a track places at the top) and from
+    /// the bottom one (mpv's `sub-pos`, stored as 100 at the edge and shown as the distance; plain text sits exactly
+    /// there, ASS and pictures rise only past the default).
+    fileprivate var placementSection: some View {
+        let subtitles = engine.subtitles
+        let secondary = subtitles.secondary
+        return QuickSettingsSection("Placement", systemImage: "arrow.up.and.down.text.horizontal") {
+            sliderRow(
+                "Distance from Top", valueText: "\(Int((secondary.inset * 100).rounded()))%",
+                isDefault: secondary.inset == SecondarySubtitles.defaultInset,
+                reset: { secondary.inset = SecondarySubtitles.defaultInset },
+                slider: {
+                    QuickSettingsSlider(
+                        value: Bindable(secondary).inset, in: SecondarySubtitles.insetRange, step: 0.01
+                    )
+                    .onChange(of: secondary.inset) { _, inset in
+                        UserDefaults.standard.set(inset, forKey: PlayerConfiguration.keySecondarySubtitleInset)
+                    }
+                })
+            sliderRow(
+                "Distance from Bottom", valueText: "\(Int((100 - subtitles.position).rounded()))%",
+                isDefault: subtitles.position == SubtitleController.defaultPosition,
+                reset: { subtitles.position = SubtitleController.defaultPosition },
+                slider: {
+                    QuickSettingsSlider(
+                        value: Binding(get: { 100 - subtitles.position }, set: { subtitles.position = 100 - $0 }),
+                        in: 0...50, step: 1
+                    )
+                    .onChange(of: subtitles.position) { _, position in
+                        UserDefaults.standard.set(position, forKey: PlayerConfiguration.keySubtitlePosition)
+                    }
+                })
+        }
     }
 }

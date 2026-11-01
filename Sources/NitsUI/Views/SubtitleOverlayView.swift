@@ -12,14 +12,20 @@ public struct SubtitleOverlayView: View, Equatable {
     public let backgroundOpacity: Double
     public let fontName: String
     public let fontWeight: String
+    /// Gap after each letter in em, and the outline against the usual one (`SubtitleStyle`).
+    public let letterSpacing: Double
+    public let outlineWidth: Double
     public let videoWidth: Int
     public let videoHeight: Int
     public let sampleAspectRatio: RationalAspectRatio
     public let geometry: VideoGeometrySettings
     /// Size of picture subtitles against the stream's (`PlayerEngine.subtitleScale`); text has `fontSize`.
     public let imageScale: Double
-    /// How far bottom subtitles are raised, as a fraction of the visible picture's height.
+    /// How far picture subtitles are raised, as a fraction of the visible picture's height.
     public let raise: Double
+    /// The distance of bottom text from the picture's bottom edge, and of top text from its top edge, likewise.
+    public let bottomMargin: Double
+    public let topMargin: Double
     /// Called with the size in pixels of the picture area subtitles are drawn on, when it changes: what a renderer of
     /// styled subtitles needs to draw at.
     public let onRenderSizeChange: ((CGSize) -> Void)?
@@ -28,18 +34,22 @@ public struct SubtitleOverlayView: View, Equatable {
     public init(
         cues: [SubtitleCue],
         images: [SubtitleImageCue] = [],
-        fontSize: Double = 24.0,
+        fontSize: Double = SubtitleStyle.defaultFontSize,
         textColor: Color = .white,
         backgroundColor: Color = .black,
-        backgroundOpacity: Double = 0.65,
-        fontName: String = SubtitleSystemFont.rounded.rawValue,
-        fontWeight: String = "Semibold",
+        backgroundOpacity: Double = SubtitleStyle.defaultBackgroundOpacity,
+        fontName: String = SubtitleStyle.defaultFontName,
+        fontWeight: String = SubtitleStyle.defaultFontWeight,
+        letterSpacing: Double = SubtitleStyle.defaultLetterSpacing,
+        outlineWidth: Double = SubtitleStyle.defaultOutlineWidth,
         videoWidth: Int = 0,
         videoHeight: Int = 0,
         sampleAspectRatio: RationalAspectRatio = .square,
         geometry: VideoGeometrySettings = VideoGeometrySettings(),
         imageScale: Double = 1,
         raise: Double = 0,
+        bottomMargin: Double = SubtitleController.defaultRaise,
+        topMargin: Double = SecondarySubtitles.defaultInset,
         onRenderSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.cues = cues
@@ -50,23 +60,29 @@ public struct SubtitleOverlayView: View, Equatable {
         self.backgroundOpacity = backgroundOpacity
         self.fontName = fontName
         self.fontWeight = fontWeight
+        self.letterSpacing = letterSpacing
+        self.outlineWidth = outlineWidth
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
         self.sampleAspectRatio = sampleAspectRatio
         self.geometry = geometry
         self.imageScale = imageScale
         self.raise = raise
+        self.bottomMargin = bottomMargin
+        self.topMargin = topMargin
         self.onRenderSizeChange = onRenderSizeChange
     }
 
     public init(
         cue: SubtitleCue?,
-        fontSize: Double = 24.0,
+        fontSize: Double = SubtitleStyle.defaultFontSize,
         textColor: Color = .white,
         backgroundColor: Color = .black,
-        backgroundOpacity: Double = 0.65,
-        fontName: String = SubtitleSystemFont.rounded.rawValue,
-        fontWeight: String = "Semibold",
+        backgroundOpacity: Double = SubtitleStyle.defaultBackgroundOpacity,
+        fontName: String = SubtitleStyle.defaultFontName,
+        fontWeight: String = SubtitleStyle.defaultFontWeight,
+        letterSpacing: Double = SubtitleStyle.defaultLetterSpacing,
+        outlineWidth: Double = SubtitleStyle.defaultOutlineWidth,
         videoWidth: Int = 0,
         videoHeight: Int = 0,
         sampleAspectRatio: RationalAspectRatio = .square,
@@ -80,6 +96,8 @@ public struct SubtitleOverlayView: View, Equatable {
             backgroundOpacity: backgroundOpacity,
             fontName: fontName,
             fontWeight: fontWeight,
+            letterSpacing: letterSpacing,
+            outlineWidth: outlineWidth,
             videoWidth: videoWidth,
             videoHeight: videoHeight,
             sampleAspectRatio: sampleAspectRatio,
@@ -98,12 +116,16 @@ public struct SubtitleOverlayView: View, Equatable {
             && lhs.backgroundOpacity == rhs.backgroundOpacity
             && lhs.fontName == rhs.fontName
             && lhs.fontWeight == rhs.fontWeight
+            && lhs.letterSpacing == rhs.letterSpacing
+            && lhs.outlineWidth == rhs.outlineWidth
             && lhs.videoWidth == rhs.videoWidth
             && lhs.videoHeight == rhs.videoHeight
             && lhs.sampleAspectRatio == rhs.sampleAspectRatio
             && lhs.geometry == rhs.geometry
             && lhs.imageScale == rhs.imageScale
             && lhs.raise == rhs.raise
+            && lhs.bottomMargin == rhs.bottomMargin
+            && lhs.topMargin == rhs.topMargin
             && lhs.cues == rhs.cues
             && lhs.images == rhs.images
     }
@@ -144,7 +166,6 @@ public struct SubtitleOverlayView: View, Equatable {
             let videoFrame = layout.visibleRect
             let scale = videoFrame.height > 0 ? (videoFrame.height / Self.referenceViewportHeight) : 1.0
             let effectiveFontSize = min(max(fontSize * scale, Self.minFontSize), Self.maxFontSize)
-            let verticalEdgePadding = max(20.0, 40.0 * scale)
             let horizontalMargin = max(16.0, 32.0 * scale)
             let resolvedFont = Self.resolveFont(name: fontName, size: effectiveFontSize, weightName: fontWeight)
 
@@ -155,48 +176,18 @@ public struct SubtitleOverlayView: View, Equatable {
 
                 if !cues.isEmpty {
                     let (topCues, centerCues, bottomCues) = Self.partition(cues)
-                    VStack(spacing: 8 * scale) {
-                        // Top aligned cues
-                        if !topCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(topCues) { cue in
-                                    cueRow(
-                                        cue, font: resolvedFont,
-                                        horizontalMargin: horizontalMargin,
-                                        scale: scale)
-                                }
-                            }
-                            .padding(.top, verticalEdgePadding)
-                        }
-
-                        Spacer()
-
-                        // Center aligned cues
-                        if !centerCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(centerCues) { cue in
-                                    cueRow(
-                                        cue, font: resolvedFont,
-                                        horizontalMargin: horizontalMargin,
-                                        scale: scale)
-                                }
-                            }
-                        }
-
-                        Spacer()
-
-                        // Bottom aligned cues
-                        if !bottomCues.isEmpty {
-                            VStack(spacing: 6 * scale) {
-                                ForEach(bottomCues) { cue in
-                                    cueRow(
-                                        cue, font: resolvedFont,
-                                        horizontalMargin: horizontalMargin,
-                                        scale: scale)
-                                }
-                            }
-                            .padding(.bottom, verticalEdgePadding + raise * videoFrame.height)
-                        }
+                    // Each group in a layer of its own, given the whole frame: in one stack a margin is part of the
+                    // group's size, and the stack offers a group a share of its height, so a margin past a third of it
+                    // left the text no room and cut a second line to "…".
+                    ZStack {
+                        cueGroup(topCues, alignment: .top, resolvedFont, horizontalMargin, scale, effectiveFontSize)
+                            .padding(.top, topMargin * videoFrame.height)
+                        cueGroup(
+                            centerCues, alignment: .center, resolvedFont, horizontalMargin, scale, effectiveFontSize)
+                        cueGroup(
+                            bottomCues, alignment: .bottom, resolvedFont, horizontalMargin, scale, effectiveFontSize
+                        )
+                        .padding(.bottom, bottomMargin * videoFrame.height)
                     }
                     .frame(width: videoFrame.width, height: videoFrame.height)
                     .position(x: videoFrame.midX, y: videoFrame.midY)
@@ -207,6 +198,25 @@ public struct SubtitleOverlayView: View, Equatable {
             .onChange(of: Self.pixelSize(of: videoFrame, scale: displayScale), initial: true) { _, size in
                 onRenderSizeChange?(size)
             }
+        }
+    }
+
+    /// One alignment's cues, stacked and kept at their full height (a line that doesn't fit overflows rather than
+    /// turning into "…"), in a layer as large as the frame.
+    @ViewBuilder
+    private func cueGroup(
+        _ cues: [SubtitleCue], alignment: Alignment, _ font: Font, _ horizontalMargin: Double, _ scale: Double,
+        _ fontSize: Double
+    ) -> some View {
+        if !cues.isEmpty {
+            VStack(spacing: 6 * scale) {
+                ForEach(cues) { cue in
+                    cueRow(
+                        cue, font: font, horizontalMargin: horizontalMargin, scale: scale, fontSize: fontSize)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
         }
     }
 
@@ -414,7 +424,9 @@ public struct SubtitleOverlayView: View, Equatable {
     }
 
     @ViewBuilder
-    private func cueRow(_ cue: SubtitleCue, font: Font, horizontalMargin: Double, scale: Double)
+    private func cueRow(
+        _ cue: SubtitleCue, font: Font, horizontalMargin: Double, scale: Double, fontSize renderedSize: Double
+    )
         -> some View
     {
         HStack {
@@ -424,7 +436,7 @@ public struct SubtitleOverlayView: View, Equatable {
 
             subtitleLabel(
                 cue.text, font: font, textAlignment: textAlignment(for: cue.alignment),
-                scale: scale)
+                scale: scale, fontSize: renderedSize)
 
             if Self.isLeadingAligned(cue.alignment) {
                 Spacer()
@@ -464,16 +476,20 @@ public struct SubtitleOverlayView: View, Equatable {
     }
 
     @ViewBuilder
-    private func subtitleLabel(_ text: String, font: Font, textAlignment: TextAlignment, scale: Double)
+    private func subtitleLabel(
+        _ text: String, font: Font, textAlignment: TextAlignment, scale: Double, fontSize renderedSize: Double
+    )
         -> some View
     {
-        let outlineWidth = max(1.0, 1.5 * scale)
+        // Capped by the letters' size: a wide outline on a large screen would outgrow what the shader samples.
+        let outlineRadius = min(max(1.0, 1.5 * scale) * outlineWidth, renderedSize * 0.15)
 
         Text(text)
             .font(font)
             .foregroundStyle(textColor)
+            .tracking(letterSpacing * renderedSize)
             .multilineTextAlignment(textAlignment)
-            .subtitleOutline(radius: outlineWidth, color: .black.opacity(0.95))
+            .subtitleOutline(radius: outlineRadius, color: .black.opacity(0.95))
             .shadow(color: .black.opacity(0.4), radius: max(1.5, 2.0 * scale), x: 0, y: max(1.0, 1.5 * scale))
             .padding(.horizontal, max(10.0, 16.0 * scale))
             .padding(.vertical, max(5.0, 8.0 * scale))

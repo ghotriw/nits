@@ -137,12 +137,16 @@ public struct ContentView: View {
                 backgroundOpacity: engine.subtitles.style.backgroundOpacity,
                 fontName: engine.subtitles.style.fontName,
                 fontWeight: engine.subtitles.style.fontWeight,
+                letterSpacing: engine.subtitles.style.letterSpacing,
+                outlineWidth: engine.subtitles.style.outlineWidth,
                 videoWidth: engine.media.video.width,
                 videoHeight: engine.media.video.height,
                 sampleAspectRatio: engine.media.video.sampleAspectRatio,
                 geometry: engine.videoGeometry,
                 imageScale: engine.subtitles.effectiveScale,
-                raise: engine.subtitles.raise,
+                raise: engine.subtitles.authoredRaise,
+                bottomMargin: engine.subtitles.raise,
+                topMargin: engine.subtitles.secondary.inset,
                 onRenderSizeChange: { engine.subtitles.renderSize = $0 }
             )
             .equatable()

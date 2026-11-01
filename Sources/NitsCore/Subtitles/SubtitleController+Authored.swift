@@ -92,8 +92,9 @@ extension SubtitleController {
         let styleOverride = AssSubtitleRenderer.StyleOverride(
             mode: assStyleOverride, subtitleFontName: style.fontName, fontSize: style.fontSize,
             textColorHex: style.textColorHex, backgroundColorHex: style.backgroundColorHex,
-            backgroundOpacity: style.backgroundOpacity)
-        let placement = (scale: effectiveScale, raise: raise)
+            backgroundOpacity: style.backgroundOpacity, outlineScale: style.outlineWidth,
+            letterSpacing: style.letterSpacing)
+        let placement = (scale: effectiveScale, raise: authoredRaise)
         libassCallsInFlight += 1
         watchLibass()
         Task { [weak self] in
