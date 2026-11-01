@@ -121,6 +121,11 @@ Accepted for now, noted for later.
 
 ## Revisit only if
 
+- **The picture's stop on an audio track switch is noticed.** A switch is an exact seek to the current frame, so the
+  picture stands while it lands (barely visible). A track from an added file has a demuxer of its own
+  (`PlaybackInputs`): switching to or from it needs no seek of the picture, only the audio input positioned at the
+  picture and an audio join. A track of the media itself needs the seek unless the demuxer kept every audio stream's
+  packets (`applyStreamSelection` reads only the selected one).
 - **A second engine in one process** (e.g. a preview player): make `PlayerPerformanceMonitor` per engine instead of
   `.shared`.
 - **A second view reading `currentMetrics` live**: `PlayerEngine.isCollectingMetrics` is one `Bool` set from

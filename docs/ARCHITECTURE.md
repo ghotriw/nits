@@ -359,9 +359,12 @@ past the new start, and mpv's playloop, which restarts after a seek only when th
 over to it. So the audio is kept off the picture's path. (What is verified here is the `ao_coreaudio.c` code and our
 measurements; how `ao_avfoundation` feels in IINA is not.)
 
-**Left as is.** Changing the audio track stops the clock for about 140–230 ms (probably the renderer's queue
-being set up for the new format; not investigated); it is a seek (`rereadPosition`) and takes the same path, without a spinner now. It is not
-audible as more than a short gap. Revisit if it is in the bundle.
+**Changing the audio track** is an exact seek to the current frame (`rereadPosition`): only the selected streams are
+read (`applyStreamSelection`), so the new track's packets around the position were dropped and the media is read
+again from the keyframe before it. It used to stop the clock for 140–230 ms, which was the wait for the new track's
+audio; since the picture no longer waits for it, the picture only stands while that seek lands (decoding from the
+keyframe to the current frame, barely visible in the bundle), and the new track's sound joins behind it with a
+flush (`expectFlush`: the old track's audio, in a format of its own maybe, is not left to play out as late).
 
 ### FrameQueue
 
