@@ -484,7 +484,8 @@ private struct LoadingOverlayView: View {
 
     var body: some View {
         ZStack {
-            if (engine.isLoading || !engine.isLoaded || engine.isBuffering || isSeekSpinnerVisible)
+            if (engine.isLoading || !engine.isLoaded || engine.isStartingPlayback || engine.isBuffering
+                || isSeekSpinnerVisible)
                 && engine.loadError == nil
             {
                 ProgressView()

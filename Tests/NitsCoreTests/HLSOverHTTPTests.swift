@@ -397,3 +397,61 @@ struct HLSOverHTTPPlaybackTests {
         #expect(engine.demuxer?.isAdaptiveBitrateEnabled == true)
     }
 }
+
+@Suite("Start position over HTTP", .serialized, .realtimePlayback, .backstopTimeLimit)
+@MainActor
+struct HLSStartPositionTests {
+    @Test("DASH: while playback is positioned at a start time, the engine says so, and stops saying so once it plays")
+    func reportsStartingPlaybackOfDASH() async throws {
+        guard let server = try InlineDASHTests.server() else { return }
+        defer { server.stop() }
+        server.setBehavior(.init(delay: .milliseconds(700)), forPaths: { $0.hasPrefix("video/") })
+        let manifest = MediaURL.inlineDASHManifest(
+            SegmentedDASHManifest(
+                streams: [
+                    .init(kind: .video, id: "v", container: "mp4", url: server.url("video")),
+                    .init(kind: .audio, id: "a", container: "mp4", url: server.url("audio")),
+                ], segmentDuration: 1, segmentCount: SyntheticTestMediaFactory.dashSegmentCount
+            ).text())
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+
+        engine.load(MediaLoadRequest(path: manifest, startTime: 2))
+        var sawLoadedAndStarting = false
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline, !(engine.isLoaded && engine.isPlaying && !engine.isStartingPlayback) {
+            if engine.isLoaded, !engine.isLoading, engine.isStartingPlayback { sawLoadedAndStarting = true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(sawLoadedAndStarting, "Loaded, and not yet positioned, with nothing to say so")
+        #expect(engine.isLoaded && !engine.isStartingPlayback)
+        engine.stop()
+        #expect(!engine.isStartingPlayback)
+    }
+
+    @Test("While playback is positioned at a start time, the engine says so, and stops saying so once it plays")
+    func reportsStartingPlayback() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        // The segments take their time, so the start position is not reached in the blink of a local file's.
+        server.setBehavior(.init(delay: .milliseconds(700)), forPaths: { $0.hasSuffix(".ts") })
+        let engine = PlayerEngine.makeForTesting()
+        defer { engine.stop() }
+
+        #expect(!engine.isStartingPlayback)
+        engine.load(MediaLoadRequest(path: server.url("master.m3u8"), startTime: 4))
+        var sawLoadedAndStarting = false
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline, !(engine.isLoaded && engine.isPlaying && !engine.isStartingPlayback) {
+            if engine.isLoaded, !engine.isLoading, engine.isStartingPlayback { sawLoadedAndStarting = true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(sawLoadedAndStarting, "Loaded, and not yet positioned, with nothing to say so")
+        #expect(engine.isLoaded && !engine.isStartingPlayback)
+        try #require(await engine.waitForPlayback(advancingBy: 0.3))
+        #expect(engine.currentTime >= 4)
+        engine.stop()
+        #expect(!engine.isStartingPlayback)
+    }
+}

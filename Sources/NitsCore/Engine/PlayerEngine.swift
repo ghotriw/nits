@@ -465,9 +465,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     @ObservationIgnored
     var resumePlaybackAfterChase: Bool = false
     /// A load is applied, and its start (the demuxer's start position, the decoder's flush) still runs on `seekQueue`:
-    /// `play()` leaves starting to it, as the feeders would read from before the start position.
-    @ObservationIgnored
+    /// `play()` leaves starting to it, as the feeders would read from before the start position. Observed: the busy
+    /// indicator stays while it does (`isStartingPlayback`).
     var isLoadStartPending = false
+    /// The media is loaded and playback is being positioned at its start (the saved position, an explicit start time),
+    /// which can take long where a seek does (a network file without an index): nothing plays or shows until it is done.
+    public var isStartingPlayback: Bool { isLoadStartPending }
     @ObservationIgnored
     var chaseSettleTask: Task<Void, Never>? = nil
     /// A key (or a host's scrubber) is held, from its press (`beginScrubbing`): seeks land and show their frame, and
