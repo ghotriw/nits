@@ -5,8 +5,9 @@ import Foundation
 /// FFmpeg opens every representation of a manifest as soon as it opens it (seconds, over the network, for a ladder of
 /// a dozen), fails the whole opening for one it cannot read (a TTML subtitle track), and plays the first picture it
 /// lists, the lowest. It also seeks wrongly in a timeline that repeats a segment "to the end" (`r="-1"`: it lands
-/// on the second segment). So the manifest is rewritten before FFmpeg sees it: one picture of the ladder (the others
-/// are offered to choose from), the best audio of each language, nothing FFmpeg cannot read, a timeline that
+/// on the second segment). So the manifest is rewritten before FFmpeg sees it: the ladder of one codec and range (the
+/// pictures that follow the network as one; the best picture of each other codec is offered to choose from), the best
+/// audio of each language, nothing FFmpeg cannot read, a timeline that
 /// ends, and an absolute `BaseURL`. Given to the demuxer inline (`MediaURL.inlineDASHManifest`).
 ///
 /// Only a finished (`static`) manifest of one period is handled; for others the initializer returns nil, and the
@@ -23,6 +24,8 @@ package struct DASHManifest {
         /// Bits per second; 0 when unknown.
         package var bandwidth: Int
         package var isHDR: Bool
+        /// The codec's family (`CodecFamily.video(in:)`); empty when the manifest tells none.
+        package var family = ""
     }
 
     /// The most a manifest read may be, in bytes: a ladder of a few dozen representations is a few hundred kilobytes.
@@ -57,7 +60,8 @@ package struct DASHManifest {
     /// - Parameters:
     ///   - data: The manifest.
     ///   - url: Where it came from, after redirects: what its relative addresses are relative to.
-    package init?(data: Data, url: URL) {
+    ///   - codecs: Which codec is preferred among the pictures of a size.
+    package init?(data: Data, url: URL, codecs: VideoCodecPreference = VideoCodecPreference()) {
         guard let root = XMLTreeElement.parse(data, limit: Self.sizeLimit), root.localName == "MPD",
             (root.attribute("type") ?? "static") == "static"
         else { return nil }
@@ -120,19 +124,22 @@ package struct DASHManifest {
                             height: value("height").flatMap { Int($0) } ?? 0,
                             frameRate: value("frameRate").flatMap(Self.frameRate(of:)),
                             codec: family.map(CodecFamily.displayName(ofVideo:)) ?? "", bandwidth: bandwidth,
-                            isHDR: isHDR), place, family != nil
+                            isHDR: isHDR, family: family ?? ""), place, family != nil
                     ))
             }
         }
         self.hasProtectedStreams = hasProtected
 
-        // The best first: a codec told over one that is not; then the larger picture, the HDR one, the higher bitrate.
+        // The best first: a codec told over one that is not; then the larger picture, the HDR one, the codec the user
+        // prefers (a bitrate says nothing of the quality across codecs), the higher bitrate.
         pictures.sort { lhs, rhs in
             let (a, b) = (lhs.video, rhs.video)
             if lhs.isKnownCodec != rhs.isKnownCodec { return lhs.isKnownCodec }
             if a.height != b.height { return a.height > b.height }
             if a.width != b.width { return a.width > b.width }
             if a.isHDR != b.isHDR { return a.isHDR }
+            let (ra, rb) = (codecs.rank(ofFamily: a.family), codecs.rank(ofFamily: b.family))
+            if ra != rb { return ra < rb }
             return a.bandwidth > b.bandwidth
         }
         // Each is offered; ids kept unique, and one that a second adaptation set lists again (the same size, codec and
@@ -144,7 +151,7 @@ package struct DASHManifest {
         for var picture in pictures {
             let key =
                 "\(picture.video.width)x\(picture.video.height)@\(Int((picture.video.frameRate ?? 0).rounded()))"
-                + " \(picture.video.codec) \(picture.video.isHDR) \(picture.video.bandwidth)"
+                + " \(picture.video.family) \(picture.video.isHDR) \(picture.video.bandwidth)"
             guard seenKeys.insert(key).inserted else { continue }
             if !seenIDs.insert(picture.video.id).inserted {
                 picture.video.id = "\(picture.place.set).\(picture.place.representation)"
@@ -192,16 +199,27 @@ package struct DASHManifest {
     /// the picture changes between them without a new decoder (HLS's ladder, `playlistsOutsideLadder`). The best first.
     /// Fewer than two is no ladder.
     package var ladder: [Video] {
-        guard let best = videos.first else { return [] }
-        let rungs = videos.filter { $0.codec == best.codec && $0.isHDR == best.isHDR && $0.bandwidth > 0 }
+        videos.first.map(ladder(of:)) ?? []
+    }
+
+    /// The ladder of `video`'s codec and range, the best first. Fewer than two is no ladder.
+    package func ladder(of video: Video) -> [Video] {
+        let rungs = videos.filter { $0.family == video.family && $0.isHDR == video.isHDR && $0.bandwidth > 0 }
         return rungs.count > 1 ? rungs : []
+    }
+
+    /// The best picture of each codec and range, the best first: what a viewer chooses between when the manifest has
+    /// more than one (a ladder plays as one, its other codecs are these).
+    package var codecGroups: [Video] {
+        var seen = Set<String>()
+        return videos.filter { seen.insert("\($0.family) \($0.isHDR)").inserted }
     }
 
     /// The manifest with every picture of `ladder` and the audio, for the demuxer to switch between the pictures with
     /// the network (`MediaDemuxer.variants`). It opens every representation at once, so it costs the opening of each;
     /// nil without a ladder.
-    package func ladderText() -> String? {
-        let rungs = ladder
+    package func ladderText(of video: Video? = nil) -> String? {
+        let rungs = video.map(ladder(of:)) ?? ladder
         guard !rungs.isEmpty, let rewritten = rewritten(videoIDs: rungs.map(\.id)) else { return nil }
         return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
     }

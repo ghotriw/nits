@@ -302,7 +302,7 @@ extension PlayerEngine {
         var resolvedTitle: String?
         var chaptersFromResolver: [MediaChapter] = []
         var buttonsFromResolver: [PlaybackActionButton] = []
-        let resolver: (any MediaResolver)? = MediaResolverChain(host: mediaResolver)
+        let resolver: (any MediaResolver)? = MediaResolverChain(codecs: configuration.videoCodecs, host: mediaResolver)
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
         let order =
             preResolved != nil ? MediaResolutionOrder.beforeOpening : pageURL.flatMap { resolver?.order(for: $0) }

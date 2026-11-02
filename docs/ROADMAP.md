@@ -365,6 +365,12 @@ flowchart TD
     could take it from the rest of the ladder (a change of the picture to look at).
   - [ ] Measured on one static manifest (Akamai MultiRate, `SegmentTimeline`): ladders with `SegmentBase`, numbered
     `SegmentTemplate`, several languages or periods have the tests of `DASHLadderTests`, not a live measurement.
+  - [x] The codec among the pictures of a size is the user's choice, not the bitrate's (2026-11-02): Settings → Video
+    → Preferred Video Codecs, an order (HEVC, H.264, AV1, VP9, VP8 by default) with a switch for each (`VideoCodecPreference`,
+    `PlayerConfiguration.videoCodecs`); a size comes first, then HDR, then the codec, then the bitrate. A ladder plays
+    as one (the Quality menu), the best picture of each other codec is in a Format menu and plays with its own ladder.
+    Not yet: the same order for HLS and for yt-dlp's formats (yt-dlp chooses its own); AV1 first only where the chip
+    decodes it; the codec in the names of the Quality menu's rungs.
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
     crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.

@@ -35,7 +35,9 @@ struct DASHManifestTests {
         DASHManifest(data: mpd(period: period, duration: duration, base: base), url: url)
     }
 
-    @Test("The pictures are listed best first: the larger one, at one size the HDR one, then the higher bitrate")
+    @Test(
+        "The pictures are listed best first: the larger one, at one size the HDR one, the preferred codec, then the higher bitrate"
+    )
     func ranksPictures() throws {
         let manifest = try #require(
             Self.manifest(
@@ -50,9 +52,10 @@ struct DASHManifestTests {
                 """))
         // A codec that is not told ranks below the others whatever its size. The HDR flag comes from the manifest's
         // properties and Dolby Vision's codecs, not from HEVC alone.
-        #expect(manifest.videos.map(\.id) == ["hd-high", "hd-hdr", "hd-low", "sd", "unknown"])
-        #expect(manifest.videos[1].codec == "HEVC")
-        #expect(abs((manifest.videos[1].frameRate ?? 0) - 29.97) < 0.01)
+        // (HEVC is the codec preferred over H.264 by default, whatever the bitrates.)
+        #expect(manifest.videos.map(\.id) == ["hd-hdr", "hd-high", "hd-low", "sd", "unknown"])
+        #expect(manifest.videos[0].codec == "HEVC")
+        #expect(abs((manifest.videos[0].frameRate ?? 0) - 29.97) < 0.01)
     }
 
     @Test("A Dolby Vision or PQ picture ranks over an SDR one of its size")

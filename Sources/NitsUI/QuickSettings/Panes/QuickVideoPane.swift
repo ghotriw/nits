@@ -72,14 +72,14 @@ public struct QuickVideoPane: View {
 
     /// The pictures a page offers as files of their own: choosing one plays it from the current frame, after a pause
     /// while it opens. What yt-dlp chose is the one playing until then.
-    private var videoFormatSection: some View {
-        QuickSettingsSection("Quality", systemImage: "square.stack.3d.up") {
+    private func videoFormatSection(title: String) -> some View {
+        QuickSettingsSection(title, systemImage: "square.stack.3d.up") {
             let selectedLabel =
                 engine.videoFormats.first(where: { $0.id == engine.selectedVideoFormatId })
                 .map(Self.videoFormatTitle) ?? "—"
 
             QuickSettingsPicker(
-                "Quality",
+                title,
                 valueLabel: selectedLabel,
                 selection: Binding(
                     get: { engine.selectedVideoFormatId },
@@ -270,11 +270,14 @@ public struct QuickVideoPane: View {
                 .padding(.horizontal, 2)
             }
 
-            // HLS variants, or the files a page offers
-            if engine.variants.filter(\.isSwitchable).count > 1 {
+            // The variants the network picks from (HLS, a DASH ladder), and the files or codecs a page offers: the
+            // ladder of another codec plays as another file, beside the variants of the one playing.
+            let hasVariants = engine.variants.filter(\.isSwitchable).count > 1
+            if hasVariants {
                 qualitySection
-            } else if engine.videoFormats.count > 1 {
-                videoFormatSection
+            }
+            if engine.videoFormats.count > 1 {
+                videoFormatSection(title: hasVariants ? "Format" : "Quality")
             }
 
             // Picture geometry: aspect ratio, crop, scaling, zoom

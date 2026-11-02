@@ -110,9 +110,11 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   (`MediaResolverChain`; it ends in `.mpd`, a name like Unified Streaming's `/.mpd` too). It downloads the manifest
   with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`): FFmpeg's DASH
   demuxer opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,
-  in a timeline that repeats a segment to the end (`r="-1"`), seeks to the second segment. So it keeps one picture
-  (the best; the rest are `ResolvedMedia.videoFormats`, each a manifest of its own, which the quality menu switches
-  to as for a video site), the best audio of each language (not a codec FFmpeg has no decoder for: AC-4, MPEG-H;
+  in a timeline that repeats a segment to the end (`r="-1"`), seeks to the second segment. So it keeps the ladder of
+  one codec and range (the preferred one, `VideoCodecPreference`; a ladder plays as one, `MediaDemuxer.variants`; the
+  best picture of each other codec is in `ResolvedMedia.videoFormats`, each a manifest of its own with its ladder,
+  which the format menu switches to as for a video site), the best audio of each language (not a codec FFmpeg has no
+  decoder for: AC-4, MPEG-H;
   `CodecFamily.canDecodeAudio`), and drops text and images, trick play and DRM streams;
   gives timelines their repeats from the length of the period, and the manifest an absolute `BaseURL` of the address
   after redirects. A manifest it can't handle (live, several periods, unreadable) returns `nil`: the address opens as it

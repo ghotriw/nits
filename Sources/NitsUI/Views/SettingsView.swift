@@ -577,6 +577,8 @@ public struct SettingsView: View {
                 Text("Picture")
             }
 
+            VideoCodecsSettingsSection(onChange: notifyChange)
+
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {

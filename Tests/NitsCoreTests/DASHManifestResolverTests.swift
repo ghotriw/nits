@@ -38,7 +38,7 @@ struct DASHManifestResolverTests {
     }
 
     @Test(
-        "The best picture plays, the others are to choose from, and the audio comes with it; the headers reach the segments"
+        "The ladder of the best picture plays with the audio, no other picture is offered for one codec; the headers reach the segments"
     )
     func playsTheBestPicture() async throws {
         guard let server = try Self.served() else { return }
@@ -46,14 +46,10 @@ struct DASHManifestResolverTests {
         let headers = ["User-Agent": "NitsTest/1", "X-Nits": "1"]
         let manifestURL = try #require(URL(string: server.url("dash.mpd")))
         let media = try #require(try await DASHManifestResolver().resolve(manifestURL, headers: headers))
-        #expect(media.videoFormats.map(\.id) == ["high", "low"])
-        #expect(media.selectedVideoFormatID == "high")
-        #expect(media.videoFormats.map(\.height) == [180, 90])
-        #expect(media.videoFormats.map(\.codec) == ["H.264", "H.264"], "SDR says nothing")
+        // One codec: its rungs are the demuxer's variants, no other picture is there to choose from.
+        #expect(media.videoFormats.isEmpty)
         #expect(media.headers == headers)
         #expect(MediaURL.isInlineDASHManifest(media.path))
-        // Both pictures are one ladder: the manifest lists them both, and the demuxer offers them as variants.
-        #expect(media.path != media.videoFormats[0].url)
 
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
         #expect(demuxer.hasVideo && demuxer.hasAudio)
@@ -72,7 +68,7 @@ struct DASHManifestResolverTests {
     }
 
     @Test(
-        "A seek in a timeline that repeats to the end lands on its segment, and the other picture plays from the manifest chosen"
+        "A seek in a timeline that repeats to the end lands on its segment, and the ladder plays through"
     )
     func seeksAndSwitches() async throws {
         guard let server = try Self.served() else { return }
@@ -86,13 +82,9 @@ struct DASHManifestResolverTests {
         let start = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(first))
         #expect((1.9...2.1).contains(start), "Keyframe of the third segment, not \(start)")
 
-        let other = try #require(media.selecting(videoFormat: "low"))
-        #expect(other.path != media.path && other.selectedVideoFormatID == "low")
-        let low = try #require(MediaDemuxer(url: other.path, headers: other.headers))
-        low.startReadAhead()
-        var pictures = 0
-        while low.nextVideoSample() != nil { pictures += 1 }
-        #expect(pictures == 25 * Self.count)
+        var pictures = 1
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        #expect(pictures >= 25 * (Self.count - 3), "Played \(pictures) pictures from the third second")
     }
 
     @Test("Only .mpd addresses are the resolver's; the host's resolver keeps the rest")
@@ -172,5 +164,52 @@ extension DASHManifestResolverTests {
         // HDR over SDR; of the two HDR ones, the higher bitrate first.
         #expect(media.videoFormats.map(\.id) == ["hdr", "dv", "sdr"])
         #expect(media.videoFormats.map(\.codec) == ["HEVC HDR", "Dolby Vision", "HEVC"])
+    }
+}
+
+extension DASHManifestResolverTests {
+    private static let twoCodecs = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S"><Period>
+        <AdaptationSet contentType="video">
+        <Representation id="h-low" mimeType="video/mp4" codecs="avc1.42c01e" width="160" height="90" \
+        bandwidth="100000"><BaseURL>v/h-low.mp4</BaseURL></Representation>
+        <Representation id="h-high" mimeType="video/mp4" codecs="avc1.42c01e" width="320" height="180" \
+        bandwidth="500000"><BaseURL>v/h-high.mp4</BaseURL></Representation>
+        </AdaptationSet>
+        <AdaptationSet contentType="video">
+        <Representation id="v-low" mimeType="video/webm" codecs="vp9" width="160" height="90" \
+        bandwidth="60000"><BaseURL>v/v-low.webm</BaseURL></Representation>
+        <Representation id="v-high" mimeType="video/webm" codecs="vp9" width="320" height="180" \
+        bandwidth="250000"><BaseURL>v/v-high.webm</BaseURL></Representation>
+        </AdaptationSet>
+        </Period></MPD>
+        """
+
+    @Test("A ladder of one codec plays, the best picture of each codec is offered, in the user's order")
+    func offersCodecsBesideTheLadder() async throws {
+        guard let server = try InlineDASHTests.server() else { return }
+        defer { server.stop() }
+        server.setResponder(forPath: "dash.mpd") { Data(Self.twoCodecs.utf8) }
+        let manifestURL = try #require(URL(string: server.url("dash.mpd")))
+
+        let byDefault = try #require(try await DASHManifestResolver().resolve(manifestURL, headers: [:]))
+        #expect(byDefault.videoFormats.map(\.id) == ["h-high", "v-high"])
+        #expect(byDefault.videoFormats.map(\.codec) == ["H.264", "VP9"])
+        #expect(byDefault.selectedVideoFormatID == "h-high")
+        // The ladder plays: the format's own address is the ladder of its codec.
+        #expect(byDefault.path == byDefault.videoFormats[0].url)
+        #expect(byDefault.videoFormats[0].url != byDefault.videoFormats[1].url)
+
+        let vp9First = try #require(
+            try await DASHManifestResolver(codecs: VideoCodecPreference(order: ["vp9", "avc"]))
+                .resolve(manifestURL, headers: [:]))
+        #expect(vp9First.videoFormats.map(\.id) == ["v-high", "h-high"])
+        #expect(vp9First.selectedVideoFormatID == "v-high")
+        #expect(vp9First.path == vp9First.videoFormats[0].url)
+        #expect(vp9First.path != byDefault.path)
+        // Choosing the other codec plays its ladder.
+        let chosen = try #require(vp9First.selecting(videoFormat: "h-high"))
+        #expect(chosen.path == byDefault.path)
     }
 }
