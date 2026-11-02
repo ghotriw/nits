@@ -216,7 +216,7 @@ final class TestHTTPServer: Sendable {
             state.withLock { $0.requests.append(request) }
 
             let behavior = behavior(for: path, in: state)
-            if behavior.delay > .zero { try? await Task.sleep(for: behavior.delay) }
+            if behavior.delay > .zero { await pause(until: .now + behavior.delay) }
             if let redirect = behavior.redirect {
                 let headers = ["Location": "/" + redirect, "Content-Length": "0"]
                 guard await send(response(status: 302, headers: headers), on: connection) else { return }
@@ -296,7 +296,7 @@ final class TestHTTPServer: Sendable {
                 state.linkFreeAt = start + .seconds(Double(chunk.count) / Double(rate))
                 return state.linkFreeAt
             }
-            if let slot, slot > .now { try? await Task.sleep(until: slot) }
+            if let slot { await pause(until: slot) }
             guard await send(Data(chunk), on: connection) else { return false }
             sent = end
             if sent >= dropAt { return false }
@@ -307,11 +307,23 @@ final class TestHTTPServer: Sendable {
             paced.bytes += chunk.count
             if let rate, rate > 0 {
                 let due = paced.start + .seconds(Double(paced.bytes) / Double(rate))
-                if due > .now { try? await Task.sleep(until: due) }
+                await pause(until: due)
             }
         }
         return true
     }
+
+    /// Waits until `deadline` without the cooperative pool: `Task.sleep` resumes on it whatever executor the task
+    /// prefers, and the pool is what a test blocks (a demuxer opening synchronously) while it waits for this answer.
+    private static func pause(until deadline: ContinuousClock.Instant) async {
+        let remaining = (deadline - .now) / .seconds(1)
+        guard remaining > 0 else { return }
+        await withCheckedContinuation { continuation in
+            timers.asyncAfter(deadline: .now() + remaining) { continuation.resume() }
+        }
+    }
+
+    private static let timers = DispatchQueue(label: "Nits.TestHTTPServer.timers")
 
     private static func receive(on connection: NWConnection) async -> Data? {
         await withCheckedContinuation { continuation in

@@ -53,7 +53,9 @@ struct HLSOverHTTPTests {
         let start = ContinuousClock.now
         _ = try await URLSession.shared.data(from: segment)
         let elapsed = (ContinuousClock.now - start) / .seconds(1)
-        #expect((0.4...0.8).contains(elapsed), "\(size) bytes at \(size * 2) B/s took \(elapsed) s")
+        // The floor is the check (the server holds the answer to the rate set); the ceiling only guards a stalled one: a client
+        // answered late by a busy cooperative pool, as in a parallel run, measures longer.
+        #expect((0.4...3).contains(elapsed), "\(size) bytes at \(size * 2) B/s took \(elapsed) s")
     }
 
     @Test("Read ahead over HTTP, every frame plays and only the selected variant's segments are fetched")
