@@ -713,7 +713,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         return overflow ? .max : end
     }
 
-    private func recordReadAhead(_ pkt: AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func recordReadAhead(_ pkt: AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
         guard pkt.stream_index == videoStreamIndex || pkt.stream_index == audioStreamIndex,
             let stream = ctx.pointee.streams[Int(pkt.stream_index)]
         else { return }
@@ -753,16 +753,11 @@ public final class MediaDemuxer: @unchecked Sendable {
         while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
-                let sample = createVideoSample(
-                    bytes: pkt.data,
-                    count: Int(pkt.size),
-                    pts: pkt.pts,
-                    dts: pkt.dts,
-                    duration: pkt.duration
-                )
+                // Through the queue, behind what the read itself queued (the pictures a variant switch held back).
+                videoQueue.append(DemuxedVideoPacket(pkt, format: videoFormat))
                 av_packet_unref(&pkt)
-                if let sample {
-                    return sample
+                while let vp = videoQueue.popFirst() {
+                    if let sample = createVideoSample(from: vp) { return sample }
                 }
             } else if pkt.stream_index == audioStreamIndex {
                 // Buffer audio packet for Stage 2 audio pipeline
@@ -772,7 +767,11 @@ public final class MediaDemuxer: @unchecked Sendable {
                 av_packet_unref(&pkt)
             }
         }
-        // The read loop ends at the end of the input (or an error); what is queued is still to be taken.
+        // The read loop ends at the end of the input (or an error); what is queued (the pictures a switch held until
+        // then) is still to be taken.
+        while let vp = videoQueue.popFirst() {
+            if let sample = createVideoSample(from: vp) { return sample }
+        }
         inputEndedOnDemand = true
         return nil
     }

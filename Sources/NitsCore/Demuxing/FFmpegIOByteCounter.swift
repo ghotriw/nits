@@ -39,7 +39,8 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private var customInputs: [UnsafeMutablePointer<AVIOContext>: any FFmpegInputSource] = [:]
     /// Makes `transport`, when set before the context opens: a network source's.
     var makeTransport: (() -> HTTPSessionTransport)?
-    /// Serves the HTTP(S) inputs an HLS demuxer asks for (`isHLS`): made for its first, none for other formats.
+    /// Serves the HTTP(S) inputs an HLS or a DASH demuxer asks for (`isHLS`, `isDASH`): made for its first, none for
+    /// other formats.
     private(set) var transport: HTTPSessionTransport?
     /// The context installed on: nested ones (an HLS playlist's) call back with their own.
     private var context: UnsafeMutablePointer<AVFormatContext>?
@@ -51,9 +52,16 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         context?.pointee.iformat.map { String(cString: $0.pointee.name) == "hls" } ?? false
     }
 
-    /// The HTTP options (headers, user agent, timeouts) of the requests a DASH demuxer makes for its segments. It copies
-    /// them from the HTTP input its manifest was read from, which an inline manifest isn't, so they are added to each
-    /// request here (`MediaURL.requestOptions`). Empty for other sources.
+    /// The context is a DASH demuxer's, which opens a segment (or the range of a file) per request as HLS's does.
+    private var isDASH: Bool {
+        context?.pointee.iformat.map { String(cString: $0.pointee.name) == "dash" } ?? false
+    }
+
+    /// The HTTP options (headers, user agent, timeouts) of the requests a DASH demuxer makes for its segments that
+    /// FFmpeg opens itself: it copies them from the HTTP input its manifest was read from, which an inline manifest
+    /// isn't, so they are added to each request here (`MediaURL.requestOptions`). The segments `transport` serves carry
+    /// the source's headers already; these are the ones it leaves to FFmpeg, an answer redirected above all. Empty for
+    /// other sources.
     var segmentRequestOptions: [(name: String, value: String)] = []
 
     /// Adds `segmentRequestOptions` to the request for `url` a DASH demuxer is opening, unless it carries them.
@@ -193,7 +201,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         -> TransportInput?
     {
         let url = String(cString: url)
-        guard isHLS, HTTPSessionTransport.serves(url) else { return nil }
+        guard isHLS || isDASH, HTTPSessionTransport.serves(url) else { return nil }
         if transport == nil { transport = makeTransport?() }
         guard let transport else { return nil }
         let end = Self.intOption("end_offset", in: options).flatMap { $0 > 0 ? $0 : nil }

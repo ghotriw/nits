@@ -65,11 +65,16 @@ struct DASHManifestResolver: MediaResolver {
                     bitrate: video.bandwidth)
             }
         }
-        guard let path = formats.first?.url ?? manifest.text().map(MediaURL.inlineDASHManifest) else { return nil }
+        // A ladder of pictures that can follow the network plays as one: the demuxer lists the rungs as variants, the
+        // quality menu is theirs and the pictures `videoFormats` lists are left to a stream without a ladder.
+        let ladder = manifest.ladderText().map(MediaURL.inlineDASHManifest)
+        guard let path = ladder ?? formats.first?.url ?? manifest.text().map(MediaURL.inlineDASHManifest) else {
+            return nil
+        }
         AppLog.info(
             .engine,
-            "DASH: '\(url.absoluteString)': \(manifest.videos.count) picture(s), playing \(formats.first?.id ?? "audio")"
-        )
+            "DASH: '\(url.absoluteString)': \(manifest.videos.count) picture(s), "
+                + (ladder != nil ? "a ladder of \(manifest.ladder.count)" : "playing \(formats.first?.id ?? "audio")"))
         return ResolvedMedia(
             path: path, headers: headers, title: manifest.title, videoFormats: formats.count > 1 ? formats : [],
             selectedVideoFormatID: formats.first?.id)

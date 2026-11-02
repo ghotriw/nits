@@ -52,10 +52,12 @@ struct DASHManifestResolverTests {
         #expect(media.videoFormats.map(\.codec) == ["H.264", "H.264"], "SDR says nothing")
         #expect(media.headers == headers)
         #expect(MediaURL.isInlineDASHManifest(media.path))
-        #expect(media.path == media.videoFormats[0].url)
+        // Both pictures are one ladder: the manifest lists them both, and the demuxer offers them as variants.
+        #expect(media.path != media.videoFormats[0].url)
 
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
         #expect(demuxer.hasVideo && demuxer.hasAudio)
+        #expect(demuxer.variants.map(\.bandwidth) == [500_000, 100_000], "\(demuxer.variants)")
         #expect(abs(demuxer.durationSeconds - Double(Self.count)) < 0.1)
         demuxer.startReadAhead()
         var pictures = 0

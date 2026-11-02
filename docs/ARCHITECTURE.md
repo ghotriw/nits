@@ -466,6 +466,25 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   …) on the reading thread, under `queueLock`: the engine reads it before starting the read-ahead at the end of a
   load, and through `readingDescription` after that. An audio track selected during a switch is spliced to in place of
   the one selected when it began.
+- **DASH variants.** A DASH manifest's ladder (`DASHManifest.ladder`: the pictures of the best one's codec and range,
+  the manifest written with every rung) is the demuxer's variants: FFmpeg's DASH demuxer has one program and a stream
+  for each representation, the picture ones with `variant_bitrate` (`dashVariants`), the sounds the manifest's own.
+  Its segments are served by `HTTPSessionTransport` as HLS's, which `AdaptiveBitrateLogic` measures. A switch is the
+  same splice, with one difference: FFmpeg's DASH demuxer reads the representation whose last picture presents
+  earliest, so with B-frames the new variant, catching up from the start of its segment, runs ahead of the old by the
+  depth of the reordering (HLS's reads by decode time), or the old variant reads its own keyframe first, and the order
+  is no rule. So (`MediaDemuxer+VariantHold.swift`) the old variant's pictures are delayed while the keyframe is looked
+  for (`heldOld`, `heldOldVideoLimit`), and the keyframe is not spliced when found: it, and the pictures after it, are
+  held (`candidate`, `heldVideo`) until the old variant hands over its first picture that decodes with or after it,
+  and the format description changes then (a packet keeps the one it was read with). The
+  held pictures are `AVPacket`s kept by reference and go through what every picture does when released, the captions
+  in their SEI (`processVideoPacket`) first, in the order the decoder takes them. The keyframe must decode after every
+  picture the old variant has handed over, else the old one's own keyframe would be repeated. A seek, the end of the
+  input and `heldVideoLimit` pictures end the wait.
+  FFmpeg's DASH demuxer frees libxml2's process-wide state after each manifest it reads (`xmlCleanupParser`), which
+  crashes a parse going on in another thread (our `XMLTree`, the playlist parser's XSPF, a system framework's): the
+  bundled FFmpeg is built without that call (`scripts/patches/ffmpeg-dashdec-keep-libxml2.patch`, applied by
+  `build_dependencies.sh`; upstream has it still). A Homebrew FFmpeg has no DASH demuxer, and so has no such call.
 - **Adaptive bitrate** (`AdaptiveBitrateLogic`, `MediaDemuxer+AdaptiveBitrate.swift`) chooses the variant while
   reading ahead, until one is chosen by hand.
   - *Requests* go through `URLSession` (`HTTPSessionTransport`), not FFmpeg's HTTP: `FFmpegIOByteCounter`'s

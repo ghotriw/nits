@@ -176,7 +176,7 @@ package struct DASHManifest {
         self.audioPlaces = languages.compactMap { bestSound[$0]?.place }
 
         // Written once to know that it can be: a timeline that cannot be made to end is not for FFmpeg to seek in.
-        guard videos.isEmpty && audioPlaces.isEmpty || rewritten(videoID: videos.first?.id) != nil else {
+        guard videos.isEmpty && audioPlaces.isEmpty || rewritten(videoIDs: videos.prefix(1).map(\.id)) != nil else {
             return nil
         }
     }
@@ -184,14 +184,32 @@ package struct DASHManifest {
     /// The manifest with the picture `videoID` (the best one when nil) and the audio, as the demuxer is given it. Nil
     /// when the picture is none of `videos`.
     package func text(videoID: String? = nil) -> String? {
-        guard let rewritten = rewritten(videoID: videoID ?? videos.first?.id) else { return nil }
+        guard let rewritten = rewritten(videoIDs: (videoID ?? videos.first?.id).map { [$0] } ?? []) else { return nil }
         return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
     }
 
-    private func rewritten(videoID: String?) -> XMLTreeElement? {
+    /// The pictures that can follow the network as one: those of the best one's codec and range (HDR or not), as
+    /// the picture changes between them without a new decoder (HLS's ladder, `playlistsOutsideLadder`). The best first.
+    /// Fewer than two is no ladder.
+    package var ladder: [Video] {
+        guard let best = videos.first else { return [] }
+        let rungs = videos.filter { $0.codec == best.codec && $0.isHDR == best.isHDR && $0.bandwidth > 0 }
+        return rungs.count > 1 ? rungs : []
+    }
+
+    /// The manifest with every picture of `ladder` and the audio, for the demuxer to switch between the pictures with
+    /// the network (`MediaDemuxer.variants`). It opens every representation at once, so it costs the opening of each;
+    /// nil without a ladder.
+    package func ladderText() -> String? {
+        let rungs = ladder
+        guard !rungs.isEmpty, let rewritten = rewritten(videoIDs: rungs.map(\.id)) else { return nil }
+        return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
+    }
+
+    private func rewritten(videoIDs: [String]) -> XMLTreeElement? {
         var kept: [Place] = audioPlaces
-        if let videoID {
-            guard let place = videoPlaces[videoID] else { return nil }
+        for id in videoIDs.reversed() {
+            guard let place = videoPlaces[id] else { return nil }
             kept.insert(place, at: 0)
         }
         guard !kept.isEmpty else { return nil }

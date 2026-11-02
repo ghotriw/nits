@@ -68,8 +68,8 @@ struct AdaptiveBitrateTests {
         func stop() { task.cancel() }
     }
 
-    private static func config() -> AdaptiveBitrateLogic.Config {
-        var config = AdaptiveBitrateLogic.Config.scaled(toReadAhead: 9)
+    static func config(readAhead: Double = 9) -> AdaptiveBitrateLogic.Config {
+        var config = AdaptiveBitrateLogic.Config.scaled(toReadAhead: readAhead)
         config.upSwitchInterval = 3
         config.downSwitchInterval = 1
         config.halfLives = (fast: 1, slow: 2)
@@ -78,7 +78,7 @@ struct AdaptiveBitrateTests {
         return config
     }
 
-    private static func waitUntil(timeout: Duration, _ condition: () -> Bool) async -> Bool {
+    static func waitUntil(timeout: Duration, _ condition: () -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while !condition() {
             guard ContinuousClock.now < deadline else { return false }

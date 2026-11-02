@@ -320,8 +320,18 @@ flowchart TD
     (`SegmentedDASHManifest`, given inline as a `data:` URL); the picture and its audio come out of one demuxer.
   - [ ] yt-dlp's other DASH formats (a manifest's representations with lists of URLs): play the manifest
     (`manifest_url`), choosing its representations.
-  - [ ] Adaptive bitrate for DASH (`AdaptiveBitrateLogic` shared with HLS; needs every representation in the manifest
-    and the requests through `HTTPSessionTransport`, `MediaDemuxer.variants` describes HLS only).
+  - [x] Adaptive bitrate for DASH (`AdaptiveBitrateLogic` shared with HLS): the segments through
+    `HTTPSessionTransport`, the ladder of a manifest as `MediaDemuxer.variants`, the splice of a switch (B-frames
+    included), the decisions (`DASHAdaptiveBitrateTests`: a throttled server brings the picture down to the rung the
+    link carries).
+  - [ ] Measure it on a live ladder (Akamai's, with Network Link Conditioner, as HLS's). Known costs: FFmpeg's DASH
+    demuxer reads the start of every rung when it opens, and again after the seek to the start that follows (a few
+    megabytes on a ladder of long segments, ≈0.3 s a rung on `SegmentBase`): a smaller ladder or an opening of the
+    rungs side by side (as `HLSPlaylistPrefetcher` does for playlists) would cut it. Rungs whose stream carries no
+    colour (Unified Streaming's lower ones) don't switch with the others: they could take it from the rest of the
+    ladder (a change of the picture to look at).
+  - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
+    crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.
 
 ---

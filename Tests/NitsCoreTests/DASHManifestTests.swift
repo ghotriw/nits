@@ -79,6 +79,37 @@ struct DASHManifestTests {
         #expect(manifest.videos.map(\.codec) == ["VP9"])
     }
 
+    @Test("The pictures of the best one's codec and range are a ladder; the others are left out of it")
+    func buildsTheLadder() throws {
+        let manifest = try #require(
+            Self.manifest(
+                """
+                <AdaptationSet contentType="video">
+                \(Self.video("hi", 1920, 1080, bandwidth: 5_000_000))
+                \(Self.video("mid", 1280, 720, bandwidth: 2_500_000))
+                \(Self.video("lo", 640, 360, bandwidth: 800_000))
+                \(Self.video("vp9", 1280, 720, codecs: "vp09.00.31.08", bandwidth: 1_000_000))
+                \(Self.video("hevc", 1280, 720, codecs: "hvc1.2.4.L120", bandwidth: 1_500_000))
+                </AdaptationSet>
+                <AdaptationSet contentType="audio" lang="en"><Representation id="a" mimeType="audio/mp4" bandwidth="64000"/></AdaptationSet>
+                """))
+        #expect(manifest.ladder.map(\.id) == ["hi", "mid", "lo"], "One codec: a switch needs no new decoder")
+        let text = try #require(manifest.ladderText())
+        for id in ["hi", "mid", "lo", "a"] { #expect(text.contains(#"id="\#(id)""#), "\(id)") }
+        #expect(!text.contains(#"id="vp9""#) && !text.contains(#"id="hevc""#))
+        // The one picture of a manifest is no ladder.
+        let single = try #require(
+            Self.manifest(
+                #"<AdaptationSet contentType="video">\#(Self.video("only", 1280, 720, bandwidth: 1))</AdaptationSet>"#))
+        #expect(single.ladder.isEmpty && single.ladderText() == nil)
+        // A rung without a bitrate can't be told from the others by the network.
+        let unknown = try #require(
+            Self.manifest(
+                #"<AdaptationSet contentType="video">\#(Self.video("a", 1280, 720, bandwidth: 0))\#(Self.video("b", 640, 360, bandwidth: 5))</AdaptationSet>"#
+            ))
+        #expect(unknown.ladder.isEmpty)
+    }
+
     @Test(
         "Of the pictures a manifest lists, the written one has the chosen alone; the audio of each language, the best")
     func keepsOnePictureAndTheBestAudio() throws {

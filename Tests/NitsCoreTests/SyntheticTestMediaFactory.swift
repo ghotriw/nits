@@ -145,6 +145,15 @@ public enum SyntheticTestMediaFactory {
         /// of one URL a DASH manifest lists (`SegmentedDASHManifest`): `video/N` and `audio/N` from 0, no extension,
         /// each with the initialization data before its media. Made as a directory; `filename` is `video/0`
         case dashSegments
+        /// A DASH ladder of twelve one-second segments (12s): H.264 with B-frames at 160x90, 320x180 and 480x270 (the
+        /// rungs `dashLadderRungs`; 25 fps, a keyframe at each segment, the same time base) and AAC audio, as the segments
+        /// of `dashSegments`: `video0`, `video1`, `video2` (the lowest first) and `audio`. `filename` is `video0/0`
+        case dashLadder
+        /// A DASH ladder of two rungs (160x90 and 320x180, 6s at 30 fps, no B-frames, a keyframe each second) whose pictures
+        /// carry the CEA-608 captions of `dashCaptionScript` in their SEI, one at each keyframe (the muxer closes the last
+        /// segment of a copied stream late: 7s are made, 6 listed). As `dashLadder` otherwise,
+        /// without audio: `video0`, `video1`. `filename` is `video0/0`
+        case dashLadderCaptions
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
         var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
@@ -273,12 +282,22 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_ladder/master.m3u8"
             case .dashSegments:
                 return "synth_dash_segments/video/0"
+            case .dashLadder:
+                return "synth_dash_ladder/video0/0"
+            case .dashLadderCaptions:
+                return "synth_dash_ladder_captions/video0/0"
             }
         }
     }
 
     /// `dashSegments`' segment count.
     static let dashSegmentCount = 4
+
+    /// `dashLadder`'s segment count, and its rungs: width, height and the bitrate the encoder is held to (bits a second).
+    static let dashLadderSegmentCount = 12
+    static let dashLadderRungs: [(width: Int, height: Int, bitrate: Int)] = [
+        (160, 90, 120_000), (320, 180, 350_000), (480, 270, 800_000),
+    ]
 
     /// Chapters muxed into the chapter presets: (start, end, title) in seconds; the third has no title.
     public static let chapterMarkers: [(start: Double, end: Double, title: String?)] = [
@@ -402,10 +421,16 @@ public enum SyntheticTestMediaFactory {
             }
         }
 
-        if preset == .dashSegments {
+        if preset == .dashSegments || preset == .dashLadder || preset == .dashLadderCaptions {
             let directory = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-dash")
             defer { try? FileManager.default.removeItem(at: directory) }
-            guard makeDASHSegments(ffmpeg, in: directory, preset: preset) else { return nil }
+            let made =
+                switch preset {
+                case .dashLadder: makeDASHLadder(ffmpeg, in: directory, preset: preset)
+                case .dashLadderCaptions: makeDASHCaptionLadder(ffmpeg, in: directory, preset: preset)
+                default: makeDASHSegments(ffmpeg, in: directory, preset: preset)
+                }
+            guard made else { return nil }
             let published = URL(fileURLWithPath: targetPath).deletingLastPathComponent().deletingLastPathComponent()
                 .path
             guard rename(directory.path, published) == 0 || FileManager.default.fileExists(atPath: targetPath) else {
@@ -587,20 +612,103 @@ public enum SyntheticTestMediaFactory {
             made.appendingPathComponent("out.mpd").path,
         ]
         guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
-        for (name, stream) in [("video", 0), ("audio", 1)] {
+        guard composeDASHSegments(of: [("video", 0), ("audio", 1)], from: made, into: directory, count: seconds) else {
+            return false
+        }
+        try? FileManager.default.removeItem(at: made)
+        return true
+    }
+
+    /// `dashLadderCaptions`: each rung a raw H.264 stream given the captions, copied into the DASH muxer's segments.
+    private static func makeDASHCaptionLadder(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let made = directory.appendingPathComponent("made", isDirectory: true)
+        try? FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        let rungs = [(160, 90, "100k"), (320, 180, "300k")]
+        var inputs: [String] = []
+        let pairs = captionPairs(for: dashCaptionScript)
+        for (index, rung) in rungs.enumerated() {
+            let streamPath = made.appendingPathComponent("rung\(index).h264").path
+            let encode = [
+                "-y", "-f", "lavfi", "-i", "testsrc2=size=\(rung.0)x\(rung.1):rate=30:duration=7",
+                "-c:v", "libx264", "-b:v", rung.2, "-pix_fmt", "yuv420p", "-bf", "0", "-g", "30", "-keyint_min", "30",
+                "-sc_threshold", "0", "-x264-params", "aud=1", "-f", "h264", streamPath,
+            ]
+            guard runFFmpeg(ffmpeg, arguments: encode, preset: preset),
+                let stream = FileManager.default.contents(atPath: streamPath),
+                FileManager.default.createFile(atPath: streamPath, contents: captionedStream(stream, pairs: pairs))
+            else { return false }
+            inputs += ["-framerate", "30", "-f", "h264", "-i", streamPath]
+        }
+        let maps = rungs.indices.flatMap { ["-map", "\($0):v"] }
+        let arguments =
+            ["-y"] + inputs + maps + [
+                "-c", "copy", "-f", "dash", "-seg_duration", "1", "-use_template", "1", "-use_timeline", "0",
+                "-adaptation_sets", "id=0,streams=v", "-init_seg_name", "init-$RepresentationID$.mp4",
+                "-media_seg_name", "chunk-$RepresentationID$-$Number$.m4s", made.appendingPathComponent("out.mpd").path,
+            ]
+        guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+        guard
+            composeDASHSegments(of: rungs.indices.map { ("video\($0)", $0) }, from: made, into: directory, count: 6)
+        else { return false }
+        try? FileManager.default.removeItem(at: made)
+        return true
+    }
+
+    /// `dashLadder`: the rungs encoded alike (the same frame rate and key frames, B-frames, so their decode and
+    /// presentation times differ as a real ladder's do), the DASH muxer's segments put in `video0`… and `audio`.
+    private static func makeDASHLadder(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let made = directory.appendingPathComponent("made", isDirectory: true)
+        try? FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        let seconds = dashLadderSegmentCount
+        let rungs = dashLadderRungs
+        let split = "[0:v]split=\(rungs.count)" + rungs.indices.map { "[s\($0)]" }.joined()
+        let scales = rungs.enumerated().map {
+            "[s\($0.offset)]scale=\($0.element.width):\($0.element.height)[v\($0.offset)]"
+        }
+        var arguments = [
+            "-f", "lavfi", "-i", "testsrc2=size=480x270:rate=25:duration=\(seconds)",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=\(seconds)",
+            "-filter_complex", ([split] + scales).joined(separator: ";"),
+        ]
+        for (index, rung) in rungs.enumerated() {
+            arguments += [
+                "-map", "[v\(index)]", "-c:v:\(index)", "libx264", "-b:v:\(index)", "\(rung.bitrate)",
+                "-maxrate:v:\(index)", "\(rung.bitrate)", "-bufsize:v:\(index)", "\(rung.bitrate * 2)",
+            ]
+        }
+        arguments += [
+            "-bf", "3", "-g", "25", "-keyint_min", "25", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+            "-map", "1:a", "-c:a", "aac", "-f", "dash", "-seg_duration", "1", "-use_template", "1",
+            "-use_timeline", "0",
+            "-adaptation_sets", "id=0,streams=\(rungs.indices.map(String.init).joined(separator: ",")) id=1,streams=a",
+            "-init_seg_name", "init-$RepresentationID$.mp4", "-media_seg_name", "chunk-$RepresentationID$-$Number$.m4s",
+            made.appendingPathComponent("out.mpd").path,
+        ]
+        guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+        let streams = rungs.indices.map { ("video\($0)", $0) } + [("audio", rungs.count)]
+        guard composeDASHSegments(of: streams, from: made, into: directory, count: seconds) else { return false }
+        try? FileManager.default.removeItem(at: made)
+        return true
+    }
+
+    /// The segments `video`… `audio` of the muxer's output in `made`: segment `n` of a stream is its initialization
+    /// data and the muxer's chunk `n + 1`, in `directory/name/n`.
+    private static func composeDASHSegments(
+        of streams: [(name: String, id: Int)], from made: URL, into directory: URL, count: Int
+    ) -> Bool {
+        for (name, stream) in streams {
             let folder = directory.appendingPathComponent(name, isDirectory: true)
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             guard let initialization = try? Data(contentsOf: made.appendingPathComponent("init-\(stream).mp4")) else {
                 return false
             }
-            for number in 0..<seconds {
+            for number in 0..<count {
                 guard
                     let media = try? Data(contentsOf: made.appendingPathComponent("chunk-\(stream)-\(number + 1).m4s")),
                     (try? (initialization + media).write(to: folder.appendingPathComponent("\(number)"))) != nil
                 else { return false }
             }
         }
-        try? FileManager.default.removeItem(at: made)
         return true
     }
 
@@ -644,7 +752,7 @@ public enum SyntheticTestMediaFactory {
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
-            .hlsRenditions, .hlsLadder, .dashSegments:
+            .hlsRenditions, .hlsLadder, .dashSegments, .dashLadder, .dashLadderCaptions:
             return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [
@@ -1304,6 +1412,14 @@ extension SyntheticTestMediaFactory {
         (3.0, 4.5, 1, "TOP LINE"),
     ]
 
+    /// The captions of `dashLadderCaptions`, timed so that the keyframe of each second (30 pictures) carries the first
+    /// pair of the text of one: a splice at a keyframe that drops its captions garbles the caption (the control codes
+    /// are sent twice, and a text pair is not).
+    static let dashCaptionScript: [(shown: Double, cleared: Double, row: Int, text: String)] = [
+        (1.0 + 2.0 / 30, 1.6, 15, "ONE"), (2.0 + 2.0 / 30, 2.6, 15, "TWO"), (3.0 + 2.0 / 30, 3.6, 15, "THREE"),
+        (4.0 + 2.0 / 30, 4.6, 15, "FOUR"), (5.0 + 2.0 / 30, 5.6, 15, "FIVE"),
+    ]
+
     /// A 608 byte with its odd parity bit.
     static func cea608Byte(_ value: UInt8) -> UInt8 {
         value.nonzeroBitCount % 2 == 0 ? value | 0x80 : value
@@ -1325,9 +1441,13 @@ extension SyntheticTestMediaFactory {
     static let clearPairs = [(cea608Byte(0x14), cea608Byte(0x2C)), (cea608Byte(0x14), cea608Byte(0x2C))]
 
     /// The field 1 pair of each picture at 30 fps: a caption's end of caption falls on the picture it is shown at.
-    static var captionPairsPerPicture: [(UInt8, UInt8)] {
+    static var captionPairsPerPicture: [(UInt8, UInt8)] { captionPairs(for: captionScript) }
+
+    /// The field 1 pair of each of the 180 pictures at 30 fps for `script`.
+    static func captionPairs(for script: [(shown: Double, cleared: Double, row: Int, text: String)]) -> [(UInt8, UInt8)]
+    {
         var pictures = Array(repeating: (cea608Byte(0), cea608Byte(0)), count: 180)
-        for caption in captionScript {
+        for caption in script {
             let pairs = popOnPairs(row: caption.row, text: caption.text)
             let shown = Int((caption.shown * 30).rounded())
             for (offset, pair) in pairs.enumerated() { pictures[shown - (pairs.count - 2) + offset] = pair }
@@ -1361,7 +1481,7 @@ extension SyntheticTestMediaFactory {
     }
 
     /// An Annex B H.264 stream with an access unit delimiter per picture, given `captionSEI` after each delimiter.
-    static func captionedStream(_ stream: Data) -> Data {
+    static func captionedStream(_ stream: Data, pairs: [(UInt8, UInt8)] = captionPairsPerPicture) -> Data {
         let bytes = [UInt8](stream)
         var starts: [Int] = []
         var index = 0
@@ -1373,7 +1493,6 @@ extension SyntheticTestMediaFactory {
                 index += 1
             }
         }
-        let pairs = captionPairsPerPicture
         var picture = 0
         var result: [UInt8] = []
         for (position, start) in starts.enumerated() {

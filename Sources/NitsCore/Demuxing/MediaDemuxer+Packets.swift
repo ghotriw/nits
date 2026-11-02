@@ -48,6 +48,29 @@ extension MediaDemuxer {
             self.flags = pkt.flags
             self.format = format
         }
+
+        /// A packet held back (`HeldVideoPacket`) with the format it plays with.
+        init(_ held: HeldVideoPacket, format: VideoPacketFormat) {
+            self.init(held.packet.pointee, format: format)
+        }
+    }
+
+    /// A video packet of a variant switched to, held back until the format it plays with is known
+    /// (`VariantSwitch.heldVideo`). FFmpeg's packet itself, kept by reference: it goes through what every picture does
+    /// when it is released (the captions in its SEI), in the order the decoder takes them.
+    final class HeldVideoPacket: @unchecked Sendable {
+        let packet: UnsafeMutablePointer<AVPacket>
+
+        /// Nil when the packet can't be kept.
+        init?(_ pkt: inout AVPacket) {
+            guard let clone = av_packet_clone(&pkt) else { return nil }
+            packet = clone
+        }
+
+        deinit {
+            var packet: UnsafeMutablePointer<AVPacket>? = packet
+            av_packet_free(&packet)
+        }
     }
 
     /// A queued packet's payload size, which `PacketFifoQueue` totals.
