@@ -5,7 +5,7 @@
 # Bump DEPS_VERSION whenever versions or configure flags change, run the "Build and Release
 # Dependencies" workflow, then paste the SHA-256 it prints into DEPS_ARCHIVE_SHA256.
 
-DEPS_VERSION="1.2.0"
+DEPS_VERSION="1.2.1"
 FFMPEG_VERSION="9.0.2"
 DAV1D_VERSION="1.5.0"
 LIBASS_VERSION="0.17.5"
@@ -17,7 +17,7 @@ DEPS_ARCH="arm64"
 DEPS_MIN_MACOS="15.0"
 
 # SHA-256 of the release asset for DEPS_VERSION. Empty = not published yet: setup builds from source.
-DEPS_ARCHIVE_SHA256="1ce6e1a4a0fc23d2cee8d490abb8be8e48acfb2dbc93169c9cc23b3fd4e61592"
+DEPS_ARCHIVE_SHA256=""
 
 DEPS_ARCHIVE_NAME="nits-deps-macos15-${DEPS_ARCH}-v${DEPS_VERSION}.tar.gz"
 DEPS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-v${DEPS_VERSION}/${DEPS_ARCHIVE_NAME}"

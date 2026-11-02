@@ -91,6 +91,17 @@ rm -rf "ffmpeg-$FFMPEG_VERSION"
 tar -xf "ffmpeg-$FFMPEG_VERSION.tar.xz"
 cd "ffmpeg-$FFMPEG_VERSION"
 
+# The one change to FFmpeg's source (scripts/patches/, listed in THIRD_PARTY_NOTICES.md): its DASH demuxer frees
+# libxml2's state for the whole process after each manifest, which a parse going on elsewhere crashes on.
+for patch_file in "$DIR"/scripts/patches/ffmpeg-*.patch; do
+    echo "==> Applying $(basename "$patch_file")..."
+    patch -p1 < "$patch_file"
+done
+if grep -q 'xmlCleanupParser();' libavformat/dashdec.c; then
+    echo "Error: dashdec.c still calls xmlCleanupParser()" >&2
+    exit 1
+fi
+
 # The DASH demuxer reads its manifest with libxml2 (MIT), which macOS ships: linked from the SDK, not bundled. FFmpeg's
 # configure finds it through pkg-config; the file goes into the prefix, first in the search path, so a Homebrew libxml2
 # is not picked. It has no Cflags: the SDK's path must not end up in the archive (the headers come from --extra-cflags).

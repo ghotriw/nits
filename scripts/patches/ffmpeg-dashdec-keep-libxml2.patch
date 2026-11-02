@@ -1,0 +1,18 @@
+FFmpeg's DASH demuxer calls xmlCleanupParser() after every manifest it parses. libxml2 documents that function as
+freeing the state of the whole process, for a time when no thread is parsing: a parse going on in another thread (or in
+another library of the process, as Foundation's XMLParser) crashes in the table of character encodings it frees.
+Upstream (master and release/9.0, libavformat/dashdec.c) still has the call. Applied by scripts/build_dependencies.sh
+to FFmpeg 9.0.2; the state libxml2 keeps is freed at exit.
+
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -1431,7 +1431,8 @@
+ cleanup:
+         /*free the document */
+         xmlFreeDoc(doc);
+-        xmlCleanupParser();
++        /* Not xmlCleanupParser(): it frees libxml2's state for the whole process, and a parse going on in another
++         * thread (or in another library) crashes on it. The state is freed at exit. */
+         xmlFreeNode(mpd_baseurl_node);
+     }
+ 
