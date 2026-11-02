@@ -355,11 +355,16 @@ flowchart TD
     (the throughput estimate was 1.8 Mbit/s a moment before). ABR was on the 1.4 Mbit/s rung from the start; 2 s after
     the link changed the estimate was 6.3 Mbit/s, and it stepped up to 2.4 Mbit/s at 60 s and to 4.5 Mbit/s at 70 s,
     where it stayed to the end (140 s), stalled 0 s.
-  - [ ] Left: the second pass over the first segments after the opening may still reopen rungs (to look at the
-    requests); a ladder of fewer rungs. Rungs whose
-    stream carries no
-    colour (Unified Streaming's lower ones) don't switch with the others: they could take it from the rest of the
-    ladder (a change of the picture to look at).
+  - [ ] Left from the opening and the start: the second pass over the first segments after the opening may still
+    reopen rungs (look at the requests: with one rung the opening takes 7.6–8.4 s on the 1.5 Mbit/s link, with the
+    ladder 10–14 s); a ladder of fewer rungs.
+  - [ ] The start's throughput is measured from 256 kB pieces at the slow start of TCP, so it reads low: fine at
+    1.5 and at 100+ Mbit/s (measured), not measured in between (20–30 Mbit/s with 4K rungs): it may start lower than
+    the link carries and step up after (`estimateUpBuffer`). Measure on such a link before tuning.
+  - [ ] Rungs whose stream carries no colour (Unified Streaming's lower ones) don't switch with the others: they
+    could take it from the rest of the ladder (a change of the picture to look at).
+  - [ ] Measured on one static manifest (Akamai MultiRate, `SegmentTimeline`): ladders with `SegmentBase`, numbered
+    `SegmentTemplate`, several languages or periods have the tests of `DASHLadderTests`, not a live measurement.
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
     crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.
