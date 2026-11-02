@@ -606,7 +606,7 @@ struct AssSubtitleTrackTests {
         // Paused above, so no time tick renders; then quiet: no render of the engine's running, asked for, or about to be.
         func isQuiet() -> Bool {
             engine.subtitles.libassCallsInFlight == 0 && !engine.subtitles.isAuthoredRenderRunning
-                && engine.subtitles.pendingAuthoredRenderTime == nil && engine.subtitles.windowRead == nil
+                && engine.subtitles.pendingAuthoredRenderTime == nil && engine.subtitles.mainReads.window == nil
         }
         for _ in 0..<200 where !isQuiet() { try await Task.sleep(for: .milliseconds(10)) }
         try await Task.sleep(for: .milliseconds(200))

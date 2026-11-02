@@ -83,11 +83,10 @@ extension MediaDemuxer {
     /// Behind `lock` and `queueLock`; selection on the main thread only asks for it (`streamSelectionChanged`).
     func applyStreamSelection(in ctx: UnsafeMutablePointer<AVFormatContext>) {
         guard let selected = selectedVariantId, let current = variantStreams[selected] else { return }
-        let subtitle = selectedSubtitleTrackId.flatMap { id in
-            subtitleTracks.first { $0.id == id && $0.closedCaptionField == nil }?.streamIndex
-        }
+        let subtitles = selectedSubtitleStreamIndices
         var involved = [current]
-        var enabled = Set([current.video, audioStreamIndex, subtitle].compactMap { $0 })
+        var enabled = Set([current.video, audioStreamIndex].compactMap { $0 })
+        enabled.formUnion(subtitles)
         if let pending = variantSwitch {
             involved += [pending.streams, pending.previous]
             enabled.formUnion([pending.streams.video, pending.previous.video].compactMap { $0 })

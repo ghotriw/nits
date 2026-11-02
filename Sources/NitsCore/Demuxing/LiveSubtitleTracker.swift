@@ -85,11 +85,23 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     private let liveSubtitleState = OSAllocatedUnfairLock(initialState: LiveSubtitleState())
     /// The packets of every subtitle stream playback reads, for a track chosen later. Changed under
     /// `MediaDemuxer.lock`, but its own lock lets `noteSubtitleReadsStart` reach it without that one.
-    private let stash = OSAllocatedUnfairLock(initialState: SubtitlePacketStash())
+    private let stash: Stash
+    /// Whether this tracker keeps the stash (adds packets to it, ends its stretches on seeks): the second track's tracker
+    /// shares the main one's, which would otherwise hold every packet twice and count every seek twice.
+    private let ownsStash: Bool
     /// Which streams of the file carry subtitles, by index (`readPacket`). Under `MediaDemuxer.lock`.
     private var subtitleStreams: [Bool] = []
 
-    init() {}
+    /// The packets of the subtitle streams playback reads, kept by one tracker for those of every track shown at once.
+    typealias Stash = OSAllocatedUnfairLock<SubtitlePacketStash>
+
+    static func makeStash() -> Stash { Stash(initialState: SubtitlePacketStash()) }
+
+    /// `ownsStash`: whether this tracker keeps `stash` (the main track's) or only reads it.
+    init(stash: Stash, ownsStash: Bool) {
+        self.stash = stash
+        self.ownsStash = ownsStash
+    }
 
     var version: Int {
         liveSubtitleState.withLock { $0.version }
@@ -184,7 +196,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
             state.readSpan += 1
             state.bitmapTruncations.removeAll()
         }
-        stash.withLock { $0.endStretch(at: previousReadAhead) }
+        if ownsStash { stash.withLock { $0.endStretch(at: previousReadAhead) } }
     }
 
     /// Phase 2 of seek: restore spanStart to the landed position after seek's own reads are complete.
@@ -193,7 +205,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             state.spanStart = seconds
         }
-        stash.withLock { $0.startStretch(at: seconds) }
+        if ownsStash { stash.withLock { $0.startStretch(at: seconds) } }
     }
 
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
@@ -245,7 +257,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         liveSubtitleState.withLock { state in
             if let start = state.spanStart, seconds > start { state.spanStart = seconds }
         }
-        stash.withLock { $0.noteReadsStart(at: seconds) }
+        if ownsStash { stash.withLock { $0.noteReadsStart(at: seconds) } }
     }
 
     @discardableResult
@@ -314,7 +326,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// Forgets the packets read so far: the demuxer read the start of the file to describe it, and reads it again from
     /// the beginning. Under `MediaDemuxer.lock`.
     func resetStash() {
-        stash.withLock { $0 = SubtitlePacketStash() }
+        if ownsStash { stash.withLock { $0 = SubtitlePacketStash() } }
     }
 
     /// A packet playback read: kept for a track chosen later, and taken by the selected one. Under
@@ -327,7 +339,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
                 formatCtx.pointee.streams[position]?.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
             }
         }
-        if subtitleStreams.indices.contains(index), subtitleStreams[index] {
+        if ownsStash, subtitleStreams.indices.contains(index), subtitleStreams[index] {
             stash.withLockUnchecked { $0.add(pkt, in: formatCtx) }
         }
         if index == selectedStreamIndex { processPacket(pkt, in: formatCtx) }

@@ -143,10 +143,30 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     public internal(set) var subtitleTracks: [SubtitleTrack] = []
     public private(set) var selectedSubtitleTrackId: Int? = nil
-    let subtitleTracker = LiveSubtitleTracker()
+    private static func makeTrackers() -> (main: LiveSubtitleTracker, secondary: LiveSubtitleTracker) {
+        let stash = LiveSubtitleTracker.makeStash()
+        return (
+            LiveSubtitleTracker(stash: stash, ownsStash: true), LiveSubtitleTracker(stash: stash, ownsStash: false)
+        )
+    }
+    private let trackers = MediaDemuxer.makeTrackers()
+    var subtitleTracker: LiveSubtitleTracker { trackers.main }
+    /// The second track shown with the selected one: collected from the same packets, kept in a tracker of its own.
+    var secondarySubtitleTracker: LiveSubtitleTracker { trackers.secondary }
+    /// Id of the second subtitle track, `nil` for none. Behind `queueLock`.
+    private(set) var selectedSecondarySubtitleTrackId: Int? = nil
     public var liveSubtitleVersion: Int {
         subtitleTracker.version
     }
+
+    /// Which of the two tracks shown at once a call is about.
+    enum SubtitleSlot { case main, secondary }
+
+    func tracker(_ slot: SubtitleSlot) -> LiveSubtitleTracker {
+        slot == .main ? subtitleTracker : secondarySubtitleTracker
+    }
+
+    func liveSubtitleVersion(of slot: SubtitleSlot) -> Int { tracker(slot).version }
     /// Furthest timeline second read from the audio and video streams since the last seek (`-infinity` before any),
     /// `infinity` once the input has been read to its end. Its own lock: `lock` is held through blocking reads.
     let readAheadState = OSAllocatedUnfairLock(initialState: -Double.infinity)
@@ -247,10 +267,32 @@ public final class MediaDemuxer: @unchecked Sendable {
         subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
     }
 
+    /// The streams of the subtitle tracks selected (the second one too) that are read as packets, not closed captions.
+    var selectedSubtitleStreamIndices: [Int] {
+        [selectedSubtitleTrackId, selectedSecondarySubtitleTrackId].compactMap { id in
+            id.flatMap { id in subtitleTracks.first { $0.id == id && $0.closedCaptionField == nil }?.streamIndex }
+        }
+    }
+
+    /// Selects the second subtitle track (or nil), as `selectSubtitleTrack` does the first: its packets are collected as
+    /// playback reads them.
+    func selectSecondarySubtitleTrack(trackId: Int?) {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        selectedSecondarySubtitleTrackId = trackId
+        streamSelectionChanged = true
+        let readAhead = readAheadState.withLock { $0 }
+        secondarySubtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
+    }
+
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
     /// Never touches the I/O lock, so it is safe to call from the main thread during network reads/seeks.
     public func getLiveSubtitleDocument() -> SubtitleDocument {
         subtitleTracker.getLiveSubtitleDocument()
+    }
+
+    func liveSubtitleDocument(of slot: SubtitleSlot) -> SubtitleDocument {
+        tracker(slot).getLiveSubtitleDocument()
     }
 
     /// Identifies the current track selection and reading stretch for `mergeLiveSubtitles`, with the stream to read
@@ -260,18 +302,23 @@ public final class MediaDemuxer: @unchecked Sendable {
         subtitleTracker.liveSubtitleSelection
     }
 
+    func subtitleSelection(of slot: SubtitleSlot) -> (id: Int, streamIndex: Int, captionField: Int?, span: Int) {
+        tracker(slot).liveSubtitleSelection
+    }
+
     /// The part of the timeline a window read (`EmbeddedSubtitleReader.readSubtitles`) must read so the selected track
     /// is whole at `time` (track time: the subtitle delay applied), less what the lists hold already; `nil` when
     /// nothing is missing.
-    func subtitleWindow(around time: Double) -> ClosedRange<Double>? {
+    func subtitleWindow(around time: Double, of slot: SubtitleSlot = .main) -> ClosedRange<Double>? {
         let readAhead = readAheadState.withLock { $0 }
-        return subtitleTracker.subtitleWindow(around: time, readAhead: readAhead)
+        return tracker(slot).subtitleWindow(around: time, readAhead: readAhead)
     }
 
     /// Playback reads from `seconds` on, not from the seek target: a forward keyframe seek lands past it, and what it
     /// jumped over wasn't read. Called with the time a seek landed at.
     func noteSubtitleReadsStart(at seconds: Double) {
         subtitleTracker.noteSubtitleReadsStart(at: seconds)
+        secondarySubtitleTracker.noteSubtitleReadsStart(at: seconds)
     }
 
     /// Adds the packets of a window read (`EmbeddedSubtitleReader.readSubtitles`) for the selection `selection` and
@@ -279,9 +326,10 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// `false`) if another track was chosen or a seek started another stretch meanwhile.
     @discardableResult
     func mergeLiveSubtitles(
-        _ packets: EmbeddedSubtitleReader.Packets, covering range: ClosedRange<Double>, selection: Int, span: Int
+        _ packets: EmbeddedSubtitleReader.Packets, covering range: ClosedRange<Double>, selection: Int, span: Int,
+        of slot: SubtitleSlot = .main
     ) -> Bool {
-        subtitleTracker.mergeLiveSubtitles(packets, covering: range, selection: selection, span: span)
+        tracker(slot).mergeLiveSubtitles(packets, covering: range, selection: selection, span: span)
     }
 
     /// The starts of each subtitle stream's packets by the file's own index (`EmbeddedSubtitleReader.readIndex`), once
@@ -307,17 +355,19 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// What playback read of the selected track before it was chosen, once (`LiveSubtitleTracker.takeStashedSubtitles`).
     /// Never touches the I/O lock.
-    func takeStashedSubtitles() -> (snapshot: SubtitlePacketStash.Snapshot, selection: Int, span: Int)? {
-        subtitleTracker.takeStashedSubtitles()
+    func takeStashedSubtitles(of slot: SubtitleSlot = .main) -> (
+        snapshot: SubtitlePacketStash.Snapshot, selection: Int, span: Int
+    )? {
+        tracker(slot).takeStashedSubtitles()
     }
 
     /// Adds what a stash snapshot decoded to (`LiveSubtitleTracker.mergeStashed`).
     @discardableResult
     func mergeStashed(
         _ decoded: [EmbeddedSubtitleReader.Packets], of snapshot: SubtitlePacketStash.Snapshot, selection: Int,
-        span: Int
+        span: Int, of slot: SubtitleSlot = .main
     ) -> Bool {
-        subtitleTracker.mergeStashed(decoded, of: snapshot, selection: selection, span: span)
+        tracker(slot).mergeStashed(decoded, of: snapshot, selection: selection, span: span)
     }
 
     var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
@@ -705,6 +755,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 }
                 recordReadAhead(pkt, in: ctx)
                 subtitleTracker.readPacket(&pkt, in: ctx)
+                secondarySubtitleTracker.readPacket(&pkt, in: ctx)
             } else if ret == Self.averrorEOF {
                 endVariantSwitchAtEOF(in: ctx)
                 readAheadState.withLock { $0 = .infinity }

@@ -7,8 +7,10 @@ import Observation
 /// as two tracks that each place themselves would overlap. Held by `SubtitleController`, which tells it when time
 /// moves and when the media goes.
 ///
-/// Its track is read whole, in the background, when chosen: unlike the selected track, an embedded one isn't collected
-/// from the packets playback reads. Only text tracks can be second (not pictures or closed captions).
+/// A file's track is read whole, in the background, when chosen. An embedded one is collected from the packets playback
+/// reads, as the selected track is (`MediaDemuxer.secondarySubtitleTracker`): choosing it reads nothing more of the
+/// file, a network volume included; a window read fills in the cue on screen now (`SubtitleController.refreshEmbedded`).
+/// Only text tracks can be second (not pictures or closed captions).
 @MainActor
 @Observable
 public final class SecondarySubtitles {
@@ -40,16 +42,16 @@ public final class SecondarySubtitles {
     @ObservationIgnored private var load: SubtitleController.Load?
     /// The key of the track as restored on load, not chosen by the user: kept in what is saved if it can't be read.
     @ObservationIgnored private var restoredKey: String?
-    /// The documents of the media's own tracks read whole, so choosing one again doesn't read the media again.
-    @ObservationIgnored private var embeddedDocuments: [Int: SubtitleDocument] = [:]
+    /// The track is the media's own, collected by the demuxer as playback reads.
+    @ObservationIgnored private var isLive = false
+    /// `MediaDemuxer.liveSubtitleVersion(of:)` of the document shown.
+    @ObservationIgnored private var observedVersion = -1
 
     init() {}
 
-    /// Whether `track` can be shown second: text read as a whole, not pictures or captions in the video. A track of
-    /// the media itself over the network isn't either: reading it means downloading every byte of the media.
+    /// Whether `track` can be shown second: text, not pictures or captions in the video.
     public func canShow(_ track: SubtitleTrack) -> Bool {
-        guard track.format != .bitmap, track.closedCaptionField == nil, !track.captionsInVideo else { return false }
-        return track.isExternal || controller?.host?.demuxer?.isNetworkSource != true
+        track.format != .bitmap && track.closedCaptionField == nil && !track.captionsInVideo
     }
 
     /// The tracks that can be shown second now: not the selected one.
@@ -80,7 +82,13 @@ public final class SecondarySubtitles {
         controller.secondaryDidChange()
         if persist { controller.host?.saveCurrentPlaybackProgress() }
         guard let track = usable else { return }
-        if let document = controller.cachedDocument(of: track) ?? embeddedDocuments[track.id] {
+        if !track.isExternal {
+            isLive = true
+            controller.host?.demuxer?.selectSecondarySubtitleTrack(trackId: track.id)
+            show(at: controller.shownSeconds - delay)
+            controller.refreshEmbedded(around: controller.shownSeconds, of: .secondary)
+            if persist { controller.rereadForRendition(trackId: track.id) }
+        } else if let document = controller.cachedDocument(of: track) {
             self.document = document
             show(at: controller.shownSeconds - delay)
         } else if let read = controller.documentReader(for: track) {
@@ -117,7 +125,6 @@ public final class SecondarySubtitles {
     func reset() {
         clear()
         restoredKey = nil
-        embeddedDocuments.removeAll()
         selectedTrackId = nil
         delay = 0
     }
@@ -126,6 +133,12 @@ public final class SecondarySubtitles {
         load?.cancel()
         load = nil
         document = nil
+        if isLive {
+            isLive = false
+            observedVersion = -1
+            controller?.host?.demuxer?.selectSecondarySubtitleTrack(trackId: nil)
+            controller?.secondaryReads.cancelWindow()
+        }
         if !cues.isEmpty { cues = [] }
     }
 
@@ -145,7 +158,6 @@ public final class SecondarySubtitles {
                     return
                 }
                 self.controller?.cache(document, of: track)
-                if !track.isExternal { self.embeddedDocuments[id] = document }
                 self.document = document
                 self.show(at: (self.controller?.shownSeconds ?? 0) - self.delay)
             }
@@ -155,6 +167,14 @@ public final class SecondarySubtitles {
 
     /// Shows what is due at `seconds` on the track's own timeline (the delay is applied).
     func show(at seconds: Double) {
+        if isLive, let demuxer = controller?.host?.demuxer {
+            // Collected as playback reads: a new document only when the version changes.
+            let version = demuxer.liveSubtitleVersion(of: .secondary)
+            if version != observedVersion || document == nil {
+                observedVersion = version
+                document = demuxer.liveSubtitleDocument(of: .secondary)
+            }
+        }
         let due = (document?.activeCues(at: seconds) ?? []).map {
             // Their own ids could be the selected track's: the overlay tells cues apart by id.
             SubtitleCue(
@@ -177,6 +197,8 @@ extension SecondarySubtitles {
         delay = clamped
         controller.store(delay: clamped, of: track)
         show(at: controller.shownSeconds - clamped)
+        // The track is due at another time now, which may lie outside what was read.
+        if isLive { controller.refreshEmbedded(around: controller.shownSeconds, of: .secondary) }
     }
 
     public func stepDelay(by delta: Double) {

@@ -38,6 +38,31 @@ struct SubtitlePacketStashTests {
         #expect(demuxer.takeStashedSubtitles() == nil, "Taken once")
     }
 
+    @Test("A second track is collected from the same packets as the first, each with its own cues")
+    func secondTrackCollectedAlongside() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let tracks = demuxer.subtitleTracks
+        try #require(tracks.count >= 2)
+        // Chosen before playback read anything: both collect live, the stash is the first tracker's alone.
+        demuxer.selectSubtitleTrack(trackId: tracks[0].id)
+        demuxer.selectSecondarySubtitleTrack(trackId: tracks[1].id)
+        readToEnd(demuxer)
+
+        #expect(demuxer.getLiveSubtitleDocument().cues.map(\.text) == ["Subtitle 0"])
+        #expect(demuxer.liveSubtitleDocument(of: .secondary).cues.map(\.text) == ["Subtitle 1"])
+
+        // Chosen later, the second gets what playback read from the shared stash, the first's left alone.
+        demuxer.selectSecondarySubtitleTrack(trackId: tracks[2].id)
+        let stashed = try #require(demuxer.takeStashedSubtitles(of: .secondary))
+        let decoded = EmbeddedSubtitleReader.decode(stashed.snapshot)
+        #expect(
+            demuxer.mergeStashed(
+                decoded, of: stashed.snapshot, selection: stashed.selection, span: stashed.span, of: .secondary))
+        #expect(demuxer.liveSubtitleDocument(of: .secondary).cues.map(\.text) == ["Subtitle 2"])
+        #expect(demuxer.getLiveSubtitleDocument().cues.map(\.text) == ["Subtitle 0"])
+    }
+
     @Test("A seek starts a new stretch: what it skipped stays for a window read")
     func seekSplitsStretches() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .assSubtitlesMKV) else { return }

@@ -9,7 +9,7 @@ import Testing
 struct SubtitleControllerTests {
     @MainActor
     final class FakeHost: SubtitleHost {
-        var demuxer: MediaDemuxer? { nil }
+        var demuxer: MediaDemuxer?
         var currentSourcePath: String?
         var currentHeaders: [String: String] = [:]
         var currentTime: Double = 0
@@ -256,6 +256,38 @@ struct SubtitleControllerTests {
         controller.secondary.select(trackId: nil)
         controller.writePreferences(into: &preferences)
         #expect(preferences.secondarySubtitle == "")
+    }
+
+    @Test(
+        "An embedded second track chosen after playback read it shows its cue, from the packets and not a read of the file"
+    )
+    func embeddedSecondTrackShowsReadPackets() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .uhdHDRSubtitles) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        while demuxer.nextVideoSample() != nil {}
+        let host = FakeHost()
+        host.demuxer = demuxer
+        host.currentSourcePath = path
+        host.currentTime = 1
+        let controller = SubtitleController()
+        controller.host = host
+        let tracks = demuxer.subtitleTracks
+        controller.mediaDidLoad(
+            tracks: tracks, readFiles: MediaSubtitleFiles(), saved: nil, requestedTrack: "0", audioLanguage: nil)
+        controller.secondary.select(trackId: tracks[1].id)
+        #expect(controller.secondary.isActive)
+
+        // The packets playback read are merged in the background.
+        for _ in 0..<100 where controller.secondary.cues.isEmpty {
+            controller.updateShown(at: 1)
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(controller.secondary.cues.map(\.text) == ["Subtitle 1"])
+        #expect(controller.cues.map(\.text) == ["Subtitle 0"])
+
+        controller.secondary.select(trackId: nil)
+        #expect(demuxer.subtitleSelection(of: .secondary).streamIndex == -1)
+        #expect(controller.secondary.cues.isEmpty)
     }
 
     @Test("Network tracks of one language and title keep their own delays and second-track choice")

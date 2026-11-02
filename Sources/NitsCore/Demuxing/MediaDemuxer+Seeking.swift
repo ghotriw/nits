@@ -37,10 +37,12 @@ extension MediaDemuxer {
         defer { readAheadWake.signal() }
         let previousReadAhead = readAheadState.withLock { $0 }
         subtitleTracker.beginSeek(previousReadAhead: previousReadAhead)
+        secondarySubtitleTracker.beginSeek(previousReadAhead: previousReadAhead)
         // After the seek's own reads: a keyframe search that backs off, or reads to the end, would leave them ahead.
         defer {
             readAheadState.withLock { $0 = seconds }
             subtitleTracker.endSeek(at: seconds)
+            secondarySubtitleTracker.endSeek(at: seconds)
         }
         if audioTimebase.den > 0 && audioTimebase.num > 0 {
             self.targetAudioPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
@@ -123,10 +125,7 @@ extension MediaDemuxer {
     /// `queueLock`.
     func reenableEndedDASHStreams(in ctx: UnsafeMutablePointer<AVFormatContext>) {
         guard let format = ctx.pointee.iformat, String(cString: format.pointee.name) == "dash" else { return }
-        let subtitle = selectedSubtitleTrackId.flatMap { id in
-            subtitleTracks.first { $0.id == id && $0.closedCaptionField == nil }?.streamIndex
-        }
-        for index in [videoStreamIndex, audioStreamIndex, subtitle ?? -1] where index >= 0 {
+        for index in [videoStreamIndex, audioStreamIndex] + selectedSubtitleStreamIndices where index >= 0 {
             ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_DEFAULT
         }
     }

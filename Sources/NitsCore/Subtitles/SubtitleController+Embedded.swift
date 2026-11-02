@@ -9,20 +9,23 @@ extension SubtitleController {
     /// the time tick while a negative delay shows the track ahead of what playback has read; a newer request cancels
     /// the one running. What playback read of the track before it was chosen (`MediaDemuxer.takeStashedSubtitles`) is
     /// merged first, for every source, and the window is what it leaves out.
-    func refreshEmbedded(around seconds: Double) {
+    func refreshEmbedded(around seconds: Double, of slot: MediaDemuxer.SubtitleSlot = .main) {
+        let trackId = slot == .main ? selectedTrackId : secondary.selectedTrackId
+        let delay = slot == .main ? self.delay : secondary.delay
+        let reads = slot == .main ? mainReads : secondaryReads
         guard let host, let demuxer = host.demuxer, let path = host.currentSourcePath,
-            let track = tracks.first(where: { $0.id == selectedTrackId }), !track.isExternal
+            let track = tracks.first(where: { $0.id == trackId }), !track.isExternal
         else { return }
-        let selection = demuxer.liveSubtitleSelection
+        let selection = demuxer.subtitleSelection(of: slot)
         guard selection.streamIndex >= 0 else { return }
-        if let stashed = demuxer.takeStashedSubtitles() {
-            let previous = stashMerge
-            stashMerge = Task.detached(priority: .utility) { [weak self] in
+        if let stashed = demuxer.takeStashedSubtitles(of: slot) {
+            let previous = reads.stashMerge
+            reads.stashMerge = Task.detached(priority: .utility) { [weak self] in
                 await previous?.value
                 let decoded = EmbeddedSubtitleReader.decode(stashed.snapshot, captionField: selection.captionField)
                 guard
                     demuxer.mergeStashed(
-                        decoded, of: stashed.snapshot, selection: stashed.selection, span: stashed.span)
+                        decoded, of: stashed.snapshot, selection: stashed.selection, span: stashed.span, of: slot)
                 else { return }
                 await MainActor.run {
                     guard let self, let host = self.host, host.demuxer === demuxer else { return }
@@ -34,11 +37,12 @@ extension SubtitleController {
         let isNetwork = demuxer.isNetworkSource
         // Before the stash is merged the window may be larger than it will be, never smaller.
         guard
-            Self.subtitleWindow(of: demuxer, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
+            Self.subtitleWindow(
+                of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
                 != nil
         else { return }
 
-        windowRead?.cancel()
+        reads.window?.cancel()
         let headers = host.currentHeaders
         if demuxer.needsSubtitleIndex, indexLoad == nil {
             let interrupt = FFmpegInterrupt()
@@ -51,18 +55,22 @@ extension SubtitleController {
             indexLoad = Load(task: task, interrupt: interrupt)
         }
         let interrupt = FFmpegInterrupt()
-        let pendingMerge = stashMerge
+        let pendingMerge = reads.stashMerge
         let pendingIndex = indexLoad?.task
+        // The second track's window waits for the first's: two reads of the same file at once would take the bandwidth
+        // playback refills with twice over after a seek.
+        let pendingMain = slot == .secondary ? mainReads.window?.task : nil
         // Below playback's own reads, which refill the buffer after a seek from the same file.
         let task = Task.detached(priority: .utility) { [weak self] in
             await pendingMerge?.value
             await pendingIndex?.value
+            await pendingMain?.value
             guard !Task.isCancelled,
                 let (range, starts) = Self.subtitleWindow(
-                    of: demuxer, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
+                    of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
             else {
                 await MainActor.run {
-                    if self?.windowRead?.interrupt === interrupt { self?.windowRead = nil }
+                    if reads.window?.interrupt === interrupt { reads.window = nil }
                 }
                 return
             }
@@ -70,14 +78,14 @@ extension SubtitleController {
             var failed = false
             if starts?.isEmpty == true {
                 merged = demuxer.mergeLiveSubtitles(
-                    .init(), covering: range, selection: selection.id, span: selection.span)
+                    .init(), covering: range, selection: selection.id, span: selection.span, of: slot)
             } else if let packets = EmbeddedSubtitleReader.readSubtitles(
                 url: path, headers: headers, streamIndex: selection.streamIndex,
                 captionField: selection.captionField, in: (starts?.first ?? range.lowerBound)...range.upperBound,
                 byteLimit: isNetwork ? EmbeddedSubtitleReader.networkWindowByteLimit : nil, interrupt: interrupt)
             {
                 merged = demuxer.mergeLiveSubtitles(
-                    packets, covering: range, selection: selection.id, span: selection.span)
+                    packets, covering: range, selection: selection.id, span: selection.span, of: slot)
             } else {
                 failed = true
                 if !interrupt.isCancelled {
@@ -91,12 +99,12 @@ extension SubtitleController {
                 guard let self, let host = self.host, host.demuxer === demuxer else { return }
                 // A read that failed stays the running one, so the time tick (`updateShown`) doesn't try it again
                 // twenty times a second; the next track switch, seek or delay change replaces it.
-                if !failed, self.windowRead?.interrupt === interrupt { self.windowRead = nil }
+                if !failed, reads.window?.interrupt === interrupt { reads.window = nil }
                 // Paused, no time tick would show what was read.
                 if merged { self.updateShown(at: host.currentTime) }
             }
         }
-        windowRead = Load(task: task, interrupt: interrupt)
+        reads.window = Load(task: task, interrupt: interrupt)
     }
 
     /// The window of the selected track to read at `time` (`MediaDemuxer.subtitleWindow`), with the starts of the
@@ -105,9 +113,10 @@ extension SubtitleController {
     /// is read only where the index tells (Matroska Cues, an MP4 sample table), up to `networkWindowByteLimit`:
     /// elsewhere a window would read every stream of the file for seconds, against playback refilling after a seek.
     nonisolated private static func subtitleWindow(
-        of demuxer: MediaDemuxer, around time: Double, streamIndex: Int, isNetwork: Bool
+        of demuxer: MediaDemuxer, slot: MediaDemuxer.SubtitleSlot, around time: Double, streamIndex: Int,
+        isNetwork: Bool
     ) -> (range: ClosedRange<Double>, starts: [Double]?)? {
-        guard let range = demuxer.subtitleWindow(around: time) else { return nil }
+        guard let range = demuxer.subtitleWindow(around: time, of: slot) else { return nil }
         let starts = demuxer.indexedSubtitleStarts(of: streamIndex, in: range)
         // Until the index is read, the read that reads it decides.
         if isNetwork, starts == nil, !demuxer.needsSubtitleIndex { return nil }
@@ -158,7 +167,7 @@ extension SubtitleController {
             load.cancel()
             loads[id] = nil
         }
-        windowRead?.cancel()
-        windowRead = nil
+        mainReads.cancelWindow()
+        secondaryReads.cancelWindow()
     }
 }

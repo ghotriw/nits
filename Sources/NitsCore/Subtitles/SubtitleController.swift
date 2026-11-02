@@ -261,11 +261,21 @@ public final class SubtitleController {
     /// Subtitle tracks being read in the background, by track id: one read per track, cancelled once the track is no
     /// longer selected or the media closes.
     @ObservationIgnored var loads: [Int: Load] = [:]
-    /// The window read of the selected embedded track around the time shown (`refreshEmbedded`).
-    @ObservationIgnored var windowRead: Load?
-    /// The merge of what playback read of the selected track before it was chosen (`refreshEmbedded`): never
-    /// cancelled, as nothing else brings it; window reads wait for it.
-    @ObservationIgnored var stashMerge: Task<Void, Never>?
+    /// The background reads of an embedded track chosen, one set a track shown (`refreshEmbedded`).
+    @MainActor final class EmbeddedReads {
+        /// The window read around the time shown.
+        var window: Load?
+        /// The merge of what playback read of the track before it was chosen: never cancelled, as nothing else brings it;
+        /// window reads wait for it.
+        var stashMerge: Task<Void, Never>?
+
+        func cancelWindow() {
+            window?.cancel()
+            window = nil
+        }
+    }
+    @ObservationIgnored let mainReads = EmbeddedReads()
+    @ObservationIgnored let secondaryReads = EmbeddedReads()
     /// The read of the file's own index of subtitle streams (`EmbeddedSubtitleReader.readIndex`), once per media:
     /// cancelled only with it, so seeks in a row don't restart it; window reads wait for it.
     @ObservationIgnored var indexLoad: Load?
@@ -314,10 +324,14 @@ extension SubtitleController {
     public func select(trackId id: Int?) {
         selectionIsAutomatic = false
         select(trackId: id, persistHistory: true)
-        // An HLS subtitle rendition is a playlist of its own, read only while selected: read ahead, FFmpeg would start
-        // it at the read position, up to the read-ahead limit past playback. Read it from the current frame instead,
-        // as an audio track switch does. (Subtitles muxed with the video, and closed captions, come as they are read.)
-        if let demuxer = host?.demuxer, demuxer.readsAhead, !demuxer.variants.isEmpty, let id,
+        if let id { rereadForRendition(trackId: id) }
+    }
+
+    /// An HLS subtitle rendition is a playlist of its own, read only while selected: read ahead, FFmpeg would start
+    /// it at the read position, up to the read-ahead limit past playback. Read it from the current frame instead,
+    /// as an audio track switch does. (Subtitles muxed with the video, and closed captions, come as they are read.)
+    func rereadForRendition(trackId id: Int) {
+        if let demuxer = host?.demuxer, demuxer.readsAhead, !demuxer.variants.isEmpty,
             let track = tracks.first(where: { $0.id == id }), !track.isExternal,
             track.closedCaptionField == nil
         {
@@ -422,7 +436,8 @@ extension SubtitleController {
         mediaGeneration += 1
         cancelLoads()
         // A merge still running is for the media left (it checks the demuxer); the next one's reads needn't wait.
-        stashMerge = nil
+        mainReads.stashMerge = nil
+        secondaryReads.stashMerge = nil
         indexLoad?.cancel()
         indexLoad = nil
         // The next media tries libass again; if its queue is still stuck, the watch finds it so again.
@@ -514,11 +529,13 @@ extension SubtitleController {
             // A cue that started before where the seek landed (`noteSubtitleReadsStart`, on the seek queue) is read in
             // a window. Once per settled seek, not per scrub step, on its own demuxer.
             refreshEmbedded(around: seconds)
+            refreshEmbedded(around: seconds, of: .secondary)
         case .mediaStarted:
             // The track was chosen before the start time was applied, its cues for 0: those due at the start. The cue
             // on screen at a resume point is read in a window (a start at 0 needs none, playback reads from there).
             updateShown(at: seconds)
             refreshEmbedded(around: seconds)
+            refreshEmbedded(around: seconds, of: .secondary)
         }
     }
 
@@ -645,6 +662,9 @@ extension SubtitleController {
         let playbackSeconds = seconds
         let seconds = seconds - delay
         secondary.show(at: playbackSeconds - secondary.delay)
+        if secondary.delay < 0, secondaryReads.window == nil, secondary.isActive {
+            refreshEmbedded(around: playbackSeconds, of: .secondary)
+        }
         if let id = selectedTrackId,
             let track = tracks.first(where: { $0.id == id }),
             !track.isExternal,
@@ -652,7 +672,7 @@ extension SubtitleController {
         {
             // Shown ahead of the picture, the track may be due past what playback has read: read on ahead of it,
             // unless a read is under way (no restart per time tick).
-            if delay < 0, windowRead == nil {
+            if delay < 0, mainReads.window == nil {
                 refreshEmbedded(around: playbackSeconds)
             }
             // Embedded tracks grow as playback reads them: refresh the document only when its version changes
