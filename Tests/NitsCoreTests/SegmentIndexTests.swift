@@ -117,7 +117,7 @@ struct SegmentIndexTests {
 
 /// Files that are DASH representations, served as they are: the manifest's `SegmentBase` becomes their segments, and a
 /// seek asks for the one it lands in, in the picture and in the sound.
-@Suite("Single file DASH", .serialized)
+@Suite("Single file DASH", .serialized, .hostDependent)
 struct SingleFileDASHTests {
     struct Made {
         let directory: URL

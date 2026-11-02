@@ -7,7 +7,7 @@ import Testing
 /// `.mpd` addresses played through `DASHManifestResolver`: the manifest is served by `TestHTTPServer` beside the
 /// segments of the `dashSegments` preset (the same four seconds for every picture it lists), read as the engine reads
 /// it. Need FFmpeg built with libxml2, else they do nothing.
-@Suite("DASH manifest resolver", .serialized)
+@Suite("DASH manifest resolver", .serialized, .hostDependent)
 struct DASHManifestResolverTests {
     private static let count = SyntheticTestMediaFactory.dashSegmentCount
 
