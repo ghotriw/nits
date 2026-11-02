@@ -324,10 +324,40 @@ flowchart TD
     `HTTPSessionTransport`, the ladder of a manifest as `MediaDemuxer.variants`, the splice of a switch (B-frames
     included), the decisions (`DASHAdaptiveBitrateTests`: a throttled server brings the picture down to the rung the
     link carries).
-  - [ ] Measure it on a live ladder (Akamai's, with Network Link Conditioner, as HLS's). Known costs: FFmpeg's DASH
-    demuxer reads the start of every rung when it opens, and again after the seek to the start that follows (a few
-    megabytes on a ladder of long segments, ≈0.3 s a rung on `SegmentBase`): a smaller ladder or an opening of the
-    rungs side by side (as `HLSPlaylistPrefetcher` does for playlists) would cut it. Rungs whose stream carries no
+  - [x] Measured on a live ladder, series 1 (2026-11-02, commit fc97d83): Akamai's MultiRate (3 rungs of 1.4 / 2.4 /
+    4.5 Mbit/s, SegmentTimeline), this Mac over Wi-Fi, Network Link Conditioner "RTT +150" (75 ms each way, bandwidth
+    unlimited; RTT to the CDN 154–156 ms), 4 runs, the first a warm-up. Opening: 2.10–2.13 s and 310 kB with one rung,
+    3.03–3.04 s and 723 kB with the ladder of 3 (every run within 0.02 s): ≈0.46 s and ≈207 kB for each rung more, ≈3
+    round trips each; the time to the first picture is the opening and 0.05 s. At the top rung, 16 s of playback
+    read 12–23 MB (the 30 s read-ahead), stalled 0 s, and did not step down.
+  - [x] Series 2a (2026-11-02, commit fc97d83), the link at 1.5 Mbit/s down (curl: 169 kB/s), 75 ms each way: the step
+    down works, the opening does not. ABR left the top rung (4.5 Mbit/s) for the lowest (1.4) in all three runs, at
+    media time 5 s once (stalled 7.8 s in all), 7.1 s once, and by 4.5 → 2.4 → 1.4 Mbit/s in the third (15.6 s), and
+    stayed there with no stall, the read-ahead growing to 45 s. But the opening took 29–32 s and the first picture
+    came at 38–45 s from the load (3 s on an unlimited link). While opening, the ladder downloaded 7.2 MB for the 0.7
+    MB FFmpeg read (a single rung: 1.5 MB for 0.3 MB, 7.6–8.4 s): `HTTPSessionInput` takes the whole body of a segment
+    (`highWater` 32 MB) that the opening reads a few kB of, for every rung, and again after the seek to the start that
+    follows the opening; each rung also costs ≈3 round trips of requests, one at a time.
+  - [x] Opening cut (2026-11-02): while the demuxer opens, DASH inputs ask for 256 kB pieces (`Range`; a suspended
+    task alone still let the kernel's socket buffers take megabytes) and the next piece when the buffer has run down
+    (`HTTPSessionInput.OpeningLimit`, lifted by `endOpening()`). On the same 1.5 Mbit/s link: 13.3 s and 2.6 MB for the
+    opening (was 29–32 s, 7.2 MB). The first picture still came at 26 s, as the selected top rung's first segment
+    (2.7 MB) downloads before ABR's step down can splice at the next keyframe (37 s).
+  - [x] Start on a rung the link carries (2026-11-02): a piece of the body is asked for when the reader gets to it
+    (a rung not played is not read on after the opening), and a DASH ladder starts on the best rung the opening's
+    throughput carries (`OpeningLimit.throughput`: the bytes of the inputs held while opening over the time any of them
+    transferred, the rungs side by side counted once; the `safety` share), else the best. Same link, 2 runs: opening
+    10–14 s, first picture 12–15 s (was 38–45 s), no stall (was 6.6–7.9 s), 9–10 MB in 40 s (was 11–12), the
+    read-ahead growing to 54 s.
+  - [x] The start on a fast link (2026-11-02, no limit, RTT 17 ms), 3 runs: the top rung (4.5 Mbit/s) from the start,
+    opened in 0.3 s, the first picture at 0.4 s, no step down in 12 s, stalled 0 s.
+  - [x] Series 2b, the step up (2026-11-02): started on 1.5 Mbit/s (RTT 169 ms), the link set to 10 Mbit/s 57 s in
+    (the throughput estimate was 1.8 Mbit/s a moment before). ABR was on the 1.4 Mbit/s rung from the start; 2 s after
+    the link changed the estimate was 6.3 Mbit/s, and it stepped up to 2.4 Mbit/s at 60 s and to 4.5 Mbit/s at 70 s,
+    where it stayed to the end (140 s), stalled 0 s.
+  - [ ] Left: the second pass over the first segments after the opening may still reopen rungs (to look at the
+    requests); a ladder of fewer rungs. Rungs whose
+    stream carries no
     colour (Unified Streaming's lower ones) don't switch with the others: they could take it from the rest of the
     ladder (a change of the picture to look at).
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which

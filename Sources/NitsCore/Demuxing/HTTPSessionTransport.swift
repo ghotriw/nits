@@ -31,6 +31,8 @@ final class HTTPSessionTransport: Sendable {
     }
 
     let meter = NetworkTransferMeter()
+    /// What the inputs opened while a DASH demuxer opens are held to, until `endOpening`.
+    private let openingLimit = HTTPSessionInput.OpeningLimit()
     private let session: URLSession
     private let headers: [String: String]
     /// Where the cookies FFmpeg passes on came from, when the master's location isn't told: the source.
@@ -70,10 +72,20 @@ final class HTTPSessionTransport: Sendable {
         url.hasPrefix("http://") || url.hasPrefix("https://")
     }
 
+    /// Bits a second the inputs held while opening have brought (`OpeningLimit.throughput`).
+    var openingThroughput: Double? { openingLimit.throughput }
+
+    /// The demuxer has opened: the inputs opened meanwhile are held no longer (see `HTTPSessionInput.OpeningLimit`).
+    func endOpening() {
+        openingLimit.lift()
+    }
+
     /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `cookies` is
     /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
     /// master was served from, after its redirects).
-    func open(_ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?) -> Opened {
+    func open(
+        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?, whileOpening: Bool = false
+    ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
         if let cookies {
             store(cookies, from: cookieOrigin.flatMap(URL.init(string:)) ?? self.cookieOrigin ?? requestURL)
@@ -81,7 +93,8 @@ final class HTTPSessionTransport: Sendable {
         var request = URLRequest(url: requestURL)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let input = HTTPSessionInput(
-            session: session, request: request, offset: offset, end: end, meter: meter, shouldAbort: shouldAbort)
+            session: session, request: request, offset: offset, end: end, meter: meter,
+            openingLimit: whileOpening ? openingLimit : nil, shouldAbort: shouldAbort)
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()
@@ -205,10 +218,87 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var transferringSince: ContinuousClock.Instant?
         var transferSeconds = 0.0
         var isReported = false
+        /// The task asked for a piece of the body (`makeTask`), and the body goes on past it once it ends.
+        var isChunked = false
+        /// Of `received` and `transferSeconds`, what came while the demuxer opened (`OpeningLimit`): the rungs of a
+        /// ladder read side by side, each with a share of the link, not a sample of its rate.
+        var limitedBytes = 0
+        var limitedSeconds = 0.0
+        /// The task was made while the demuxer opened: all its bytes and time are the opening's, whenever they come.
+        var isOpeningTask = false
+        var needsContinuation = false
     }
 
     static let highWater = 32 << 20
     static let lowWater = 8 << 20
+    /// While the demuxer opens (`OpeningLimit`): it reads the start of each of a ladder's rungs, and a body downloaded
+    /// whole for those few kilobytes (a rung of 4.5 Mbit/s: 2.7 MB) costs seconds of a slow link, with all the rungs.
+    static let openingHighWater = 256 << 10
+    static let openingLowWater = 64 << 10
+
+    /// Held to `openingHighWater` while `isLimited`: shared by the inputs a DASH demuxer opens while it opens, and lifted
+    /// when it has (`HTTPSessionTransport.endOpening`), the buffers of those it keeps reading then growing as any.
+    final class OpeningLimit: Sendable {
+        private struct State {
+            var isLimited = true
+            /// Inputs transferring now, since when any did, for how long any did, and what they brought meanwhile.
+            var active = 0
+            var busySince: ContinuousClock.Instant?
+            var busySeconds = 0.0
+            var bytes = 0
+        }
+
+        private let state = OSAllocatedUnfairLock(initialState: State())
+        var isLimited: Bool { state.withLock { $0.isLimited } }
+        /// Ends the measuring: what the inputs do from now on is not the opening's.
+        func lift() {
+            state.withLock { state in
+                state.isLimited = false
+                if let since = state.busySince {
+                    state.busySeconds += (ContinuousClock.now - since) / .seconds(1)
+                    state.busySince = nil
+                }
+            }
+        }
+
+        func transferBegan() {
+            state.withLock { state in
+                guard state.isLimited else { return }
+                state.active += 1
+                if state.busySince == nil { state.busySince = .now }
+            }
+        }
+
+        func transferEnded() {
+            state.withLock { state in
+                guard state.isLimited else { return }
+                state.active = max(state.active - 1, 0)
+                if state.active == 0, let since = state.busySince {
+                    state.busySeconds += (ContinuousClock.now - since) / .seconds(1)
+                    state.busySince = nil
+                }
+            }
+        }
+
+        func received(_ count: Int) {
+            state.withLock { if $0.isLimited { $0.bytes += count } }
+        }
+
+        /// Bits a second the inputs brought together over the time any of them transferred (the ladder's rungs read
+        /// side by side share the link: each one's own rate is a share of it), once there is enough to say.
+        var throughput: Double? {
+            state.withLock { state in
+                var seconds = state.busySeconds
+                if let since = state.busySince { seconds += (ContinuousClock.now - since) / .seconds(1) }
+                guard state.bytes >= HTTPSessionInput.openingHighWater, seconds >= 0.5 else { return nil }
+                return Double(state.bytes) * 8 / seconds
+            }
+        }
+    }
+
+    private let openingLimit: OpeningLimit?
+    private var highWater: Int { openingLimit?.isLimited == true ? Self.openingHighWater : Self.highWater }
+    private var lowWater: Int { openingLimit?.isLimited == true ? Self.openingLowWater : Self.lowWater }
     /// Seconds before asking again for a body cut short, a retry each: FFmpeg's `reconnect` waits 0, 1, 2, … s.
     static let retryDelays = [0.0, 1, 2]
     /// `AVERROR_EXIT` (`-MKTAG('E', 'X', 'I', 'T')`), FFmpeg's error for an interrupted call.
@@ -227,8 +317,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     init(
         session: URLSession, request: URLRequest, offset: Int64, end: Int64?, meter: NetworkTransferMeter,
-        shouldAbort: @escaping @Sendable () -> Bool
+        openingLimit: OpeningLimit? = nil, shouldAbort: @escaping @Sendable () -> Bool
     ) {
+        self.openingLimit = openingLimit
         self.session = session
         self.request = request
         self.offset = offset
@@ -241,22 +332,42 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         request.url ?? URL(fileURLWithPath: "/")
     }
 
-    /// A task for the body from `position` on (the request's offset at first), to `end`.
-    private func makeTask(from position: Int64) -> URLSessionDataTask {
+    /// A task for the body from `position` on (the request's offset at first), to `end`: while the demuxer opens
+    /// (`OpeningLimit`), to `openingHighWater` bytes only, so the server sends no more (a suspended task's socket still
+    /// takes in what the kernel buffers: megabytes of a slow link) and `startContinuation` asks for the rest.
+    /// Made behind `state`'s lock, as the task is its `task`.
+    private func makeTask(from position: Int64, in state: inout State) -> URLSessionDataTask {
         var request = request
-        if position > 0 || end != nil {
-            request.setValue("bytes=\(position)-\(end.map { String($0 - 1) } ?? "")", forHTTPHeaderField: "Range")
+        var last = end.map { $0 - 1 }
+        state.isChunked = false
+        state.isOpeningTask = openingLimit?.isLimited == true
+        if openingLimit?.isLimited == true {
+            let chunkLast = position + Int64(Self.openingHighWater) - 1
+            if last.map({ chunkLast < $0 }) ?? true {
+                last = chunkLast
+                state.isChunked = true
+            }
+        }
+        if position > 0 || last != nil {
+            request.setValue("bytes=\(position)-\(last.map(String.init) ?? "")", forHTTPHeaderField: "Range")
         }
         let task = session.dataTask(with: request)
         task.delegate = self
+        state.task = task
         return task
+    }
+
+    /// The next chunk of a body asked for in pieces. Behind `state`'s lock.
+    private func startContinuation(in state: inout State) {
+        state.needsContinuation = false
+        state.wasSuspended = false
+        state.isSuspended = false
+        makeTask(from: offset + Int64(state.received), in: &state).resume()
     }
 
     fileprivate func start() {
         state.withLockUnchecked { state in
-            let task = makeTask(from: offset)
-            state.task = task
-            task.resume()
+            makeTask(from: offset, in: &state).resume()
         }
     }
 
@@ -286,13 +397,24 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         state.withLock { $0.answeredLength }
     }
 
+    /// Body bytes the task has delivered so far, read or not.
+    var receivedBytes: Int {
+        state.withLock { $0.received }
+    }
+
     /// The transfer runs, or not (suspended, ended, closed). Behind `state`'s lock.
     private func setTransferring(_ transferring: Bool, in state: inout State) {
         if transferring {
-            if state.transferringSince == nil { state.transferringSince = .now }
+            if state.transferringSince == nil {
+                state.transferringSince = .now
+                openingLimit?.transferBegan()
+            }
         } else if let since = state.transferringSince {
-            state.transferSeconds += (ContinuousClock.now - since) / .seconds(1)
+            let seconds = (ContinuousClock.now - since) / .seconds(1)
+            state.transferSeconds += seconds
+            if state.isOpeningTask { state.limitedSeconds += seconds }
             state.transferringSince = nil
+            openingLimit?.transferEnded()
         }
     }
 
@@ -302,16 +424,36 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         setTransferring(false, in: &state)
         guard !state.isReported, state.received > 0 else { return }
         state.isReported = true
-        guard state.received >= HTTPSessionTransport.oneTimeRequestBytes else { return }
-        meter.add(.init(bytes: state.received - state.untimed, seconds: state.transferSeconds))
+        // What came while opening is the ladder's share of the link, not this input's: not a sample.
+        let bytes = state.received - state.limitedBytes
+        let seconds = state.transferSeconds - state.limitedSeconds
+        guard bytes >= HTTPSessionTransport.oneTimeRequestBytes, seconds > 0 else { return }
+        meter.add(.init(bytes: bytes - state.untimed, seconds: seconds))
     }
 
     // MARK: FFmpegInputSource
 
     func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
-        guard wait(until: { $0.buffered > 0 || $0.isFinished || $0.remaining == 0 }) else { return Self.averrorExit }
+        while true {
+            let result = readOnce(buffer, size)
+            if result != Self.again { return result }
+        }
+    }
+
+    /// `readOnce`'s answer when the next piece of the body was asked for: read again once it comes.
+    private static let again = Int32.min
+
+    private func readOnce(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
+        guard
+            wait(until: { $0.buffered > 0 || $0.isFinished || $0.remaining == 0 || $0.needsContinuation })
+        else { return Self.averrorExit }
         let (result, isServed) = state.withLockUnchecked { state -> (Int32, Bool) in
             if state.remaining == 0 { return (MediaDemuxer.averrorEOF, true) }
+            if state.buffered == 0, state.needsContinuation {
+                // The piece is read: the next, and the reader waits for it.
+                startContinuation(in: &state)
+                return (Self.again, false)
+            }
             guard state.buffered > 0 else { return (state.failed ? -EIO : MediaDemuxer.averrorEOF, false) }
             var wanted = Int(size)
             if let remaining = state.remaining { wanted = Int(min(Int64(wanted), remaining)) }
@@ -329,7 +471,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             }
             state.buffered -= copied
             state.remaining = state.remaining.map { $0 - Int64(copied) }
-            if state.isSuspended, state.buffered <= Self.lowWater {
+            if state.needsContinuation, state.buffered <= lowWater {
+                startContinuation(in: &state)
+            } else if state.isSuspended, state.buffered <= lowWater {
                 state.isSuspended = false
                 setTransferring(true, in: &state)
                 state.task?.resume()
@@ -385,11 +529,23 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 return true
             }
             let answer = Self.answer(to: response, url: requestURL, offset: offset, end: end)
-            state.answer = answer.answer
-            state.answeredLength = answer.remaining
-            state.fileSize = answer.fileSize
-            state.remaining = answer.remaining
-            guard case .open = answer.answer else { return false }
+            var answered = answer
+            if state.isChunked, (response as? HTTPURLResponse)?.statusCode != 206 { state.isChunked = false }
+            if state.isChunked, case .open = answer.answer, let http = response as? HTTPURLResponse,
+                http.statusCode == 206
+            {
+                // A piece of the body: what it carries is the whole body's, to the request's end or the file's.
+                if let total = end ?? answer.fileSize {
+                    answered.remaining = total - offset
+                } else {
+                    answered.answer = .notServed
+                }
+            }
+            state.answer = answered.answer
+            state.answeredLength = answered.remaining
+            state.fileSize = answered.fileSize
+            state.remaining = answered.remaining
+            guard case .open = answered.answer else { return false }
             setTransferring(true, in: &state)
             return true
         }
@@ -404,8 +560,14 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             state.chunks.append(data)
             state.buffered += data.count
             state.received += data.count
-            if state.transferringSince == nil { state.untimed += data.count }
-            if !state.isSuspended, state.buffered >= Self.highWater {
+            let isOpening = state.isOpeningTask
+            if isOpening {
+                openingLimit?.received(data.count)  // Ignored once lifted: the rate is the opening's alone.
+                state.limitedBytes += data.count
+            }
+            if !isOpening, state.transferringSince == nil { state.untimed += data.count }
+            // A piece asked for with a `Range` ends at its bound, whatever is unread.
+            if !state.isSuspended, !state.isChunked, state.buffered >= highWater {
                 state.isSuspended = true
                 state.wasSuspended = true
                 setTransferring(false, in: &state)
@@ -431,6 +593,15 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 state.retries += 1
                 return Self.retryDelays[state.retries - 1]
             }
+            // A piece of the body ended with more to come: the next is asked for when the buffer has run down.
+            if error == nil, state.isChunked, !state.isClosed, !state.isFinished, case .open? = state.answer,
+                let total = state.answeredLength, Int64(state.received) < total
+            {
+                // Asked for by the reader (`read`), not now: a rung of a ladder that isn't played is not read on, and
+                // would otherwise download its segment to `highWater` once the opening is done.
+                state.needsContinuation = true
+                return nil
+            }
             state.isFinished = true
             state.failed = state.failed || error != nil
             if state.answer == nil {
@@ -448,8 +619,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             DispatchQueue.global().asyncAfter(deadline: .now() + retry) { [self] in
                 state.withLockUnchecked { state in
                     guard !state.isClosed else { return }
-                    let task = makeTask(from: offset + Int64(state.received))
-                    state.task = task
+                    let task = makeTask(from: offset + Int64(state.received), in: &state)
                     // A task suspended when it was cut short: the new one runs, and its data suspends it again if
                     // what is buffered still reaches `highWater`.
                     state.isSuspended = false

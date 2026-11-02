@@ -128,7 +128,9 @@ extension MediaDemuxer {
     /// indexes of the streams to read (the selected program's, and any stream outside every program), or nil when
     /// the input has no variants. FFmpeg puts the `EXT-X-MEDIA` renditions a variant refers to in its program.
     func discoverVariants(in formatCtx: UnsafeMutablePointer<AVFormatContext>) -> Set<Int>? {
-        if let dash = Self.dashVariants(in: formatCtx) { return adoptVariants(dash, in: formatCtx) }
+        if let dash = Self.dashVariants(in: formatCtx) {
+            return adoptVariants(dash, in: formatCtx, linkRate: ioBytes.transport?.openingThroughput)
+        }
         guard formatCtx.pointee.nb_programs > 1, let programs = formatCtx.pointee.programs else { return nil }
         var found: [(id: Int, bandwidth: Int, streams: VariantStreams)] = []
         for position in 0..<Int(formatCtx.pointee.nb_programs) {
@@ -202,10 +204,19 @@ extension MediaDemuxer {
     /// `discoverVariants`.
     private func adoptVariants(
         _ found: [(id: Int, bandwidth: Int, streams: VariantStreams)],
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>
+        in formatCtx: UnsafeMutablePointer<AVFormatContext>, linkRate: Double? = nil
     ) -> Set<Int>? {
-        guard let selected = found.max(by: { $0.bandwidth < $1.bandwidth }) else { return nil }
+        guard let best = found.max(by: { $0.bandwidth < $1.bandwidth }) else { return nil }
+        // A DASH ladder is read side by side while it opens, so the link's rate is measured by then: start on the
+        // rung it carries, not the best (its first segment, megabytes, downloaded before a switch could splice).
+        var start = best
+        if let linkRate {
+            let share = AdaptiveBitrateLogic.Config().safety
+            let fitting = found.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
+            start = fitting ?? found.min { $0.bandwidth < $1.bandwidth } ?? best
+        }
 
+        let selected = start
         variants = found.map { variant in
             let video = variant.streams.video.flatMap { formatCtx.pointee.streams[$0]?.pointee.codecpar }
             return StreamVariant(
@@ -218,7 +229,7 @@ extension MediaDemuxer {
         AppLog.info(
             .demuxer,
             "\(streamingName): \(found.count) variants (\(variants.filter(\.isSwitchable).count) switchable), playing "
-                + "\(selected.bandwidth / 1000) kbit/s")
+                + "\(selected.bandwidth / 1000) kbit/s" + (linkRate.map { ", link \(Int($0 / 1000)) kbit/s" } ?? ""))
 
         let inPrograms = Set(found.flatMap(\.streams.all))
         let outsidePrograms = (0..<Int(formatCtx.pointee.nb_streams)).filter { !inPrograms.contains($0) }

@@ -39,6 +39,15 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private var customInputs: [UnsafeMutablePointer<AVIOContext>: any FFmpegInputSource] = [:]
     /// Makes `transport`, when set before the context opens: a network source's.
     var makeTransport: (() -> HTTPSessionTransport)?
+    /// The demuxer is opening (`MediaDemuxer.init`): the inputs a DASH demuxer opens meanwhile are held to a few hundred
+    /// kilobytes of download, which it reads the start of and leaves (`HTTPSessionInput.OpeningLimit`).
+    var isOpening = false
+
+    /// The demuxer has opened.
+    func endOpening() {
+        isOpening = false
+        transport?.endOpening()
+    }
     /// Serves the HTTP(S) inputs an HLS or a DASH demuxer asks for (`isHLS`, `isDASH`): made for its first, none for
     /// other formats.
     private(set) var transport: HTTPSessionTransport?
@@ -211,7 +220,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
         switch transport.open(
             url, offset: Self.intOption("offset", in: options) ?? 0, end: end, cookies: cookies,
-            cookieOrigin: cookies == nil ? nil : masterLocation)
+            cookieOrigin: cookies == nil ? nil : masterLocation, whileOpening: isOpening && isDASH)
         {
         case .input(let input):
             guard let context = makeContext(serving: input) else {

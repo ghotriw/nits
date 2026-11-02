@@ -496,6 +496,11 @@ public final class MediaDemuxer: @unchecked Sendable {
         // `self.interruptContext` keeps a strong reference to `ctxContext` across the lifetime of MediaDemuxer.
         ctxContext.install(on: allocatedCtx)
         ioBytes.install(on: allocatedCtx)
+        // Until the opening is done (whichever way it ends), the inputs a DASH demuxer opens for the start of each
+        // rung of a ladder are not downloaded whole.
+        let openingBytes = ioBytes
+        openingBytes.isOpening = true
+        defer { openingBytes.endOpening() }
 
         var avOptions: OpaquePointer? = nil
         defer {
