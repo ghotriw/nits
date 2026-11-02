@@ -19,6 +19,7 @@ jobs:
   verify:
     name: Lint, Typecheck, Test & Package
     runs-on: xcode-27
+    timeout-minutes: 90
     env:
       # Too slow for the gating step; included in the manual host-dependent run with run_stress_tests. `\b`
       # matters: a trailing `/` misses the suite itself.
@@ -115,6 +116,8 @@ jobs:
       - name: Run deterministic tests
         env:
           NITS_SKIP_HOST_DEPENDENT_TESTS: 1
+        # They take seconds; a hang is a deadlock, so fail fast with the log instead of holding the runner.
+        timeout-minutes: 10
         run: swift test --disable-sandbox --skip "$SLOW_TESTS"
 
       - name: Package Nits.app
