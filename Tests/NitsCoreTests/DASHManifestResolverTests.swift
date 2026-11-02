@@ -171,13 +171,13 @@ extension DASHManifestResolverTests {
     private static let twoCodecs = """
         <?xml version="1.0" encoding="UTF-8"?>
         <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S"><Period>
-        <AdaptationSet contentType="video">
+        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
         <Representation id="h-low" mimeType="video/mp4" codecs="avc1.42c01e" width="160" height="90" \
         bandwidth="100000"><BaseURL>v/h-low.mp4</BaseURL></Representation>
         <Representation id="h-high" mimeType="video/mp4" codecs="avc1.42c01e" width="320" height="180" \
         bandwidth="500000"><BaseURL>v/h-high.mp4</BaseURL></Representation>
         </AdaptationSet>
-        <AdaptationSet contentType="video">
+        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
         <Representation id="v-low" mimeType="video/webm" codecs="vp9" width="160" height="90" \
         bandwidth="60000"><BaseURL>v/v-low.webm</BaseURL></Representation>
         <Representation id="v-high" mimeType="video/webm" codecs="vp9" width="320" height="180" \

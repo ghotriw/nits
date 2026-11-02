@@ -26,6 +26,9 @@ package struct DASHManifest {
         package var isHDR: Bool
         /// The codec's family (`CodecFamily.video(in:)`); empty when the manifest tells none.
         package var family = ""
+        /// Its media is segments (a template or a list), so that the demuxer can seek in it and switch to it at a
+        /// position; a single file (`BaseURL` and `SegmentBase`) is read from its start to either.
+        package var isSegmented = true
     }
 
     /// The most a manifest read may be, in bytes: a ladder of a few dozen representations is a few hundred kilobytes.
@@ -45,6 +48,9 @@ package struct DASHManifest {
     package let videos: [Video]
     private let videoPlaces: [String: Place]
     private let audioPlaces: [Place]
+    /// What the pictures and sounds that are single files have for the index each is read from (`indexRequests`).
+    private var indexes: [Place: SegmentIndex] = [:]
+
     /// Whether the manifest has audio to play.
     package var hasAudio: Bool { !audioPlaces.isEmpty }
 
@@ -124,7 +130,8 @@ package struct DASHManifest {
                             height: value("height").flatMap { Int($0) } ?? 0,
                             frameRate: value("frameRate").flatMap(Self.frameRate(of:)),
                             codec: family.map(CodecFamily.displayName(ofVideo:)) ?? "", bandwidth: bandwidth,
-                            isHDR: isHDR, family: family ?? ""), place, family != nil
+                            isHDR: isHDR, family: family ?? "",
+                            isSegmented: Self.hasSegments(in: [representation, set, period])), place, family != nil
                     ))
             }
         }
@@ -202,9 +209,20 @@ package struct DASHManifest {
         videos.first.map(ladder(of:)) ?? []
     }
 
-    /// The ladder of `video`'s codec and range, the best first. Fewer than two is no ladder.
+    private static func hasSegments(in nodes: [XMLTreeElement]) -> Bool {
+        nodes.contains { !$0.elements(named: "SegmentTemplate").isEmpty || !$0.elements(named: "SegmentList").isEmpty }
+    }
+
+    /// The ladder of `video`'s codec and range, the best first. Fewer than two is no ladder, nor is one of pictures that
+    /// are single files (`isSegmented`): FFmpeg reads such a file from its start to switch to it. Pictures that
+    /// `setIndex` gave segments are still not segmented here, on purpose: a switch to one has not been measured to
+    /// read from its segment, and without that the ladder is not safe. A ladder of them would also need pictures to
+    /// share a set (`SegmentIndex.isRegular`'s lengths told by a set's timeline are for a set of one picture).
     package func ladder(of video: Video) -> [Video] {
-        let rungs = videos.filter { $0.family == video.family && $0.isHDR == video.isHDR && $0.bandwidth > 0 }
+        guard video.isSegmented else { return [] }
+        let rungs = videos.filter {
+            $0.family == video.family && $0.isHDR == video.isHDR && $0.bandwidth > 0 && $0.isSegmented
+        }
         return rungs.count > 1 ? rungs : []
     }
 
@@ -243,11 +261,28 @@ package struct DASHManifest {
             }
             let representations = Set(kept.filter { $0.set == setIndex }.map(\.representation))
             guard !representations.isEmpty else { continue }
+            var timeline: XMLTreeElement?
             set.children = set.children.enumerated().compactMap { index, child in
                 if case .element(let element) = child, element.localName == "Representation" {
-                    return representations.contains(index) ? child : nil
+                    guard representations.contains(index) else { return nil }
+                    // A file that is one segment for the demuxer is its segments, when they are known. Segments of
+                    // lengths that differ are told by a timeline, which the demuxer reads from the set's list only:
+                    // a set of the one representation.
+                    guard let segmentIndex = indexes[Place(set: setIndex, representation: index)],
+                        segmentIndex.isRegular || representations.count == 1,
+                        let listed = Self.segmentList(of: element, from: segmentIndex)
+                    else { return child }
+                    if !segmentIndex.isRegular { timeline = Self.timelineList(of: segmentIndex) }
+                    return .element(listed)
                 }
                 return child
+            }
+            // Before the representation: the demuxer reads a set's children in order, a list it has not come to is unknown.
+            if let timeline {
+                let first = set.children.firstIndex { node in
+                    if case .element(let element) = node { element.localName == "Representation" } else { false }
+                }
+                set.children.insert(.element(timeline), at: first ?? set.children.endIndex)
             }
             sets.append((kept.firstIndex { $0.set == setIndex } ?? 0, .element(set)))
         }
@@ -291,6 +326,115 @@ package struct DASHManifest {
         let path = components.path
         if let slash = path.lastIndex(of: "/") { components.path = String(path[...slash]) }
         return components.string ?? manifestURL.absoluteString
+    }
+
+    // MARK: - Segment indexes
+
+    /// A range of a file that is a representation, which holds its index (`SegmentIndex`).
+    package struct IndexRequest: Equatable, Sendable {
+        package var url: URL
+        package var range: ClosedRange<Int64>
+        /// A picture: its segments must start at a keyframe, or a seek to one lands on what cannot be decoded.
+        package var requiresSAP: Bool
+        fileprivate var set: Int
+        fileprivate var representation: Int
+    }
+
+    /// The most an index range may be, bytes: a file of hours has one of a few dozen kilobytes.
+    package static let indexSizeLimit: Int64 = 1 << 20
+
+    /// The indexes to read for the manifest to say the segments of the pictures and sounds that are single files
+    /// (`BaseURL` and a `SegmentBase` with an `indexRange` on the representation: one of the set is not read, nor
+    /// is one with a `presentationTimeOffset`), which FFmpeg reads from their start to seek in.
+    package var indexRequests: [IndexRequest] {
+        guard case .element(let period) = root.children[periodIndex] else { return [] }
+        let pictures = videos.compactMap { videoPlaces[$0.id] }
+        let places = pictures + audioPlaces
+        return places.compactMap { place in
+            guard case .element(let set) = period.children[place.set],
+                case .element(let representation) = set.children[place.representation],
+                !Self.hasSegments(in: [representation, set, period]),
+                let base = representation.elements(named: "SegmentBase").first,
+                let text = base.attribute("indexRange"), let range = Self.byteRange(of: text),
+                range.count <= Self.indexSizeLimit,
+                (base.attribute("presentationTimeOffset").flatMap { Double($0) } ?? 0) == 0,
+                base.elements(named: "Initialization").first?.attribute("range") != nil,
+                let url = mediaURL(of: representation, in: set, period: period)
+            else { return nil }
+            return IndexRequest(
+                url: url, range: range, requiresSAP: pictures.contains(place), set: place.set,
+                representation: place.representation)
+        }
+    }
+
+    /// Says the segments of the file `request` asked for, from the index read.
+    package mutating func setIndex(_ index: SegmentIndex, for request: IndexRequest) {
+        indexes[Place(set: request.set, representation: request.representation)] = index
+    }
+
+    /// The file of a representation: its `BaseURL`, and those above it, resolved. Nil when it has none of its own.
+    private func mediaURL(of representation: XMLTreeElement, in set: XMLTreeElement, period: XMLTreeElement) -> URL? {
+        var url = URL(string: absoluteBase)
+        var hasOwn = false
+        for (node, isOwn) in [(period, false), (set, true), (representation, true)] {
+            guard
+                let text = node.elements(named: "BaseURL").first?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                !text.isEmpty
+            else { continue }
+            url = URL(string: text, relativeTo: url)?.absoluteURL
+            hasOwn = hasOwn || isOwn
+        }
+        return hasOwn ? url : nil
+    }
+
+    /// "828-3067".
+    private static func byteRange(of text: String) -> ClosedRange<Int64>? {
+        let parts = text.split(separator: "-").compactMap { Int64($0) }
+        guard parts.count == 2, parts[0] >= 0, parts[1] >= parts[0] else { return nil }
+        return parts[0]...parts[1]
+    }
+
+    /// The lengths of the segments for the adaptation set's `SegmentList`, the only one whose timeline the demuxer reads.
+    private static func timelineList(of index: SegmentIndex) -> XMLTreeElement {
+        var list = XMLTreeElement(name: "SegmentList")
+        list.setAttribute("timescale", to: String(index.timescale))
+        var timeline = XMLTreeElement(name: "SegmentTimeline")
+        for run in index.runs {
+            var segment = XMLTreeElement(name: "S")
+            segment.setAttribute("d", to: String(run.duration))
+            if run.repeats > 0 { segment.setAttribute("r", to: String(run.repeats)) }
+            timeline.children.append(.element(segment))
+        }
+        list.children = [.element(timeline)]
+        return list
+    }
+
+    /// `representation` with the segments of its file in place of its `SegmentBase`: a `SegmentList` of byte ranges.
+    /// The `SegmentBase` of a representation only (a set's is not read), and its `Initialization`; a
+    /// `presentationTimeOffset` of it is why `indexRequests` leaves it out.
+    private static func segmentList(of representation: XMLTreeElement, from index: SegmentIndex) -> XMLTreeElement? {
+        guard
+            let initialization = representation.elements(named: "SegmentBase").first?.elements(named: "Initialization")
+                .first,
+            let initRange = initialization.attribute("range")
+        else { return nil }
+        var list = XMLTreeElement(name: "SegmentList")
+        list.setAttribute("timescale", to: String(index.timescale))
+        if index.isRegular { list.setAttribute("duration", to: String(index.durations[0])) }
+        var start = XMLTreeElement(name: "Initialization")
+        start.setAttribute("range", to: initRange)
+        list.children = [.element(start)]
+        for segment in index.segments {
+            var url = XMLTreeElement(name: "SegmentURL")
+            url.setAttribute("mediaRange", to: "\(segment.offset)-\(segment.offset + segment.size - 1)")
+            list.children.append(.element(url))
+        }
+        var result = representation
+        result.children = representation.children.filter { node in
+            if case .element(let element) = node { element.localName != "SegmentBase" } else { true }
+        }
+        result.children.append(.element(list))
+        return result
     }
 
     // MARK: - Timelines

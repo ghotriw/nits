@@ -43,11 +43,85 @@ struct DASHManifestResolver: MediaResolver {
         return (data, http.url ?? request.url!)
     }
 
+    /// How long the indexes may take all together, seconds: a request's own timeout counts the time without data, and
+    /// a slow one would hold the opening of every picture for it. The rest play as they are.
+    var indexBudget: Duration = .seconds(6)
+
+    private enum IndexOutcome: Sendable {
+        case found(DASHManifest.IndexRequest, SegmentIndex)
+        case missed
+        case expired
+    }
+
+    /// The indexes `requests` ask for, a range of each file, side by side. One that is not answered as asked, or is not
+    /// an index the manifest can say the segments of, is left out: its file plays as it is.
+    private func indexes(
+        of requests: [DASHManifest.IndexRequest], headers: [String: String]
+    ) async -> [(DASHManifest.IndexRequest, SegmentIndex)] {
+        await withTaskGroup(of: IndexOutcome.self) { group in
+            group.addTask {
+                try? await Task.sleep(for: indexBudget)
+                return .expired
+            }
+            for request in requests {
+                group.addTask { await index(of: request, headers: headers) }
+            }
+            var found: [(DASHManifest.IndexRequest, SegmentIndex)] = []
+            var pending = requests.count
+            for await outcome in group {
+                switch outcome {
+                case .found(let request, let index):
+                    found.append((request, index))
+                    pending -= 1
+                case .missed: pending -= 1
+                // Those not in yet are given up, and the clock with those in.
+                case .expired: group.cancelAll()
+                }
+                if pending == 0 { group.cancelAll() }
+            }
+            return found
+        }
+    }
+
+    /// The index of one file: asked for as a range, and not read if the server answers otherwise (a server that takes
+    /// no `Range` sends the file, which is not downloaded for this) or with more than asked for.
+    private func index(of request: DASHManifest.IndexRequest, headers: [String: String]) async -> IndexOutcome {
+        var urlRequest = URLRequest(url: request.url, timeoutInterval: 15)
+        for (name, value) in MediaURL.sanitizedHeaders(headers) { urlRequest.setValue(value, forHTTPHeaderField: name) }
+        urlRequest.setValue(
+            "bytes=\(request.range.lowerBound)-\(request.range.upperBound)", forHTTPHeaderField: "Range")
+        let size = request.range.count
+        guard let (bytes, response) = try? await session.bytes(for: urlRequest) else { return .missed }
+        guard
+            let http = response as? HTTPURLResponse, http.statusCode == 206, http.expectedContentLength == size
+        else {
+            bytes.task.cancel()
+            return .missed
+        }
+        var data = Data()
+        data.reserveCapacity(Int(size))
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > size {
+                    bytes.task.cancel()
+                    return .missed
+                }
+            }
+        } catch {
+            return .missed
+        }
+        guard Int64(data.count) == size, let index = SegmentIndex.parse(data, at: request.range.lowerBound),
+            !request.requiresSAP || index.startsWithSAP
+        else { return .missed }
+        return .found(request, index)
+    }
+
     func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
         var request = URLRequest(url: url, timeoutInterval: 15)
         for (name, value) in MediaURL.sanitizedHeaders(headers) { request.setValue(value, forHTTPHeaderField: name) }
         guard let (data, finalURL) = await download(request),
-            let manifest = DASHManifest(data: data, url: finalURL, codecs: codecs)
+            var manifest = DASHManifest(data: data, url: finalURL, codecs: codecs)
         else {
             // A load that was replaced or stopped ends this early; nothing was left to the demuxer.
             if !Task.isCancelled { AppLog.info(.engine, "DASH: '\(url.absoluteString)' is left to the demuxer") }
@@ -56,6 +130,15 @@ struct DASHManifestResolver: MediaResolver {
         guard !manifest.videos.isEmpty || manifest.hasAudio else {
             if manifest.hasProtectedStreams { throw MediaResolutionError("Its streams are protected (DRM)") }
             return nil
+        }
+        // The segments of the pictures and sounds that are single files, which FFmpeg reads from their start to seek in.
+        let requests = manifest.indexRequests
+        if !requests.isEmpty {
+            let found = await indexes(of: requests, headers: headers)
+            AppLog.info(.engine, "DASH: the segments of \(found.count) of \(requests.count) single file(s) are known")
+            for (request, index) in found {
+                manifest.setIndex(index, for: request)
+            }
         }
         // HDR10 and SDR of one size and codec would differ in the menu by their bitrates only. Dolby Vision says it in
         // its name.

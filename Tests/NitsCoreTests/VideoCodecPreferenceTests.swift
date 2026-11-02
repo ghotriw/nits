@@ -11,11 +11,11 @@ struct VideoCodecPreferenceTests {
         DASHManifest(
             data: DASHManifestTests.mpd(
                 period: """
-                    <AdaptationSet contentType="video">
+                    <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                     \(DASHManifestTests.video("h-low", 640, 266, codecs: "avc1.4d401f", bandwidth: 800_000))
                     \(DASHManifestTests.video("h-high", 1920, 800, codecs: "avc1.640028", bandwidth: 4_500_000))
                     </AdaptationSet>
-                    <AdaptationSet contentType="video">
+                    <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                     \(DASHManifestTests.video("v-low", 640, 266, codecs: "vp9", bandwidth: 400_000))
                     \(DASHManifestTests.video("v-high", 1920, 800, codecs: "vp9", bandwidth: 2_100_000))
                     </AdaptationSet>
@@ -79,7 +79,7 @@ struct VideoCodecPreferenceTests {
             DASHManifest(
                 data: DASHManifestTests.mpd(
                     period: """
-                        <AdaptationSet contentType="video">
+                        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                         \(DASHManifestTests.video("h", 1280, 720, bandwidth: 2_000_000))
                         </AdaptationSet>
                         """), url: DASHManifestTests.url, codecs: off))
@@ -92,7 +92,7 @@ struct VideoCodecPreferenceTests {
             DASHManifest(
                 data: DASHManifestTests.mpd(
                     period: """
-                        <AdaptationSet contentType="video">
+                        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                         \(DASHManifestTests.video("h", 1920, 1080, bandwidth: 4_000_000))
                         \(DASHManifestTests.video("v", 1280, 720, codecs: "vp9", bandwidth: 2_000_000))
                         </AdaptationSet>
@@ -135,7 +135,7 @@ extension VideoCodecPreferenceTests {
             DASHManifest(
                 data: DASHManifestTests.mpd(
                     period: """
-                        <AdaptationSet contentType="video">
+                        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                         \(DASHManifestTests.video("dv-hevc", 1920, 1080, codecs: "dvh1.05.06", bandwidth: 5_000_000))
                         \(DASHManifestTests.video("dv-hevc-low", 1280, 720, codecs: "dvh1.05.06", bandwidth: 2_000_000))
                         \(DASHManifestTests.video("dv-av1", 1920, 1080, codecs: "dav1.10.06", bandwidth: 3_000_000))
@@ -151,7 +151,7 @@ extension VideoCodecPreferenceTests {
             DASHManifest(
                 data: DASHManifestTests.mpd(
                     period: """
-                        <AdaptationSet contentType="video">
+                        <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                         \(DASHManifestTests.video("top", 3840, 2160, codecs: "av01.0.12M.10", bandwidth: 12_000_000))
                         \(DASHManifestTests.video("h-high", 1920, 1080, bandwidth: 4_000_000))
                         \(DASHManifestTests.video("h-low", 1280, 720, bandwidth: 2_000_000))
@@ -160,5 +160,26 @@ extension VideoCodecPreferenceTests {
         #expect(manifest.ladder.isEmpty)
         let h264 = try #require(manifest.codecGroups.last)
         #expect(manifest.ladder(of: h264).map(\.id) == ["h-high", "h-low"])
+    }
+}
+
+extension VideoCodecPreferenceTests {
+    @Test(
+        "Pictures that are single files are no ladder: FFmpeg reads a file from its start to seek in it or switch to it"
+    )
+    func singleFilesAreNoLadder() throws {
+        let manifest = try #require(
+            DASHManifest(
+                data: DASHManifestTests.mpd(
+                    period: """
+                        <AdaptationSet contentType="video">
+                        \(DASHManifestTests.video("hi", 1920, 1080, bandwidth: 4_000_000, inside: #"<BaseURL>hi.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#))
+                        \(DASHManifestTests.video("lo", 1280, 720, bandwidth: 2_000_000, inside: #"<BaseURL>lo.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#))
+                        </AdaptationSet>
+                        """), url: DASHManifestTests.url))
+        #expect(manifest.videos.map(\.isSegmented) == [false, false])
+        #expect(manifest.ladder.isEmpty && manifest.ladderText() == nil)
+        // Each is still a picture to play.
+        #expect(manifest.text(videoID: "hi") != nil)
     }
 }

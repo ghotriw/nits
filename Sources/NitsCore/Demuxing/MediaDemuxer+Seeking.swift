@@ -89,6 +89,34 @@ extension MediaDemuxer {
         return isExact
     }
 
+    /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are
+    /// closed first, so that the seek does not move them (`closeUnusedDASHRepresentations`).
+    public func prepareFirstSeek() {
+        lockIO()
+        defer { lock.unlock() }
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        guard let ctx = formatCtx else { return }
+        closeUnusedDASHRepresentations(in: ctx)
+    }
+
+    /// FFmpeg's DASH demuxer opens every representation of a ladder, and closes those discarded only when it reads a
+    /// packet (`recheck_discard_flags`): a seek before the first read goes through all of them, each one reading its
+    /// file up to the target when it has no index it can use (a single file: 19 s for a ladder of 7, 7 s once the
+    /// others are closed). One packet read first, dropped by the seek, closes them. Behind `lock` and `queueLock`.
+    ///
+    /// For the seek to a start position a load makes (`prepareFirstSeek`) only: once playback has read, they are closed,
+    /// and a packet read before a seek in the middle of it would be a request for nothing.
+    func closeUnusedDASHRepresentations(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard !dashDiscardsApplied, variants.count > 1, streamingName == "DASH" else { return }
+        dashDiscardsApplied = true
+        var pkt = AVPacket()
+        // A packet the probing of the streams left is handed out first, with no word to the DASH demuxer: dropped,
+        // as the seek does.
+        avformat_flush(ctx)
+        if withoutQueueLock({ av_read_frame(ctx, &pkt) }) >= 0 { av_packet_unref(&pkt) }
+    }
+
     /// FFmpeg's DASH demuxer, once a stream was read to its end, closes its input and sets the stream to
     /// `AVDISCARD_ALL`, so that it stays closed: a seek back moves its segment number, but nothing opens the input
     /// again, and the stream reads nothing. The streams playing are enabled again before the seek. Behind `lock` and

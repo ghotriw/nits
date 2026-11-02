@@ -107,6 +107,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     var variantStreams: [Int: VariantStreams] = [:]
     /// The switch being spliced, behind `lock`.
     var variantSwitch: VariantSwitch?
+    /// The representations of a ladder that are discarded were closed by a packet read for the purpose, before the first
+    /// seek (`closeUnusedDASHRepresentations`). Behind `lock` and `queueLock`.
+    var dashDiscardsApplied = false
     /// The pictures read from a timeline second on: of which variant, and as they are.
     public struct VariantChange: Sendable {
         public let variant: StreamVariant

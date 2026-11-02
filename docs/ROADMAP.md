@@ -371,6 +371,25 @@ flowchart TD
     as one (the Quality menu), the best picture of each other codec is in a Format menu and plays with its own ladder.
     Not yet: the same order for HLS and for yt-dlp's formats (yt-dlp chooses its own); AV1 first only where the chip
     decodes it; the codec in the names of the Quality menu's rungs.
+  - [x] Manifests of single files (`BaseURL` and `SegmentBase`, the on-demand profile: Shaka's demo assets) are no
+    ladder (2026-11-02): FFmpeg's DASH demuxer reads such a file from its start to seek in it (its input is not
+    seekable, `dashdec.c:1989`) and to switch to it, and a seek before the first read goes through all of the
+    ladder's files (19.6 s for 7 pictures at 335 s on a fast link; 7.3 s once the discarded ones are closed). Such a
+    manifest plays its best picture, the others in the format menu, as before the ladders; and the first seek reads
+    a packet first (`closeUnusedDASHRepresentations`), so that the demuxer closes the representations it discards.
+    Shaka's: 19.9 s → 7.4 s to resume at 335 s.
+  - [x] Seek in a single file (2026-11-02): the `sidx` of each picture and sound (its `indexRange`, asked for when the
+    manifest is read) says its segments, as a `SegmentList` of byte ranges (`SegmentIndex`, `DASHManifest.indexRequests`);
+    FFmpeg seeks by segment in that. Lengths that differ (AAC's) are told by a `SegmentTimeline` in the adaptation
+    set's list, the only one it reads. Shaka's (single files, 734 s): resuming at 335 s took 19.9 s (7.4 s with one
+    picture), now 0.9 s; seeks back and forth land on the segment (335.65 → 332.0, 99.9 → 96.0; before, every seek
+    after the first back landed a segment late: the sound's file cannot be read backwards), 1 s each, opening 3 s
+    (2.6 s before: the indexes, a round trip). An index that starts late (more than a tenth of a segment) or of
+    indexes is left as it was. The set's list with the timeline must come before the representation in the set: the
+    demuxer reads a set's children in order, and a list it has not come to yet is not known to the representation
+    (the sound was then read from its first segment to the target: 32 s of buffering at 373 s in).
+    Not done: a ladder of such pictures (a switch to one still reads from its start until
+    measured otherwise: `isSegmented` stays false).
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
     crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.

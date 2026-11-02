@@ -80,6 +80,25 @@ struct DASHLadderTests {
             "\(comment): irregular steps \(irregular.prefix(5).map { "\($0.offset): \($0.element)" })")
     }
 
+    @Test("A seek before the first read leaves the rungs not played alone: they are not moved to where it lands")
+    func firstSeekClosesTheOthers() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: Self.manifest(for: server)))
+        demuxer.startReadAhead(limits: .init(seconds: 30), held: true)
+        let before = server.requests.count
+        demuxer.prepareFirstSeek()
+        demuxer.seek(to: 8.5, exact: true)
+        let sample = try #require(demuxer.nextVideoSample())
+        #expect(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) >= 8)
+        // Rung 2 plays (the best); a segment of rung 0 or 1 past the first is a seek that moved them as well.
+        let moved = server.requests.dropFirst(before).map(\.path).filter { path in
+            ["video0/", "video1/"].contains { path.hasPrefix($0) }
+                && Int(path.split(separator: "/").last ?? "") ?? 0 >= 5
+        }
+        #expect(moved.isEmpty, "Segments of the rungs not played: \(moved)")
+    }
+
     @Test("The rungs of a ladder are the variants of the demuxer, the best selected")
     func listsTheRungs() throws {
         guard let server = try Self.server() else { return }

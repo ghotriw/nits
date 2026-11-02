@@ -24,6 +24,8 @@ final class TestHTTPServer: Sendable {
         var closesConnection = false
         /// Bytes a range response holds at most, fewer than asked for: a server may send a range in parts.
         var rangeLimit: Int?
+        /// A `Range` is answered with the whole file (200), as a server that does not take ranges does.
+        var ignoresRange = false
         /// Answered with a redirect (302) to this path, relative to the served directory.
         var redirect: String?
         /// A `Set-Cookie` header with the answer.
@@ -248,7 +250,9 @@ final class TestHTTPServer: Sendable {
             var body = contents[...]
             var status = 200
             var responseHeaders = ["Content-Type": contentType(of: path), "Accept-Ranges": "bytes"]
-            if var range = headers["range"].flatMap({ byteRange($0, size: contents.count) }) {
+            if var range = headers["range"].flatMap({
+                behavior.ignoresRange ? nil : byteRange($0, size: contents.count)
+            }) {
                 if let limit = behavior.rangeLimit {
                     range = range.lowerBound...min(range.upperBound, range.lowerBound + limit - 1)
                 }

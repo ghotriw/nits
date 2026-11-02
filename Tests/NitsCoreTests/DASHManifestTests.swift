@@ -87,7 +87,7 @@ struct DASHManifestTests {
         let manifest = try #require(
             Self.manifest(
                 """
-                <AdaptationSet contentType="video">
+                <AdaptationSet contentType="video"><SegmentTemplate media="s/$Number$" timescale="1" duration="1"/>
                 \(Self.video("hi", 1920, 1080, bandwidth: 5_000_000))
                 \(Self.video("mid", 1280, 720, bandwidth: 2_500_000))
                 \(Self.video("lo", 640, 360, bandwidth: 800_000))
