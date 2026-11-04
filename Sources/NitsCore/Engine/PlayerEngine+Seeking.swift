@@ -13,6 +13,31 @@ extension PlayerEngine {
         seek(to: seconds, exact: exact, forward: false)
     }
 
+    /// Takes the window the demuxer tells now (a tick of playback), brings the picture back into it if its place has
+    /// expired from the playlist (the segments before the window are gone from the server, and a demuxer that reaches
+    /// for one fails), and reads again if the demuxer has stopped. Runs at the tick of playback: a picture paused for
+    /// longer than the window is brought back once it resumes, not while it stands.
+    func trackLiveWindow(at seconds: Double) {
+        guard live.isLive else { return }
+        if let report = demuxer?.liveReport { live.update(window: report.window, at: report.loadedAt) }
+        guard !live.isEnded, !isSeeking, chase == nil else { return }
+        if live.shouldRecoverWindow(at: seconds), let window = live.window() {
+            AppLog.info(.engine, "Live window moved past the picture (\(seconds)s < \(window.start)s): seeking into it")
+            seek(to: window.start + LiveStream.startMargin * 2, exact: false)
+        } else if live.shouldRecoverReading(isStopped: demuxer?.isEOF == true) {
+            // The playlist failed to load for good (a server error, `max_reload` spent) and what was read is played:
+            // the picture would stand with the clock going on. A seek puts the demuxer right and reads again.
+            AppLog.warning(.engine, "The live stream stopped reading at \(seconds)s: seeking to read again")
+            seek(to: seconds, exact: false)
+        }
+    }
+
+    /// Seeks a live stream to its edge ("go live"); does nothing for other media.
+    public func seekToLiveEdge() {
+        guard let edge = live.edgeTarget() else { return }
+        seek(to: edge, exact: false)
+    }
+
     func resetRelativeSeekBurst() {
         relativeSeekBurstResetTask?.cancel()
         relativeSeekBurstResetTask = nil
@@ -60,7 +85,8 @@ extension PlayerEngine {
         }
 
         // 2. Immediate responsive UI update (0ms latency for exact seek)
-        chase = ChaseTarget(seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS)
+        chase = ChaseTarget(
+            seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS, bound: live.bound(of: seconds))
         if exact {
             currentTime = target
             subtitles.timeDidChange(to: target, .tick)
@@ -429,7 +455,9 @@ extension PlayerEngine {
         let isExact = !media.hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
         let isForward = seconds > 0 && !isExact
 
-        let target = ChaseTarget(seconds: clampedSeekTarget(baseTime + seconds), exact: isExact, forward: isForward)
+        let target = ChaseTarget(
+            seconds: clampedSeekTarget(baseTime + seconds), exact: isExact, forward: isForward, minFramePTS: nil,
+            bound: live.bound(of: baseTime + seconds))
         if isSeekInFlight(toPressed: target) {
             return relativeSeekBurst.offset(landingAt: target.seconds) ?? 0
         }
@@ -441,16 +469,19 @@ extension PlayerEngine {
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
     }
 
-    /// Where a seek to `seconds` goes: within the media.
+    /// Where a seek to `seconds` goes: within the media; of a live stream, within the window its playlist lists.
     func clampedSeekTarget(_ seconds: Double) -> Double {
-        max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
+        if live.isLive { return live.clamp(seconds) }
+        return max(0, media.duration > 0 ? min(seconds, media.duration) : seconds)
     }
 
     /// The picture shows the media's last frame, where a seek to the end lands: within a frame and a half of the end
     /// (`duration` is where the last frame's display ends). Not just within the margin of `isAtEndOfMedia`, from which
     /// frame steps and seeks still reach the frames after.
     private var isOnLastFrame: Bool {
-        media.hasVideo && media.duration > 0 && currentFramePTS >= media.duration - nominalFrameDuration * 1.5
+        // A live stream that ended ends where its last window does.
+        let end = live.isEnded ? (live.window()?.end ?? 0) : media.duration
+        return media.hasVideo && end > 0 && currentFramePTS >= end - nominalFrameDuration * 1.5
     }
 
     public func seekRelative(by seconds: Double, exact: Bool) {
@@ -459,7 +490,9 @@ extension PlayerEngine {
         // Forward keyframe steps must land on the next keyframe; a backward search on sparse-GOP
         // streams (AV1) would snap back to the current keyframe and the position would never advance.
         let forward = seconds > 0 && !exact
-        let target = ChaseTarget(seconds: clampedSeekTarget(baseTime + seconds), exact: exact, forward: forward)
+        let target = ChaseTarget(
+            seconds: clampedSeekTarget(baseTime + seconds), exact: exact, forward: forward, minFramePTS: nil,
+            bound: live.bound(of: baseTime + seconds))
         if isSeekInFlight(toPressed: target) { return }
         seek(to: baseTime + seconds, exact: exact, forward: forward)
     }
@@ -474,6 +507,8 @@ extension PlayerEngine {
         // At either end an exact and a keyframe seek land on the same frame, the first or the last: the first press
         // of a burst is exact, the repeats are keyframe seeks.
         let isAtBound = target.seconds == 0 || (media.duration > 0 && target.seconds == media.duration)
+        // A live stream's ends are the window's, which move with the clock: targets at the same end, not equal ones.
+        if live.isLive { return target.bound != nil && target.bound == chase.bound }
         return isAtBound && chase.seconds == target.seconds
     }
 

@@ -35,7 +35,15 @@ extension MediaDemuxer {
 
     /// Takes `lock`. While reading ahead, the read-ahead thread lets the caller in before its next packet (the lock is
     /// unfair: a thread that takes it again at once could keep a seek waiting).
-    func lockIO() {
+    ///
+    /// - Parameter yielding: For a caller that repositions the input next (a seek): the read the read-ahead thread is in
+    ///   is interrupted if it waits (`FFmpegInterrupt.yieldIO`). A live stream's read at the edge waits for the next
+    ///   segment, holding the input for as long as the stream takes (a stalled one, forever); the caller repositions what
+    ///   it left. Only for such callers: the read-ahead goes on from where the interrupted read left it, in a state only
+    ///   a seek puts right.
+    func lockIO(yielding: Bool = false) {
+        if yielding { interruptContext.yieldIO() }
+        defer { if yielding { interruptContext.resumeIO() } }
         readAheadControl.withLock { $0.ioWaiters += 1 }
         lock.lock()
         readAheadControl.withLock { $0.ioWaiters -= 1 }
@@ -123,7 +131,17 @@ extension MediaDemuxer {
         var pkt = AVPacket()
         let mark = readMark
         let ret = readPacket(ctx, &pkt, releasingQueueLock: true)
-        noteRead(from: mark)
+        // A seek waiting for the input interrupted the read (`lockIO(yielding:)`). It is not the input's end, nor an
+        // error: the thread steps aside for the seek, which repositions what the read left (`lock` is still held here,
+        // so the seek has not yet resumed the input). Nor is it a measure of the network, whatever it returned (a
+        // packet, for MPEG-TS: the rest of the segment): its requests are cut short, and the wait it was in is no cost
+        // of reading (`noteRead`), so their transfers are dropped.
+        if interruptContext.isYieldingIO, !interruptContext.shouldAbort {
+            _ = ioBytes.transport?.meter.take()
+            if ret < 0 { return true }
+        } else {
+            noteRead(from: mark)
+        }
         guard ret >= 0 else {
             if ret != Self.averrorEOF {
                 AppLog.warning(.demuxer, "Read-ahead stopped: \(Self.ffmpegErrorDescription(ret))")

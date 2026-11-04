@@ -249,10 +249,7 @@ public struct ContentView: View {
                         onJump: { targetTime in
                             let offset = targetTime - engine.currentTime
                             engine.seek(to: targetTime)
-                            uiState.osd.show(
-                                .seek(
-                                    offsetSeconds: offset, currentTime: targetTime, duration: engine.media.duration)
-                            )
+                            uiState.osd.show(.seek(offsetSeconds: offset, at: targetTime, of: engine))
                             let shouldResume = uiState.dismissJumpTo()
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 uiState.isJumpToPresented = false

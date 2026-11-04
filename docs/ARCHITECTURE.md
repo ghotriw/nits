@@ -557,6 +557,70 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   or FFmpeg would start it at the read position.
 - Tests play local files only: `NITS_READ_AHEAD_LOCAL=1` reads them ahead too, to run the suites that way.
 
+### Live streams
+
+An HLS playlist that slides (no `ENDLIST`, not `EVENT`: a YouTube live stream's DVR window of about 15 minutes) is a
+live stream. It has no duration (`MediaInfo.duration` is 0, so everything keyed to a duration stays off: the end of
+media, history, resume, thumbnails); what is played is a **window**, `LiveWindow`, from the first segment its playlist
+lists to the end of the last. Both ends move with real time.
+
+- **The window comes from FFmpeg.** The bundled HLS demuxer is patched (`scripts/patches/ffmpeg-hls-live-seek.patch`).
+  Upstream master's series of 2026-07-08 makes a live playlist seekable and puts `first_timestamp` at the playlist's
+  first segment (9.0.2 starts it at the first packet read, a few segments from the edge, and a seek fails). Ours
+  publishes, after every load of the playlist *read* (the variant playing's, never a rendition's: an audio rendition has a
+  window and an end of its own; with a master playlist it is not the
+  first, which the series' `first_timestamp` follows only; ours tells it the media sequence number it is the start of,
+  `first_timestamp_seq`, so that any needed playlist advances it, by the segments it dropped, or by the time that has
+  passed when the gap is longer than the time allows (a pause makes it as long as itself; variants numbered from other
+  bases tell nothing of each other; a small step back, a CDN's older playlist, changes nothing)), the window as the format
+  context's `start_time` and
+  `duration`, and tags it `hls_live` with the media sequence number of its first segment (`LiveWindow.hasSlid`: the
+  start moves from the first load on). When the playlist ends the last window stays and the tag goes
+  (`LiveWindow.hasEnded`). `MediaDemuxer.publishLiveWindow` reads them on the reading thread right after
+  `av_read_frame` (FFmpeg writes them there) into `liveWindowState`, a lock of its own like `readAheadState`, with the
+  time it first saw the window (`LiveReport.loadedAt`: the load's, which the engine, reading it much later after a pause,
+  moves the window on from). Drop the
+  first part of the patch when the bundled FFmpeg has the series.
+- **A stream that ended** (`LiveStream.isEnded`) is a recording: the last window stands, seeks stay in all of it, there
+  is no edge (no badge, no "go live"), the timeline shows time into the window and its length, and playback ends where
+  the window does (`isAtEndOfMedia`).
+- **`LiveStream`** (`engine.live`) owns what the engine makes of it: the window as last told and **extrapolated** (a
+  demuxer that has read 30 s ahead loads the playlist no more until playback catches up), how far behind the edge the
+  picture is, and where "go live" lands. The edge is the clock plus the greatest `end - clock` the loads of the last minute told, not the
+  last load's end plus the time since: a playlist grows in steps of a segment (5 s at YouTube), loaded whenever the
+  demuxer reads, and the last load's edge made the distance behind it, constant while playing, jump by a segment. The
+  start stays while the playlist grows from the stream's beginning (YouTube lists all of it up to an hour, `34:05` of
+  a stream 34 minutes old), and moves with the clock once it slides. A minute of samples, so that a stall of the source
+  does not leave the edge ahead of the real one for good (the badge grey). During a stall the distance behind the edge
+  grows with the clock, on purpose: a source that stopped looks like a paused picture near the edge whose read-ahead is
+  full (both read nothing more, the playlist loads unchanged), and a distance that stood would be wrong for the latter.
+  `PlayerEngine` feeds it at every tick (`trackLiveWindow`) and
+  resets it with the media. The timeline stays in the stream's own timestamps (an hour into a broadcast, not zero): the
+  UI maps them onto the window.
+- **Start and seeks.** A live stream starts `edgeMargin` (6 s) behind the edge, whatever the requested or saved start.
+  Seeks go through `clampedSeekTarget` into the window: `startMargin` (10 s) after its start, as the oldest segments
+  expire from the server while they are fetched, and `edgeMargin` before its end. A picture whose place has expired
+  from the playlist (a long pause) is brought back into the window by the tick. The repeats of a key held at an end are
+  one seek, though the end moves with the clock while it goes: a `ChaseTarget` remembers the end its target was cut to
+  (`bound`), and a press cut to the same end does not start the seek over; a skip that stops short of the edge is not
+  one to the edge, however near. (The seek lands where the edge was when it began, up to as far behind as it took.)
+- **The read at the edge waits.** FFmpeg's HLS demuxer sleeps inside `av_read_frame` until the playlist lists a new
+  segment, holding `lock`; a seek would wait for it (up to a segment, for a stalled stream forever). `seek` of a live
+  stream takes the lock as `lockIO(yielding: true)`, which asks the interrupt context to `yieldIO()` while it waits: the
+  callback interrupts the read, which the read-ahead thread does not take for an end of the input (it steps aside), and
+  the seek repositions what it left. Only a seek yields: the read-ahead goes on from an interrupted read in a state only a
+  seek puts right. The HLS
+  requests of `HTTPSessionTransport` poll the same (`shouldInterruptFFmpeg`), so that a read waiting for a segment's
+  answer gives way too, not only one sleeping between loads of the playlist.
+- **Reading that stops.** The read-ahead ends on an error or an end of input, as for any source, and only a seek starts
+  it again. A live stream has no end it can hold for (a playlist that fails to load for good, a server error, spends
+  FFmpeg's `max_reload`), so `trackLiveWindow` seeks to the picture's place to read again when the demuxer has stopped
+  and what it read is played (`LiveStream.shouldRecoverReading`: ever less often, 5 s to 30 s, for as long as it lasts). A picture
+  whose place expired from the window is brought back the same way, at most every 15 s (a window of a few segments
+  moves past every seek's landing before it prerolls).
+- **UI.** The timeline spans the window; the time at its left is the distance behind the edge; `LiveBadge` beside it is
+  red at the edge and grey behind it, where a click seeks to the edge (`seekToLiveEdge()`). No thumbnails.
+
 ### Backpressure
 
 - **Video** — the feeding task stops decoding once `FrameQueue` holds 40 frames and resumes below

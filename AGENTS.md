@@ -189,6 +189,13 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   HTTP/1.1 the next segment's body comes with its answer and halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
   in `docs/ARCHITECTURE.md`.
+- **A live HLS stream has a window, not a duration** (`MediaInfo.duration` stays 0). The demuxer reads the window from
+  the format context after `av_read_frame` (`publishLiveWindow`), which our patch of FFmpeg's HLS demuxer
+  (`scripts/patches/ffmpeg-hls-live-seek.patch`) keeps up to date: never from another thread, never by parsing
+  playlists. Seeks of a live stream go through `LiveStream.clamp` (`clampedSeekTarget`) and `seek` yields the input to
+  itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
+  set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
+  `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add
   `timelineOffset` back to `av_seek_frame` targets. A bare `av_read_frame` breaks timing for these
@@ -225,3 +232,10 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
 - `TestHTTPServer` serves connections on its own queue (a `TaskExecutor`), never the cooperative pool: tests that
   open or read a network demuxer synchronously block pool threads, and a CI runner's three left it none to answer
   on (FFmpeg's requests timed out). Check HTTP tests with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` (a one-thread pool).
+  Even on a machine with a full pool the HTTP, HLS and DASH suites run together at the edge of it: a suite of more such
+  tests than a few, or an `async` one waiting in it, can stand the whole run still (every pool thread blocked on a
+  server that has no thread to answer on; `sample` shows 12 cooperative threads and no other). Give the suite
+  `.serialized`, keep its tests synchronous (an `async` one that has to be there goes into the same serialized suite: with
+  a pool of one thread it waits for the thread behind the tests that sleep, its timeouts and the clock going on), and run
+  it together with the other HTTP suites
+  (`--filter "HLSOverHTTPTests|AdaptiveBitrateTests|DASH|MediaDemuxer|<yours>"`) before pushing.

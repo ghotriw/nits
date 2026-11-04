@@ -170,6 +170,18 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Furthest timeline second read from the audio and video streams since the last seek (`-infinity` before any),
     /// `infinity` once the input has been read to its end. Its own lock: `lock` is held through blocking reads.
     let readAheadState = OSAllocatedUnfairLock(initialState: -Double.infinity)
+    /// The window of a live HLS playlist, as the playlist last loaded tells (`publishLiveWindow`); `nil` for other
+    /// media. Once the playlist ends the last window stays, with `hasEnded` set. Its own lock, as `readAheadState`:
+    /// read from the main actor.
+    let liveWindowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
+    /// A live HLS stream: opened as a playlist that slides and has no end yet (it stays set once the playlist ends,
+    /// `LiveWindow.hasEnded`). It has no duration (`durationSeconds` is 0); what can be seeked in is `liveWindow`.
+    public internal(set) var isLive = false
+    public var liveWindow: LiveWindow? { liveReport?.window }
+    /// `liveWindow` and when its playlist was loaded.
+    public var liveReport: LiveReport? {
+        liveWindowState.withLock { $0 }
+    }
     /// Timeline second up to which packets have been read ahead of playback; see `readAheadState`.
     public var readAheadSeconds: Double {
         readAheadState.withLock { $0 }
@@ -573,7 +585,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         // playlists' reloads over the connection it read the master on, past `io_open`.
         if isNetworkSource {
             ioBytes.makeTransport = { [ctxContext] in
-                HTTPSessionTransport(source: url, headers: headers) { ctxContext.shouldAbort }
+                // The requests too give way to a seek that waits for the input (`yieldIO`), not just FFmpeg's own waits.
+                HTTPSessionTransport(source: url, headers: headers) { ctxContext.shouldInterruptFFmpeg }
             }
             _ = av_dict_set(&avOptions, "http_persistent", "0", 0)
         }
@@ -678,6 +691,11 @@ public final class MediaDemuxer: @unchecked Sendable {
             return nil
         }
 
+        if Self.isLivePlaylist(formatCtx) {
+            isLive = true
+            durationSeconds = 0
+            publishLiveWindow(from: formatCtx)
+        }
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
     }
 
@@ -744,6 +762,11 @@ public final class MediaDemuxer: @unchecked Sendable {
             if releasingQueueLock { queueLock.unlock() }
             let ret = av_read_frame(ctx, &pkt)
             if releasingQueueLock { queueLock.lock() }
+            // A seek waiting for the input interrupted the read (`lockIO(yielding:)`): FFmpeg may report it as the end of the
+            // input, which is none, so nothing below (the end of the input's bookkeeping) is done for it.
+            if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
+            // The playlist is reloaded inside the read: the window it tells moved.
+            if isLive { publishLiveWindow(from: ctx) }
             if ret >= 0 {
                 Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
                 if variantSwitch != nil, !admitDuringVariantSwitch(&pkt, in: ctx) {

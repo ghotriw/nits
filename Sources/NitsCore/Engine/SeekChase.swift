@@ -7,10 +7,13 @@ struct ChaseTarget: Equatable {
     var forward: Bool
     /// A forward frame step: the frame landed on must be at or past it, so the step advances (`SeekPreview`).
     var minFramePTS: Double?
+    /// The end of a live stream's window the target was cut to (`LiveStream.bound(of:)`), if it was. Repeats of a key held
+    /// at an end are the same seek though the end moves with the clock.
+    var bound: LiveStream.Bound?
 
     /// The target once the seek landed at `seconds`, waiting there to resume: no frame step to complete any more.
     func landed(at seconds: Double) -> ChaseTarget {
-        ChaseTarget(seconds: seconds, exact: exact, forward: forward, minFramePTS: nil)
+        ChaseTarget(seconds: seconds, exact: exact, forward: forward, minFramePTS: nil, bound: bound)
     }
 }
 

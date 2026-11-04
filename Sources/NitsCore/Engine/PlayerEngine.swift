@@ -18,6 +18,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// The action buttons of the media ("Skip Intro", "Next Episode", SponsorBlock segments) and the one playback is
     /// in.
     public let actionButtons = ActionButtonController()
+    /// The window of a live stream and the picture's place in it; empty for other media. Reset with the media.
+    public let live = LiveStream()
     /// Resolves the pages a load is given (a video site's) into the streams that play them; `nil` opens every URL as
     /// is. Asked for network URLs only, before the demuxer opens (`MediaResolver`).
     @ObservationIgnored
@@ -720,6 +722,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                 if !seconds.isNaN && !seconds.isInfinite && seconds >= 0 {
                     self.currentTime = seconds
                     self.onTimeUpdate?(seconds, self.media.duration)
+                    self.trackLiveWindow(at: seconds)
 
                     self.applyDueVariantChanges(at: seconds)
                     self.subtitles.timeDidChange(to: seconds, .tick)
@@ -743,7 +746,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Whether playback at `seconds` has reached the end: within the last quarter second, where the last frames and
     /// audio packets of a stream end apart.
     func isAtEndOfMedia(_ seconds: Double) -> Bool {
-        media.duration > 0 && seconds >= media.duration - 0.25
+        // A live stream that ended ends where its last window does (it has no duration).
+        if live.isEnded, let end = live.window()?.end { return seconds >= end - 0.25 }
+        return media.duration > 0 && seconds >= media.duration - 0.25
     }
 
     func handleEndOfMedia() {

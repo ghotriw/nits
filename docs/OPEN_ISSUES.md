@@ -145,3 +145,23 @@ Accepted for now, noted for later.
 - **`FormatDescriptionCacheTests`** failed twice on CI with VideoToolbox returning 1–3 frames of 30 (always 30
   locally). The failure message now reports fed samples, session creation status, decode error statuses and the
   last callback status.
+
+## Live streams: a window of a few segments, and an outage that stands the picture
+
+**Not checked on a real stream (2026-11-04)**:
+
+- A window shorter than about 10 s (three segments of 2 s) cannot be seeked in without the picture falling out of it
+  again: the start moves on while the seek prerolls and lands a keyframe before its target, and
+  `PlayerEngine.trackLiveWindow` brings the picture back at most every 15 s (`LiveStream.windowRecoveryInterval`), so it
+  jerks back every 15 s. Such windows are rare (YouTube's is 15 minutes to an hour); a window that short is a stream to
+  watch at its edge.
+- While a live stream's playlist fails to load (a server error for a minute), the demuxer stops reading, the picture
+  stands, the clock goes on and the badge says LIVE: `trackLiveWindow` seeks to the place to read again, ever less often
+  (5 s, 10 s, 20 s, then 30 s apart, for as long as it lasts), and the stream plays again when the server does, but there
+  is no buffering shown meanwhile, nor an error after a while. The clock is not held: `holdForBuffering` ends at once
+  for an input that has ended (`isReadyToResumeAfterBuffering`), and the tick that drives recovery does not fire with the
+  clock held.
+- A live stream's variants numbered from other bases, on a playlist that grows from the stream's beginning and has not
+  slid: the first switch to the other numbering moves the start of the window by all the time since the stream opened
+  (`first_timestamp_updated` is set when `first_timestamp` is, and only a slide moves it), up to an hour. Needs both a
+  growing playlist and variants that do not share a base; not seen.

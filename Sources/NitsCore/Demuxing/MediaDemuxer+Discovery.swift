@@ -36,7 +36,9 @@ extension MediaDemuxer {
             self.sampleAspectRatio = .square
         }
 
-        if stream.pointee.duration > 0 {
+        if isLive {
+            // No duration: the window moves (`liveWindow`). Also at a variant switch, which configures the stream again.
+        } else if stream.pointee.duration > 0 {
             self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
         } else if formatCtx.pointee.duration > 0 {
             self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)

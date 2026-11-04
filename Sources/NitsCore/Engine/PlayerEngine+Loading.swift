@@ -86,6 +86,7 @@ extension PlayerEngine {
         isLoaded = false
         currentTime = 0
         media = MediaInfo()
+        live.reset()
         loadError = nil
         nominalFrameDuration = 1.0 / 24.0
         nominalFrameDurationLock.withLock { $0 = 1.0 / 24.0 }
@@ -925,6 +926,8 @@ extension PlayerEngine {
         self.currentSourcePath = sourcePath
         self.currentHeaders = headers
         self.media = MediaInfo(demuxer: demuxer, fallbackChapters: resolvedChapters)
+        live.begin(
+            isLive: demuxer.isLive, window: demuxer.liveReport?.window, at: demuxer.liveReport?.loadedAt ?? .now)
         actionButtons.setResolved(resolvedActionButtons)
         let frameDuration = demuxer.nominalFrameDuration
         self.nominalFrameDuration = frameDuration
@@ -1069,7 +1072,15 @@ extension PlayerEngine {
         // 2. PlaybackHistoryStore saved position (if resume is enabled)
         // 3. Fallback to 0.0
         let effectiveStartTime: Double
-        if let explicit = requestedStartTime {
+        if let edge = live.edgeTarget() {
+            // A live stream plays from its edge: its timeline starts where the window does (minutes behind, and what
+            // expires with time), and a saved position names a moment gone by.
+            effectiveStartTime = edge
+            AppLog.info(
+                .engine,
+                "Starting a live stream at its edge: \(edge)s"
+                    + (requestedStartTime.map { " (the start requested, \($0)s, is ignored)" } ?? ""))
+        } else if let explicit = requestedStartTime {
             effectiveStartTime = min(max(0.0, explicit), max(0.0, self.media.duration - 1.0))
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")
         } else if configuration.resumePlayback,

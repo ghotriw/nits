@@ -259,9 +259,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         }
         engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
             guard let self, self.uiState.osd.isVisible else { return }
-            self.uiState.osd.show(
-                .seek(offsetSeconds: actualOffset, currentTime: completedTime, duration: self.engine.media.duration)
-            )
+            self.uiState.osd.show(.seek(offsetSeconds: actualOffset, at: completedTime, of: self.engine))
         }
     }
 
@@ -559,7 +557,7 @@ extension PlayerWindowController: PlayerActions {
     public func seek(to seconds: Double) {
         let offset = seconds - engine.currentTime
         engine.seek(to: seconds)
-        uiState.osd.show(.seek(offsetSeconds: offset, currentTime: seconds, duration: engine.media.duration))
+        uiState.osd.show(.seek(offsetSeconds: offset, at: seconds, of: engine))
     }
 
     public func stepFrameForward() {
@@ -583,9 +581,7 @@ extension PlayerWindowController: PlayerActions {
     public func seekRelative(by seconds: Double) {
         let honestOffset = engine.seekRelative(by: seconds)
         let targetPos = engine.pendingSeekTime ?? engine.currentTime
-        uiState.osd.show(
-            .seek(offsetSeconds: honestOffset, currentTime: targetPos, duration: engine.media.duration)
-        )
+        uiState.osd.show(.seek(offsetSeconds: honestOffset, at: targetPos, of: engine))
     }
 
     public func stepVolume(by delta: Float) {

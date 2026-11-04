@@ -511,10 +511,42 @@ public struct ControlTimelineSection: View {
         self.previewBoundsWidth = previewBoundsWidth
     }
 
+    /// The window of a live stream now, which the bar spans instead of a duration; `nil` for other media.
+    private var liveWindow: LiveWindow? {
+        engine.live.isLive ? engine.live.window() : nil
+    }
+
+    /// The time at `ratio` of the bar: of the duration, or of a live stream's window.
+    private func time(atRatio ratio: Double) -> Double {
+        if let window = liveWindow { return window.start + ratio * window.length }
+        return ratio * engine.media.duration
+    }
+
+    /// The time to the left of the bar: the position, or how far behind the live edge a live stream's picture is.
+    private var currentTimeText: String {
+        let position = isDragging ? dragPosition : engine.currentTime
+        guard let window = liveWindow else { return TimeParser.format(seconds: position) }
+        // A stream that ended is a recording: the time into it.
+        if window.hasEnded { return TimeParser.format(seconds: max(0, position - window.start)) }
+        // At the edge it reads 0:00, but not while dragging: that shows where the drop lands, near the edge too.
+        if !isDragging && engine.live.isAtEdge(position) { return "0:00" }
+        return "−" + TimeParser.format(seconds: engine.live.secondsBehindEdge(at: position))
+    }
+
     public var body: some View {
+        if engine.live.isLive && !engine.live.isEnded {
+            // The edge moves while the picture may stand (paused): the distance behind it and the bar are read every
+            // second, not only when the position changes.
+            TimelineView(.periodic(from: .now, by: 1)) { _ in content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         HStack(spacing: 0) {
             // Current time (clickable to jump to time)
-            Text(TimeParser.format(seconds: isDragging ? dragPosition : engine.currentTime))
+            Text(currentTimeText)
                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(minWidth: 48, alignment: .trailing)
@@ -545,9 +577,10 @@ public struct ControlTimelineSection: View {
 
             // Progress Bar with Keyframe Thumbnail Hover & Scrub Preview
             GeometryReader { geo in
-                let total = max(engine.media.duration, 1)
+                let window = liveWindow
+                let total = max(window?.length ?? engine.media.duration, 1)
                 let current = isDragging ? dragPosition : engine.currentTime
-                let progress = min(max(current / total, 0), 1)
+                let progress = min(max((current - (window?.start ?? 0)) / total, 0), 1)
 
                 ZStack(alignment: .leading) {
                     ZStack(alignment: .leading) {
@@ -560,7 +593,7 @@ public struct ControlTimelineSection: View {
                         // buffering, when the time stands: read twice a second.
                         if engine.media.isNetworkSource {
                             TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                                let buffered = min(max(engine.bufferedTime / total, 0), 1)
+                                let buffered = min(max((engine.bufferedTime - (window?.start ?? 0)) / total, 0), 1)
                                 Capsule()
                                     .fill(.white.opacity(0.25))
                                     .frame(width: geo.size.width * max(buffered, progress), height: 6)
@@ -643,13 +676,13 @@ public struct ControlTimelineSection: View {
                         .onChanged { value in
                             isDragging = true
                             let ratio = min(max(value.location.x / geo.size.width, 0), 1)
-                            dragPosition = ratio * engine.media.duration
+                            dragPosition = time(atRatio: ratio)
                             timelineHoverLocation = value.location
                             timelineHoverRatio = ratio
                         }
                         .onEnded { value in
                             let ratio = min(max(value.location.x / geo.size.width, 0), 1)
-                            let targetTime = ratio * engine.media.duration
+                            let targetTime = time(atRatio: ratio)
                             engine.seek(to: targetTime)
                             isDragging = false
                             if value.location.y >= 0 && value.location.y <= geo.size.height {
@@ -666,12 +699,16 @@ public struct ControlTimelineSection: View {
             .frame(minHeight: Self.trackHeight, maxHeight: .infinity)
             .zIndex(10)
 
-            // Total duration
-            Text(TimeParser.format(seconds: engine.media.duration))
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.75))
-                .padding(.all, 7)
-                .frame(minWidth: 48, alignment: .leading)
+            if engine.live.isLive && !engine.live.isEnded {
+                LiveBadge(engine: engine)
+            } else {
+                // Total duration; of a live stream that ended, the length of what it left.
+                Text(TimeParser.format(seconds: liveWindow?.length ?? engine.media.duration))
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .padding(.all, 7)
+                    .frame(minWidth: 48, alignment: .leading)
+            }
         }
     }
 }

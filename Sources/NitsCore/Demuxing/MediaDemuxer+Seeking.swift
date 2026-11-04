@@ -13,7 +13,7 @@ extension MediaDemuxer {
     ///   seconds before the target near the end.
     @discardableResult
     public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0) -> Bool {
-        lockIO()
+        lockIO(yielding: isLive)
         defer { lock.unlock() }
         queueLock.lock()
         defer { queueLock.unlock() }

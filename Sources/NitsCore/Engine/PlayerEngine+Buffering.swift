@@ -141,6 +141,8 @@ extension PlayerEngine {
         guard let inputs, isLoaded else { return currentTime }
         let readAhead = inputs.readAheadSeconds
         if readAhead == .infinity {
+            // Read to its end: of a live stream that ended (no duration), the end of its last window.
+            if live.isEnded, let end = live.window()?.end { return end }
             return media.duration > 0 ? media.duration : currentTime
         }
         let buffered = max(currentTime, readAhead)

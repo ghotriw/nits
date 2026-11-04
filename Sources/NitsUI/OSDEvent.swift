@@ -45,3 +45,25 @@ public struct DebugOSDMessage: Identifiable, Equatable, Sendable {
         self.expiresAt = expiresAt
     }
 }
+
+extension OSDEvent {
+    /// A seek's OSD at `time` in the media of `engine`: the place in it and its duration. Of a live stream, what its
+    /// timeline shows (its timestamps run from where the stream began, hours in): how far behind the edge, with the
+    /// place in the window as the bar; of one that ended, the time into it and its length.
+    @MainActor
+    public static func seek(offsetSeconds: Double, at time: Double, of engine: PlayerEngine) -> OSDEvent {
+        guard engine.live.isLive, let window = engine.live.window() else {
+            return .seek(offsetSeconds: offsetSeconds, currentTime: time, duration: engine.media.duration)
+        }
+        if window.hasEnded {
+            return .seek(
+                offsetSeconds: offsetSeconds, currentTime: max(0, time - window.start), duration: window.length)
+        }
+        let behind =
+            engine.live.isAtEdge(time)
+            ? "Live" : "−" + TimeParser.format(seconds: engine.live.secondsBehindEdge(at: time))
+        return .custom(
+            symbol: offsetSeconds >= 0 ? "goforward" : "gobackward", text: TimeParser.formatSeekOffset(offsetSeconds),
+            subtext: behind, progress: Float(min(max((time - window.start) / max(window.length, 1), 0), 1)))
+    }
+}
