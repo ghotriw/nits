@@ -91,8 +91,9 @@ rm -rf "ffmpeg-$FFMPEG_VERSION"
 tar -xf "ffmpeg-$FFMPEG_VERSION.tar.xz"
 cd "ffmpeg-$FFMPEG_VERSION"
 
-# The one change to FFmpeg's source (scripts/patches/, listed in THIRD_PARTY_NOTICES.md): its DASH demuxer frees
-# libxml2's state for the whole process after each manifest, which a parse going on elsewhere crashes on.
+# The changes to FFmpeg's source (scripts/patches/, listed in THIRD_PARTY_NOTICES.md): its DASH demuxer frees
+# libxml2's state for the whole process after each manifest, which a parse going on elsewhere crashes on; its HLS
+# demuxer seeks in a live playlist that slides (a stream's DVR window), from upstream master's series of 2026-07-08.
 for patch_file in "$DIR"/scripts/patches/ffmpeg-*.patch; do
     echo "==> Applying $(basename "$patch_file")..."
     patch -p1 < "$patch_file"
@@ -271,6 +272,7 @@ cp "$SRC_DIR/libunibreak-$LIBUNIBREAK_VERSION/LICENCE" "$LICENSES_DIR/libunibrea
     done
     echo "    (the DASH demuxer no longer calls xmlCleanupParser() after each manifest it reads, which frees libxml2's state"
     echo "    for the whole process and crashes a parse going on in another thread)"
+    echo "    (the HLS demuxer seeks in a live playlist that slides: upstream master's series of 2026-07-08, libavformat/hls.c)"
     echo "  Configure flags (paths elided):"
     for flag in "${FFMPEG_CONFIGURE_FLAGS[@]}"; do
         case "$flag" in --prefix=*|--extra-*) continue ;; esac
