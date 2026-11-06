@@ -36,9 +36,18 @@ struct HLSDiscontinuityTests {
         guard let (demuxer, server) = try Self.open(.hlsDiscontinuity) else { return }
         defer { server.stop() }
         var times: [Double] = []
+        var audio: [(start: Double, end: Double)] = []
+        let audioTimebase = demuxer.audioTimebase
         let deadline = ContinuousClock.now + .seconds(20)
         while ContinuousClock.now < deadline, let sample = demuxer.nextVideoSample() {
             times.append(Self.seconds(sample, demuxer))
+            // The sound alongside, as the feeder takes it.
+            while let packet = demuxer.nextAudioPacket() {
+                let start = Double(packet.pts) * Double(audioTimebase.num) / Double(audioTimebase.den)
+                let length = Double(packet.duration) * Double(audioTimebase.num) / Double(audioTimebase.den)
+                audio.append((start, start + length))
+                if start > (times.last ?? 0) + 0.5 { break }
+            }
         }
         #expect(times.count >= 350, "\(times.count) pictures of 12 s at 30 fps")
         let backwards = zip(times, times.dropFirst()).map { $0 - $1 }.max() ?? 0
@@ -46,6 +55,13 @@ struct HLSDiscontinuityTests {
         #expect((times.max() ?? 0) > 11.5, "The pictures end at \(times.max() ?? 0) s of 12")
         #expect(
             times.filter { $0 > 3.95 && $0 < 4.05 }.count >= 1, "The second segment starts where the playlist puts it")
+
+        // The audio of each segment restarts its timestamps too, and is moved the same way: one timeline, no packet
+        // before the one before it, none missing (a gap of more than 100 ms), reaching the end.
+        #expect(audio.count > 400, "\(audio.count) audio packets of 12 s")
+        let worstGap = zip(audio, audio.dropFirst()).map { abs($1.start - $0.end) }.max() ?? 0
+        #expect(worstGap < 0.1, "A gap or overlap of \(worstGap) s in the audio")
+        #expect((audio.last?.end ?? 0) > 11.5, "The audio ends at \(audio.last?.end ?? 0) s of 12")
     }
 
     @Test("A seek past the discontinuity lands in the segment that holds the target")

@@ -174,7 +174,22 @@ Accepted for now, noted for later.
     HEVC with Dolby Vision. A format description with other parameter sets for the same pictures is taken by
     VideoToolbox's session (`VTDecompressionSessionCanAcceptFormatDescription`): PlayOn's stream alternates its SPS
     (timing in the VUI), and made a session each time before (3 in 40 s, 1 now).
-  - Not looked at: audio and A/V sync across a break; a live stream with breaks (all runs were VOD; the position of a
+  - Audio and frame rate across a break (2026-11-06): Google's `ima-vod-skippable-test` has no audio and 25 fps in the
+    content and the advertisement, so it says nothing of either. On the 16 + 6 + 4 s synthetic (three timestamp
+    domains, packets read with the patched `ffprobe`) the audio has no gap or overlap over 100 ms through both breaks and
+    ends 50 ms after the pictures (27.52 against 27.47 s); the pictures step 67 ms (two frames) more than usual at each
+    break (17.37 to 17.43 s, 23.40 to 23.47 s); the first audio and picture packets after a break are 30 and 67 ms
+    apart (17.40 / 17.43, 23.40 / 23.47). `HLSDiscontinuityTests` keeps the audio timeline of the 4 + 8 s preset
+    (no gap over 100 ms, ends past 11.5 s; it fails when the audio is left out of the patch's offset, checked by taking
+    it out). Audio and picture of a playlist are moved by one offset, so their positions to each other stay; a separate
+    audio rendition with its own playlist and breaks has an offset of its own, which meets the picture's only if the
+    `EXTINF`s and the bases of the timestamps agree (unchecked). Not done: A/V sync through a break by the `flashClick`
+    method (`SyncPatternTests`), and a change of frame rate at a break (a variant's change sets `nominalFrameDuration`
+    and the display link's rate; a break does not, and the pictures are paced by their timestamps meanwhile).
+  - A segment whose timestamps restart with no `EXT-X-DISCONTINUITY` before it is not seen: PlayOn's stream has one (the
+    8 s segment before its last tag), which lands at -6.4 to 1.6 s and leaves a hole at 97.5 to 105.6 s in the timeline.
+    The tag is what tells where to take the offset; guessing from a jump alone is what the patch avoids.
+  - Not looked at: a live stream with breaks (all runs were VOD; the position of a
     segment comes from `first_timestamp`, which the live-seek patch moves as the window slides: untested together);
     subtitles (their playlists are not moved).
   - A restart of timestamps by less than 2 s is not seen (the error is that small).
