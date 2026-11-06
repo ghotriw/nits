@@ -11,17 +11,20 @@ import os
 /// A thread of its own reads packets into the queues up to `ReadAheadLimits` ahead of the packets taken. Consumers take
 /// packets under `queueLock` alone, which the thread releases during `av_read_frame`, so they never wait for the
 /// network; seeks and the other users of the input take `lock` through `lockIO()`, and the thread steps aside between
-/// packets. A seek clears the queues and the thread reads on from where it left the input.
+/// packets. A seek clears the queues (or seeks within the packet cache) and the thread reads on from where it left the input.
 extension MediaDemuxer {
     public struct ReadAheadLimits: Sendable {
         /// Seconds of media read ahead of the packets taken.
         public var seconds: Double
         /// Payload bytes queued at most: a 4K stream at 80 Mbit/s fills 192 MB in about 20 seconds.
         public var bytes: Int
+        /// Payload bytes retained in backward history cache (default 64 MB).
+        public var backBytes: Int
 
-        public init(seconds: Double = 30, bytes: Int = 192 << 20) {
+        public init(seconds: Double = 30, bytes: Int = 192 << 20, backBytes: Int = 64 << 20) {
             self.seconds = seconds
             self.bytes = bytes
+            self.backBytes = backBytes
         }
     }
 
@@ -68,8 +71,16 @@ extension MediaDemuxer {
             return
         }
         readsAhead = true
+        readAheadEnded = false
+        readAheadHitEOF = false
         if held { readAheadControl.withLock { $0.isHeld = true } }
-        readAheadLimits = limits
+        var effectiveLimits = limits
+        if variants.count > 1 || isLive {
+            effectiveLimits.backBytes = 0
+        }
+        readAheadLimits = effectiveLimits
+        videoQueue.maxBackBytes = effectiveLimits.backBytes
+        audioQueue.maxBackBytes = effectiveLimits.backBytes > 0 ? max(1 << 20, effectiveLimits.backBytes / 4) : 0
         // Only the read-ahead thread uses it, from its start on: no `lock`, which the main thread must not take.
         adaptiveBitrate.logic = AdaptiveBitrateLogic(
             config: adaptiveBitrateConfig ?? .scaled(toReadAhead: limits.seconds))
@@ -95,6 +106,11 @@ extension MediaDemuxer {
         readAheadControl.withLock { $0.isStopped = true }
         queueLock.lock()
         readAheadEnded = true
+        readAheadHitEOF = false
+        videoQueue.maxBackBytes = 0
+        audioQueue.maxBackBytes = 0
+        videoQueue.pruneAllHistory()
+        audioQueue.pruneAllHistory()
         wakePacketWaiters()
         queueLock.unlock()
         readAheadWake.signal()
@@ -143,7 +159,9 @@ extension MediaDemuxer {
             noteRead(from: mark)
         }
         guard ret >= 0 else {
-            if ret != Self.averrorEOF {
+            if ret == Self.averrorEOF {
+                readAheadHitEOF = true
+            } else {
                 AppLog.warning(.demuxer, "Read-ahead stopped: \(Self.ffmpegErrorDescription(ret))")
             }
             readAheadEnded = true
@@ -173,8 +191,35 @@ extension MediaDemuxer {
         return readAheadState.withLock { $0 } - consumedSeconds >= readAheadLimits.seconds
     }
 
+    /// Prunes audio history to align with the earliest retained video keyframe minus audio delay,
+    /// or by audio time when there is no video. Behind `queueLock`.
+    func pruneAudioQueueIfNeeded() {
+        // No history kept (local files, ladders, live): the pops drop the packets already.
+        guard audioQueue.maxBackBytes > 0 else { return }
+        if hasVideo, videoStreamIndex >= 0 {
+            if let videoHeadPTS = videoQueue.earliestPTS, videoHeadPTS != Int64.min,
+                timebase.den > 0, audioTimebase.den > 0, audioTimebase.num > 0
+            {
+                let videoHeadSeconds = Double(videoHeadPTS) * Double(timebase.num) / Double(timebase.den)
+                let audioPruneSeconds = videoHeadSeconds - 0.5
+                let rawPrune = audioPruneSeconds * Double(audioTimebase.den) / Double(audioTimebase.num)
+                if rawPrune.isFinite, rawPrune > -0x1.0p62, rawPrune < 0x1.0p62 {
+                    audioQueue.pruneLinear(beforePTS: Int64(rawPrune))
+                } else {
+                    audioQueue.pruneLinear()
+                }
+            } else {
+                audioQueue.pruneLinear()
+            }
+        } else {
+            // Without video the history is held by size alone (`audioQueue.maxBackBytes`): an audio-only input is also the
+            // audio of another input's picture, and a seek back as far as that one's history must stay in this one.
+            audioQueue.pruneLinear()
+        }
+    }
+
     /// Behind `queueLock`.
-    private func wakePacketWaiters() {
+    func wakePacketWaiters() {
         for _ in 0..<packetWaiters {
             packetArrival.signal()
         }
@@ -189,6 +234,8 @@ extension MediaDemuxer {
         let deadline = ContinuousClock.now + .seconds(10)
         while true {
             while let packet = videoQueue.popFirst() {
+                videoQueue.pruneGOPs()
+                pruneAudioQueueIfNeeded()
                 let time = packet.pts != Int64.min ? packet.pts : packet.dts
                 if time != Int64.min, timebase.den > 0 {
                     consumedSeconds = Double(time) * Double(timebase.num) / Double(timebase.den)

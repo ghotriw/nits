@@ -173,13 +173,16 @@ extension PlayerEngine {
             // The seek as it lands: past the last keyframe, a forward keyframe seek goes to its target exactly
             // instead of back to that keyframe (see `MediaDemuxer.seek`), to the last frame for a target at the end.
             var landed = target
+            var didFastSeek = false
 
             if !isSuperseded() {
                 if hasVideo {
                     decoder.flush()
                 }
-                let isExact = demuxer.seek(
+                let outcome = demuxer.seekReportingCache(
                     to: targetSeconds, exact: target.exact, forward: target.forward, audioDelay: audioDelay)
+                let isExact = outcome.isExact
+                didFastSeek = outcome.fromCache
                 if isExact && !target.exact {
                     landed.exact = true
                     landed.forward = false
@@ -203,7 +206,8 @@ extension PlayerEngine {
                 let resolvedSeconds = previewFrame?.pts ?? targetSeconds
                 // Playback reads on from where the seek landed, past the target after a forward keyframe seek: what it
                 // jumped over wasn't read, even if a newer seek supersedes this one before it completes.
-                if let preview = previewFrame { demuxer.noteSubtitleReadsStart(at: preview.pts) }
+                // In-cache seeks already have their subtitle packets collected, so do not advance span start.
+                if !didFastSeek, let preview = previewFrame { demuxer.noteSubtitleReadsStart(at: preview.pts) }
                 // Audio heard with the picture at `t` is the media's audio at `t - audioDelay`.
                 if let externalAudio {
                     // Its own input goes straight there, now the picture's landing is known: a keyframe seek lands

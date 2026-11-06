@@ -424,7 +424,26 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   ends when its own queue is empty, so the video decoder is drained while longer audio still plays, and an input
   with no audio track selected has ended its audio); the synchronous pumps on `seekQueue` (seek previews, frame steps)
   wait for the thread (`nextVideoSample(waitingForReadAhead:)`).
-- **Seeks** clear the queues as before, and the thread reads on from where the seek left the input.
+- **Seeks and packet cache.** Read-ahead packets are stored in `DemuxerPacketBuffer`. Consumed packets are
+  retained as backward history (`backBytes`, up to 64 MB), pruned strictly by whole GOPs (so the buffer's head is
+  always a keyframe) with a hard cap at 2× limit (falling back to linear pruning for streams without keyframes, like
+  intra-refresh). Keyframes are indexed (binary searched) for video only. Audio history is pruned linearly with a 0.5 s
+  margin before the earliest retained video keyframe (audio decoder priming); without video (an audio-only input, such
+  as the external audio of another input's picture), by size alone, so it reaches as far back as that picture's
+  history. History is off (`maxBackBytes = 0`) for multi-variant HLS/DASH and live streams, whose cache is never used.
+  Seeks landing within the buffered range (backward into history or forward into pre-read packets) are satisfied
+  atomically under `queueLock` without network I/O (`seekWithinCache`, tried first by `MediaDemuxer.seek`;
+  `seekReportingCache` also tells the engine whether it served the seek). A seek to the start finds a first picture
+  presented up to 0.25 s after 0 (B-frames, edit lists). Anything else is a slow seek (`performSlowSeek`), which clears
+  the buffer and re-anchors the read-ahead thread at the target:
+  - a cache miss, a live stream, a multi-variant stream (variant and resolution desync);
+  - an HLS subtitle rendition selected after the packets were read (`selectionOutdatesCache`: the rendition is a
+    playlist read only while selected, so they lack it; the demuxer holds the flag until a slow seek, which the
+    engine's re-read for the rendition is). An audio track needs no flag: its queue is emptied at selection, and a
+    target the audio left does not cover misses;
+  - a selected bitmap (PGS / VobSub) or closed-caption subtitle track (their decoders keep state between packets);
+  - a read-ahead that ended before the container's duration (a dropped connection can read as EOF, and playback would
+    end where it dropped; a seek in a cache that reaches the duration keeps the end, which is the media's).
 - **Limit.** The seconds ahead are counted from the video taken (the audio's, without video). A stream with nothing
   queued is read for up to the byte limit, as in mpv: video that ends (or starts) further than the limit from its
   audio would otherwise stop the thread for good, with no end of input.

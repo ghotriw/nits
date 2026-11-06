@@ -274,6 +274,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { queueLock.unlock() }
         self.selectedSubtitleTrackId = trackId
         streamSelectionChanged = true
+        if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
         // Packets from where the reads are now on belong to the new track; what came before is for a window read.
         let readAhead = readAheadState.withLock { $0 }
         subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
@@ -293,6 +294,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { queueLock.unlock() }
         selectedSecondarySubtitleTrackId = trackId
         streamSelectionChanged = true
+        if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
         let readAhead = readAheadState.withLock { $0 }
         secondarySubtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
     }
@@ -382,8 +384,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         tracker(slot).mergeStashed(decoded, of: snapshot, selection: selection, span: span)
     }
 
-    var audioQueue = PacketFifoQueue<DemuxedAudioPacket>()
-    var videoQueue = PacketFifoQueue<DemuxedVideoPacket>()
+    var audioQueue = DemuxerPacketBuffer<DemuxedAudioPacket>(indexesKeyframes: false)
+    var videoQueue = DemuxerPacketBuffer<DemuxedVideoPacket>()
     private let maxAudioQueueCount = 500
     private let maxVideoQueueCount = 180
     public internal(set) var formatDescription: CMVideoFormatDescription?
@@ -511,8 +513,28 @@ public final class MediaDemuxer: @unchecked Sendable {
     public private(set) var isNetworkSource = false
     /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
     var streamSelectionChanged = false
+    /// A subtitle rendition of an HLS stream was selected after the packets in the queues were read: it is a playlist of
+    /// its own, read only while selected, so they lack it, and a seek in them would show it from the read position on
+    /// (see `SubtitleController.rereadForRendition`). Unlike `streamSelectionChanged` the read-ahead thread does not
+    /// take it back: only a seek that reads the input again (and clears the queues) does. An audio track needs none:
+    /// the audio queue is emptied at its selection, and a seek the audio left does not cover is a slow one.
+    var selectionOutdatesCache = false
     /// The read-ahead thread stopped at the end of the input or an error, until a seek.
     var readAheadEnded = false
+    /// Whether the read-ahead thread stopped specifically because it reached EOF (not an error).
+    var readAheadHitEOF = false
+    /// Timeline second the packets read so far reach (the end of the furthest packet of either stream). Behind `queueLock`.
+    var cachedFrontierSeconds: Double {
+        var seconds = 0.0
+        if videoQueue.maxPacketEndPTS != Int64.min, timebase.den > 0 {
+            seconds = Double(videoQueue.maxPacketEndPTS) * Double(timebase.num) / Double(timebase.den)
+        }
+        if audioQueue.maxPacketEndPTS != Int64.min, audioTimebase.den > 0 {
+            seconds = max(
+                seconds, Double(audioQueue.maxPacketEndPTS) * Double(audioTimebase.num) / Double(audioTimebase.den))
+        }
+        return seconds
+    }
     /// Timeline second of the packets last taken from the queues: the read-ahead target is measured from it.
     var consumedSeconds = 0.0
     var readAheadLimits = ReadAheadLimits()
@@ -921,8 +943,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// The first queued audio packet that ends at or after `targetAudioPts`. Behind `queueLock`.
     private func popQueuedAudio() -> DemuxedAudioPacket? {
         while let p = audioQueue.popFirst() {
+            pruneAudioQueueIfNeeded()
             if targetAudioPts >= 0 {
-                let packetEndPts = Self.packetEnd(pts: p.pts, duration: p.duration)
+                let packetEndPts = p.packetEnd
                 if packetEndPts < targetAudioPts {
                     continue
                 }

@@ -118,6 +118,19 @@ Accepted for now, noted for later.
   50 s, audio to 60 s), a seek to 54 s lands on the last frame's 49.96 s: the position is the picture's, while audio
   starts at 54 s, so playback resumes with ~4 s of silence, and the next arrow press steps from 49.96 s again, never
   into the audio-only part. The position after such a seek should be its target.
+- **The packet cache serves files and single-variant streams only.** Seeks back (and forward into what was read) skip
+  the input only for those (`seekWithinCache`). Multi-variant HLS/DASH, the main network case, and live streams read
+  the input again: they keep no history (`maxBackBytes = 0`). mpv caches both (it picks one HLS variant at open, and
+  checks `seekable` only on a cache miss), and keeps several cached ranges where we keep one. For ladders a seek in the
+  cache would have to account for the variant at the landing (`reportVariant`, the packet's `format`, the decoder) and
+  an unfinished `variantSwitch`, as adaptive bitrate switches in the stream and a history can hold several variants;
+  for live, to agree with `LiveStream.clamp` and `trackLiveWindow` (a seek back would no longer depend on the playlist's
+  window). Each needs tests and measurements of its own.
+- **How long a read-ahead takes to end after its server goes away is not known.** A test stopped the server mid-file
+  and waited for `readAheadEnded` for 10 s; it did not come (the test was dropped, as a read error cannot be made to
+  happen the same way every time). FFmpeg's reconnects or the input's read timeout (`rw_timeout`) may be waiting; not
+  checked. Until it is, the time the picture stands after a dropped connection, and when `readAheadEnded` (so the
+  cache's refusal of a seek short of the duration) takes effect, are guesses.
 
 ## Revisit only if
 

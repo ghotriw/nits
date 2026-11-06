@@ -12,7 +12,26 @@ extension MediaDemuxer {
     ///   last one). That one goes to `seconds` exactly, from the keyframe before, rather than back to that keyframe,
     ///   seconds before the target near the end.
     @discardableResult
-    public func seek(to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0) -> Bool {
+    public func seek(
+        to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
+    ) -> Bool {
+        seekReportingCache(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay).isExact
+    }
+
+    /// `seek`, also telling whether the packet cache served it (no input was read or moved).
+    @discardableResult
+    func seekReportingCache(
+        to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
+    ) -> (isExact: Bool, fromCache: Bool) {
+        if seekWithinCache(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay) {
+            return (exact, true)
+        }
+        return (performSlowSeek(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay), false)
+    }
+
+    private func performSlowSeek(
+        to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
+    ) -> Bool {
         lockIO(yielding: isLive)
         defer { lock.unlock() }
         queueLock.lock()
@@ -31,7 +50,9 @@ extension MediaDemuxer {
         inputEndedOnDemand = false
         // The read-ahead thread reads on from where this seek leaves the input; one started held for a start position
         // (`startReadAhead(held:)`) too, as a seek issued before it was positioned there takes its place.
+        selectionOutdatesCache = false
         readAheadEnded = false
+        readAheadHitEOF = false
         readAheadControl.withLock { $0.isHeld = false }
         consumedSeconds = seconds
         defer { readAheadWake.signal() }
@@ -89,6 +110,111 @@ extension MediaDemuxer {
             "av_seek_frame to targetPts: \(target) (exact: \(isExact), forward: \(useForward)), targetAudioPts: \(self.targetAudioPts) (seconds: \(seconds)), stream: \(streamIdx), ret: \(ret)"
         )
         return isExact
+    }
+
+    /// Attempts an instant in-cache seek using packets currently held in RAM without network I/O.
+    ///
+    /// Acquires `queueLock` internally. Must not be called while holding `queueLock`. Returns `true`
+    /// if the target was satisfied from cache; returns `false` on cache miss, live stream, track change, etc.,
+    /// leaving the demuxer state intact so that `seek(to:)` can be called as fallback.
+    @discardableResult
+    func seekWithinCache(
+        to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
+    ) -> Bool {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+
+        // 1. Check prerequisites
+        guard readsAhead, !isLive, !selectionOutdatesCache else {
+            return false
+        }
+        guard variants.count <= 1 else { return false }
+        guard formatCtx != nil else { return false }
+        guard timebase.num > 0, timebase.den > 0 else { return false }
+        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return false }
+
+        // An ended read-ahead keeps its end through the seek, so it must be the media's: a dropped connection also
+        // reads as EOF, and the playback would end where it dropped. Trusted only when the cache reaches the end of a
+        // duration the container told.
+        if readAheadEnded {
+            guard readAheadHitEOF, durationSeconds > 0, cachedFrontierSeconds >= durationSeconds - 1.0 else {
+                return false
+            }
+        }
+
+        // Decoders of these keep state across packets (a seek back would show what they remember of the wrong place).
+        let hasStatefulSubtitleSelected = [selectedSubtitleTrackId, selectedSecondarySubtitleTrackId].contains { id in
+            guard let id, let track = subtitleTracks.first(where: { $0.id == id }) else { return false }
+            return track.format == .bitmap || track.closedCaptionField != nil
+        }
+        if hasStatefulSubtitleSelected {
+            return false
+        }
+
+        // 2. Video keyframe search
+        let targetVideoPTS = Int64(seconds * Double(timebase.den) / Double(timebase.num))
+        var videoTargetIndex: Int? = nil
+        var landedVideoSeconds: Double? = nil
+        if hasVideo && videoStreamIndex >= 0 {
+            let startTolerance = Int64(0.25 * Double(timebase.den) / Double(timebase.num))
+            guard
+                let kfIndex = videoQueue.findKeyframeIndex(
+                    targetPTS: targetVideoPTS, forward: forward && !exact, startTolerancePTS: startTolerance)
+            else {
+                return false
+            }
+            videoTargetIndex = kfIndex
+            if let kfPkt = videoQueue.peekAt(kfIndex), timebase.den > 0 {
+                landedVideoSeconds = Double(kfPkt.effectivePTS) * Double(timebase.num) / Double(timebase.den)
+            }
+        }
+
+        // 3. Audio coverage check
+        var audioTargetIndex: Int? = nil
+        if audioStreamIndex >= 0, audioTimebase.den > 0, audioTimebase.num > 0 {
+            let baseSeconds = (!exact && landedVideoSeconds != nil) ? landedVideoSeconds! : seconds
+            let targetAudioSec = max(0, baseSeconds - audioDelay)
+            let targetAudioPTS = Int64(targetAudioSec * Double(audioTimebase.den) / Double(audioTimebase.num))
+            let primingTolerance = Int64(Double(audioTimebase.den) / 10.0)
+            guard
+                let aIndex = audioQueue.findAudioPacketIndex(
+                    targetPTS: targetAudioPTS, primingTolerancePTS: primingTolerance)
+            else {
+                return false
+            }
+            audioTargetIndex = aIndex
+            self.targetAudioPts = targetAudioPTS
+        } else {
+            self.targetAudioPts = -1
+        }
+
+        // 4. Reposition cursors
+        if let videoTargetIndex {
+            videoQueue.seekTo(elementIndex: videoTargetIndex)
+        }
+        if let audioTargetIndex {
+            audioQueue.seekTo(elementIndex: audioTargetIndex)
+        }
+
+        self.targetPts = (hasVideo && videoStreamIndex >= 0 && exact) ? targetVideoPTS : -1
+
+        // 5. Reset consumer state (matching demuxer.seek(to:))
+        lastAudioPts = -1
+        inputEndedOnDemand = false
+        readAheadControl.withLock { $0.isHeld = false }
+        consumedSeconds = landedVideoSeconds ?? seconds
+
+        // 6. Prune history and wake waiters/read-ahead if forward space opened
+        videoQueue.pruneGOPs()
+        pruneAudioQueueIfNeeded()
+        wakePacketWaiters()
+        readAheadWake.signal()
+
+        AppLog.info(
+            .demuxer,
+            "In-cache seek succeeded to seconds: \(seconds) (exact: \(exact), forward: \(forward))"
+        )
+        return true
     }
 
     /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are
@@ -331,6 +457,12 @@ extension MediaDemuxer {
             return
         }
         let thresholdPts = Int64(seconds * Double(audioTimebase.den) / Double(audioTimebase.num))
-        audioQueue.removeAll { $0.pts < thresholdPts }
+        if readsAhead {
+            while let pkt = audioQueue.peek(), pkt.effectivePTS < thresholdPts {
+                _ = audioQueue.popFirst()
+            }
+        } else {
+            audioQueue.removeAll { $0.pts < thresholdPts }
+        }
     }
 }

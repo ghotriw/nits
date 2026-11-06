@@ -287,6 +287,8 @@ extension PlayerEngine: SubtitleHost {
     }
 
     func rereadFromCurrentFrame() {
+        // The demuxer refuses its packet cache for this (`selectionOutdatesCache`): what it holds was read without the
+        // rendition, which this seek reads from the current frame.
         seek(to: rereadPosition, exact: true)
     }
 
