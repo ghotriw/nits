@@ -16,8 +16,7 @@ stream, so audio and video of a segment stay together. It is taken
    seconds against the last packet of its own stream (the packets of the segment before may still come out of the
    subdemuxer after the segment changed, the h264 parser holding the last pictures, so the jump tells which packet is
    the first). Left untaken once reading has gone past the next segment with no jump (a server that keeps its timestamps).
-A difference of less than half a target duration is not taken (a server that keeps its timestamps across the
-discontinuity), a packet that the offset would put outside the playlist's timeline keeps its own timestamps (a late packet
+A difference of less than half a target duration is not taken at the first packet after a seek (a server that keeps its timestamps across the discontinuity); for a jump found while reading, which shows a restart by itself, one under a second is not. A packet that the offset would put outside the playlist's timeline keeps its own timestamps (a late packet
 of the segment before), and where the playlist puts the segment is not known the offset stays as it is. A break that
 restarts the timestamps by less than 2 seconds is not seen: it is not worth seeing, the error is that small. A playlist
 without the tag is unchanged: the code does nothing until a segment follows one.
@@ -159,7 +158,7 @@ index 2ac9032..6ea6c3d 100644
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
                  /* catch up */
                  pls->seek_timestamp = c->cur_timestamp +
-@@ -2764,6 +2820,86 @@ static int metadata_has_changed(const AVDictionary *current,
+@@ -2764,6 +2820,88 @@ static int metadata_has_changed(const AVDictionary *current,
      return 0;
  }
  
@@ -182,8 +181,8 @@ index 2ac9032..6ea6c3d 100644
 + * of this demuxer finds the segment by the playlist's durations and then drops packets until their timestamps reach
 + * its start there, which the restarted ones never do, so the packets of such a segment are moved onto the playlist's
 + * timeline: by the difference of where the playlist puts the segment and the timestamp of its first packet, taken
-+ * (see dts_anchor) at the first packet after a seek or the first that jumps after the segment. A difference of less
-+ * than half a target duration (a server that keeps its timestamps) is not taken. */
++ * (see dts_anchor) at the first packet after a seek or the first that jumps after the segment. After a seek a difference
++ * under half a target duration (a server that keeps its timestamps) is not taken; while reading, one under a second. */
 +static void hls_move_to_timeline(HLSContext *c, struct playlist *pls, AVPacket *pkt)
 +{
 +    AVRational tb;
@@ -192,16 +191,18 @@ index 2ac9032..6ea6c3d 100644
 +
 +    if (!pls->has_discont)
 +        return;
-+    /* A packet with no DTS is moved too, by its PTS. */
-+    ref = pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
++    /* Placed by its PTS, as first_timestamp is (a DTS would put the pictures a reordering delay late). */
++    ref = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
 +    if (ref == AV_NOPTS_VALUE)
 +        return;
 +    tb = pls->ctx->streams[pkt->stream_index]->time_base;
 +    ts = av_rescale_q(ref, tb, AV_TIME_BASE_Q);
 +    threshold = FFMAX(AV_TIME_BASE, pls->target_duration / 2);
-+    /* The jump is that of a stream against its own last packet: the packets of the segment before may still come out
-+     * of the subdemuxer, and those of another stream are not on the same timestamps. */
-+    last = pkt->stream_index < HLS_TRACKED_STREAMS ? &pls->last_raw_ts[pkt->stream_index] : NULL;
++    /* The jump is that of an audio or video stream against its own last packet (data such as timed ID3 comes seconds
++     * apart, and is no sign of a restart); the packets of the segment before may still come out of the subdemuxer. */
++    last = pkt->stream_index < HLS_TRACKED_STREAMS &&
++           (unsigned)pls->ctx->streams[pkt->stream_index]->codecpar->codec_type <= AVMEDIA_TYPE_AUDIO ?
++           &pls->last_raw_ts[pkt->stream_index] : NULL;
 +
 +    if (pls->dts_anchor &&
 +        (pls->dts_anchor == 2 ||
@@ -213,7 +214,7 @@ index 2ac9032..6ea6c3d 100644
 +        if (expected != AV_NOPTS_VALUE) {
 +            int64_t diff = expected - ts;
 +
-+            pls->dts_offset = FFABS(diff) > threshold ? diff : 0;
++            pls->dts_offset = FFABS(diff) >= (pls->dts_anchor == 2 ? threshold : AV_TIME_BASE) ? diff : 0;
 +            av_log(c->ctx, AV_LOG_DEBUG, "Playlist %d: segment %"PRId64" expected at %"PRId64", packet at %"PRId64
 +                   ": offset %"PRId64"\n", pls->index, pls->dts_anchor_seq, expected, ts, pls->dts_offset);
 +        }
@@ -246,7 +247,7 @@ index 2ac9032..6ea6c3d 100644
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
-@@ -2797,6 +2933,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2797,6 +2935,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                      fill_timing_for_id3_timestamped_stream(pls);
                  }
  

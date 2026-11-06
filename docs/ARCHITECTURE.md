@@ -593,7 +593,7 @@ does). The bundled HLS demuxer is patched (`scripts/patches/ffmpeg-hls-timeline.
 where the playlist's durations put the segment, minus the timestamp of its first packet, one offset per playlist so audio
 and video stay together, taken at the first packet after a seek or a variant switch, and at the first packet that jumps
 (by 2 s against its own stream's last) after a segment that follows a discontinuity. A server that keeps its timestamps
-is not touched (a difference under half a target duration is not taken), nor is a playlist without the tag. So the
+is not touched (after a seek a difference under half a target duration is not taken; while reading, a jump of 2 s or more is taken from a second of difference), nor is a playlist without the tag. So the
 demuxer's timeline is the playlist's: the engine, the read-ahead's measure (`readAheadState` against `consumedSeconds`)
 and the packet cache see one, and the cache's `searchFloor` (a timestamp going back) is a safety for what the patch does
 not cover (a file of segments cut and joined, an MPEG-TS with a reset). Tests of the patch read the build's version string
@@ -606,6 +606,17 @@ description, and `onVideoSizeChanged` tells the player the size, which it applie
 variant's change (`videoSizeWillPlay`). The first keyframe after a slow seek tells its size whether or not the sets
 changed, as the player may show the size of another stretch (content, an advertisement, content again) that the
 reading, ahead, has left.
+
+In fragmented MP4 the parameter sets are not in band but in the init section, and a playlist may renew `EXT-X-MAP` at the
+break. FFmpeg's mov sub-demuxer skips every `moov` after the first, so the streams keep the first section's `avcC` /
+`hvcC`. A third patch (`scripts/patches/ffmpeg-hls-update-init-extradata.patch`) parses the init section of a playlist
+that has more than one with a mov demuxer of its own and passes a stream's extradata, where it differs from what the
+packets before were given, on its next key frame as `AV_PKT_DATA_NEW_EXTRADATA`; after a seek it passes the landing's
+whatever it is (the player may hold the description of another stretch). `refreshVideoFormat` takes the sets from that
+side data like it takes in-band ones, and everything after is the same path. An audio rendition with a playlist of its
+own has its breaks and its offset of its own (`dts_offset` is per playlist); picture and sound meet because the
+`EXTINF`s of both playlists put the segments at the same places (`HLSDiscontinuityFMP4Tests` checks the first packets of
+the second stretch to keep the first's lead of picture over sound within 20 ms on the synthetic stream, and no gap in either).
 
 Not covered: the advertisement of some streams (Mux's Deltatre DAI) is MPEG-TS with a PMT of its own, whose packets
 FFmpeg's HLS demuxer drops as corrupt; subtitles, whose playlists are not moved. See `docs/OPEN_ISSUES.md`.

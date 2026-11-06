@@ -197,17 +197,35 @@ extension MediaDemuxer {
         return DemuxedVideoPacket(pkt, format: videoFormat)
     }
 
-    private func refreshVideoFormat(from pkt: AVPacket) {
-        guard codec.requiresParameterSets, isAnnexBStream, pkt.flags & AV_PKT_FLAG_KEY != 0,
-            let bytes = pkt.data, pkt.size > 0
-        else { return }
-        // The sets come before the slices: the start of the packet holds them.
-        let head = Data(bytes: bytes, count: min(Int(pkt.size), 4096))
-        guard let parsed = VideoFormatDescriptionBuilder.parameterSets(fromExtradata: head, codec: codec),
-            parsed.isAnnexB, let sps = parsed.sets.sps, let pps = parsed.sets.pps,
+    /// The `avcC` / `hvcC` a key frame brings as new extradata: an HLS stream of fragmented MP4 whose `EXT-X-MAP` changed
+    /// at a discontinuity (`ffmpeg-hls-update-init-extradata.patch`), whose parameter sets are not in band.
+    private func newExtradataSets(of pkt: AVPacket) -> VideoFormatDescriptionBuilder.ParameterSets? {
+        var packet = pkt
+        var size = 0
+        guard let side = av_packet_get_side_data(&packet, AV_PKT_DATA_NEW_EXTRADATA, &size), size > 0,
+            let parsed = VideoFormatDescriptionBuilder.parameterSets(
+                fromExtradata: Data(bytes: side, count: size), codec: codec),
+            let sps = parsed.sets.sps, let pps = parsed.sets.pps, !sps.isEmpty, !pps.isEmpty,
             codec != .hevc || parsed.sets.vps != nil
-        else { return }
-        let sets = parsed.sets
+        else { return nil }
+        return parsed.sets
+    }
+
+    private func refreshVideoFormat(from pkt: AVPacket) {
+        guard codec.requiresParameterSets, pkt.flags & AV_PKT_FLAG_KEY != 0 else { return }
+        let sets: VideoFormatDescriptionBuilder.ParameterSets
+        if let fromSideData = newExtradataSets(of: pkt) {
+            sets = fromSideData
+        } else {
+            guard isAnnexBStream, let bytes = pkt.data, pkt.size > 0 else { return }
+            // The sets come before the slices: the start of the packet holds them.
+            let head = Data(bytes: bytes, count: min(Int(pkt.size), 4096))
+            guard let parsed = VideoFormatDescriptionBuilder.parameterSets(fromExtradata: head, codec: codec),
+                parsed.isAnnexB, parsed.sets.sps != nil, parsed.sets.pps != nil,
+                codec != .hevc || parsed.sets.vps != nil
+            else { return }
+            sets = parsed.sets
+        }
         let seen = lastSeenParameterSets
         lastSeenParameterSets = sets
         // The first keyframe after a slow seek tells the size it lands at, whatever came before it: the player may be

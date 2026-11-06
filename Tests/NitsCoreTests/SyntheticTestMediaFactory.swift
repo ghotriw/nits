@@ -145,6 +145,12 @@ public enum SyntheticTestMediaFactory {
         /// `hlsDiscontinuity` with the second segment of 1 reference frame against the first's 3, in the same size: its SPS
         /// differs, as an encoder that varies its parameters does. `filename` is the media playlist
         case hlsDiscontinuityTiming
+        /// Two 4 s fragmented-MP4 segments (320x180, then 640x360) with an init section each: `EXT-X-MAP` renewed after the
+        /// `EXT-X-DISCONTINUITY`, the timestamps of each starting again, picture and sound muxed. `filename` is the playlist
+        case hlsDiscontinuityFMP4
+        /// `hlsDiscontinuityFMP4` with the sound in an audio rendition (`EXT-X-MEDIA`) of its own: a playlist, init sections
+        /// and breaks of its own, the picture alone in the variant. `filename` is the master playlist
+        case hlsDiscontinuityFMP4AudioRendition
         /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
         case hlsVariantsFMP4
         /// `hlsVariants` in AV1 (SVT-AV1) and fragmented MP4: the configuration in each variant's `av1C`
@@ -177,7 +183,7 @@ public enum SyntheticTestMediaFactory {
             [
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
-                .hlsDiscontinuityTiming,
+                .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
             ]
             .contains(self)
         }
@@ -306,6 +312,10 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_discontinuity_resize/media.m3u8"
             case .hlsDiscontinuityTiming:
                 return "synth_hls_discontinuity_timing/media.m3u8"
+            case .hlsDiscontinuityFMP4:
+                return "synth_hls_discontinuity_fmp4/media.m3u8"
+            case .hlsDiscontinuityFMP4AudioRendition:
+                return "synth_hls_discontinuity_fmp4_audio/master.m3u8"
             case .dashSegments:
                 return "synth_dash_segments/video/0"
             case .dashLadder:
@@ -482,6 +492,8 @@ public enum SyntheticTestMediaFactory {
             }
             if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
+            } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition {
+                guard makeHLSDiscontinuityFMP4(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuity || preset == .hlsDiscontinuityResize
                 || preset == .hlsDiscontinuityTiming
             {
@@ -608,6 +620,62 @@ public enum SyntheticTestMediaFactory {
             v0.m3u8
             #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"
             v1.m3u8
+
+            """
+        return FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+    }
+
+    /// Two 4 s fragmented-MP4 stretches, each made on its own (so it has an init section of its own and timestamps from
+    /// zero) and joined by an `EXT-X-DISCONTINUITY` and a new `EXT-X-MAP`: 320x180, then 640x360. With
+    /// `.hlsDiscontinuityFMP4AudioRendition` the sound goes to a rendition of its own, whose playlist has its breaks and
+    /// init sections.
+    private static func makeHLSDiscontinuityFMP4(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let separate = preset == .hlsDiscontinuityFMP4AudioRendition
+        let sizes = ["320x180", "640x360"]
+        var playlists: [String: String] = [:]  // kind -> body
+        for (index, size) in sizes.enumerated() {
+            let source = "testsrc2=size=\(size):rate=30:duration=4"
+            let sound = "sine=frequency=\(440 * (index + 1)):sample_rate=48000:duration=4"
+            let x264 = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0"]
+            // (kind, mapped streams, codec arguments)
+            let parts: [(String, [String], [String])] =
+                separate
+                ? [("v", ["-map", "0:v"], x264), ("a", ["-map", "1:a"], ["-c:a", "aac", "-b:a", "64k"])]
+                : [("m", ["-map", "0:v", "-map", "1:a"], x264 + ["-c:a", "aac", "-b:a", "64k"])]
+            for (kind, maps, codecs) in parts {
+                let arguments =
+                    [
+                        "-y", "-f", "lavfi", "-i", source, "-f", "lavfi", "-i", sound,
+                    ] + maps + codecs + [
+                        "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
+                        "-hls_fmp4_init_filename", "\(kind)init\(index).mp4",
+                        "-hls_segment_filename", directory.appendingPathComponent("\(kind)seg\(index)_%d.m4s").path,
+                        directory.appendingPathComponent(".\(kind)\(index).m3u8").path,
+                    ]
+                guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+                var body = playlists[kind] ?? ""
+                if index > 0 { body += "#EXT-X-DISCONTINUITY\n" }
+                body += "#EXT-X-MAP:URI=\"\(kind)init\(index).mp4\"\n#EXTINF:4.0,\n\(kind)seg\(index)_0.m4s\n"
+                playlists[kind] = body
+            }
+        }
+        let header = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        for (kind, body) in playlists {
+            let name = separate ? "\(kind).m3u8" : "media.m3u8"
+            guard
+                FileManager.default.createFile(
+                    atPath: directory.appendingPathComponent(name).path,
+                    contents: Data((header + body + "#EXT-X-ENDLIST\n").utf8))
+            else { return false }
+        }
+        guard separate else { return true }
+        let master = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Sound",DEFAULT=YES,AUTOSELECT=YES,URI="a.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=320x180,CODECS="avc1.640015,mp4a.40.2",AUDIO="aud"
+            v.m3u8
 
             """
         return FileManager.default.createFile(
@@ -878,7 +946,7 @@ public enum SyntheticTestMediaFactory {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
-            .hlsDiscontinuityTiming,
+            .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
             .dashSegments, .dashLadder,
             .dashLadderCaptions:
             return []  // Made by `generateMedia`.

@@ -1,0 +1,201 @@
+FFmpeg 9.0.2's HLS demuxer hands the segments of fragmented MP4 to its mov sub-demuxer behind the init section
+(EXT-X-MAP) of the playlist's first segment, and the mov demuxer skips every moov after the first ("Found duplicated
+MOOV Atom"). A playlist that renews EXT-X-MAP after an EXT-X-DISCONTINUITY (an advertisement or a splice in another
+encoding: another size, other parameter sets) so plays its later segments with the first section's avcC / hvcC: the
+streams never change, and the pictures cannot be decoded.
+
+When a playlist has more than one init section, the init section taken is parsed by a mov demuxer of its own (over a
+copy of its bytes), and the extradata of each of its streams, if it differs from what the packets before it were given
+(at the start: the stream's own), goes out as AV_PKT_DATA_NEW_EXTRADATA on the next key frame of that stream: the
+mechanism FFmpeg's decoders and other demuxers use for a change of extradata in the stream. A seek reads its init
+section again and passes the extradata on whatever it is, as the user of the demuxer may hold the description of
+another stretch. Streams are matched by position, codec type and codec id. A playlist with one init section is unchanged.
+
+Restricted to libavformat/hls.c. Applied by scripts/build_dependencies.sh to FFmpeg 9.0.2 after ffmpeg-hls-timeline.patch
+(its name sorts after that one).
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -177,6 +177,17 @@
+     int64_t dts_anchor_seq;
+     int64_t dts_offset;
+     int64_t last_raw_ts[HLS_TRACKED_STREAMS]; /* of the last packet of each stream of the subdemuxer, before dts_offset */
++    /* The sub-demuxer (mov) skips the moov of an init section after the first, so a new EXT-X-MAP (another size, other
++     * parameter sets) never reaches the streams. The extradata of each stream of the init section taken last is
++     * kept here: cur_extradata is what the packets read so far were given (or the stream's own at the start), and
++     * new_extradata goes out as AV_PKT_DATA_NEW_EXTRADATA with the next key frame of the stream. extradata_forced: the
++     * next init section's is passed on whatever it is (after a seek, which leaves the user of the demuxer with the
++     * description of another stretch). */
++    uint8_t *cur_extradata[HLS_TRACKED_STREAMS];
++    int cur_extradata_size[HLS_TRACKED_STREAMS];
++    uint8_t *new_extradata[HLS_TRACKED_STREAMS];
++    int new_extradata_size[HLS_TRACKED_STREAMS];
++    int extradata_started, extradata_forced;
+     int64_t seek_timestamp;
+     int seek_flags;
+     int seek_stream_index; /* into subdemuxer stream array */
+@@ -297,6 +308,8 @@
+     pls->n_init_sections = 0;
+ }
+ 
++static void free_extradata_slots(struct playlist *pls);
++
+ static void free_playlist_list(HLSContext *c)
+ {
+     int i;
+@@ -311,6 +324,7 @@
+         av_dict_free(&pls->timed_id3_metadata);
+         ff_id3v2_free_extra_meta(&pls->id3_deferred_extra);
+         av_freep(&pls->init_sec_buf);
++        free_extradata_slots(pls);
+         av_packet_free(&pls->pkt);
+         av_freep(&pls->pb.pub.buffer);
+         ff_format_io_close(c->ctx, &pls->input);
+@@ -1638,8 +1652,118 @@
+     av_dict_free(&opts);
+     pls->cur_seg_offset = 0;
+     return ret;
++}
++
++static void free_extradata_slots(struct playlist *pls)
++{
++    for (int i = 0; i < HLS_TRACKED_STREAMS; i++) {
++        av_freep(&pls->cur_extradata[i]);
++        av_freep(&pls->new_extradata[i]);
++        pls->cur_extradata_size[i] = pls->new_extradata_size[i] = 0;
++    }
++    pls->extradata_started = 0;
+ }
+ 
++static int same_extradata(const uint8_t *a, int a_size, const uint8_t *b, int b_size)
++{
++    return a_size == b_size && (!a_size || !memcmp(a, b, a_size));
++}
++
++static int store_extradata(uint8_t **dst, int *dst_size, const uint8_t *src, int size)
++{
++    uint8_t *copy = NULL;
++
++    if (size > 0) {
++        copy = av_memdup(src, size);
++        if (!copy)
++            return AVERROR(ENOMEM);
++    }
++    av_free(*dst);
++    *dst = copy;
++    *dst_size = size > 0 ? size : 0;
++    return 0;
++}
++
++/* The extradata of the streams in the init section just read (a moov) goes to the next key frame of each stream that
++ * it differs for, as AV_PKT_DATA_NEW_EXTRADATA: the mov sub-demuxer takes the first moov only. The init section is
++ * parsed by a mov demuxer of its own, over a copy of its bytes. Only for playlists with more than one init section
++ * (EXT-X-MAP renewed), and streams the init section has in the same order and kind as the sub-demuxer's. */
++static void hls_take_init_extradata(struct playlist *pls)
++{
++    AVFormatContext *probe = NULL;
++    AVIOContext *io = NULL;
++    uint8_t *copy = NULL;
++    const AVInputFormat *mov = av_find_input_format("mov");
++    const AVFormatContext *ctx = pls->ctx;
++
++    if (pls->n_init_sections < 2 || !mov || !ctx || !ctx->nb_streams || !pls->init_sec_data_len ||
++        !ctx->iformat || !strstr(ctx->iformat->name, "mov"))
++        return;
++
++    copy = av_memdup(pls->init_sec_buf, pls->init_sec_data_len);
++    if (!copy)
++        return;
++    io = avio_alloc_context(copy, pls->init_sec_data_len, 0, NULL, NULL, NULL, NULL);
++    if (!io) {
++        av_free(copy);
++        return;
++    }
++    probe = avformat_alloc_context();
++    if (!probe)
++        goto end;
++    probe->pb = io;
++    probe->flags |= AVFMT_FLAG_CUSTOM_IO;
++    if (avformat_open_input(&probe, "", mov, NULL) < 0) {
++        probe = NULL;
++        goto end;
++    }
++
++    if (!pls->extradata_started) {
++        /* The streams as the first init section made them. */
++        for (unsigned i = 0; i < ctx->nb_streams && i < HLS_TRACKED_STREAMS; i++) {
++            const AVCodecParameters *par = ctx->streams[i]->codecpar;
++            store_extradata(&pls->cur_extradata[i], &pls->cur_extradata_size[i], par->extradata, par->extradata_size);
++        }
++        pls->extradata_started = 1;
++    }
++    for (unsigned i = 0; i < probe->nb_streams && i < ctx->nb_streams && i < HLS_TRACKED_STREAMS; i++) {
++        const AVCodecParameters *par = probe->streams[i]->codecpar;
++        const AVCodecParameters *own = ctx->streams[i]->codecpar;
++
++        if (par->codec_type != own->codec_type || par->codec_id != own->codec_id || par->extradata_size <= 0)
++            continue;
++        if (!pls->extradata_forced &&
++            same_extradata(par->extradata, par->extradata_size, pls->cur_extradata[i], pls->cur_extradata_size[i]))
++            continue;
++        if (store_extradata(&pls->new_extradata[i], &pls->new_extradata_size[i], par->extradata, par->extradata_size) < 0)
++            continue;
++        store_extradata(&pls->cur_extradata[i], &pls->cur_extradata_size[i], par->extradata, par->extradata_size);
++    }
++    pls->extradata_forced = 0;
++
++end:
++    if (probe)
++        avformat_close_input(&probe);
++    av_freep(&io->buffer);
++    avio_context_free(&io);
++}
++
++/* The next key frame of a stream whose extradata changed with the init section carries the new one. */
++static void hls_attach_new_extradata(struct playlist *pls, AVPacket *pkt)
++{
++    int i = pkt->stream_index;
++    uint8_t *side;
++
++    if (i < 0 || i >= HLS_TRACKED_STREAMS || !pls->new_extradata[i] || !(pkt->flags & AV_PKT_FLAG_KEY))
++        return;
++    side = av_packet_new_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, pls->new_extradata_size[i]);
++    if (!side)
++        return;
++    memcpy(side, pls->new_extradata[i], pls->new_extradata_size[i]);
++    av_freep(&pls->new_extradata[i]);
++    pls->new_extradata_size[i] = 0;
++}
++
+ static int update_init_section(struct playlist *pls, struct segment *seg)
+ {
+     static const int max_init_section_size = 1024*1024;
+@@ -1689,6 +1813,7 @@
+     pls->cur_init_section = seg->init_section;
+     pls->init_sec_data_len = ret;
+     pls->init_sec_buf_read_offset = 0;
++    hls_take_init_extradata(pls);
+ 
+     /* spec says audio elementary streams do not have media initialization
+      * sections, so there should be no ID3 timestamps */
+@@ -3093,6 +3218,7 @@
+             }
+         }
+ 
++        hls_attach_new_extradata(pls, pls->pkt);
+         av_packet_move_ref(pkt, pls->pkt);
+         pkt->stream_index = st->index;
+ 
+@@ -3267,6 +3393,11 @@
+ 
+         pls->last_seq_no = pls->cur_seq_no;
+ 
++        /* The init section read again for the landing passes its extradata on, whichever it is. */
++        for (int k = 0; k < HLS_TRACKED_STREAMS; k++)
++            av_freep(&pls->new_extradata[k]);
++        pls->extradata_forced = 1;
++
+         /* The first packet read from here sets the offset of the timeline its segment is on. */
+         pls->dts_offset = 0;
+         reset_last_raw_ts(pls);
