@@ -52,6 +52,7 @@ extension MediaDemuxer {
         // (`startReadAhead(held:)`) too, as a seek issued before it was positioned there takes its place.
         selectionOutdatesCache = false
         readAheadEnded = false
+        reportsVideoSizeAtNextKeyframe = true
         readAheadHitEOF = false
         readAheadControl.withLock { $0.isHeld = false }
         consumedSeconds = seconds
@@ -327,7 +328,7 @@ extension MediaDemuxer {
                 audioQueue.append(DemuxedAudioPacket(pkt))
             } else if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
-                keyframe = DemuxedVideoPacket(pkt, format: videoFormat)
+                keyframe = videoPacket(from: pkt)
             }
         }
         guard let keyframe else { return }
@@ -422,7 +423,7 @@ extension MediaDemuxer {
                     break
                 }
                 subtitleTracker.processVideoPacket(&pkt)
-                videoQueue.append(DemuxedVideoPacket(pkt, format: videoFormat))
+                videoQueue.append(videoPacket(from: pkt))
                 landed = true
                 break
             }

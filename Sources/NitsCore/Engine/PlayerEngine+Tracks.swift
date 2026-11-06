@@ -165,12 +165,41 @@ extension PlayerEngine {
         applyDueVariantChanges(at: (chase?.seconds ?? currentTime) + 0.1)
     }
 
-    /// Applies the variant changes due by timeline second `seconds`.
+    /// Applies the variant and size changes due by timeline second `seconds`.
     func applyDueVariantChanges(at seconds: Double) {
         while let first = pendingVariantChanges.first, first.seconds <= seconds {
             pendingVariantChanges.removeFirst()
             variantDidChange(to: first)
         }
+        while let first = pendingVideoSizeChanges.first, first.seconds <= seconds {
+            pendingVideoSizeChanges.removeFirst()
+            videoSizeDidChange(to: first)
+        }
+    }
+
+    /// The demuxer reads pictures of another size (the parameter sets changed) from `change.seconds` on: as for a
+    /// variant, read ahead the change waits for playback to get there.
+    func videoSizeWillPlay(_ change: MediaDemuxer.VideoSizeChange) {
+        guard demuxer?.readsAhead == true else {
+            videoSizeDidChange(to: change)
+            return
+        }
+        pendingVideoSizeChanges.removeAll { $0.seconds >= change.seconds }
+        pendingVideoSizeChanges.append(change)
+        applyDueVariantChanges(at: (chase?.seconds ?? currentTime) + 0.1)
+    }
+
+    /// The picture's size and pixel aspect, in one write so observers never see one size's width with another's height.
+    func videoSizeDidChange(to change: MediaDemuxer.VideoSizeChange) {
+        var video = media.video
+        if change.width > 0, change.height > 0 {
+            video.width = change.width
+            video.height = change.height
+        }
+        video.sampleAspectRatio = change.sampleAspectRatio
+        // A seek reports the size it lands at, changed or not: observers are woken for a change only.
+        guard video != media.video else { return }
+        media.video = video
     }
 
     /// A variant's pictures play now: its size, pixel aspect and frame rate (a ladder can mix 30 and 60 fps, and the

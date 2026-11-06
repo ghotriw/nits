@@ -599,9 +599,16 @@ and the packet cache see one, and the cache's `searchFloor` (a timestamp going b
 not cover (a file of segments cut and joined, an MPEG-TS with a reset). Tests of the patch read the build's version string
 (`--extra-version=nits-hls-timeline`) and are skipped on another FFmpeg, which has none of it.
 
+The picture's size can change at a break too (an advertisement in another encoding): the parameter sets in the stream
+change, and the demuxer starts a new format description where a keyframe carries others (`videoPacket(from:)`, for
+H.264 and HEVC with the sets in band); the packets after it carry it, VideoToolbox follows with a session per
+description, and `onVideoSizeChanged` tells the player the size, which it applies when playback gets there like a
+variant's change (`videoSizeWillPlay`). The first keyframe after a slow seek tells its size whether or not the sets
+changed, as the player may show the size of another stretch (content, an advertisement, content again) that the
+reading, ahead, has left.
+
 Not covered: the advertisement of some streams (Mux's Deltatre DAI) is MPEG-TS with a PMT of its own, whose packets
-FFmpeg's HLS demuxer drops as corrupt; the picture's size changing at a break (the format description of the samples
-stays the first segment's); subtitles, whose playlists are not moved. See `docs/OPEN_ISSUES.md`.
+FFmpeg's HLS demuxer drops as corrupt; subtitles, whose playlists are not moved. See `docs/OPEN_ISSUES.md`.
 
 ### Live streams
 

@@ -290,6 +290,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Variants the demuxer reads ahead, by the timeline second their pictures play from (`variantWillPlay`).
     @ObservationIgnored
     var pendingVariantChanges: [MediaDemuxer.VariantChange] = []
+    /// Changes of the picture's size without a variant switch the demuxer read ahead, by their second (`videoSizeWillPlay`).
+    @ObservationIgnored
+    var pendingVideoSizeChanges: [MediaDemuxer.VideoSizeChange] = []
 
     /// Called when the audio or subtitle tracks, or the selected ones, change: once by each load (when it is applied)
     /// and by a `stop()` that clears tracks, then by a track switch or an added subtitle file. Read the current tracks

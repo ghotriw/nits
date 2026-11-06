@@ -7,6 +7,9 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var session: VTDecompressionSession?
     private var currentFormatDescription: CMFormatDescription?
+    /// How many sessions this decoder has made (for the tests: a format description with other parameter sets for the
+    /// same pictures does not make one).
+    private(set) var sessionsCreated = 0
     private var lastCreationStatus: OSStatus = noErr
     private var _lastDecodeStatus: OSStatus = noErr
     private var _lastCallbackStatus: OSStatus = noErr
@@ -71,6 +74,13 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
         }
 
         lock.lock()
+        if let current = session, currentFormatDescription != formatDesc,
+            VTDecompressionSessionCanAcceptFormatDescription(current, formatDescription: formatDesc)
+        {
+            // Other parameter sets for the same pictures (an encoder that varies its SPS' timing from GOP to GOP): the
+            // session goes on, as VideoToolbox says it can take them.
+            currentFormatDescription = formatDesc
+        }
         if let previous = session, currentFormatDescription != formatDesc {
             // Frames of the previous format (an HLS variant switch) come out before its session goes; the output
             // callback takes the lock.
@@ -148,6 +158,7 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     }
 
     private func createSession(formatDescription: CMFormatDescription) {
+        sessionsCreated += 1
         if let session {
             VTDecompressionSessionInvalidate(session)
             self.session = nil

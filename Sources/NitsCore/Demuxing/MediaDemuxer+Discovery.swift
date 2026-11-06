@@ -445,6 +445,9 @@ extension MediaDemuxer {
     func makeVideoFormatDescription(
         parameterSets: VideoFormatDescriptionBuilder.ParameterSets, codecParameters: UnsafePointer<AVCodecParameters>?
     ) -> CMVideoFormatDescription? {
+        // The description is of these sets: a keyframe in band with others starts a new one (`videoPacket(from:)`),
+        // the first one read after the open or a seek included.
+        lastSeenParameterSets = parameterSets
         let builder = VideoFormatDescriptionBuilder(
             codec: codec,
             width: width,

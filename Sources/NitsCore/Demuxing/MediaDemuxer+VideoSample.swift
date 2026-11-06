@@ -1,3 +1,4 @@
+import CFFmpeg
 import CoreMedia
 import Foundation
 import VideoToolbox
@@ -183,5 +184,84 @@ extension MediaDemuxer {
             return sb
         }
         return nil
+    }
+}
+
+extension MediaDemuxer {
+    /// A video packet as it queues: with the format description of the stream as the packet leaves it. A keyframe whose
+    /// parameter sets (in band, H.264 and HEVC in MPEG-TS and the like) differ from the keyframe before starts a new
+    /// description, which the packets after it carry and the decoder follows (`VTVideoDecoder` makes a session for
+    /// each); the packets queued before keep theirs.
+    func videoPacket(from pkt: AVPacket) -> DemuxedVideoPacket {
+        refreshVideoFormat(from: pkt)
+        return DemuxedVideoPacket(pkt, format: videoFormat)
+    }
+
+    private func refreshVideoFormat(from pkt: AVPacket) {
+        guard codec.requiresParameterSets, isAnnexBStream, pkt.flags & AV_PKT_FLAG_KEY != 0,
+            let bytes = pkt.data, pkt.size > 0
+        else { return }
+        // The sets come before the slices: the start of the packet holds them.
+        let head = Data(bytes: bytes, count: min(Int(pkt.size), 4096))
+        guard let parsed = VideoFormatDescriptionBuilder.parameterSets(fromExtradata: head, codec: codec),
+            parsed.isAnnexB, let sps = parsed.sets.sps, let pps = parsed.sets.pps,
+            codec != .hevc || parsed.sets.vps != nil
+        else { return }
+        let sets = parsed.sets
+        let seen = lastSeenParameterSets
+        lastSeenParameterSets = sets
+        // The first keyframe after a slow seek tells the size it lands at, whatever came before it: the player may be
+        // showing the size of another stretch (content, an advertisement, content again), which the reading, further on,
+        // has left.
+        let landing = reportsVideoSizeAtNextKeyframe
+        reportsVideoSizeAtNextKeyframe = false
+        var sizeChanged = false
+        // `seen` are the sets the description now is made of (`makeVideoFormatDescription`).
+        if let seen, Self.parameterSetsDiffer(seen, sets) {
+            var codecParameters: UnsafePointer<AVCodecParameters>?
+            if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+                codecParameters = UnsafePointer(stream.pointee.codecpar)
+            }
+            guard let description = makeVideoFormatDescription(parameterSets: sets, codecParameters: codecParameters)
+            else {
+                AppLog.warning(.demuxer, "Parameter sets changed in the stream, but no format description came of them")
+                return
+            }
+            formatDescription = description
+            let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+            // Other sets for the same pictures (an encoder varying its SPS' timing) change the description, not the
+            // size the player draws at: it is told when that changes.
+            sizeChanged = Int(dimensions.width) != width || Int(dimensions.height) != height
+            width = Int(dimensions.width)
+            height = Int(dimensions.height)
+        }
+        guard sizeChanged || landing else { return }
+        // From the description the pictures carry, as a variant's change takes it: `width` and `height` are what the open
+        // (or the stream's configuration) said, which FFmpeg may not have probed.
+        let size = formatDescription.map(CMVideoFormatDescriptionGetDimensions)
+        let reportedWidth = size.map { Int($0.width) } ?? width
+        let reportedHeight = size.map { Int($0.height) } ?? height
+        let time = pkt.pts != Int64.min ? pkt.pts : pkt.dts
+        let seconds = timebase.den > 0 ? Double(time) * Double(timebase.num) / Double(timebase.den) : 0
+        AppLog.info(.demuxer, "The pictures are \(reportedWidth)x\(reportedHeight) from \(seconds)s")
+        onVideoSizeChanged?(
+            VideoSizeChange(
+                seconds: seconds, width: reportedWidth, height: reportedHeight, sampleAspectRatio: sampleAspectRatio))
+    }
+}
+
+extension MediaDemuxer {
+    /// Whether two sets of parameter sets are different ones. The bytes may differ by zero bytes after a NAL unit (it is
+    /// followed by padding before the next start code, which one extraction keeps and another does not): that is no change.
+    static func parameterSetsDiffer(
+        _ first: VideoFormatDescriptionBuilder.ParameterSets, _ second: VideoFormatDescriptionBuilder.ParameterSets
+    ) -> Bool {
+        func trimmed(_ data: Data?) -> Data? {
+            guard var data else { return nil }
+            while data.last == 0 { data.removeLast() }
+            return data
+        }
+        return trimmed(first.sps) != trimmed(second.sps) || trimmed(first.pps) != trimmed(second.pps)
+            || trimmed(first.vps) != trimmed(second.vps)
     }
 }

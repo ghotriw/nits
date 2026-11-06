@@ -152,9 +152,28 @@ Accepted for now, noted for later.
   discont_test_new/discont_test.m3u8`) dropped 697 frames and stood at 8.0 s for a minute; a seek past the first break
   landed at the start of the file. After: the picture follows the clock to the end in both, a seek lands in the right
   segment. Left:
-  - Advertisements that are not on the first segment's streams are dropped (next entry); the size of the picture changes at
-    a break with the format description of the samples staying the first segment's (a 640x360 segment is delivered with
-    a 320x180 description; unchecked what the decoder makes of it).
+  - Advertisements that are not on the first segment's streams are dropped (next entry).
+  - A segment in another size is played now (the demuxer starts a new format description where the parameter sets in the
+    band change, `MediaDemuxer.videoPacket(from:)`; before, the picture stood at the last frame of the first size while
+    nothing came out of the decoder: on `hlsDiscontinuityResize` 4 s at 320x180 then 4 s at 640x360 it stood at 4.0 s).
+    Not covered: only H.264 and HEVC with the sets in band (MPEG-TS and the like; AV1 and VP9 have their sequence
+    headers in band too); the software decoder (FFmpeg follows an in-band change by itself; not run); a seek back
+    across a change in the packet cache (the size the player has is the later one while the earlier pictures play; a
+    slow seek reports the size at its landing, always: the first keyframe after it tells the size, so the player does
+    not keep the size of another stretch, an advertisement the reading has left).
+  - A keyframe seek (a held arrow key) that lands past its target across a change of size: the size comes with the
+    picture it lands on (its second), and is applied when the clock gets to `chase.seconds + 0.1`; while scrubbing the
+    clock stands, so the picture is of the new size and `media.video` is still the old one until the scrub ends.
+  - A change of the picture's size, and of its parameter sets only, is followed by the decoder; the rest of an
+    advertisement's properties is not, and the pictures play with the old ones:
+    the frame rate (`nominalFrameDuration` and the display link's rate stay: a variant's change updates them,
+    `variantDidChange`; a size change does not), the pixel aspect ratio (the event carries the stream's old one), the
+    colour (the description is made from the codec parameters of the open), another codec after the change (the sets are
+    parsed as the first codec's), fMP4/CMAF segments with a new `EXT-X-MAP` at the break (`isAnnexBStream` leaves them
+    out; FFmpeg's HLS demuxer does not pass the new init section's parameters on to the stream either; unchecked), and
+    HEVC with Dolby Vision. A format description with other parameter sets for the same pictures is taken by
+    VideoToolbox's session (`VTDecompressionSessionCanAcceptFormatDescription`): PlayOn's stream alternates its SPS
+    (timing in the VUI), and made a session each time before (3 in 40 s, 1 now).
   - Not looked at: audio and A/V sync across a break; a live stream with breaks (all runs were VOD; the position of a
     segment comes from `first_timestamp`, which the live-seek patch moves as the window slides: untested together);
     subtitles (their playlists are not moved).

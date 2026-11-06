@@ -125,6 +125,27 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Called on the reading thread when the pictures read come from another variant (at a switch's splice), after
     /// a seek and when a switch is given up. Set before reading starts.
     public var onVariantChanged: (@Sendable (VariantChange) -> Void)?
+
+    /// The size of the pictures changes without a variant switch: the parameter sets in the stream change (the segment
+    /// after an HLS discontinuity is in another encoding, an advertisement; a file of joined streams). The sample
+    /// buffers from `seconds` on carry the new format description (`videoPacket(from:)`), which VideoToolbox's session
+    /// follows; this tells the player the size the picture is drawn at.
+    public struct VideoSizeChange: Sendable {
+        /// Where the pictures of the new size start on the timeline.
+        public let seconds: Double
+        public let width: Int
+        public let height: Int
+        public let sampleAspectRatio: RationalAspectRatio
+    }
+
+    /// Called on the reading thread where the size of the pictures read changes (see `VideoSizeChange`). Set before
+    /// reading starts.
+    public var onVideoSizeChanged: (@Sendable (VideoSizeChange) -> Void)?
+    /// The parameter sets of the keyframe last read in a stream that carries them in band (Behind the lock the packet
+    /// is read under): a keyframe with others starts a new description.
+    var lastSeenParameterSets: VideoFormatDescriptionBuilder.ParameterSets?
+    /// A slow seek was made: the first keyframe read tells the size it lands at, even when it is the size reported before.
+    var reportsVideoSizeAtNextKeyframe = false
     /// Adaptive bitrate state (`MediaDemuxer+AdaptiveBitrate.swift`); set up by `startReadAhead` before the thread
     /// that uses it starts.
     var adaptiveBitrate = AdaptiveBitrateState()
@@ -863,7 +884,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
                 // Through the queue, behind what the read itself queued (the pictures a variant switch held back).
-                videoQueue.append(DemuxedVideoPacket(pkt, format: videoFormat))
+                videoQueue.append(videoPacket(from: pkt))
                 av_packet_unref(&pkt)
                 while let vp = videoQueue.popFirst() {
                     if let sample = createVideoSample(from: vp) { return sample }
@@ -933,8 +954,8 @@ public final class MediaDemuxer: @unchecked Sendable {
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
                 subtitleTracker.processVideoPacket(&pkt)
-                let videoPacket = DemuxedVideoPacket(pkt, format: videoFormat)
-                videoQueue.append(videoPacket)
+                let packet = videoPacket(from: pkt)
+                videoQueue.append(packet)
                 av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)

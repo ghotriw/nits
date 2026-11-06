@@ -1,7 +1,9 @@
 import CFFmpeg
 import CoreMedia
+import CoreVideo
 import Foundation
 import Testing
+import os
 
 @testable import NitsCore
 
@@ -110,5 +112,129 @@ struct HLSDiscontinuityTests {
         }
         #expect(engine.currentTime >= 7.5, "Playback reached \(engine.currentTime) s")
         #expect(worst < 0.8, "The picture trailed the clock by \(worst) s after the switch")
+    }
+
+    @Test(
+        "The pictures of a segment in another size after a discontinuity play, drawn at their size", .realtimePlayback)
+    @MainActor
+    func sizeChangesAtTheBreak() async throws {
+        guard let (_, server) = try Self.open(.hlsDiscontinuityResize) else { return }
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: server.url("media.m3u8"))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        #expect(engine.media.video.width == 320)
+        engine.seek(to: 2.5, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        engine.play()
+
+        // The second segment (from 4 s) is 640x360, its parameter sets other than the first's.
+        let deadline = ContinuousClock.now + .seconds(15)
+        var worst = 0.0
+        while engine.currentTime < 7.0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            if engine.currentTime > 4.8 { worst = max(worst, engine.currentTime - engine.currentFramePTS) }
+        }
+        #expect(engine.currentTime >= 7.0, "Playback reached \(engine.currentTime) s")
+        #expect(worst < 0.6, "The picture trailed the clock by \(worst) s after the change of size")
+        let buffer = try #require(engine.getLastRenderedBuffer())
+        #expect(CVPixelBufferGetWidth(buffer) == 640 && CVPixelBufferGetHeight(buffer) == 360)
+        #expect(engine.media.video.width == 640 && engine.media.video.height == 360, "\(engine.media.video.width)")
+    }
+
+    @Test("A start straight in the segment of another size plays at its size", .realtimePlayback)
+    @MainActor
+    func startInAnotherSize() async throws {
+        guard let (_, server) = try Self.open(.hlsDiscontinuityResize) else { return }
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        // The first keyframe the demuxer reads after the open is in the 640x360 segment (a resumed start): the
+        // description made at the open, from the first picture of the stream, is 320x180, not that of its sets.
+        engine.load(MediaLoadRequest(path: server.url("media.m3u8"), startTime: 6.0))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        engine.play()
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while engine.currentTime < 7.5, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(engine.currentTime >= 7.5, "Playback reached \(engine.currentTime) s")
+        #expect(engine.currentTime - engine.currentFramePTS < 0.6, "The picture stands at \(engine.currentFramePTS) s")
+        let buffer = try #require(engine.getLastRenderedBuffer())
+        #expect(CVPixelBufferGetWidth(buffer) == 640 && CVPixelBufferGetHeight(buffer) == 360)
+        #expect(engine.media.video.width == 640, "\(engine.media.video.width)")
+    }
+
+    @Test("The player is told of a new size only when the size changes")
+    func sizeEventsOnlyForASize() throws {
+        for (preset, expected) in [
+            (SyntheticTestMediaFactory.Preset.hlsDiscontinuityTiming, 0), (.hlsDiscontinuityResize, 2),
+        ] {
+            guard let (demuxer, server) = try Self.open(preset) else { return }
+            defer { server.stop() }
+            let events = OSAllocatedUnfairLock(initialState: [MediaDemuxer.VideoSizeChange]())
+            demuxer.onVideoSizeChanged = { change in events.withLock { $0.append(change) } }
+            let setsAtOpen = try #require(demuxer.lastSeenParameterSets)
+            let deadline = ContinuousClock.now + .seconds(20)
+            while ContinuousClock.now < deadline, demuxer.nextVideoSample() != nil {}
+            let setsAfter = try #require(demuxer.lastSeenParameterSets)
+            #expect(MediaDemuxer.parameterSetsDiffer(setsAtOpen, setsAfter), "\(preset): the sets were the same")
+            #expect(events.withLock { $0.count } == expected, "\(preset): \(events.withLock { $0 })")
+        }
+    }
+
+    @Test("Other parameter sets for the same pictures are no new session and no new size", .realtimePlayback)
+    @MainActor
+    func sameSizeOtherSets() async throws {
+        guard let (_, server) = try Self.open(.hlsDiscontinuityTiming) else { return }
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: server.url("media.m3u8"))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        let demuxer = try #require(engine.demuxer)
+        engine.seek(to: 2.5, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        engine.play()
+
+        // The second segment (from 4 s) has 1 reference frame against the first's 3: the same size, its SPS other (which
+        // `sizeEventsOnlyForASize` checks of the same preset).
+        let sizeBefore = (engine.media.video.width, engine.media.video.height)
+        let deadline = ContinuousClock.now + .seconds(15)
+        while engine.currentTime < 7.0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(engine.currentTime >= 7.0, "Playback reached \(engine.currentTime) s")
+        #expect(engine.currentTime - engine.currentFramePTS < 0.6, "The picture stands at \(engine.currentFramePTS) s")
+        #expect((engine.media.video.width, engine.media.video.height) == sizeBefore)
+        let decoder = try #require(engine.decoder as? VTVideoDecoder, "The hardware decoder is the one under test")
+        #expect(decoder.sessionsCreated == 1, "\(decoder.sessionsCreated) sessions")
+    }
+
+    @Test("A seek back to the first size, from an advertisement, shows the first size again", .realtimePlayback)
+    @MainActor
+    func sizeFollowsASeekBack() async throws {
+        guard let (_, server) = try Self.open(.hlsDiscontinuityResize) else { return }
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: server.url("media.m3u8"))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        engine.seek(to: 5.0, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        engine.play()
+
+        // In the advertisement (4 to 8 s, 640x360) the reading, ahead, is in the third segment (320x180, from 8 s): the
+        // demuxer's size is the first's again while the player's is the advertisement's.
+        #expect(await engine.waitUntil { engine.currentTime > 5.5 && engine.media.video.width == 640 })
+        // Back to the content before it: its parameter sets are those the demuxer has, so nothing in the stream says the
+        // size changed, but the seek does.
+        engine.seek(to: 1.0, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        engine.play()
+        // Still in the first stretch (to 4 s): its size is on at once, not when the reading comes to the next change.
+        #expect(await engine.waitUntil { engine.currentTime > 1.6 })
+        #expect(engine.currentTime < 3.5, "Playback is at \(engine.currentTime) s")
+        let buffer = try #require(engine.getLastRenderedBuffer())
+        #expect(CVPixelBufferGetWidth(buffer) == 320, "\(CVPixelBufferGetWidth(buffer))")
+        #expect(engine.media.video.width == 320 && engine.media.video.height == 180)
     }
 }

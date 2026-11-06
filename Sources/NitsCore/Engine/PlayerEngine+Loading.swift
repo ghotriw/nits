@@ -114,6 +114,7 @@ extension PlayerEngine {
         isVariantAutomatic = false
         canSelectAutomaticVariant = false
         pendingVariantChanges = []
+        pendingVideoSizeChanges = []
         subtitles.reset()
         if !reportingTracks {
             if hasDeferredTracksChange, !reportWasDeferred { tracksClearedUnreported = true }
@@ -914,7 +915,14 @@ extension PlayerEngine {
                 self.variantWillPlay(change)
             }
         }
+        demuxer.onVideoSizeChanged = { [weak self, weak demuxer] change in
+            DispatchQueue.main.async {
+                guard let self, let demuxer, self.demuxer === demuxer else { return }
+                self.videoSizeWillPlay(change)
+            }
+        }
         pendingVariantChanges = []
+        pendingVideoSizeChanges = []
         // A network source is read ahead (started below), so that a slow network shows as buffering only once that
         // runs out.
         let readsAhead = demuxer.isNetworkSource || Self.readsAheadLocalFiles

@@ -171,7 +171,7 @@ extension MediaDemuxer {
         defer { av_packet_unref(&pkt) }
         if pkt.stream_index == videoStreamIndex {
             subtitleTracker.processVideoPacket(&pkt)
-            videoQueue.append(DemuxedVideoPacket(pkt, format: videoFormat))
+            videoQueue.append(videoPacket(from: pkt))
         } else if pkt.stream_index == audioStreamIndex {
             audioQueue.append(DemuxedAudioPacket(pkt))
         }
