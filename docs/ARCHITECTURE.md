@@ -219,7 +219,8 @@ past it.
 Past the last keyframe a forward keyframe seek has no keyframe to land on after its target. Rather than fall back to
 the one before it, seconds back near the end, `MediaDemuxer.seek` goes to the target exactly from there and says so
 (for MPEG-TS / MPEG-PS when the keyframe search finds none to the end); the engine decodes the preview as an exact
-seek's. A target at or past the end lands on the last frame: a held arrow key never goes back. Landing at the end ends
+seek's (the packet cache does the same once its input is read to the true end). A target at or past the end lands on
+the last frame: a held arrow key never goes back. Landing at the end ends
 the media when playing (`handleEndOfMedia`, the same as playing on to it), once the resume debounce is over, so key
 repeats still held land there rather than on the next item; paused, it stays on that frame.
 

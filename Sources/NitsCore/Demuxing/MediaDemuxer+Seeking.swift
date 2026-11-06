@@ -23,8 +23,8 @@ extension MediaDemuxer {
     func seekReportingCache(
         to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
     ) -> (isExact: Bool, fromCache: Bool) {
-        if seekWithinCache(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay) {
-            return (exact, true)
+        if let isExact = serveSeekFromCache(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay) {
+            return (isExact, true)
         }
         return (performSlowSeek(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay), false)
     }
@@ -121,24 +121,31 @@ extension MediaDemuxer {
     func seekWithinCache(
         to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
     ) -> Bool {
+        serveSeekFromCache(to: seconds, exact: exact, forward: forward, audioDelay: audioDelay) != nil
+    }
+
+    /// `seekWithinCache`, telling whether the seek it served lands on its target exactly (see `seek`).
+    func serveSeekFromCache(
+        to seconds: Double, exact: Bool = true, forward: Bool = false, audioDelay: Double = 0
+    ) -> Bool? {
         queueLock.lock()
         defer { queueLock.unlock() }
 
         // 1. Check prerequisites
         guard readsAhead, !isLive, !selectionOutdatesCache else {
-            return false
+            return nil
         }
-        guard variants.count <= 1 else { return false }
-        guard formatCtx != nil else { return false }
-        guard timebase.num > 0, timebase.den > 0 else { return false }
-        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return false }
+        guard variants.count <= 1 else { return nil }
+        guard formatCtx != nil else { return nil }
+        guard timebase.num > 0, timebase.den > 0 else { return nil }
+        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return nil }
 
         // An ended read-ahead keeps its end through the seek, so it must be the media's: a dropped connection also
         // reads as EOF, and the playback would end where it dropped. Trusted only when the cache reaches the end of a
         // duration the container told.
         if readAheadEnded {
             guard readAheadHitEOF, durationSeconds > 0, cachedFrontierSeconds >= durationSeconds - 1.0 else {
-                return false
+                return nil
             }
         }
 
@@ -148,21 +155,27 @@ extension MediaDemuxer {
             return track.format == .bitmap || track.closedCaptionField != nil
         }
         if hasStatefulSubtitleSelected {
-            return false
+            return nil
         }
 
         // 2. Video keyframe search
         let targetVideoPTS = Int64(seconds * Double(timebase.den) / Double(timebase.num))
+        // Whether the seek lands on its target: asked to, or a forward one past the last keyframe (below).
+        var landsExactly = exact
         var videoTargetIndex: Int? = nil
         var landedVideoSeconds: Double? = nil
         if hasVideo && videoStreamIndex >= 0 {
             let startTolerance = Int64(0.25 * Double(timebase.den) / Double(timebase.num))
-            guard
-                let kfIndex = videoQueue.findKeyframeIndex(
-                    targetPTS: targetVideoPTS, forward: forward && !exact, startTolerancePTS: startTolerance)
-            else {
-                return false
+            var keyframe = videoQueue.findKeyframeIndex(
+                targetPTS: targetVideoPTS, forward: forward && !exact, startTolerancePTS: startTolerance)
+            if keyframe == nil, forward, !exact, readAheadEnded {
+                // Past the last keyframe of an input read to its end (the prerequisites above hold the end to be the
+                // media's): as the slow seek does, to the target exactly from the keyframe before it.
+                keyframe = videoQueue.findKeyframeIndex(
+                    targetPTS: targetVideoPTS, forward: false, startTolerancePTS: startTolerance)
+                landsExactly = true
             }
+            guard let kfIndex = keyframe else { return nil }
             videoTargetIndex = kfIndex
             if let kfPkt = videoQueue.peekAt(kfIndex), timebase.den > 0 {
                 landedVideoSeconds = Double(kfPkt.effectivePTS) * Double(timebase.num) / Double(timebase.den)
@@ -172,7 +185,7 @@ extension MediaDemuxer {
         // 3. Audio coverage check
         var audioTargetIndex: Int? = nil
         if audioStreamIndex >= 0, audioTimebase.den > 0, audioTimebase.num > 0 {
-            let baseSeconds = (!exact && landedVideoSeconds != nil) ? landedVideoSeconds! : seconds
+            let baseSeconds = (!landsExactly && landedVideoSeconds != nil) ? landedVideoSeconds! : seconds
             let targetAudioSec = max(0, baseSeconds - audioDelay)
             let targetAudioPTS = Int64(targetAudioSec * Double(audioTimebase.den) / Double(audioTimebase.num))
             let primingTolerance = Int64(Double(audioTimebase.den) / 10.0)
@@ -180,7 +193,7 @@ extension MediaDemuxer {
                 let aIndex = audioQueue.findAudioPacketIndex(
                     targetPTS: targetAudioPTS, primingTolerancePTS: primingTolerance)
             else {
-                return false
+                return nil
             }
             audioTargetIndex = aIndex
             self.targetAudioPts = targetAudioPTS
@@ -196,7 +209,7 @@ extension MediaDemuxer {
             audioQueue.seekTo(elementIndex: audioTargetIndex)
         }
 
-        self.targetPts = (hasVideo && videoStreamIndex >= 0 && exact) ? targetVideoPTS : -1
+        self.targetPts = (hasVideo && videoStreamIndex >= 0 && landsExactly) ? targetVideoPTS : -1
 
         // 5. Reset consumer state (matching demuxer.seek(to:))
         lastAudioPts = -1
@@ -214,7 +227,7 @@ extension MediaDemuxer {
             .demuxer,
             "In-cache seek succeeded to seconds: \(seconds) (exact: \(exact), forward: \(forward))"
         )
-        return true
+        return landsExactly
     }
 
     /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are

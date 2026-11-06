@@ -516,4 +516,41 @@ struct NetworkCachedSeekTests {
         demuxer.readAheadHitEOF = false
         #expect(demuxer.seekWithinCache(to: 1.0) == false)
     }
+
+    @Test(
+        "A forward keyframe seek past the last keyframe of a fully read input is served exactly from the keyframe before"
+    )
+    func testForwardSeekPastLastKeyframeIsServedExactly() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        let fileURL = URL(fileURLWithPath: path)
+        let server = try TestHTTPServer(root: fileURL.deletingLastPathComponent())
+        defer { server.stop() }
+
+        let demuxer = try #require(MediaDemuxer(url: server.url(fileURL.lastPathComponent)))
+        demuxer.startReadAhead(limits: .init(seconds: 600, bytes: 100 << 20, backBytes: 64 << 20))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !demuxer.readAheadEnded && ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        try #require(demuxer.readAheadEnded)
+        try #require(demuxer.readAheadHitEOF, "The whole file was read")
+
+        let timebase = demuxer.timebase
+        func seconds(_ pts: Int64) -> Double { Double(pts) * Double(timebase.num) / Double(timebase.den) }
+        let lastKeyframe = try #require(
+            demuxer.videoQueue.keyframeIndices.last.flatMap { demuxer.videoQueue.peekAt($0) })
+        let target = seconds(lastKeyframe.effectivePTS) + 0.2
+
+        let requestsBefore = server.requests.count
+        let outcome = demuxer.seekReportingCache(to: target, exact: false, forward: true)
+        #expect(outcome.fromCache == true)
+        #expect(outcome.isExact == true, "No keyframe follows: the seek goes to its target, as the slow one does")
+        #expect(demuxer.targetPts >= 0, "The frames before the target are only decoded")
+        #expect(server.requests.count == requestsBefore)
+
+        // With a keyframe ahead it stays a keyframe seek.
+        let first = demuxer.seekReportingCache(to: 0.1, exact: false, forward: true)
+        #expect(first.fromCache == true)
+        #expect(first.isExact == false)
+    }
 }
