@@ -611,6 +611,11 @@ public final class MediaDemuxer: @unchecked Sendable {
                 HTTPSessionTransport(source: url, headers: headers) { ctxContext.shouldInterruptFFmpeg }
             }
             _ = av_dict_set(&avOptions, "http_persistent", "0", 0)
+            // The HLS demuxer refuses a segment whose URL has no extension it knows (`extension_picky`): Google's ad
+            // segments are `redirector.googlevideo.com/videoplayback/...`, and the stream does not open at all. mpv turns
+            // the check off for HLS (`no_ext_picky`). A network source only: its protocols are the whitelist's, and a
+            // local playlist keeps the check against naming files that are not media.
+            _ = av_dict_set(&avOptions, "extension_picky", "0", 0)
         }
 
         // What an HLS master's opening reads, playlists and the starts of their segments, is downloaded side by side

@@ -143,6 +143,42 @@ Accepted for now, noted for later.
 - **A stream with breaks gets no cache after the end of its input.** The end is trusted only when what was read reaches
   the container's duration (`cachedFrontierSeconds`), measured on the last timeline; with a break it falls short of the
   playlist's total, so the seek reads again. Safe (a slow seek), and only after the end of the input.
+- **HLS `EXT-X-DISCONTINUITY` drops a stretch of the media and freezes the picture at the end.** Neither the demuxer
+  nor the engine moves the timeline at a break: FFmpeg's HLS demuxer passes the second segment's timestamps from zero
+  again (it only flags the format `AVFMT_TS_DISCONT`; the consumer is to cope). Played on the engine
+  (`hlsDiscontinuity`: a 4 s and an 8 s segment, the same on the commit before the packet cache, `424a8ac`): the frames
+  of the second segment, raw 0 to 8 s, meet a clock that is already at 4 s. `droppedFramesCount` jumps by ~89 frames at
+  the break (the pictures raw 0 to ~3.4 s are late and dropped), the rest shows at the wrong time (`currentFramePTS`
+  follows the clock as 4 to 8 s), and the picture stands at the last frame, 7.99 s, for the last four seconds while
+  `currentTime` runs to 11.75 s. Audio not looked at. Ad insertions and splices make such streams, though many servers
+  keep the timestamps continuous across a break (none of Apple's HLS examples has the tag).
+  A seek past the first break lands at the start of the file. Played with a 16 s, a 6 s and a 4 s segment with a
+  discontinuity between each: a seek to 6 s and 10 s lands at the first segment's start (right: it is 16 s long),
+  but 18, 21, 23 and 25 s read the later segments, find no packet at the cutoff, and end by reading the first segment
+  again (the segment requests: `seg1, seg2, seg1, seg2, seg0`), so the picture lands at 0. FFmpeg's `hls_read_seek`
+  finds the segment by playlist time, and `hls_read_packet` then drops packets until the raw DTS reaches the
+  segment's start on the playlist's timeline, which the raw DTS of a later segment (from 0) never does. So the
+  demuxer cannot fix it from outside, by an offset or by a seek to the raw time; the fix is in `hls.c` (our patch
+  of it): parse `EXT-X-DISCONTINUITY`, and keep an offset per playlist (not per stream, which keeps audio and
+  video of a segment together) of the segment's start on the playlist's timeline minus the raw DTS of its first
+  packet, applied before the seek filter and the comparison between playlists; none when the difference is small.
+  mpv's linearization (`demux_lavf.c`, a keyframe below the highest timestamp seen adds the difference to a
+  per-stream offset; on for OGG audio only) does not meet the seek. Also: a break can change the picture's size
+  (an advertisement): the format description of the samples stays the first segment's (a 640x360 segment is
+  delivered with a 320x180 description), which the demuxer changes only at a variant switch; unchecked what the
+  decoder makes of it.
+  Played on the engine (2026-11-06; not in the app bundle), real streams: PlayOn's test stream
+  (`s3.amazonaws.com/playon-test-videos/discont_test_new/discont_test.m3u8`, one segment repeated with a break
+  between, timestamps back to 1.47 s): the picture plays the first 8 s, then 697 frames are dropped at once and it
+  stands at 8.0 s from `currentTime` 10 s to ~64 s, a minute, before it follows the clock again. Mux's Deltatre DAI
+  (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`): the timestamps jump forward (71683.6 to 71863.9
+  s), nothing is dropped and the picture stands at 36.3 s from `currentTime` ~37 s to the end of the 75 s watched,
+  waiting for the clock to reach it: a forward jump needs the offset as much as a backward one (the "small
+  difference" threshold in both directions). Google's DAI (`dai.google.com`, a real ad server; timestamps back from
+  9.05 to 0.04 s; it opens since the `extension_picky` option, see `HLSSegmentExtensionTests`): plays the first ad to
+  9.8 s and then sits in "buffering" for the 40 s watched, dropping 217 and then 452 frames. A stream is made by
+  `POST https://dai.google.com/ondemand/hls/content/2528370/vid/tears-of-steel/streams` (the address expires); the
+  content ids are in `.ref/exoplayer/demos/main/src/main/assets/media.exolist.json`.
 
 ## Revisit only if
 
