@@ -101,16 +101,49 @@ struct SyncPatternTests {
         await Self.check(engine, "with external audio, after a seek")
     }
 
+    @Test(
+        "Across an HLS discontinuity with the sound in a rendition of its own, the flash and the clicks stay on their seconds",
+        .enabled(if: hasHLSTimelinePatch, "needs the bundled FFmpeg"))
+    func acrossAnHLSBreak() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuityFlashClick) else { return }
+        let url = URL(fileURLWithPath: path)
+        let server = try TestHTTPServer(root: url.deletingLastPathComponent())
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        // Two 6 s stretches, each with its own timestamps from 0, the break at 6 s: the stretches, picture and sound
+        // from playlists of their own, must put flash and click on the seconds of the whole timeline: the picture keeps
+        // the 2 frames of lead the first stretch has (in this synthetic stream the video is shifted by its reordering,
+        // the tracks being encoded apart), the sound has none.
+        engine.load(MediaLoadRequest(path: server.url(url.lastPathComponent), startTime: 4.2))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        engine.play()
+        #expect(await engine.waitForPlayback(advancingBy: 0.2))
+        let lead = 2.0 / 30
+        let seen = await Self.check(engine, "across the HLS break", for: .seconds(4), pictureLead: lead)
+        #expect(engine.currentTime > 7.0, "Playback reached only \(engine.currentTime) s")
+        // The seconds repeat, so the fractions above would pass a second stretch that is a whole number of seconds
+        // off (an offset not taken): the second stretch's first whole second (7 s, the click at the break itself is
+        // not a start for `clickOnsets`) must be seen, in picture and in sound, where the timeline puts it.
+        #expect(seen.flashes.contains { abs($0 - (7 + lead)) < 0.005 }, "Flashes seen at \(seen.flashes)")
+        #expect(seen.clicks.contains { abs($0 - 7) < Self.clickTolerance }, "Clicks fed at \(seen.clicks)")
+    }
+
     // MARK: - Checks
 
     /// Watches 1.2 s of playback (a flash at least: tests that play in real time share a queue, see AGENTS.md), then
     /// checks the frames seen and the audio fed.
-    private static func check(_ engine: PlayerEngine, _ scenario: String) async {
-        let frames = await watchFrames(engine, for: .milliseconds(1200))
+    @discardableResult
+    private static func check(
+        _ engine: PlayerEngine, _ scenario: String, for duration: Duration = .milliseconds(1200),
+        pictureLead: Double = 0
+    ) async -> (flashes: [Double], clicks: [Double]) {
+        let frames = await watchFrames(engine, for: duration)
         let flashes = frames.filter(\.isBright)
-        #expect(!flashes.isEmpty, "\(scenario): no flash seen in 1.2 s")
+        #expect(!flashes.isEmpty, "\(scenario): no flash seen in \(duration)")
         for frame in frames {
-            let onSecond = abs(frame.pts - frame.pts.rounded()) < 0.005
+            let shifted = frame.pts - pictureLead
+            let onSecond = abs(shifted - shifted.rounded()) < 0.005
             #expect(
                 frame.isBright == onSecond,
                 "\(scenario): the frame at \(frame.pts)s is \(frame.isBright ? "white" : "black")")
@@ -128,6 +161,7 @@ struct SyncPatternTests {
                 abs(onset - onset.rounded()) < clickTolerance,
                 "\(scenario): a click starts at \(String(format: "%.4f", onset))s of the audio fed")
         }
+        return (flashes.map(\.pts), onsets)
     }
 
     private struct SeenFrame {

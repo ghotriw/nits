@@ -10,7 +10,7 @@ import os
 /// Whether FFmpeg is the bundled build with `scripts/patches/ffmpeg-hls-timeline.patch` (its version string says so, see
 /// `--extra-version` in `build_dependencies.sh`): on a Homebrew FFmpeg the timestamps of an HLS stream that restarts at a
 /// discontinuity stay as they are.
-private let hasHLSTimelinePatch = String(cString: av_version_info()).contains("nits-hls-timeline")
+let hasHLSTimelinePatch = String(cString: av_version_info()).contains("nits-hls-timeline")
 
 @Suite(
     "HLS discontinuities (bundled FFmpeg's timeline patch)",

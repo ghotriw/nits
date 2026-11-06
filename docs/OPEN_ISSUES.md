@@ -200,15 +200,21 @@ Accepted for now, noted for later.
     apart (17.40 / 17.43, 23.40 / 23.47). `HLSDiscontinuityTests` keeps the audio timeline of the 4 + 8 s preset
     (no gap over 100 ms, ends past 11.5 s; it fails when the audio is left out of the patch's offset, checked by taking
     it out). Audio and picture of a playlist are moved by one offset, so their positions to each other stay (a separate
-    audio rendition with its own playlist has an offset of its own: see the entry above). Not done: A/V sync through a
-    break by the `flashClick` method (`SyncPatternTests`), and a change of frame rate at a break (a variant's change sets `nominalFrameDuration`
+    audio rendition with its own playlist has an offset of its own: see the entry above). Not done:
+    a change of frame rate at a break (a variant's change sets `nominalFrameDuration`
     and the display link's rate; a break does not, and the pictures are paced by their timestamps meanwhile).
     The 67 ms step was a bug of the timeline patch, found with the fMP4 audio rendition (2026-11-06): the offset was taken
     from the first packet's DTS while `first_timestamp` is its PTS, so every segment after a break sat a reordering delay
     (67 ms here; 125 ms at 24 fps with three B-frames) later than the playlist puts it, against audio that has no delay
     (an audio rendition has an offset of its own, so the picture trailed its sound by that much). Now both use the PTS:
     the step at a break is one frame (muxed fMP4, rendition and TS, `HLSDiscontinuityTests` / `...FMP4Tests`). The
-    numbers above are from before. A/V sync through a break by the `flashClick` method is still not measured.
+    numbers above are from before. A/V sync through a break by the `flashClick` method is measured (`SyncPatternTests.acrossAnHLSBreak`, fMP4 with the sound in a rendition of its own, the picture keeping its 2 frames of reordering in both stretches; it fails with the offset taken from the DTS, checked by putting that back).
+    The test also needs the second stretch's first whole second (7 s) seen in picture and sound at its absolute place, as the
+    seconds repeat; it fails with the audio playlist's offset left out (checked by taking it out). FLAC, so that the
+    clicks are exact: the trimming of AAC's priming samples after a break (about 21 ms) is not covered.
+    On the final patch (PTS, thresholds, audio/video-only jump), real streams (2026-11-06): Google DAI
+    (`ima-vod-skippable-test`) plays its 90 s with no frame dropped, PlayOn's with the 240 dropped frames of the
+    segment without a tag (97.5 to 105.6 s), Mux's (rerun on this patch) as before, 2150 packets; a real fMP4 stream with a new `EXT-X-MAP` was not found.
     The 67 ms lead of picture over sound at the start is of these synthetic streams (tracks encoded apart, only the
     video shifted); the tests hold the second stretch to the first's lead: positions to each other, not absolute sync.
   - An early break is placed differently when reading and after a seek (read from the code, not run). The first packet

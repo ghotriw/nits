@@ -151,6 +151,11 @@ public enum SyntheticTestMediaFactory {
         /// `hlsDiscontinuityFMP4` with the sound in an audio rendition (`EXT-X-MEDIA`) of its own: a playlist, init sections
         /// and breaks of its own, the picture alone in the variant. `filename` is the master playlist
         case hlsDiscontinuityFMP4AudioRendition
+        /// `hlsDiscontinuityFMP4AudioRendition` with the `flashClick` pattern: two 6 s stretches (320x180, then 640x360) of a
+        /// white frame and a click at every whole second of the stretch, so on the playlist's timeline too if the break keeps
+        /// the picture and the sound together. The sound is FLAC (no encoder delay) and starts at 0; the picture, reordered by
+        /// the encoder, at 2 frames (67 ms): a property of this stream (tracks encoded apart, only the video shifted). `filename` is the master playlist
+        case hlsDiscontinuityFlashClick
         /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
         case hlsVariantsFMP4
         /// `hlsVariants` in AV1 (SVT-AV1) and fragmented MP4: the configuration in each variant's `av1C`
@@ -184,6 +189,7 @@ public enum SyntheticTestMediaFactory {
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
+                .hlsDiscontinuityFlashClick,
             ]
             .contains(self)
         }
@@ -314,6 +320,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_discontinuity_timing/media.m3u8"
             case .hlsDiscontinuityFMP4:
                 return "synth_hls_discontinuity_fmp4/media.m3u8"
+            case .hlsDiscontinuityFlashClick:
+                return "synth_hls_discontinuity_flashclick/master.m3u8"
             case .hlsDiscontinuityFMP4AudioRendition:
                 return "synth_hls_discontinuity_fmp4_audio/master.m3u8"
             case .dashSegments:
@@ -492,7 +500,9 @@ public enum SyntheticTestMediaFactory {
             }
             if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
-            } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition {
+            } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition
+                || preset == .hlsDiscontinuityFlashClick
+            {
                 guard makeHLSDiscontinuityFMP4(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuity || preset == .hlsDiscontinuityResize
                 || preset == .hlsDiscontinuityTiming
@@ -631,24 +641,41 @@ public enum SyntheticTestMediaFactory {
     /// `.hlsDiscontinuityFMP4AudioRendition` the sound goes to a rendition of its own, whose playlist has its breaks and
     /// init sections.
     private static func makeHLSDiscontinuityFMP4(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
-        let separate = preset == .hlsDiscontinuityFMP4AudioRendition
+        let flash = preset == .hlsDiscontinuityFlashClick
+        let separate = flash || preset == .hlsDiscontinuityFMP4AudioRendition
+        let seconds = flash ? 6 : 4
         let sizes = ["320x180", "640x360"]
         var playlists: [String: String] = [:]  // kind -> body
         for (index, size) in sizes.enumerated() {
-            let source = "testsrc2=size=\(size):rate=30:duration=4"
-            let sound = "sine=frequency=\(440 * (index + 1)):sample_rate=48000:duration=4"
-            let x264 = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0"]
+            let source =
+                flash
+                ? "color=c=black:size=\(size):rate=30:duration=\(seconds)"
+                : "testsrc2=size=\(size):rate=30:duration=\(seconds)"
+            let sound =
+                flash
+                ? "aevalsrc=exprs='0.5*sin(2*PI*1000*t)*lt(mod(t\\,1)\\,0.01)':s=48000:d=\(seconds)"
+                : "sine=frequency=\(440 * (index + 1)):sample_rate=48000:duration=\(seconds)"
+            // The flash on every whole second of the content; the encoder's reordering puts the first picture at 2 frames (67 ms).
+            let flashFilter = ["-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\\,30)\\,0)'"]
+            let x264 =
+                ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0"]
+                + (flash ? flashFilter : [])
+            let audioCodec =
+                flash
+                ? ["-af", "aformat=channel_layouts=stereo", "-c:a", "flac", "-frame_size", "4800"]
+                : ["-c:a", "aac", "-b:a", "64k"]
             // (kind, mapped streams, codec arguments)
             let parts: [(String, [String], [String])] =
                 separate
-                ? [("v", ["-map", "0:v"], x264), ("a", ["-map", "1:a"], ["-c:a", "aac", "-b:a", "64k"])]
+                ? [("v", ["-map", "0:v"], x264), ("a", ["-map", "1:a"], audioCodec)]
                 : [("m", ["-map", "0:v", "-map", "1:a"], x264 + ["-c:a", "aac", "-b:a", "64k"])]
             for (kind, maps, codecs) in parts {
                 let arguments =
                     [
                         "-y", "-f", "lavfi", "-i", source, "-f", "lavfi", "-i", sound,
                     ] + maps + codecs + [
-                        "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
+                        "-f", "hls", "-hls_time", "\(seconds)", "-hls_playlist_type", "vod", "-hls_segment_type",
+                        "fmp4",
                         "-hls_fmp4_init_filename", "\(kind)init\(index).mp4",
                         "-hls_segment_filename", directory.appendingPathComponent("\(kind)seg\(index)_%d.m4s").path,
                         directory.appendingPathComponent(".\(kind)\(index).m3u8").path,
@@ -656,11 +683,11 @@ public enum SyntheticTestMediaFactory {
                 guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
                 var body = playlists[kind] ?? ""
                 if index > 0 { body += "#EXT-X-DISCONTINUITY\n" }
-                body += "#EXT-X-MAP:URI=\"\(kind)init\(index).mp4\"\n#EXTINF:4.0,\n\(kind)seg\(index)_0.m4s\n"
+                body += "#EXT-X-MAP:URI=\"\(kind)init\(index).mp4\"\n#EXTINF:\(seconds).0,\n\(kind)seg\(index)_0.m4s\n"
                 playlists[kind] = body
             }
         }
-        let header = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        let header = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(seconds)\n#EXT-X-PLAYLIST-TYPE:VOD\n"
         for (kind, body) in playlists {
             let name = separate ? "\(kind).m3u8" : "media.m3u8"
             guard
@@ -947,6 +974,7 @@ public enum SyntheticTestMediaFactory {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
+            .hlsDiscontinuityFlashClick,
             .dashSegments, .dashLadder,
             .dashLadderCaptions:
             return []  // Made by `generateMedia`.
