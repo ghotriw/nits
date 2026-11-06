@@ -191,7 +191,8 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   in `docs/ARCHITECTURE.md`.
 - **A read-ahead demuxer keeps the packets it handed out** (`DemuxerPacketBuffer`, `backBytes`) so a seek inside them
   needs no input (`seekWithinCache`, tried by `seek` first; the engine learns whether it served a seek from
-  `seekReportingCache`, not from state). It refuses live streams, ladders, an HLS subtitle rendition selected after the
+  `seekReportingCache`, not from state). It refuses live streams, a ladder's seek across a variant splice (the packets'
+  `format.variantGeneration`; `keyframesShare`) and, after a variant chosen by hand, packets of another variant than the one read now or while it is asked for or being switched to, an HLS subtitle rendition selected after the
   packets were read (`selectionOutdatesCache`, which only a slow seek clears: the engine's re-read for it needs no flag),
   bitmap / closed-caption subtitles, and a read-ahead that ended short of the container's duration. History is pruned
   in whole GOPs under `queueLock` (keep the buffer's head a keyframe); audio history stays 0.5 s before the earliest

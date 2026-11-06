@@ -88,6 +88,101 @@ struct HLSVariantTests {
         #expect(audio.count > 270)
     }
 
+    /// A ladder keeps what it read like any input: a seek back inside one variant's stretch is served from it, one that
+    /// would land before a switch's splice (in the variant left) is a slow seek, which reads the variant now selected.
+    @Test("A seek back in a ladder's cache is served inside a variant's stretch, not across a splice")
+    func cachedSeekStopsAtSplice() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let low = try #require(demuxer.variants.last)
+        demuxer.startReadAhead(limits: .init(seconds: 1, bytes: 50 << 20, backBytes: 20 << 20))
+
+        var pictures: [(pts: Double, width: Int32)] = []
+        while let sample = demuxer.nextVideoSample() {
+            let width = CMSampleBufferGetFormatDescription(sample).map(CMVideoFormatDescriptionGetDimensions)?.width
+            pictures.append((CMSampleBufferGetPresentationTimeStamp(sample).seconds, width ?? 0))
+            if pictures.count == 20 { demuxer.selectVariant(id: low.id) }
+            if pictures.count == 170 { break }
+        }
+        let splice = try #require(pictures.first { $0.width == 320 }?.pts, "The switch didn't splice")
+        let start = demuxer.videoStartTime
+        #expect(splice - start > 0.9 && splice - start < 4, "Spliced at \(splice - start) s")
+
+        // Across the splice: the picture would come from the variant left.
+        #expect(demuxer.seekWithinCache(to: start + 0.2, exact: false, forward: false) == false)
+        // Inside the stretch of the variant now read.
+        #expect(demuxer.seekWithinCache(to: splice + 0.7, exact: false, forward: false) == true)
+        let sample = try #require(demuxer.nextVideoSample())
+        #expect(CMSampleBufferGetFormatDescription(sample).map(CMVideoFormatDescriptionGetDimensions)?.width == 320)
+    }
+
+    /// Waits for the read-ahead to splice to variant `id` and finish the switch (the muxed audio splices after the
+    /// picture: `variantSwitch` stays until then, and refuses a cached seek on its own). The read-ahead reads only with
+    /// room in its queue, so a picture is taken per turn to make some: at most 40, which with the 20 before keeps the
+    /// cursor within 2 s, ahead of the splice unless the reading falls behind by that much (`cachedSeekBeforeSplice`
+    /// then fails plainly).
+    private static func waitForSplice(of id: Int, in demuxer: MediaDemuxer) -> Bool {
+        let deadline = ContinuousClock.now + .seconds(10)
+        var taken = 0
+        func switchEnded() -> Bool {
+            demuxer.queueLock.lock()
+            defer { demuxer.queueLock.unlock() }
+            return demuxer.selectedVariantId == id && demuxer.variantSwitch == nil
+        }
+        while !switchEnded() && ContinuousClock.now < deadline {
+            if taken < 40, demuxer.nextVideoSample() != nil { taken += 1 }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return switchEnded()
+    }
+
+    /// The usual case after an adaptive switch: reading is past the splice, playback not yet, and a seek back inside the
+    /// variant played is served by the cache, in that variant's format.
+    @Test("A seek back in a ladder with the splice ahead of the cursor is served in the variant being played")
+    func cachedSeekBeforeSplice() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let low = try #require(demuxer.variants.last)
+        demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
+        var count = 0
+        while count < 20, demuxer.nextVideoSample() != nil { count += 1 }
+        // Adaptive bitrate asks as this does; `selectVariant(id:)` is the user's choice (below).
+        demuxer.variantSelection.withLock { $0.requested = low.id }
+        try #require(Self.waitForSplice(of: low.id, in: demuxer), "The switch didn't splice")
+        #expect(demuxer.seekWithinCache(to: demuxer.videoStartTime + 0.2, exact: true) == true)
+        let sample = try #require(demuxer.nextVideoSample())
+        #expect(CMSampleBufferGetFormatDescription(sample).map(CMVideoFormatDescriptionGetDimensions)?.width == 640)
+    }
+
+    /// A variant chosen by hand shows from the seek the engine makes at once: packets of the one left would not.
+    @Test("A seek back after a variant chosen by hand is a slow one until the picture is of that variant")
+    func cachedSeekRefusedForChoiceByHand() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let low = try #require(demuxer.variants.last)
+        demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
+        var count = 0
+        while count < 20, demuxer.nextVideoSample() != nil { count += 1 }
+        demuxer.selectVariant(id: low.id)
+        #expect(demuxer.seekWithinCache(to: demuxer.videoStartTime + 0.2, exact: true) == false, "Asked for")
+        try #require(Self.waitForSplice(of: low.id, in: demuxer), "The switch didn't splice")
+        #expect(
+            demuxer.seekWithinCache(to: demuxer.videoStartTime + 0.2, exact: true) == false,
+            "Spliced ahead of the cursor: the packets are of the variant left")
+    }
+
+    @Test("A seek back in a ladder before any switch is served from the cache")
+    func cachedSeekInOneVariant() throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
+        var count = 0
+        while count < 90, demuxer.nextVideoSample() != nil { count += 1 }
+        #expect(demuxer.seekWithinCache(to: demuxer.videoStartTime + 0.5, exact: true) == true)
+        let sample = try #require(demuxer.nextVideoSample())
+        #expect(CMSampleBufferGetFormatDescription(sample).map(CMVideoFormatDescriptionGetDimensions)?.width == 640)
+    }
+
     @Test("A seek completes a switch: it reads the new variant from the target on")
     func seekCompletesSwitch() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }

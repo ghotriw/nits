@@ -343,8 +343,8 @@ struct NetworkCachedSeekTests {
         #expect(demuxer.selectionOutdatesCache == false, "Only a seek that reads the input takes it back")
     }
 
-    @Test("Multi-variant streams bypass in-cache seek and allocate 0 backBytes")
-    func testMultiVariantStreamBypassesInCacheSeek() throws {
+    @Test("Multi-variant streams keep history and serve a seek back inside one variant's stretch from it")
+    func testMultiVariantStreamServesInCacheSeek() throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let fileURL = URL(fileURLWithPath: master)
         let server = try TestHTTPServer(root: fileURL.deletingLastPathComponent())
@@ -354,7 +354,7 @@ struct NetworkCachedSeekTests {
         #expect(demuxer.variants.count > 1)
 
         demuxer.startReadAhead(limits: .init(seconds: 4, bytes: 20 << 20, backBytes: 10 << 20))
-        #expect(demuxer.readAheadLimits.backBytes == 0, "Multi-variant streams must disable backBytes to save RAM")
+        #expect(demuxer.readAheadLimits.backBytes == 10 << 20, "A ladder keeps history like any input")
 
         // Advance a bit
         let deadline = ContinuousClock.now + .seconds(5)
@@ -364,9 +364,9 @@ struct NetworkCachedSeekTests {
             }
         }
 
-        // Even if requested position is within cached range, seekWithinCache must return false
+        // No switch has happened: the position and the target are in one variant's stretch.
         let fastSeekSucceeded = demuxer.seekWithinCache(to: 0.5, exact: true)
-        #expect(fastSeekSucceeded == false, "Multi-variant streams must not perform in-cache seeks")
+        #expect(fastSeekSucceeded == true, "A seek back within one variant is served from the cache")
 
         // An HLS rendition selected after the read is read again by the engine: the cache is refused for it.
         demuxer.selectSubtitleTrack(trackId: demuxer.subtitleTracks.first?.id ?? 0)

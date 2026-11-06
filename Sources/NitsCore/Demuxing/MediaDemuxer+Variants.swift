@@ -268,6 +268,11 @@ extension MediaDemuxer {
         else { return false }
         return zip(a.audio, b.audio).allSatisfy { aIndex, bIndex in
             guard aIndex != bIndex else { return true }
+            // Queued audio keeps no time base of its own (the demuxer's `audioTimebase` is the current stream's), so
+            // streams that differ in it (MPEG-TS and fragmented MP4 renditions) do not switch.
+            guard let aBase = timebase(aIndex), let bBase = timebase(bIndex), av_cmp_q(aBase, bBase) == 0 else {
+                return false
+            }
             guard let aAudio = parameters(aIndex), let bAudio = parameters(bIndex) else { return false }
             let extradata = { (codecpar: UnsafeMutablePointer<AVCodecParameters>) in
                 codecpar.pointee.extradata.map { Data(bytes: $0, count: Int(codecpar.pointee.extradata_size)) }
@@ -430,6 +435,7 @@ extension MediaDemuxer {
             return false
         }
         formatDescription = description
+        variantGeneration &+= 1
         variantSwitch?.spliceTime = time
         variantSelection.withLock { $0.selected = pending.target.id }
         AppLog.info(

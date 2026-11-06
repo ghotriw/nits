@@ -75,7 +75,7 @@ extension MediaDemuxer {
         readAheadHitEOF = false
         if held { readAheadControl.withLock { $0.isHeld = true } }
         var effectiveLimits = limits
-        if variants.count > 1 || isLive {
+        if isLive {
             effectiveLimits.backBytes = 0
         }
         readAheadLimits = effectiveLimits
@@ -194,7 +194,7 @@ extension MediaDemuxer {
     /// Prunes audio history to align with the earliest retained video keyframe minus audio delay,
     /// or by audio time when there is no video. Behind `queueLock`.
     func pruneAudioQueueIfNeeded() {
-        // No history kept (local files, ladders, live): the pops drop the packets already.
+        // No history kept (local files, live): the pops drop the packets already.
         guard audioQueue.maxBackBytes > 0 else { return }
         if hasVideo, videoStreamIndex >= 0 {
             if let videoHeadPTS = videoQueue.earliestPTS, videoHeadPTS != Int64.min,

@@ -27,6 +27,9 @@ extension MediaDemuxer {
         /// Start codes rather than length prefixes.
         let isAnnexB: Bool
         let timebase: AVRational
+        /// `MediaDemuxer.variantGeneration` when the packet was read: packets of one generation come from one stretch
+        /// of one variant (the parameter sets within it may change, the description with them).
+        let variantGeneration: Int
     }
 
     /// A demuxed video packet, queued while the audio pump reads ahead so no video is lost.
@@ -192,6 +195,23 @@ extension MediaDemuxer {
             if indexesKeyframes, element.isKeyFrame {
                 keyframeIndices.append(newIndex)
             }
+        }
+
+        /// Whether `key` is the same for the packet at `index` (a keyframe) and for the position of the cursor: the
+        /// keyframes between them, and the one the cursor's packet follows, are compared; what is not held (pruned)
+        /// fails.
+        package func keyframesShare<K: Equatable>(from index: Int, withCursorBy key: (T) -> K) -> Bool {
+            guard let reference = peekAt(index) else { return false }
+            let wanted = key(reference)
+            let low = min(index, readIndex)
+            let high = max(index, readIndex)
+            if let before = keyframeIndices.last(where: { $0 <= low }) {
+                guard let element = peekAt(before), key(element) == wanted else { return false }
+            }
+            for keyframe in keyframeIndices where keyframe > low && keyframe <= high {
+                guard let element = peekAt(keyframe), key(element) == wanted else { return false }
+            }
+            return true
         }
 
         /// Drops the consumed elements before the start of the timeline now: nothing searches them. When the break is

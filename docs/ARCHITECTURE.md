@@ -436,7 +436,14 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   intra-refresh). Keyframes are indexed (binary searched) for video only. Audio history is pruned linearly with a 0.5 s
   margin before the earliest retained video keyframe (audio decoder priming); without video (an audio-only input, such
   as the external audio of another input's picture), by size alone, so it reaches as far back as that picture's
-  history. History is off (`maxBackBytes = 0`) for multi-variant HLS/DASH and live streams, whose cache is never used.
+  history. History is off (`maxBackBytes = 0`) for live streams, whose cache is never used. A ladder keeps it like
+  any input: each video packet carries the `variantGeneration` it was read in (`MediaDemuxer.variantGeneration`, bumped at a
+  variant's splice), and a cached seek of a ladder is served only when the keyframe it lands on and the cursor's
+  position have the same generation, with no splice between them (`keyframesShare`): the engine's variant label,
+  `pendingVariantChanges` and the decoder's description stay right without a journal. After a variant chosen by hand
+  the packets must also be of the variant read now (the engine seeks at once to show it), and nothing is served while
+  it is asked for or being switched to (`variantSwitch`, read under `queueLock`, which every write holds). Audio: the
+  variants switch only when their audio streams share a time base (`canSwitch`), as queued audio keeps none.
   Seeks landing within the buffered range (backward into history or forward into pre-read packets) are satisfied
   atomically under `queueLock` without network I/O (`seekWithinCache`, tried first by `MediaDemuxer.seek`;
   `seekReportingCache` also tells the engine whether it served the seek). A seek to the start finds a first picture
@@ -444,7 +451,7 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   starts a new timeline (`searchFloor`): older packets are not searched, stay queued to play if not yet taken, and are
   dropped once taken. Anything else is a slow seek (`performSlowSeek`), which clears
   the buffer and re-anchors the read-ahead thread at the target:
-  - a cache miss, a live stream, a multi-variant stream (variant and resolution desync);
+  - a cache miss, a live stream, a ladder's seek across a splice (variant and resolution desync);
   - an HLS subtitle rendition selected after the packets were read (`selectionOutdatesCache`: the rendition is a
     playlist read only while selected, so they lack it; the demuxer holds the flag until a slow seek, which the
     engine's re-read for the rendition is). An audio track needs no flag: its queue is emptied at selection, and a

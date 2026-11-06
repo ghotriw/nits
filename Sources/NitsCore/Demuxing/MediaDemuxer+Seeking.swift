@@ -136,7 +136,19 @@ extension MediaDemuxer {
         guard readsAhead, !isLive, !selectionOutdatesCache else {
             return nil
         }
-        guard variants.count <= 1 else { return nil }
+        // A ladder with a variant chosen by hand: the choice is the picture's from the seek on (the engine re-reads at
+        // the position), so the packets must be of the variant read now. Not while it is asked for (`requested`) or
+        // being switched to (`variantSwitch`: the read-ahead takes `requested` as soon as it reads, long before the
+        // splice), and not from one it left.
+        let isLadder = variants.count > 1
+        var needsCurrentVariant = false
+        if isLadder {
+            let selection = variantSelection.withLock { $0 }
+            if !selection.isAutomatic {
+                guard selection.requested == nil, variantSwitch == nil else { return nil }
+                needsCurrentVariant = true
+            }
+        }
         // A break in the timestamps (a discontinuity): the cursor on the older timeline, or a stream that has reached
         // it before the other, compares a position and a target of different timelines. Both clear with a slow seek.
         guard !videoQueue.isBeforeBreak, !audioQueue.isBeforeBreak else { return nil }
@@ -182,7 +194,17 @@ extension MediaDemuxer {
                     targetPTS: targetVideoPTS, forward: false, startTolerancePTS: startTolerance)
                 landsExactly = true
             }
-            guard let kfIndex = keyframe else { return nil }
+            guard let kfIndex = keyframe else {
+                return nil
+            }
+            // A ladder: the picture lands in the variant it is at now (the one the engine shows); a splice between the
+            // two is a slow seek's.
+            if isLadder, !videoQueue.keyframesShare(from: kfIndex, withCursorBy: { $0.format.variantGeneration }) {
+                return nil
+            }
+            if needsCurrentVariant, videoQueue.peekAt(kfIndex)?.format.variantGeneration != variantGeneration {
+                return nil
+            }
             videoTargetIndex = kfIndex
             if let kfPkt = videoQueue.peekAt(kfIndex), timebase.den > 0 {
                 landedVideoSeconds = Double(kfPkt.effectivePTS) * Double(timebase.num) / Double(timebase.den)

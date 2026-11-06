@@ -118,14 +118,23 @@ Accepted for now, noted for later.
   50 s, audio to 60 s), a seek to 54 s lands on the last frame's 49.96 s: the position is the picture's, while audio
   starts at 54 s, so playback resumes with ~4 s of silence, and the next arrow press steps from 49.96 s again, never
   into the audio-only part. The position after such a seek should be its target.
-- **The packet cache serves files and single-variant streams only.** Seeks back (and forward into what was read) skip
-  the input only for those (`seekWithinCache`). Multi-variant HLS/DASH, the main network case, and live streams read
-  the input again: they keep no history (`maxBackBytes = 0`). mpv caches both (it picks one HLS variant at open, and
-  checks `seekable` only on a cache miss), and keeps several cached ranges where we keep one. For ladders a seek in the
-  cache would have to account for the variant at the landing (`reportVariant`, the packet's `format`, the decoder) and
-  an unfinished `variantSwitch`, as adaptive bitrate switches in the stream and a history can hold several variants;
-  for live, to agree with `LiveStream.clamp` and `trackLiveWindow` (a seek back would no longer depend on the playlist's
-  window). Each needs tests and measurements of its own.
+- **The packet cache serves files, single-variant streams and ladders within one variant's stretch; not live streams.**
+  Seeks back (and forward into what was read) skip the input (`seekWithinCache`). A ladder's seek that would cross a
+  variant splice is a slow one (`format.variantGeneration` of the landing keyframe against the cursor's), so after an
+  adaptive switch a seek back past it reads the input again; a journal of variant changes would serve those too.
+  Measured on Apple's `bipbop_adv_example_hevc` (54 variants, one variant played, 2026-11-06): exact seek back 10 s
+  1.1–1.5 s (RTT 25 ms) / 4.4 s (RTT 175 ms) before, 7–10 ms after; keyframe seek back 0.6 s / 3.2 s before, 2 ms after;
+  no bytes. Adaptive playback in real time with a seek back every 10-30 s (probe `LadderABRSeekMeasurement`, 2026-11-07):
+  Wi-Fi alone, no switch, 60 of 60 served from the cache; with NLC "DSL" (2 Mbit/s) the stream mostly stalled (the
+  start is the top variant, ~10 Mbit/s; one run lost a segment, "failed too many times") and the few switches came
+  when the cursor was past them: 7 of 8 and 3 of 3 served. One seek of 8, at the up-switch the line's release caused
+  (target before the splice at 68 s, cursor after it), was slow (447 ms, 1.3 MB); its reason was not recorded (it did not
+  repeat), the splice rule explains it. How often seeks cross a splice on a real stream is therefore unmeasured; a
+  journal of variant changes waits for that. Not done: history behind the splice stays until the size limit evicts it (up to the 64 MB); the engine's
+  ABR sees the read-ahead as the cache holds it (frontier minus the cursor, larger after a seek back: a false step up
+  is possible; not measured); live. mpv caches both (it picks one HLS variant at open), and keeps several
+  cached ranges where we keep one. Live needs to agree with `LiveStream.clamp` and `trackLiveWindow` (a seek back would
+  no longer depend on the playlist's window).
 - **How long a read-ahead takes to end after its server goes away is not known.** A test stopped the server mid-file
   and waited for `readAheadEnded` for 10 s; it did not come (the test was dropped, as a read error cannot be made to
   happen the same way every time). FFmpeg's reconnects or the input's read timeout (`rw_timeout`) may be waiting; not

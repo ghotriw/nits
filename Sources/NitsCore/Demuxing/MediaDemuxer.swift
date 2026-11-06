@@ -105,7 +105,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     let variantSelection = OSAllocatedUnfairLock(initialState: VariantSelection())
     /// Streams of each variant by its id.
     var variantStreams: [Int: VariantStreams] = [:]
-    /// The switch being spliced, behind `lock`.
+    /// The switch being spliced. Written with `lock` and `queueLock` held, so either one reads it.
     var variantSwitch: VariantSwitch?
     /// The representations of a ladder that are discarded were closed by a packet read for the purpose, before the first
     /// seek (`closeUnusedDASHRepresentations`). Behind `lock` and `queueLock`.
@@ -409,6 +409,10 @@ public final class MediaDemuxer: @unchecked Sendable {
     var videoQueue = DemuxerPacketBuffer<DemuxedVideoPacket>()
     private let maxAudioQueueCount = 500
     private let maxVideoQueueCount = 180
+    /// Bumped at a variant's splice (`spliceVariantVideo`): the packets read in between carry it
+    /// (`VideoPacketFormat.variantGeneration`), which tells a cached seek whether it crosses one. New parameter sets within
+    /// a variant don't bump it: the cache serves those like a single-variant stream's. Written with `queueLock` held.
+    var variantGeneration = 0
     public internal(set) var formatDescription: CMVideoFormatDescription?
     public internal(set) var durationSeconds: Double = 0
     public internal(set) var width: Int = 0

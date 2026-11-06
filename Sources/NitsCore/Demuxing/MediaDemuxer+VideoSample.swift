@@ -6,7 +6,9 @@ import VideoToolbox
 extension MediaDemuxer {
     /// The format packets are read as now (`DemuxedVideoPacket.format`).
     var videoFormat: VideoPacketFormat {
-        VideoPacketFormat(description: formatDescription, isAnnexB: isAnnexBStream, timebase: timebase)
+        VideoPacketFormat(
+            description: formatDescription, isAnnexB: isAnnexBStream, timebase: timebase,
+            variantGeneration: variantGeneration)
     }
 
     /// A queued packet keeps the format it was read with: a variant switch can change it while the packet waits.
