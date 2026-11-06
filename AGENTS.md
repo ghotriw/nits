@@ -195,7 +195,9 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   packets were read (`selectionOutdatesCache`, which only a slow seek clears: the engine's re-read for it needs no flag),
   bitmap / closed-caption subtitles, and a read-ahead that ended short of the container's duration. History is pruned
   in whole GOPs under `queueLock` (keep the buffer's head a keyframe); audio history stays 0.5 s before the earliest
-  video keyframe, or by size alone without video, so an external audio input keeps as much as the picture does.
+  video keyframe, or by size alone without video, so an external audio input keeps as much as the picture does. A
+  timestamp going back (a discontinuity) moves `searchFloor`: nothing before it is searched, but it still plays; the
+  cache refuses while the cursor is before it or the video and audio have met different numbers of breaks.
 - **A live HLS stream has a window, not a duration** (`MediaInfo.duration` stays 0). The demuxer reads the window from
   the format context after `av_read_frame` (`publishLiveWindow`), which our patch of FFmpeg's HLS demuxer
   (`scripts/patches/ffmpeg-hls-live-seek.patch`) keeps up to date: never from another thread, never by parsing

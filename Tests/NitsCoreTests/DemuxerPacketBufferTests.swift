@@ -445,4 +445,126 @@ struct DemuxerPacketBufferTests {
         inner.append(TestPacket(pts: 120, isKeyFrame: true))
         #expect(inner.findKeyframeIndex(targetPTS: 0, startTolerancePTS: 250) == nil)
     }
+
+    // MARK: - Breaks in the timeline
+
+    /// Video of two stretches: keyframes at 0, 400, 800 and then, after a break, 0, 400 again (a splice, a discontinuity).
+    private static func twoTimelines(maxBackBytes: Int = 100_000) -> MediaDemuxer.DemuxerPacketBuffer<TestPacket> {
+        var buffer = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: maxBackBytes)
+        for pts in stride(from: 0, to: 1200, by: 40) {
+            buffer.append(TestPacket(pts: Int64(pts), isKeyFrame: pts % 400 == 0))
+        }
+        for pts in stride(from: 0, to: 800, by: 40) {
+            buffer.append(TestPacket(pts: Int64(pts), isKeyFrame: pts % 400 == 0))
+        }
+        return buffer
+    }
+
+    @Test("A keyframe going back in time starts a timeline: older packets are not searched")
+    func testBreakStartsTimeline() throws {
+        let buffer = Self.twoTimelines()
+        #expect(buffer.searchFloor == 30, "The second stretch starts at the 31st packet")
+        #expect(buffer.earliestPTS == 0)
+        // 800 is a keyframe of the first stretch only; the second ends at 760 + 40.
+        #expect(buffer.findKeyframeIndex(targetPTS: 1000) == nil)
+        // 400 is in both: the later timeline's.
+        #expect(buffer.findKeyframeIndex(targetPTS: 400) == 30 + 10)
+        #expect(buffer.findKeyframeIndex(targetPTS: 400, forward: true) == 30 + 10)
+        // Packets before the break are still there to be taken, in order.
+        var taken = buffer
+        #expect(taken.popFirst()?.pts == 0)
+        #expect(taken.totalCount == 50, "History keeps what was taken")
+    }
+
+    @Test("Consumed packets before a break are dropped; those not yet taken play")
+    func testHistoryBeforeBreakDropped() throws {
+        var buffer = Self.twoTimelines()
+        // The cursor is before the break: nothing is dropped, the old stretch must play.
+        for _ in 0..<10 { _ = buffer.popFirst() }
+        buffer.pruneGOPs()
+        #expect(buffer.headIndex == 0)
+        #expect(buffer.backBytes == 1000)
+
+        // Past the break, the old stretch is history nothing searches: it goes.
+        while buffer.readIndex < 35 { _ = buffer.popFirst() }
+        buffer.pruneGOPs()
+        #expect(buffer.headIndex == 30)
+        #expect(buffer.backBytes == 500)
+        #expect(buffer.findKeyframeIndex(targetPTS: 0) == 30)
+    }
+
+    @Test("A second break moves the start of the timeline on, and the search stays in the last stretch")
+    func testSecondBreak() throws {
+        var buffer = Self.twoTimelines()
+        for pts in stride(from: 100, to: 500, by: 40) {
+            buffer.append(TestPacket(pts: Int64(pts), isKeyFrame: pts == 100))
+        }
+        // 100 is a keyframe going back from 760: a break.
+        #expect(buffer.searchFloor == 50)
+        #expect(buffer.earliestPTS == 100)
+        #expect(buffer.findKeyframeIndex(targetPTS: 50) == nil, "Before the stretch's start")
+        #expect(buffer.findKeyframeIndex(targetPTS: 300) == 50)
+        #expect(buffer.findKeyframeIndex(targetPTS: 5000) == nil)
+    }
+
+    @Test("Reordered pictures between keyframes are not a break")
+    func testReorderIsNotABreak() throws {
+        var buffer = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 10_000)
+        buffer.append(TestPacket(pts: 0, isKeyFrame: true))
+        buffer.append(TestPacket(pts: 120))
+        buffer.append(TestPacket(pts: 40))
+        buffer.append(TestPacket(pts: 80))
+        buffer.append(TestPacket(pts: 240, isKeyFrame: true))
+        buffer.append(TestPacket(pts: 160))
+        #expect(buffer.searchFloor == 0)
+        #expect(buffer.findKeyframeIndex(targetPTS: 100) == 0)
+    }
+
+    @Test("A break in one stream does not move the other's start")
+    func testBreakInOneStream() throws {
+        var video = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 10_000)
+        var audio = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 10_000, indexesKeyframes: false)
+        for pts in stride(from: 0, to: 800, by: 40) {
+            video.append(TestPacket(pts: Int64(pts), isKeyFrame: pts % 400 == 0))
+            audio.append(TestPacket(pts: Int64(pts), isKeyFrame: true))
+        }
+        // Only the audio goes back (its own rebasing).
+        for pts in stride(from: 0, to: 200, by: 40) {
+            audio.append(TestPacket(pts: Int64(pts), isKeyFrame: true))
+        }
+        #expect(video.searchFloor == 0)
+        #expect(audio.searchFloor == 20)
+        #expect(audio.findAudioPacketIndex(targetPTS: 120) == 20 + 2, "The packet 80..120 ends at the target")
+        #expect(video.findKeyframeIndex(targetPTS: 120) == 0)
+        #expect(audio.findAudioPacketIndex(targetPTS: 700) == nil, "The old stretch is not searched")
+    }
+
+    @Test("Audio going back by no more than a packet's duration is not a break")
+    func testAudioLeeway() throws {
+        var audio = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 10_000, indexesKeyframes: false)
+        audio.append(TestPacket(pts: 100, isKeyFrame: true, duration: 40))
+        audio.append(TestPacket(pts: 80, isKeyFrame: true, duration: 40))
+        #expect(audio.searchFloor == 0)
+        audio.append(TestPacket(pts: 10, isKeyFrame: true, duration: 40))
+        #expect(audio.searchFloor == 2)
+    }
+
+    @Test("removeAll(where:) and compaction keep the start of the timeline on its packet")
+    func testBreakSurvivesCompaction() throws {
+        var buffer = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 0, indexesKeyframes: false)
+        for pts in 0..<100 { buffer.append(TestPacket(pts: Int64(pts) * 40, isKeyFrame: true)) }
+        for pts in 0..<20 { buffer.append(TestPacket(pts: Int64(pts) * 40, isKeyFrame: true)) }
+        #expect(buffer.searchFloor == 100)
+        // Taking 90 packets compacts the array (history is off): the start is the same packet, at a smaller index.
+        for _ in 0..<90 { _ = buffer.popFirst() }
+        let afterCompaction = try #require(buffer.findAudioPacketIndex(targetPTS: 0))
+        #expect(afterCompaction == buffer.searchFloor)
+        #expect(buffer.peekAt(buffer.searchFloor)?.pts == 0)
+
+        // Removing packets of the new stretch keeps the start on the first one left.
+        buffer.removeAll { $0.pts < 200 }
+        let start = try #require(buffer.findAudioPacketIndex(targetPTS: 200))
+        #expect(start == buffer.searchFloor)
+        #expect(buffer.peekAt(start)?.pts == 200)
+    }
 }

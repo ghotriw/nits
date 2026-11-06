@@ -435,13 +435,18 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   Seeks landing within the buffered range (backward into history or forward into pre-read packets) are satisfied
   atomically under `queueLock` without network I/O (`seekWithinCache`, tried first by `MediaDemuxer.seek`;
   `seekReportingCache` also tells the engine whether it served the seek). A seek to the start finds a first picture
-  presented up to 0.25 s after 0 (B-frames, edit lists). Anything else is a slow seek (`performSlowSeek`), which clears
+  presented up to 0.25 s after 0 (B-frames, edit lists). A keyframe (any packet, for audio) whose timestamp goes back
+  starts a new timeline (`searchFloor`): older packets are not searched, stay queued to play if not yet taken, and are
+  dropped once taken. Anything else is a slow seek (`performSlowSeek`), which clears
   the buffer and re-anchors the read-ahead thread at the target:
   - a cache miss, a live stream, a multi-variant stream (variant and resolution desync);
   - an HLS subtitle rendition selected after the packets were read (`selectionOutdatesCache`: the rendition is a
     playlist read only while selected, so they lack it; the demuxer holds the flag until a slow seek, which the
     engine's re-read for the rendition is). An audio track needs no flag: its queue is emptied at selection, and a
     target the audio left does not cover misses;
+  - a timeline break (above) the cursor has not passed (`isBeforeBreak`: the position is on the older timeline and a
+    target found on the newer would land on other content), or one only the video or only the audio has met so far
+    (`breakCount` differs: one stream is on a timeline the other has not reached). A slow seek clears both;
   - a selected bitmap (PGS / VobSub) or closed-caption subtitle track (their decoders keep state between packets);
   - a read-ahead that ended before the container's duration (a dropped connection can read as EOF, and playback would
     end where it dropped; a seek in a cache that reaches the duration keeps the end, which is the media's).

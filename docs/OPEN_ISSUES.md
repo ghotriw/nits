@@ -131,6 +131,18 @@ Accepted for now, noted for later.
   happen the same way every time). FFmpeg's reconnects or the input's read timeout (`rw_timeout`) may be waiting; not
   checked. Until it is, the time the picture stands after a dropped connection, and when `readAheadEnded` (so the
   cache's refusal of a seek short of the duration) takes effect, are guesses.
+- **A timeline break leaves the read-ahead's measure on the old timeline.** After a discontinuity (HLS
+  `EXT-X-DISCONTINUITY`: ad insertions, splices) FFmpeg passes the timestamps back from zero. `readAheadState` is the
+  furthest time read and does not go back, while `consumedSeconds` follows the packets taken: after 20 minutes of
+  media `readAheadState` stays at ~1200 s and `consumedSeconds` starts again from 0, so the next ~20 minutes read as
+  "full" and the thread reads only when the queue is empty, with no margin. Expected from the code, not seen on a real
+  stream: `bufferedTime` in the UI would be wrong, and adaptive bitrate would see a huge buffer and could step up
+  instead of down. It predates the packet cache. A plain reset does not do: `consumedSeconds` stays on the old
+  timeline while it plays out. Check before ladders, on a stream with ad insertions; also how the engine (clock,
+  position, frame queue) takes the break at all, which the demuxer-level tests do not cover.
+- **A stream with breaks gets no cache after the end of its input.** The end is trusted only when what was read reaches
+  the container's duration (`cachedFrontierSeconds`), measured on the last timeline; with a break it falls short of the
+  playlist's total, so the seek reads again. Safe (a slow seek), and only after the end of the input.
 
 ## Revisit only if
 

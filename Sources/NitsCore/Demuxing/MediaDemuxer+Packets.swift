@@ -102,8 +102,28 @@ extension MediaDemuxer {
         /// Payload bytes of consumed history packets (`headIndex ..< readIndex`).
         package private(set) var backBytes: Int = 0
 
-        /// Highest presentation end timestamp seen among all appended packets.
+        /// Highest presentation end timestamp seen among the packets of the timeline now (since the last break).
         package private(set) var maxPacketEndPTS: Int64 = Int64.min
+
+        /// The first element of the timeline now: a break in the presentation timestamps (a packet's, or a keyframe's
+        /// for video, going back before the one before it: a discontinuity, a splice) starts a new timeline at its packet,
+        /// and the elements before it are not searched, as their timestamps are not on this one. They stay queued: a break
+        /// may be in what is not yet taken, which has to play. Consumed ones before it are dropped (`dropHistoryBeforeBreak`).
+        package private(set) var searchFloor: Int = 0
+
+        /// How many breaks the buffer has seen since it was emptied. A seek spans both streams: with the video and the
+        /// audio at different counts, one is on a timeline the other has not reached yet (or the other way), and they
+        /// do not match.
+        package private(set) var breakCount = 0
+
+        /// The cursor is before the start of the timeline now: the position is on the older one, and a target compared
+        /// against the newer would land on other content.
+        package var isBeforeBreak: Bool {
+            readIndex < searchFloor
+        }
+
+        /// Presentation timestamp of the latest packet (a keyframe's for video) appended: a smaller one is a break.
+        private var lastTimelinePTS: Int64 = Int64.min
 
         /// Configured limit for retained history bytes. When 0 (default for local files),
         /// history is immediately pruned as packets are consumed.
@@ -129,9 +149,14 @@ extension MediaDemuxer {
             max(0, elements.count - headIndex)
         }
 
-        /// Effective PTS of the earliest packet currently retained in memory, if any.
+        /// The first element a search looks at: the head, or the start of the timeline now if that is later.
+        private var searchStart: Int {
+            max(headIndex, searchFloor)
+        }
+
+        /// Effective PTS of the earliest packet retained of the timeline now, if any.
         package var earliestPTS: Int64? {
-            guard headIndex < elements.count, let p = elements[headIndex] else { return nil }
+            guard searchStart < elements.count, let p = elements[searchStart] else { return nil }
             return p.effectivePTS
         }
 
@@ -147,6 +172,19 @@ extension MediaDemuxer {
             let newIndex = elements.count
             elements.append(element)
             forwardBytes += element.data.count
+            // The timeline breaks where the timestamps go back: at a keyframe for video (the pictures between keyframes
+            // are reordered), at any packet for audio (with a packet's duration of leeway).
+            let pts = element.effectivePTS
+            let isTimelinePacket = !indexesKeyframes || element.isKeyFrame
+            if isTimelinePacket, pts != Int64.min {
+                let leeway = indexesKeyframes ? 0 : max(element.duration, 0)
+                if lastTimelinePTS != Int64.min, pts.addingReportingOverflow(leeway).partialValue < lastTimelinePTS {
+                    searchFloor = newIndex
+                    breakCount += 1
+                    maxPacketEndPTS = Int64.min
+                }
+                lastTimelinePTS = pts
+            }
             let end = element.packetEnd
             if end > maxPacketEndPTS {
                 maxPacketEndPTS = end
@@ -154,6 +192,19 @@ extension MediaDemuxer {
             if indexesKeyframes, element.isKeyFrame {
                 keyframeIndices.append(newIndex)
             }
+        }
+
+        /// Drops the consumed elements before the start of the timeline now: nothing searches them. When the break is
+        /// still ahead of the cursor they stay, as does what the cursor has yet to reach.
+        private mutating func dropHistoryBeforeBreak() {
+            guard searchFloor > headIndex, searchFloor <= readIndex else { return }
+            for i in headIndex..<searchFloor {
+                if let el = elements[i] {
+                    backBytes = max(0, backBytes - el.data.count)
+                    elements[i] = nil
+                }
+            }
+            headIndex = searchFloor
         }
 
         package mutating func popFirst() -> T? {
@@ -229,8 +280,8 @@ extension MediaDemuxer {
         ///   starts within this much of 0: the first picture of a file with B-frames or an edit list is presented a
         ///   little after 0, and a seek to the start asks for it.
         package func findKeyframeIndex(targetPTS: Int64, forward: Bool = false, startTolerancePTS: Int64 = 0) -> Int? {
-            guard !elements.isEmpty, headIndex < elements.count else { return nil }
-            guard let headPkt = elements[headIndex] else { return nil }
+            guard !elements.isEmpty, searchStart < elements.count else { return nil }
+            guard let headPkt = elements[searchStart] else { return nil }
             let earliestPTS = headPkt.effectivePTS
 
             // Target cannot be beyond the downloaded frontier
@@ -238,12 +289,12 @@ extension MediaDemuxer {
 
             if targetPTS < earliestPTS {
                 guard targetPTS >= 0, earliestPTS <= startTolerancePTS, headPkt.isKeyFrame else { return nil }
-                return headIndex
+                return searchStart
             }
 
             // Keyframes ascend in presentation time, so the ones at or after the head (older entries of
             // `keyframeIndices` are pruned history) are binary searched.
-            let first = keyframePosition(atOrAfter: headIndex)
+            let first = keyframePosition(atOrAfter: searchStart)
             func pts(at position: Int) -> Int64 {
                 elements[keyframeIndices[position]]?.effectivePTS ?? Int64.max
             }
@@ -270,8 +321,8 @@ extension MediaDemuxer {
 
         /// Finds the element index of the first audio packet whose end PTS is >= targetPTS.
         package func findAudioPacketIndex(targetPTS: Int64, primingTolerancePTS: Int64 = 0) -> Int? {
-            guard !elements.isEmpty, headIndex < elements.count else { return nil }
-            guard let headPkt = elements[headIndex] else { return nil }
+            guard !elements.isEmpty, searchStart < elements.count else { return nil }
+            guard let headPkt = elements[searchStart] else { return nil }
             let earliestPTS = headPkt.effectivePTS
 
             // Target cannot be beyond what has been downloaded
@@ -280,12 +331,12 @@ extension MediaDemuxer {
             if targetPTS < earliestPTS {
                 // Allow priming delay at stream start (targetPTS >= 0 and the earliest packet is within the priming tolerance)
                 if targetPTS >= 0, earliestPTS <= primingTolerancePTS {
-                    return headIndex
+                    return searchStart
                 }
                 return nil
             }
 
-            for i in headIndex..<elements.count {
+            for i in searchStart..<elements.count {
                 guard let p = elements[i] else { continue }
                 if p.packetEnd >= targetPTS {
                     return i
@@ -299,6 +350,7 @@ extension MediaDemuxer {
         /// If keyframes are absent (e.g. intra-refresh or missing keyframe flags),
         /// history is pruned linearly once it exceeds `hardCap` (2x limit) to prevent memory exhaustion.
         package mutating func pruneGOPs(maxBackBytes: Int? = nil) {
+            dropHistoryBeforeBreak()
             let limitBytes = maxBackBytes ?? self.maxBackBytes
             guard limitBytes > 0 else {
                 pruneAllHistory()
@@ -334,6 +386,7 @@ extension MediaDemuxer {
         /// Prunes history packets before `readIndex` for streams without GOPs (e.g. audio),
         /// dropping packets whose timestamp is before `beforePTS` or to satisfy `maxBackBytes`.
         package mutating func pruneLinear(beforePTS: Int64? = nil, maxBackBytes: Int? = nil) {
+            dropHistoryBeforeBreak()
             let limitBytes = maxBackBytes ?? self.maxBackBytes
             while headIndex < readIndex {
                 guard let packet = elements[headIndex] else {
@@ -383,6 +436,7 @@ extension MediaDemuxer {
                 elements.removeFirst(headIndex)
                 readIndex -= headIndex
                 let offset = headIndex
+                searchFloor = max(0, searchFloor - offset)
                 headIndex = 0
                 keyframeIndices = keyframeIndices.compactMap { idx in
                     let newIdx = idx - offset
@@ -399,6 +453,9 @@ extension MediaDemuxer {
             forwardBytes = 0
             backBytes = 0
             maxPacketEndPTS = Int64.min
+            searchFloor = 0
+            lastTimelinePTS = Int64.min
+            breakCount = 0
         }
 
         package mutating func removeAll(where shouldBeRemoved: (T) -> Bool) {
@@ -409,6 +466,7 @@ extension MediaDemuxer {
             var newForwardBytes = 0
             var newBackBytes = 0
             var newMaxPacketEndPTS = Int64.min
+            var newFloor: Int?
 
             for i in headIndex..<elements.count {
                 guard let el = elements[i] else { continue }
@@ -416,7 +474,8 @@ extension MediaDemuxer {
                 let newIdx = active.count
                 active.append(el)
                 let end = el.packetEnd
-                if end > newMaxPacketEndPTS {
+                if i >= searchFloor, newFloor == nil { newFloor = newIdx }
+                if i >= searchFloor, end > newMaxPacketEndPTS {
                     newMaxPacketEndPTS = end
                 }
                 if indexesKeyframes, el.isKeyFrame {
@@ -436,6 +495,7 @@ extension MediaDemuxer {
             forwardBytes = newForwardBytes
             backBytes = newBackBytes
             maxPacketEndPTS = newMaxPacketEndPTS
+            searchFloor = newFloor ?? active.count
         }
     }
 }

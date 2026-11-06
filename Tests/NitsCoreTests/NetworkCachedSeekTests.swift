@@ -553,4 +553,120 @@ struct NetworkCachedSeekTests {
         #expect(first.fromCache == true)
         #expect(first.isExact == false)
     }
+
+    // MARK: - A discontinuity (EXT-X-DISCONTINUITY)
+
+    /// Opens the two 4 s segments of `hlsDiscontinuity`, which FFmpeg hands over with the second one's timestamps back at
+    /// zero. With `waitForBreak` the read-ahead (given `seconds` ahead of what is taken) goes on until it has crossed
+    /// the break, nothing taken; otherwise it stays that near the start until packets are taken.
+    private static func openDiscontinuity(seconds: Double, waitForBreak: Bool) throws
+        -> (demuxer: MediaDemuxer, server: TestHTTPServer)?
+    {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuity) else { return nil }
+        let fileURL = URL(fileURLWithPath: path)
+        let server = try TestHTTPServer(root: fileURL.deletingLastPathComponent())
+        let demuxer = try #require(MediaDemuxer(url: server.url(fileURL.lastPathComponent)))
+        demuxer.startReadAhead(limits: .init(seconds: seconds, bytes: 50 << 20, backBytes: 20 << 20))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while waitForBreak, demuxer.audioQueue.breakCount == 0 || demuxer.videoQueue.breakCount == 0,
+            ContinuousClock.now < deadline
+        {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return (demuxer, server)
+    }
+
+    /// Takes video and audio packets until both cursors are `count` past the start of the timeline after the break,
+    /// or time is up. The read-ahead stays `seconds` ahead of them, so the end of the input is not reached.
+    private static func playPastBreak(_ demuxer: MediaDemuxer, by count: Int = 10) {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            let video = demuxer.videoQueue
+            let audio = demuxer.audioQueue
+            let videoDone = video.breakCount > 0 && video.readIndex >= video.searchFloor + count
+            let audioDone = audio.breakCount > 0 && audio.readIndex >= audio.searchFloor + count
+            if videoDone && audioDone { return }
+            var progressed = false
+            if !videoDone, demuxer.nextVideoSample() != nil { progressed = true }
+            if !audioDone, demuxer.nextAudioPacket() != nil { progressed = true }
+            if !progressed { Thread.sleep(forTimeInterval: 0.01) }
+        }
+    }
+
+    @Test("A discontinuity moves the start of both timelines, and a cursor before it refuses the cache")
+    func testDiscontinuityRefusesWhileBeforeIt() throws {
+        // The read-ahead stays 2 s ahead of what is taken: it reaches the break (at 4 s) when playback is at about 2 s.
+        guard let (demuxer, server) = try Self.openDiscontinuity(seconds: 2, waitForBreak: false) else { return }
+        defer { server.stop() }
+
+        // Take 2.2 s: the read-ahead then goes on to 4.2 s, across the break, while the cursor stays well before it.
+        let deadline = ContinuousClock.now + .seconds(10)
+        while demuxer.consumedSeconds < 2.2, ContinuousClock.now < deadline {
+            if demuxer.nextVideoSample() == nil { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        while let packet = demuxer.nextAudioPacket(),
+            Double(packet.pts) * Double(demuxer.audioTimebase.num) / Double(demuxer.audioTimebase.den) < 2.2
+        {}
+        while demuxer.audioQueue.breakCount == 0 || demuxer.videoQueue.breakCount == 0, ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        // FFmpeg passes the timestamps going back on: both streams break once.
+        try #require(demuxer.videoQueue.breakCount == 1, "The video's timestamps go back at the splice")
+        #expect(demuxer.audioQueue.breakCount == 1)
+        #expect(demuxer.videoQueue.searchFloor > 0 && demuxer.audioQueue.searchFloor > 0)
+        // Not the end of the input: an ended read-ahead is refused for its own reasons (the cache is short of the
+        // duration), and this test is of the cursor.
+        try #require(!demuxer.readAheadEnded)
+
+        // The cursor is on the first segment's timeline, before the break; 1 s is in both timelines, and the cache has
+        // the second's. A seek there would land on other content than the one playing.
+        #expect(demuxer.videoQueue.isBeforeBreak && demuxer.audioQueue.isBeforeBreak)
+        #expect(demuxer.seekWithinCache(to: 1.0, exact: true) == false)
+    }
+
+    @Test("Past a discontinuity, seeks are served from the new timeline only")
+    func testDiscontinuityServesTheNewTimeline() throws {
+        guard let (demuxer, server) = try Self.openDiscontinuity(seconds: 2, waitForBreak: false) else { return }
+        defer { server.stop() }
+        Self.playPastBreak(demuxer)
+        try #require(demuxer.videoQueue.breakCount == 1 && demuxer.audioQueue.breakCount == 1)
+        #expect(!demuxer.videoQueue.isBeforeBreak && !demuxer.audioQueue.isBeforeBreak)
+
+        // What came before the splice is gone; 0.3 s is the second segment's, read to 0.45 s.
+        let requestsBefore = server.requests.count
+        let outcome = demuxer.seekReportingCache(to: 0.3, exact: true)
+        #expect(outcome.fromCache == true)
+        #expect(server.requests.count == requestsBefore)
+        let sample = try #require(demuxer.nextVideoSample())
+        let pts =
+            Double(CMSampleBufferGetPresentationTimeStamp(sample).value) * Double(demuxer.timebase.num)
+            / Double(demuxer.timebase.den)
+        #expect((0.0...0.4).contains(pts), "Landed at \(pts)s")
+        #expect(demuxer.videoQueue.peekAt(demuxer.videoQueue.headIndex)?.isKeyFrame == true)
+    }
+
+    @Test("A stream that has not reached a break the other has refuses the cache")
+    func testUnequalBreaksRefuse() throws {
+        guard let (demuxer, server) = try Self.openDiscontinuity(seconds: 2, waitForBreak: false) else { return }
+        defer { server.stop() }
+        Self.playPastBreak(demuxer)
+        try #require(demuxer.videoQueue.breakCount == 1 && demuxer.audioQueue.breakCount == 1)
+        #expect(demuxer.seekWithinCache(to: 0.3, exact: true) == true, "Both on the new timeline: served")
+
+        // The audio is read again into an emptied queue, as after a selection, with the packets it held: its count of
+        // breaks starts over at 0, the video's is 1, and the audio covers the target as before. Under `queueLock`, which
+        // the read-ahead thread appends under.
+        demuxer.queueLock.lock()
+        let held = (demuxer.audioQueue.headIndex..<demuxer.audioQueue.headIndex + demuxer.audioQueue.totalCount)
+            .compactMap { demuxer.audioQueue.peekAt($0) }
+        demuxer.audioQueue.removeAll()
+        for packet in held { demuxer.audioQueue.append(packet) }
+        demuxer.queueLock.unlock()
+        let covered = demuxer.audioQueue.findAudioPacketIndex(
+            targetPTS: Int64(0.3 * Double(demuxer.audioTimebase.den) / Double(demuxer.audioTimebase.num)))
+        #expect(covered != nil, "The audio still covers 0.3 s: only the counts can refuse")
+        #expect(demuxer.videoQueue.breakCount != demuxer.audioQueue.breakCount)
+        #expect(demuxer.seekWithinCache(to: 0.3, exact: true) == false)
+    }
 }

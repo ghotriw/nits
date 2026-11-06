@@ -136,6 +136,12 @@ extension MediaDemuxer {
             return nil
         }
         guard variants.count <= 1 else { return nil }
+        // A break in the timestamps (a discontinuity): the cursor on the older timeline, or a stream that has reached
+        // it before the other, compares a position and a target of different timelines. Both clear with a slow seek.
+        guard !videoQueue.isBeforeBreak, !audioQueue.isBeforeBreak else { return nil }
+        if hasVideo, videoStreamIndex >= 0, audioStreamIndex >= 0, videoQueue.breakCount != audioQueue.breakCount {
+            return nil
+        }
         guard formatCtx != nil else { return nil }
         guard timebase.num > 0, timebase.den > 0 else { return nil }
         guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return nil }
