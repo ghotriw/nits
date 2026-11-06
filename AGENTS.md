@@ -205,6 +205,11 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
   `docs/ARCHITECTURE.md`.
+- **Timestamps that restart or jump at an HLS `EXT-X-DISCONTINUITY`** (ads, splices) are moved onto the playlist's
+  timeline inside the bundled FFmpeg (`scripts/patches/ffmpeg-hls-timeline.patch`): the demuxer sees one timeline, so
+  don't add offsets of your own in Nits for HLS. Tests that need the patch check the build's version string
+  (`--extra-version=nits-hls-timeline`) and are skipped on a Homebrew FFmpeg. Background: "Discontinuities in HLS" in
+  `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add
   `timelineOffset` back to `av_seek_frame` targets. A bare `av_read_frame` breaks timing for these

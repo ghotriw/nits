@@ -134,6 +134,10 @@ public enum SyntheticTestMediaFactory {
         /// A media playlist (12s, MPEG-TS) of a 4s and an 8s segment with `EXT-X-DISCONTINUITY` between them, each made on its own
         /// and starting at the same timestamps: the second segment's go back. Made as a directory; `filename` is the playlist
         case hlsDiscontinuity
+        /// `hlsDiscontinuity` as a master playlist of two variants (320x180 and 640x360, 4 s + 4 s each, a discontinuity
+        /// between the segments, the timestamps of each starting again), to switch variant after the break. Made as a
+        /// directory; `filename` is its master playlist
+        case hlsDiscontinuityLadder
         /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
         case hlsVariantsFMP4
         /// `hlsVariants` in AV1 (SVT-AV1) and fragmented MP4: the configuration in each variant's `av1C`
@@ -165,7 +169,7 @@ public enum SyntheticTestMediaFactory {
         var isHLS: Bool {
             [
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
-                .hlsDiscontinuity,
+                .hlsDiscontinuity, .hlsDiscontinuityLadder,
             ]
             .contains(self)
         }
@@ -288,6 +292,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_ladder/master.m3u8"
             case .hlsDiscontinuity:
                 return "synth_hls_discontinuity/media.m3u8"
+            case .hlsDiscontinuityLadder:
+                return "synth_hls_discontinuity_ladder/master.m3u8"
             case .dashSegments:
                 return "synth_dash_segments/video/0"
             case .dashLadder:
@@ -462,7 +468,9 @@ public enum SyntheticTestMediaFactory {
                     return nil
                 }
             }
-            if preset == .hlsDiscontinuity {
+            if preset == .hlsDiscontinuityLadder {
+                guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
+            } else if preset == .hlsDiscontinuity {
                 guard makeHLSDiscontinuity(ffmpeg, in: directory, preset: preset) else { return nil }
             } else {
                 let arguments = hlsArguments(for: preset, in: directory, subtitlesPath: subtitlesPath)
@@ -542,6 +550,54 @@ public enum SyntheticTestMediaFactory {
             return nil
         }
         return targetPath
+    }
+
+    /// Two variants (320x180 at ~300 kbit/s listed first, 640x360 at ~900 kbit/s) of two 4 s MPEG-TS segments each, with
+    /// a discontinuity between them: every segment is encoded on its own, so all start at the same timestamps. The
+    /// variants carry the same sound, so a switch changes the picture only.
+    private static func makeHLSDiscontinuityLadder(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let sizes = ["320x180", "640x360"]
+        for (variant, size) in sizes.enumerated() {
+            for segment in 0..<2 {
+                let source = segment == 0 ? "testsrc2" : "smptebars"
+                let arguments = [
+                    "-y", "-f", "lavfi", "-i", "\(source)=size=\(size):rate=30:duration=4",
+                    "-f", "lavfi", "-i", "sine=frequency=\(440 * (segment + 1)):sample_rate=48000:duration=4",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0",
+                    "-c:a", "aac", "-b:a", "64k", "-f", "mpegts",
+                    directory.appendingPathComponent("v\(variant)_\(segment).ts").path,
+                ]
+                guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+            }
+            let playlist = """
+                #EXTM3U
+                #EXT-X-VERSION:3
+                #EXT-X-TARGETDURATION:4
+                #EXT-X-PLAYLIST-TYPE:VOD
+                #EXTINF:4.0,
+                v\(variant)_0.ts
+                #EXT-X-DISCONTINUITY
+                #EXTINF:4.0,
+                v\(variant)_1.ts
+                #EXT-X-ENDLIST
+
+                """
+            guard
+                FileManager.default.createFile(
+                    atPath: directory.appendingPathComponent("v\(variant).m3u8").path, contents: Data(playlist.utf8))
+            else { return false }
+        }
+        let master = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS="avc1.640015,mp4a.40.2"
+            v0.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"
+            v1.m3u8
+
+            """
+        return FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
     }
 
     /// A media playlist of two MPEG-TS segments, 4 s and 8 s: each is encoded on its own so both start at the same
@@ -797,7 +853,8 @@ public enum SyntheticTestMediaFactory {
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
-            .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .dashSegments, .dashLadder, .dashLadderCaptions:
+            .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .dashSegments, .dashLadder,
+            .dashLadderCaptions:
             return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [

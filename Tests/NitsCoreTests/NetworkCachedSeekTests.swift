@@ -556,16 +556,23 @@ struct NetworkCachedSeekTests {
 
     // MARK: - A discontinuity (EXT-X-DISCONTINUITY)
 
-    /// Opens the two 4 s segments of `hlsDiscontinuity`, which FFmpeg hands over with the second one's timestamps back at
-    /// zero. With `waitForBreak` the read-ahead (given `seconds` ahead of what is taken) goes on until it has crossed
-    /// the break, nothing taken; otherwise it stays that near the start until packets are taken.
+    /// Opens the two segments of `hlsDiscontinuity` (4 s and 8 s) joined into one MPEG-TS file, whose timestamps go back
+    /// to the start where the second begins: the case of a break the timeline patch of the HLS demuxer does not cover
+    /// (it moves HLS segments only). With `waitForBreak` the read-ahead (given `seconds` ahead of what is taken) goes on
+    /// until it has crossed the break, nothing taken; otherwise it stays that near the start until packets are taken.
     private static func openDiscontinuity(seconds: Double, waitForBreak: Bool) throws
         -> (demuxer: MediaDemuxer, server: TestHTTPServer)?
     {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuity) else { return nil }
-        let fileURL = URL(fileURLWithPath: path)
-        let server = try TestHTTPServer(root: fileURL.deletingLastPathComponent())
-        let demuxer = try #require(MediaDemuxer(url: server.url(fileURL.lastPathComponent)))
+        let source = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NitsJoinedTS", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let joinedURL = directory.appendingPathComponent("joined.ts")
+        var joined = try Data(contentsOf: source.appendingPathComponent("seg0.ts"))
+        joined.append(try Data(contentsOf: source.appendingPathComponent("seg1.ts")))
+        try joined.write(to: joinedURL, options: .atomic)
+        let server = try TestHTTPServer(root: directory)
+        let demuxer = try #require(MediaDemuxer(url: server.url(joinedURL.lastPathComponent)))
         demuxer.startReadAhead(limits: .init(seconds: seconds, bytes: 50 << 20, backBytes: 20 << 20))
         let deadline = ContinuousClock.now + .seconds(10)
         while waitForBreak, demuxer.audioQueue.breakCount == 0 || demuxer.videoQueue.breakCount == 0,

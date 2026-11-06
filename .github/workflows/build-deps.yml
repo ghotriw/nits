@@ -61,13 +61,14 @@ jobs:
             - FFmpeg ${{ steps.deps.outputs.ffmpeg }} (libavcodec, libavformat, libavutil, libswresample, libswscale)
             - libass ${{ steps.deps.outputs.libass }} (ISC), FreeType ${{ steps.deps.outputs.freetype }} (FTL), HarfBuzz ${{ steps.deps.outputs.harfbuzz }} (MIT), FriBidi ${{ steps.deps.outputs.fribidi }} (LGPL-2.1+), libunibreak ${{ steps.deps.outputs.libunibreak }} (zlib)
             - Target: macOS 15.0+ (`-mmacosx-version-min=15.0`), Apple Silicon (`arm64`)
-            Source archives the libraries were built from, and the patch applied to FFmpeg, are attached (LGPL source offer).
+            Source archives the libraries were built from, and the patches applied to FFmpeg, are attached (LGPL source offer).
           files: |
             .build/dist/${{ steps.deps.outputs.archive }}
             .build/dist/${{ steps.deps.outputs.archive }}.sha256
             .build/src/ffmpeg-${{ steps.deps.outputs.ffmpeg }}.tar.xz
             scripts/patches/ffmpeg-dashdec-keep-libxml2.patch
             scripts/patches/ffmpeg-hls-live-seek.patch
+            scripts/patches/ffmpeg-hls-timeline.patch
             .build/src/dav1d-${{ steps.deps.outputs.dav1d }}.tar.bz2
             .build/src/libass-${{ steps.deps.outputs.libass }}.tar.xz
             .build/src/freetype-${{ steps.deps.outputs.freetype }}.tar.xz

@@ -582,6 +582,27 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   or FFmpeg would start it at the read position.
 - Tests play local files only: `NITS_READ_AHEAD_LOCAL=1` reads them ahead too, to run the suites that way.
 
+### Discontinuities in HLS (`EXT-X-DISCONTINUITY`)
+
+A stream with ad insertions or splices may restart its timestamps (from zero, or another base) or jump at a
+discontinuity. FFmpeg's HLS demuxer does not read the tag; left alone, the pictures of such a segment meet a clock far
+from them (dropped, or waited for), and a seek past the first break lands at the start of the file (its seek drops
+packets until their timestamps reach the segment's start on the playlist's timeline, which a restarted segment never
+does). The bundled HLS demuxer is patched (`scripts/patches/ffmpeg-hls-timeline.patch`, after
+`ffmpeg-hls-live-seek.patch`) to move the packets of the segments after a discontinuity onto the playlist's timeline: by
+where the playlist's durations put the segment, minus the timestamp of its first packet, one offset per playlist so audio
+and video stay together, taken at the first packet after a seek or a variant switch, and at the first packet that jumps
+(by 2 s against its own stream's last) after a segment that follows a discontinuity. A server that keeps its timestamps
+is not touched (a difference under half a target duration is not taken), nor is a playlist without the tag. So the
+demuxer's timeline is the playlist's: the engine, the read-ahead's measure (`readAheadState` against `consumedSeconds`)
+and the packet cache see one, and the cache's `searchFloor` (a timestamp going back) is a safety for what the patch does
+not cover (a file of segments cut and joined, an MPEG-TS with a reset). Tests of the patch read the build's version string
+(`--extra-version=nits-hls-timeline`) and are skipped on another FFmpeg, which has none of it.
+
+Not covered: the advertisement of some streams (Mux's Deltatre DAI) is MPEG-TS with a PMT of its own, whose packets
+FFmpeg's HLS demuxer drops as corrupt; the picture's size changing at a break (the format description of the samples
+stays the first segment's); subtitles, whose playlists are not moved. See `docs/OPEN_ISSUES.md`.
+
 ### Live streams
 
 An HLS playlist that slides (no `ENDLIST`, not `EVENT`: a YouTube live stream's DVR window of about 15 minutes) is a

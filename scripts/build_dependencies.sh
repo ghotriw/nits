@@ -117,6 +117,7 @@ EOF
 
 FFMPEG_CONFIGURE_FLAGS=(
     --prefix="$PREFIX"
+    --extra-version=nits-hls-timeline
     --arch="$DEPS_ARCH"
     --target-os=darwin
     --cc=clang
