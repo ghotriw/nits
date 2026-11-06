@@ -145,6 +145,11 @@ public enum SyntheticTestMediaFactory {
         /// `hlsDiscontinuity` with the second segment of 1 reference frame against the first's 3, in the same size: its SPS
         /// differs, as an encoder that varies its parameters does. `filename` is the media playlist
         case hlsDiscontinuityTiming
+        /// The segments a live stream with server-side ad insertion is made of: thirty content segments `c0` to `c29` of
+        /// 4 s (320x180) on one running timeline (segment `n` starts at 1000 + 4n s, as an encoder's clock does), and two
+        /// advertisement segments `ad0`, `ad1` of 4 s (smptebars) whose timestamps start at 0. A test lists them as it likes
+        /// (`HLSLiveDiscontinuityTests`); `filename` is a playlist of the content alone
+        case hlsLiveAds
         /// Two 4 s fragmented-MP4 segments (320x180, then 640x360) with an init section each: `EXT-X-MAP` renewed after the
         /// `EXT-X-DISCONTINUITY`, the timestamps of each starting again, picture and sound muxed. `filename` is the playlist
         case hlsDiscontinuityFMP4
@@ -189,7 +194,7 @@ public enum SyntheticTestMediaFactory {
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-                .hlsDiscontinuityFlashClick,
+                .hlsDiscontinuityFlashClick, .hlsLiveAds,
             ]
             .contains(self)
         }
@@ -318,6 +323,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_discontinuity_resize/media.m3u8"
             case .hlsDiscontinuityTiming:
                 return "synth_hls_discontinuity_timing/media.m3u8"
+            case .hlsLiveAds:
+                return "synth_hls_live_ads/media.m3u8"
             case .hlsDiscontinuityFMP4:
                 return "synth_hls_discontinuity_fmp4/media.m3u8"
             case .hlsDiscontinuityFlashClick:
@@ -498,7 +505,9 @@ public enum SyntheticTestMediaFactory {
                     return nil
                 }
             }
-            if preset == .hlsDiscontinuityLadder {
+            if preset == .hlsLiveAds {
+                guard makeHLSLiveAds(ffmpeg, in: directory, preset: preset) else { return nil }
+            } else if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition
                 || preset == .hlsDiscontinuityFlashClick
@@ -752,6 +761,36 @@ public enum SyntheticTestMediaFactory {
             atPath: directory.appendingPathComponent("media.m3u8").path, contents: Data(playlist.utf8))
     }
 
+    /// `.hlsLiveAds`: content segments on a running timeline and advertisement segments from 0, and a VOD playlist of
+    /// the content alone.
+    private static func makeHLSLiveAds(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let contentCount = 30
+        func segment(name: String, source: String, frequency: Int, offset: Int) -> Bool {
+            runFFmpeg(
+                ffmpeg,
+                arguments: [
+                    "-y", "-f", "lavfi", "-i", "\(source)=size=320x180:rate=30:duration=4",
+                    "-f", "lavfi", "-i", "sine=frequency=\(frequency):sample_rate=48000:duration=4",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0",
+                    "-c:a", "aac", "-b:a", "64k", "-output_ts_offset", "\(offset)", "-muxdelay", "0",
+                    "-f", "mpegts", directory.appendingPathComponent("\(name).ts").path,
+                ], preset: preset)
+        }
+        var playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-PLAYLIST-TYPE:VOD\n"
+        for index in 0..<contentCount {
+            guard segment(name: "c\(index)", source: "testsrc2", frequency: 440, offset: 1000 + 4 * index) else {
+                return false
+            }
+            playlist += "#EXTINF:4.0,\nc\(index).ts\n"
+        }
+        for index in 0..<2 {
+            guard segment(name: "ad\(index)", source: "smptebars", frequency: 880, offset: 0) else { return false }
+        }
+        playlist += "#EXT-X-ENDLIST\n"
+        return FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("media.m3u8").path, contents: Data(playlist.utf8))
+    }
+
     /// FFmpeg arguments writing an HLS preset's master playlist, media playlists and segments into `directory`.
     private static func hlsArguments(for preset: Preset, in directory: URL, subtitlesPath: String) -> [String] {
         let file = { (name: String) in directory.appendingPathComponent(name).path }
@@ -974,7 +1013,7 @@ public enum SyntheticTestMediaFactory {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-            .hlsDiscontinuityFlashClick,
+            .hlsDiscontinuityFlashClick, .hlsLiveAds,
             .dashSegments, .dashLadder,
             .dashLadderCaptions:
             return []  // Made by `generateMedia`.

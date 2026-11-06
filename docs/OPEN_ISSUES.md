@@ -232,8 +232,40 @@ Accepted for now, noted for later.
   - A segment whose timestamps restart with no `EXT-X-DISCONTINUITY` before it is not seen: PlayOn's stream has one (the
     8 s segment before its last tag), which lands at -6.4 to 1.6 s and leaves a hole at 97.5 to 105.6 s in the timeline.
     The tag is what tells where to take the offset; guessing from a jump alone is what the patch avoids.
-  - Not looked at: a live stream with breaks (all runs were VOD; the position of a
-    segment comes from `first_timestamp`, which the live-seek patch moves as the window slides: untested together);
+  - A live stream with breaks (`HLSLiveDiscontinuityTests`, synthetic, 2026-11-06), in two kinds: every 4 s segment
+    restarting its timestamps at 0, and server-side ad insertion (`hlsLiveAds`: content on a running timeline from 1000 s,
+    two advertisement segments from 0 after every three of content, so the content after the advertisement is already on
+    the stream's time, as Mux's is). A window of 10 segments sliding, opened after it had slid. FFmpeg opens a live
+    playlist at the third segment before its end (the timestamp probed there is the origin: negative where that segment
+    restarts its timestamps, 1012 s on content), and the demuxer then rewinds to the first segment listed, so a plain read
+    goes through the window as it was at the open and never waits for the playlist. The read from the edge, where the
+    engine plays, is `edgeThroughAnAdvertisement`: content (number 10), the advertisement (13, 14), content again (15 on,
+    already 8 s on): the steps stay under 0.2 s and the sound has no gaps. That does not tell whether the offset the
+    advertisement took is dropped or the timeline patch's guard keeps the packets' own timestamps (either way the stream
+    plays right), so it was looked at once in the patch's debug log (`av_log_set_level(AV_LOG_DEBUG)`, 2026-11-06):
+    segment 13 `offset 1051933333`, segment 14 `offset 1055933333` (the advertisement), segment 15 `expected at
+    1060000000, packet at 1060000000: offset 0`: dropped, by the comparison with the playlist. Not a check the tests
+    make. The content is made up to segment 29, and a test's playlist must not reach past it. Picture
+    and sound go on across the breaks (steps under 0.2 s, gaps under 0.15 s), keyframe seeks within the window land
+    within a segment of the target, and the engine plays and seeks to the oldest place allowed (the clock goes on, the
+    picture follows it, under 20 dropped). A single run of 30 s through about eight breaks (the 4 s segments restarting)
+    dropped nothing; the engine test watches 5 s). `engineCrossesAnAdvertisement` takes the engine across both borders
+    of the advertisement (seeks to 18 and 26 s on the window's timeline, 2 s short of the entry at 20 s and the return
+    at 28 s): the clock and the picture go on past each, under 20 dropped. The lag check of the engine tests failed twice,
+    in the first run after a build each time; the message of the second said 35 s at 0 s from the start, a first sample
+    before the first picture (`currentFramePTS` is -1 until one is shown), which the check skips now. The first
+    failure's message was not kept: it may have been the same. One thing was wrong and is fixed: the window of a stream opened after it
+    had slid started before 0 (the segments listed before the one reading begins at are placed earlier than its first
+    timestamp, which is small when timestamps restart), and a seek into that part stood the clock (`currentFramePTS >= 0`
+    means "a picture is there" throughout the engine). `MediaDemuxer.timelineOrigin(of:)` now takes the start of an
+    HLS stream for the origin, negative or not (other formats flagged `AVFMT_TS_DISCONT` keep a positive one or none), so it starts at 0 as it opens and everything after is positive.
+    An EVENT playlist (no `hls_live` tag, so `isLive` is false and it has a duration) had the same fault, its first
+    picture at -2.5 s; it starts at 0 now (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks (single
+    variant only; see Ladders), a stream whose timestamps jump on without a break, an advertisement on a timeline of its
+    own at a splice shorter than the 1 s threshold, audio of a rendition with its own live playlist, a live stream of
+    fMP4 (the origin applies to it too: `AVFMT_TS_DISCONT` is on HLS, read from the code), and a real stream (only
+    synthetic ones). A break close to the reading point, as after a seek, is moved only when the jump is over half a target
+    duration: with a target duration of 10 s a 4 s segment near the point is not (early break, above). Not looked at:
     subtitles (their playlists are not moved).
   - A restart of timestamps by less than 2 s is not seen (the error is that small).
   - Mux's Deltatre DAI (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`) puts the later main content on
@@ -275,7 +307,12 @@ Accepted for now, noted for later.
 - **`PlaybackStressTests` "Holding backward seek key produces monotonic non-increasing time values..."** failed once
   in three runs, then none in ten (2026-11-06), and once in ten on the same build without the HLS timeline patch:
   `Expectation failed: curr <= prev + 0.05` (`PlaybackStressTests.swift:395`), a time that stepped forward by more than
-  50 ms in a backward series. Not looked into; a local file, so no HLS in it.
+  50 ms in a backward series. Not looked into; a local file, so no HLS in it. Fell again in a full run of 343 s (2026-11-06,
+  after the origin change, which does not touch a Matroska/MP4 file): at 25.0 → 25.050201 s, the sixth press of ~15
+  (the series goes 45, 43, 40, 35, 30, 25, 20 … 0), 0.2 ms over the allowance; the time then rose in microsecond steps to
+  25.066596 (the PTS of the picture that landed), and the next press took it to 20.0. So the clock reads a little ahead
+  of the seek target in the middle of a series, between two presses (30–70 ms apart), not at its end. 3 of 3 alone it
+  passes (1.6 s against 9.95 s in the run). Cause not shown.
 - **`ExternalAudioTests` "A dub next to the media is a track of it…"** failed once in a full local run (2026-11-01):
   the dub's first audio fed at 1.04 s against `fed < 1`; it passes alone. The dub is joined to the picture's clock
   (`AudioJoin`), which cuts the audio to where the clock is plus the output latency, so under load the first buffer
