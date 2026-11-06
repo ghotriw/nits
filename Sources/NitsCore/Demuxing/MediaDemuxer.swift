@@ -765,12 +765,20 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// Start of the playback timeline in `AV_TIME_BASE` units. MPEG-TS / MPEG-PS timestamps continue the
     /// source's clock (a DVD starts around 0.5 s, a broadcast capture hours in), so their first timestamp
     /// becomes zero. Other containers already start near zero (or slightly before, via edit lists) and
-    /// are left as they are.
+    /// are left as they are. An HLS stream of a live or EVENT playlist can start before 0 (segments listed before the one
+    /// reading began at, placed by the timeline patch on a stream whose timestamps restart at a break): the engine counts
+    /// on times from 0 (`currentFramePTS >= 0` means a picture is there), so it starts at 0 too. Only HLS gets a negative
+    /// origin: the other formats flagged above (MPEG-PS, FLV, Ogg, ...) keep theirs as they were.
     package static func timelineOrigin(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Int64 {
-        guard isUnindexedStream(ctx),
-            ctx.pointee.start_time != Int64.min, ctx.pointee.start_time > 0
-        else { return 0 }
-        return ctx.pointee.start_time
+        guard isUnindexedStream(ctx), ctx.pointee.start_time != Int64.min else { return 0 }
+        if ctx.pointee.start_time > 0 || isHLS(ctx) { return ctx.pointee.start_time }
+        return 0
+    }
+
+    /// Whether `ctx` was opened by FFmpeg's HLS demuxer (`name` is a comma-separated list of the format's names).
+    static func isHLS(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        guard let name = ctx.pointee.iformat?.pointee.name else { return false }
+        return String(cString: name).split(separator: ",").contains("hls")
     }
 
     /// `origin` (`AV_TIME_BASE` units) in the time base of `stream`.

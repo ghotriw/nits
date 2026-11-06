@@ -239,6 +239,11 @@ discontinuity can't hide every following frame. Container quirks:
   Thumbnails and embedded subtitle extraction apply the same origin.
   After probing parameter sets at open, these formats rewind to byte 0: a timestamp rewind can land past
   the first packet and lose the keyframe that starts the file.
+- **HLS** can start before 0. The segments of a live or EVENT playlist listed before the one reading begins at (three
+  from the end) are placed earlier than its first timestamp, which is small when timestamps restart at a break, and the
+  engine takes `currentFramePTS >= 0` for "a picture is there". `timelineOrigin(of:)` gives HLS (and only HLS) a negative
+  origin too: the stream's start is its zero, and a live window opens at 0. The other formats flagged `AVFMT_TS_DISCONT`
+  keep a positive origin or none.
 - **AVI** stores decode order only, so I/P packets have no PTS. The sample's PTS falls back to its
   DTS (the engine needs one), but it carries `presentationTimeUnknownAttachmentKey`, and
   `FFmpegVideoDecoder` then leaves the packet PTS unset so FFmpeg reorders B-frames correctly.
