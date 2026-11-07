@@ -10,7 +10,7 @@ import Testing
 struct HTTPSessionOpeningLimitTests {
     static let size = 4 << 20
 
-    private static func server() throws -> (server: TestHTTPServer, directory: URL) {
+    fileprivate static func server() throws -> (server: TestHTTPServer, directory: URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "NitsOpeningLimit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -19,7 +19,7 @@ struct HTTPSessionOpeningLimitTests {
         return (try TestHTTPServer(root: directory), directory)
     }
 
-    private static func read(_ input: HTTPSessionInput, _ count: Int) -> Int {
+    fileprivate static func read(_ input: HTTPSessionInput, _ count: Int) -> Int {
         var buffer = [UInt8](repeating: 0, count: 64 << 10)
         var total = 0
         while total < count {
@@ -174,5 +174,85 @@ extension HTTPSessionOpeningLimitTests {
         input.close()
         let sampled = transport.meter.take().reduce(0) { $0 + $1.bytes }
         #expect(sampled <= Self.size - HTTPSessionInput.openingHighWater, "\(sampled) bytes sampled of \(Self.size)")
+    }
+}
+
+/// The session a transport's requests go through is replaced when its connection was lost (`HTTPSessionHolder`).
+@Suite("Replaceable sessions", .serialized, .hostDependent, .networkServer)
+struct HTTPSessionHolderTests {
+    @Test("A connection lost mid-body is asked again on a new session, and the body comes whole")
+    func lostConnectionMovesOnToANewSession() throws {
+        let (server, directory) = try HTTPSessionOpeningLimitTests.server()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        server.setBehavior(.init(failure: .dropMidwayOnce), forPaths: { $0 == "body" })
+        let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
+        let before = transport.holder.session
+        guard
+            case .input(let input) = transport.open(
+                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+        else {
+            Issue.record("the request was not served")
+            return
+        }
+        defer { input.close() }
+        let total = HTTPSessionOpeningLimitTests.read(input, HTTPSessionOpeningLimitTests.size)
+        #expect(total == HTTPSessionOpeningLimitTests.size, "\(total) of \(HTTPSessionOpeningLimitTests.size) bytes")
+        #expect(transport.holder.session !== before, "the session that lost its connection is still the one asked")
+    }
+
+    @Test("A session is replaced once for the connection that was lost, whoever finds it gone first")
+    func replacesOnce() {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let holder = HTTPSessionHolder(configuration: .ephemeral, queue: queue)
+        defer { holder.invalidate() }
+        let first = holder.session
+        holder.replace(first)
+        let second = holder.session
+        #expect(second !== first)
+        // Another request that lost the same connection finds the session replaced already: it keeps the new one.
+        holder.replace(first)
+        #expect(holder.session === second)
+        holder.replace(second)
+        #expect(holder.session !== second)
+    }
+
+    @Test("The cookies an answer set go with the requests on the session that replaced the one that got them")
+    func cookiesSurviveTheReplacement() throws {
+        let (server, directory) = try HTTPSessionOpeningLimitTests.server()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        server.setBehavior(.init(setCookie: "token=abc; Path=/"), forPaths: { $0 == "body" })
+        let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
+        func open() -> HTTPSessionInput? {
+            guard
+                case .input(let input) = transport.open(
+                    server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+            else { return nil }
+            return input
+        }
+        let first = try #require(open())
+        _ = HTTPSessionOpeningLimitTests.read(first, 1_000)
+        first.close()
+        transport.holder.replace(transport.holder.session)
+        let second = try #require(open())
+        defer { second.close() }
+        _ = HTTPSessionOpeningLimitTests.read(second, 1_000)
+        let sent = server.requests.last?.cookie
+        #expect(sent?.contains("token=abc") == true, "the request after the replacement sent \(sent ?? "no cookie")")
+    }
+
+    @Test("A session of the caller's own is never replaced")
+    func fixedSessionStays() {
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let holder = HTTPSessionHolder(fixed: session)
+        holder.replace(session)
+        #expect(holder.session === session)
     }
 }

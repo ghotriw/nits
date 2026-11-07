@@ -530,7 +530,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     `io_open` hands FFmpeg an `AVIOContext` of a task's own (`HTTPSessionInput`) for every HTTP(S) request of an HLS
     demuxer, once the context is one (the master, probed first, FFmpeg opens itself, so a redirect still resolves).
     `io_open` waits for the answer's headers; the body comes into a buffer while FFmpeg reads at its own pace
-    (suspended past 32 MB unread). The session keeps the connections open; FFmpeg's `http_persistent` is off, as it
+    (suspended past 32 MB unread). The session keeps the connections open, and is replaced by a new one, with the
+    cookies, when a connection is lost (`HTTPSessionHolder`). YouTube's servers close an HTTP/3 connection after a
+    response, and a session would put the next request, retries included, on the dead one. The error that reports the
+    loss can follow a body that came whole; that is no failure. FFmpeg's `http_persistent` is off, as it
     only keeps those of its own inputs, and sends the requests over them past `io_open`. What isn't served so FFmpeg
     opens as before: a redirected answer, a range answered whole, encrypted segments (`crypto+`), a file read over
     HTTP (it seeks). The requests carry the source's headers, and FFmpeg's user agent (`Lavf/…`) without one.

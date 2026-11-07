@@ -86,7 +86,8 @@ struct LiveSegmentGateTests {
     private static func input() -> HTTPSessionTransport.Opened {
         .input(
             HTTPSessionInput(
-                session: .shared, request: URLRequest(url: URL(string: "https://live.nits.invalid/x")!), offset: 0,
+                holder: HTTPSessionHolder(fixed: .shared),
+                request: URLRequest(url: URL(string: "https://live.nits.invalid/x")!), offset: 0,
                 end: nil, meter: NetworkTransferMeter(), shouldAbort: Self.never))
     }
 

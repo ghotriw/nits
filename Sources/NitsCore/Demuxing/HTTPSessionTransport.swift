@@ -33,7 +33,7 @@ final class HTTPSessionTransport: Sendable {
     let meter = NetworkTransferMeter()
     /// What the inputs opened while a DASH demuxer opens are held to, until `endOpening`.
     private let openingLimit = HTTPSessionInput.OpeningLimit()
-    private let session: URLSession
+    let holder: HTTPSessionHolder
     private let headers: [String: String]
     /// Where the cookies FFmpeg passes on came from, when the master's location isn't told: the source.
     private let cookieOrigin: URL?
@@ -63,10 +63,10 @@ final class HTTPSessionTransport: Sendable {
         // The delegates' calls, off the cooperative pool: FFmpeg's thread waits on them with its own.
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
-        session = URLSession(configuration: configuration, delegate: nil, delegateQueue: queue)
+        holder = HTTPSessionHolder(configuration: configuration, queue: queue)
     }
 
-    deinit { session.invalidateAndCancel() }
+    deinit { holder.invalidate() }
 
     static func serves(_ url: String) -> Bool {
         url.hasPrefix("http://") || url.hasPrefix("https://")
@@ -94,7 +94,7 @@ final class HTTPSessionTransport: Sendable {
         var request = URLRequest(url: requestURL)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let input = HTTPSessionInput(
-            session: session, request: request, offset: offset, end: end, meter: meter,
+            holder: holder, request: request, offset: offset, end: end, meter: meter,
             openingLimit: whileOpening ? openingLimit : nil, followsRedirects: followsRedirects,
             shouldAbort: shouldAbort)
         input.start()
@@ -121,7 +121,7 @@ final class HTTPSessionTransport: Sendable {
             defer { stored = cookies }
             return stored != cookies
         }
-        guard isNew, let storage = session.configuration.httpCookieStorage else { return }
+        guard isNew, let storage = holder.cookieStorage else { return }
         for line in cookies.split(whereSeparator: \.isNewline) {
             let parsed = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": String(line)], for: origin)
             storage.setCookies(parsed, for: origin, mainDocumentURL: nil)
@@ -337,7 +337,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// `AVERROR_EXIT` (`-MKTAG('E', 'X', 'I', 'T')`), FFmpeg's error for an interrupted call.
     static let averrorExit: Int32 = -0x5449_5845
 
-    private let session: URLSession
+    private let holder: HTTPSessionHolder
     private let request: URLRequest
     private let offset: Int64
     private let end: Int64?
@@ -349,12 +349,12 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     private let changed = DispatchSemaphore(value: 0)
 
     init(
-        session: URLSession, request: URLRequest, offset: Int64, end: Int64?, meter: NetworkTransferMeter,
+        holder: HTTPSessionHolder, request: URLRequest, offset: Int64, end: Int64?, meter: NetworkTransferMeter,
         openingLimit: OpeningLimit? = nil, followsRedirects: Bool = false, shouldAbort: @escaping @Sendable () -> Bool
     ) {
         self.followsRedirects = followsRedirects
         self.openingLimit = openingLimit
-        self.session = session
+        self.holder = holder
         self.request = request
         self.offset = offset
         self.end = end
@@ -385,7 +385,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         if position > 0 || last != nil {
             request.setValue("bytes=\(position)-\(last.map(String.init) ?? "")", forHTTPHeaderField: "Range")
         }
-        let task = session.dataTask(with: request)
+        // Made under the holder's lock: a session is closed only after the tasks made on it, never between a task's session
+        // being picked and its being made (a task made on a closed session is an exception that ends the app).
+        let task = holder.dataTask(with: request)
         task.delegate = self
         state.task = task
         return task
@@ -623,6 +625,14 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        // A connection the server closed (HTTP/3 to YouTube's servers does it after a response, with the next request
+        // already on it): the requests that follow, retries included, would go on the same dead connection until the
+        // session drops it, which was seen to be never. A session of its own for what comes next. The replacement costs
+        // the other inputs their warm connections (their TLS, their window): on HTTP/1.1, where a server closing an idle
+        // keep-alive is routine, it would drop them too, and the metrics of the next requests would show the slow start.
+        // Only HTTP/3 to YouTube was seen. Not narrowed to it (the protocol is known by now: `didFinishCollecting` comes
+        // before this) until another case shows the cost.
+        if (error as? URLError)?.code == .networkConnectionLost { holder.replace(session) }
         let retry = state.withLockUnchecked { state -> Double? in
             guard task === state.task else { return nil }
             setTransferring(false, in: &state)
@@ -647,7 +657,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 return nil
             }
             state.isFinished = true
-            state.failed = state.failed || error != nil
+            // An error after the whole body came (the connection closed on the last byte) loses nothing.
+            state.failed = state.failed || (error != nil && isCutShort)
             if state.answer == nil {
                 state.answer = (error as? URLError)?.code == .timedOut ? .failed(-ETIMEDOUT) : .failed(-EIO)
             }
@@ -732,5 +743,69 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             UInt32(a) | UInt32(b.asciiValue ?? 0) << 8 | UInt32(c.asciiValue ?? 0) << 16
             | UInt32(d.asciiValue ?? 0) << 24
         return -Int32(bitPattern: tag)
+    }
+}
+
+/// The `URLSession` a transport's requests go through, which can be replaced: a session keeps its connections, and one
+/// the server closed may be the one its next request is put on (`HTTPSessionInput`, `networkConnectionLost`). The
+/// replaced one finishes the requests it has, and goes. The cookies belong to the holder, not to a session: every session
+/// is made with the first's storage.
+final class HTTPSessionHolder: Sendable {
+    private struct State {
+        var session: URLSession
+        var isInvalidated = false
+    }
+
+    /// Makes the next session; `nil` for one that is never replaced.
+    private let make: (@Sendable () -> URLSession)?
+    private let state: OSAllocatedUnfairLock<State>
+    /// What the cookies of the answers go into, and the requests take theirs from.
+    let cookieStorage: HTTPCookieStorage?
+
+    /// Sessions of `configuration`, their delegates' calls on `queue`.
+    init(configuration: URLSessionConfiguration, queue: OperationQueue) {
+        // The storage is the first session's: an ephemeral configuration may make its own only with a session. Set once,
+        // before any session is made from the configuration again.
+        let first = URLSession(configuration: configuration, delegate: nil, delegateQueue: queue)
+        let storage = first.configuration.httpCookieStorage
+        configuration.httpCookieStorage = storage
+        cookieStorage = storage
+        make = { URLSession(configuration: configuration, delegate: nil, delegateQueue: queue) }
+        state = OSAllocatedUnfairLock(initialState: State(session: first))
+    }
+
+    /// One session that is never replaced.
+    init(fixed session: URLSession) {
+        make = nil
+        cookieStorage = session.configuration.httpCookieStorage
+        state = OSAllocatedUnfairLock(initialState: State(session: session))
+    }
+
+    var session: URLSession { state.withLock { $0.session } }
+
+    /// A task for `request`, made under the lock that `replace` takes before it closes a session: a session is closed only
+    /// after the tasks made on it, so none is made on a closed one.
+    func dataTask(with request: URLRequest) -> URLSessionDataTask {
+        state.withLock { $0.session.dataTask(with: request) }
+    }
+
+    /// A new session in place of `lost`, unless it already was replaced (by another request that found the connection
+    /// gone), or the holder is closed.
+    func replace(_ lost: URLSession) {
+        guard let make else { return }
+        let isReplaced = state.withLock { state -> Bool in
+            guard !state.isInvalidated, state.session === lost else { return false }
+            state.session = make()
+            return true
+        }
+        if isReplaced { lost.finishTasksAndInvalidate() }
+    }
+
+    func invalidate() {
+        let session = state.withLock { state -> URLSession in
+            state.isInvalidated = true
+            return state.session
+        }
+        session.invalidateAndCancel()
     }
 }
