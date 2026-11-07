@@ -52,6 +52,26 @@ extension MediaDemuxer {
         }
     }
 
+    /// The window of a live stream's history after the gate found something (`LiveSegmentGate.Change`): the end further on,
+    /// or the end of the stream. The start has slid since the report was told, as the engine slides it (by the time that
+    /// has passed, `LiveStream.window`); a window told again with the start it began with would take the slide back to the
+    /// first load, and let a seek into segments the server has dropped.
+    static func applying(
+        _ change: LiveSegmentGate.Change, to report: LiveReport, origin: Double, now: ContinuousClock.Instant
+    ) -> LiveReport {
+        var window = report.window
+        if window.hasSlid { window.start += max(0, (now - report.loadedAt) / .seconds(1)) }
+        switch change {
+        case .headAdvanced(let head):
+            window.end = max(window.end, head.startTime + LiveSegmentGate.nominalSegmentDuration - origin)
+        case .ended(_, let endTime):
+            window.end = max(window.end, endTime - origin)
+            window.hasEnded = true
+        }
+        window.start = min(window.start, window.end)
+        return LiveReport(window: window, loadedAt: now)
+    }
+
     static func liveWindow(of ctx: UnsafeMutablePointer<AVFormatContext>, origin: Int64) -> LiveWindow? {
         guard ctx.pointee.start_time != Int64.min, ctx.pointee.duration > 0 else { return nil }
         let start = Double(ctx.pointee.start_time - origin) / Double(AV_TIME_BASE)

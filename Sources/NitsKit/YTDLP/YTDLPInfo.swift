@@ -152,7 +152,9 @@ struct YTDLPInfo: Decodable, Sendable {
 
     /// The streams to play the page from; `nil` when `pageURL` is media itself, to open as it is. `sponsorBlock`, the
     /// video's SponsorBlock segments, become skip buttons, and chapters when the author gave none.
-    func resolvedMedia(for pageURL: URL, sponsorBlock: [SponsorBlockSegment] = []) throws -> ResolvedMedia? {
+    func resolvedMedia(
+        for pageURL: URL, sponsorBlock: [SponsorBlockSegment] = [], liveHistory: YouTubeLiveHistory.Window? = nil
+    ) throws -> ResolvedMedia? {
         if type == "playlist" {
             throw MediaResolutionError("Playlists aren't supported yet")
         }
@@ -188,6 +190,18 @@ struct YTDLPInfo: Decodable, Sendable {
 
         let resolvedSubtitles = subtitleFiles()
 
+        // A live stream's history plays from a manifest of its segments, built from the server's answers
+        // (`YouTubeLiveHistory`), the picture and its audio in one demuxer.
+        if let liveHistory {
+            return ResolvedMedia(
+                path: MediaURL.inlineDASHManifest(liveHistory.manifest.text()), headers: headers,
+                subtitleFiles: resolvedSubtitles, chapters: resolvedChapters, title: title, historyKey: historyKey,
+                actionButtons: buttons,
+                liveHistory: LiveHistory(
+                    origin: liveHistory.startTime,
+                    end: liveHistory.lastStartTime + YouTubeLiveHistory.nominalSegmentDuration,
+                    headNumber: liveHistory.lastNumber, source: liveHistory.source))
+        }
         // HLS opens from its master playlist, which a URL without `.m3u8` needed yt-dlp to tell: its variants and
         // audio renditions, not the one variant `-f` chose, play with adaptive bitrate.
         if main.protocol?.hasPrefix("m3u8") == true, let master = main.manifestURL {
@@ -223,11 +237,40 @@ struct YTDLPInfo: Decodable, Sendable {
             videoFormats: pictures, selectedVideoFormatID: picture?.formatID)
     }
 
-    /// The manifest playing `formats` (all `isSegmented`); `nil` when it can't tell how many segments there are.
-    func segmentedManifest(of formats: [Format]) -> SegmentedDASHManifest? {
-        // A picture first. A format with both is the picture alone: its sound is in its segments.
+    /// The picture and sound `-f` chose of a YouTube live stream that are numbered segments of one URL (`…&sq=N`,
+    /// which `formats=incomplete` lists: `YouTubeLiveHistory`); `nil` for any other page.
+    func liveHistoryFormats() -> [Format]? {
+        guard isLive == true, extractorKey == "Youtube", let chosen = requestedFormats, !chosen.isEmpty,
+            chosen.allSatisfy({ $0.protocol == "https" && $0.url?.contains("source=yt_live_broadcast") == true })
+        else { return nil }
+        return chosen
+    }
+
+    /// Whether `-f` chose formats yt-dlp calls incomplete (a live stream's adaptive segments, which the server ends after a
+    /// few seconds): they play as a history (`liveHistoryFormats`) or not at all.
+    var choseIncompleteFormats: Bool {
+        requestedFormats?.contains { $0.formatNote?.contains("incomplete") == true } == true
+    }
+
+    /// The same page with its best HLS picture chosen in place of `requestedFormats`: the stream when its history can't
+    /// be read (a server that refuses, an answer without the head). `nil` without HLS formats.
+    func choosingHLS() -> YTDLPInfo? {
+        let ladder = (formats ?? []).filter { $0.protocol?.hasPrefix("m3u8") == true && $0.manifestURL != nil }
+        guard
+            let picture = ladder.filter(\.hasVideo).max(by: {
+                ($0.height ?? 0, $0.tbr ?? 0) < ($1.height ?? 0, $1.tbr ?? 0)
+            })
+        else { return nil }
+        var copy = self
+        copy.requestedFormats = [picture]
+        return copy
+    }
+
+    /// The segments of `formats` as a manifest has them: a picture first (a format with both is the picture alone:
+    /// its sound is in its segments).
+    func segmentStreams(of formats: [Format]) -> [SegmentedDASHManifest.Stream] {
         let ordered = formats.filter(\.hasVideo) + formats.filter { !$0.hasVideo }
-        let streams = ordered.compactMap { format -> SegmentedDASHManifest.Stream? in
+        return ordered.compactMap { format -> SegmentedDASHManifest.Stream? in
             guard let url = format.url else { return nil }
             let container =
                 switch format.ext?.lowercased() {
@@ -242,6 +285,11 @@ struct YTDLPInfo: Decodable, Sendable {
                 width: format.width, height: format.height, frameRate: format.fps, sampleRate: format.sampleRate,
                 url: url)
         }
+    }
+
+    /// The manifest playing `formats` (all `isSegmented`); `nil` when it can't tell how many segments there are.
+    func segmentedManifest(of formats: [Format]) -> SegmentedDASHManifest? {
+        let streams = segmentStreams(of: formats)
         guard let segmentDuration = formats.first?.targetDuration, segmentDuration > 0, !streams.isEmpty else {
             return nil
         }

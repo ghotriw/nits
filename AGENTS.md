@@ -67,6 +67,11 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
 `HTTPSessionInput`, an HLS demuxer's HTTP requests) takes a retained one, released when FFmpeg closes the input through
 `io_close2`.
 
+So does blocking a thread, which FFmpeg's reads do by nature: `LiveSegmentGate` waits for a live stream's next segment
+inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` waits for yt-dlp and the network on a
+`DispatchSemaphore` (`blocking`, up to 90 s). Both run on the thread of the demuxer's read (or of its opening, a pool
+thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). Not a pattern for other code.
+
 ## Layer boundaries
 
 - `NitsCore` (engine) never imports SwiftUI or knows about views. `PlayerEngine` is `@Observable`
@@ -206,6 +211,18 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
   `docs/ARCHITECTURE.md`.
+- **A live stream's history as numbered segments** (`ResolvedMedia.liveHistory`, YouTube's `&sq=N`; `AppSettings.liveHistory`) is
+  told to the demuxer (`LiveHistory`), never read from the format context: the window is the resolver's, the timeline is
+  rebased to zero, and `MediaInfo.timelineOrigin` is the stream's time at that zero, so a position is saved as its time
+  plus the origin. The manifest stays static (FFmpeg does not seek a `dynamic` MPD). FFmpeg's DASH demuxer is patched to
+  return an error when interrupted (`scripts/patches/ffmpeg-dashdec-interrupt.patch`, `nits-dash-interrupt` in the
+  build's version): unpatched, an interrupted read can go round at full speed, and a seek that interrupted it waits for it for good.
+  Tests that interrupt a DASH read check the version string. Its manifest names the streams by keys
+  (`LiveHistory.streamAddress`) and goes on past the head: `LiveSegmentGate` (in `io_open`) asks `LiveSegmentSource` for
+  each segment's signed address and waits for those past the head. Once the head stood still for `segmentWaitLimit` the
+  source decides if the stream is over: if it is, the window gets `hasEnded`; if not, the wait has no limit. Never fail a
+  segment past the head to the demuxer (it skips it: a hole in time) unless the head reports it there and the server does
+  not serve it, and never put a signed address in the manifest. Background: "Live streams" in `docs/ARCHITECTURE.md`.
 - **Timestamps that restart or jump at an HLS `EXT-X-DISCONTINUITY`** (ads, splices) are moved onto the playlist's
   timeline inside the bundled FFmpeg (`scripts/patches/ffmpeg-hls-timeline.patch`): the demuxer sees one timeline, so
   don't add offsets of your own in Nits for HLS. Tests that need the patch check the build's version string

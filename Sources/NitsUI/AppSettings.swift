@@ -48,6 +48,9 @@ public struct AppSettings: Sendable, Equatable {
     /// Skip buttons for a YouTube video's SponsorBlock segments (sponsors, intros, …), and its community chapters
     /// when the author gave none (default true).
     public var sponsorBlock: Bool
+    /// Whether a YouTube live stream plays from its history (a day back, on the stream's own time, its position kept
+    /// between runs) in place of its HLS playlist, which holds an hour at most (default true).
+    public var liveHistory: Bool
     /// What happens to the player window while its video plays in Picture in Picture.
     public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
     /// Pause playback when Picture in Picture starts.
@@ -68,6 +71,7 @@ public struct AppSettings: Sendable, Equatable {
         resolvesWithYTDLP: Bool = true,
         ytdlpPath: String = "",
         sponsorBlock: Bool = true,
+        liveHistory: Bool = true,
         pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
         pausesOnPictureInPicture: Bool = false,
         entersPictureInPictureOnMinimize: Bool = false
@@ -84,6 +88,7 @@ public struct AppSettings: Sendable, Equatable {
         self.resolvesWithYTDLP = resolvesWithYTDLP
         self.ytdlpPath = ytdlpPath
         self.sponsorBlock = sponsorBlock
+        self.liveHistory = liveHistory
         self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
         self.pausesOnPictureInPicture = pausesOnPictureInPicture
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
@@ -101,6 +106,7 @@ public struct AppSettings: Sendable, Equatable {
     public static let keyResolvesWithYTDLP = "Nits.resolvesWithYTDLP"
     public static let keyYTDLPPath = "Nits.ytdlpPath"
     public static let keySponsorBlock = "Nits.sponsorBlock"
+    public static let keyLiveHistory = "Nits.liveHistory"
     public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
     public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
@@ -144,6 +150,9 @@ public struct AppSettings: Sendable, Equatable {
         if userDefaults.object(forKey: keySponsorBlock) != nil {
             settings.sponsorBlock = userDefaults.bool(forKey: keySponsorBlock)
         }
+        if userDefaults.object(forKey: keyLiveHistory) != nil {
+            settings.liveHistory = userDefaults.bool(forKey: keyLiveHistory)
+        }
         if let behavior = userDefaults.string(forKey: keyPictureInPictureWindowBehavior).flatMap(
             PictureInPictureWindowBehavior.init(rawValue:))
         {
@@ -172,6 +181,7 @@ public struct AppSettings: Sendable, Equatable {
         userDefaults.set(resolvesWithYTDLP, forKey: Self.keyResolvesWithYTDLP)
         userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
         userDefaults.set(sponsorBlock, forKey: Self.keySponsorBlock)
+        userDefaults.set(liveHistory, forKey: Self.keyLiveHistory)
         userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
         userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)

@@ -56,6 +56,44 @@ public struct VideoFormat: Sendable, Equatable, Identifiable {
     }
 }
 
+/// What a resolver knows of a live stream it gives as the segments of its past up to now (`ResolvedMedia.liveHistory`),
+/// and the demuxer, which reads a manifest of segments, cannot: where the stream's time stands. Both in seconds of the
+/// stream's own time (from its start, which the segments' timestamps count in).
+public struct LiveHistory: Sendable, Equatable {
+    /// The start of the first segment: the media's timeline begins here, and the engine's zero stands for it (it counts
+    /// on times from zero), so what is saved of a position is its time plus this.
+    public var origin: Double
+    /// The end of the newest segment, when the manifest was made. The edge moves on from there with the clock
+    /// (`LiveStream`).
+    public var end: Double
+    /// The number of that segment (the newest one then).
+    public var headNumber: Int
+    /// What the manifest's segments are asked for through (their addresses, the head, the signature), when the manifest
+    /// goes on past the head: the segments to come are waited for (`LiveSegmentGate`). `nil`: the manifest ends at the head.
+    public var source: (any LiveSegmentSource)?
+
+    /// How long a segment of a live stream given as segments lasts, about (YouTube's): the end of a segment whose start is
+    /// known and whose length is not, and the length of those to come.
+    public static let nominalSegmentDuration = 5.0
+
+    /// What a manifest names the stream `key` by: the address its segments are asked for (with `sq=N`) through the
+    /// source (`LiveSegmentSource.url(for:number:)`), not an address that exists.
+    package static func streamAddress(_ key: String) -> String {
+        "https://\(LiveSegmentGate.host)/\(key)"
+    }
+
+    public init(origin: Double, end: Double, headNumber: Int = 0, source: (any LiveSegmentSource)? = nil) {
+        self.origin = origin
+        self.end = end
+        self.headNumber = headNumber
+        self.source = source
+    }
+
+    public static func == (lhs: LiveHistory, rhs: LiveHistory) -> Bool {
+        lhs.origin == rhs.origin && lhs.end == rhs.end && lhs.headNumber == rhs.headNumber && lhs.source === rhs.source
+    }
+}
+
 /// The streams a `MediaResolver` found for a page.
 public struct ResolvedMedia: Sendable, Equatable {
     /// The stream with the picture (or the only one), opened as the media.
@@ -83,14 +121,18 @@ public struct ResolvedMedia: Sendable, Equatable {
     /// when there is nothing to choose from.
     public var videoFormats: [VideoFormat]
     public var selectedVideoFormatID: String?
+    /// Set when `path` is a live stream's past and present as segments the resolver numbered (a manifest of its own),
+    /// not a playlist the demuxer reads the window of: the demuxer plays it as live, on a timeline from zero.
+    public var liveHistory: LiveHistory?
 
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],
         subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
         chapters: [MediaChapter] = [], title: String? = nil, historyKey: String? = nil,
         actionButtons: [PlaybackActionButton] = [], httpRequestSize: Int? = nil, videoFormats: [VideoFormat] = [],
-        selectedVideoFormatID: String? = nil
+        selectedVideoFormatID: String? = nil, liveHistory: LiveHistory? = nil
     ) {
+        self.liveHistory = liveHistory
         self.videoFormats = videoFormats
         self.selectedVideoFormatID = selectedVideoFormatID
         self.path = path

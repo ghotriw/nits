@@ -724,6 +724,88 @@ lists to the end of the last. Both ends move with real time.
 - **UI.** The timeline spans the window; the time at its left is the distance behind the edge; `LiveBadge` beside it is
   red at the edge and grey behind it, where a click seeks to the edge (`seekToLiveEdge()`). No thumbnails.
 
+**A live stream's history as segments** (`ResolvedMedia.liveHistory`; the app's setting `AppSettings.liveHistory`, on, `--no-live-history` turns it off). YouTube's
+HLS playlist holds an hour at most (30 s where the broadcaster has no DVR), but the adaptive formats of a live stream are
+numbered segments of one URL (`…&sq=N`) the server keeps for days. The resolver builds a manifest of them
+(`SegmentedDASHManifest`, `YouTubeLiveHistory`) and tells the demuxer, with `LiveHistory`, where the stream's time stands.
+
+- **The window is the resolver's.** The format context has no playlist to read it from, so the demuxer publishes the
+  window it was told (`LiveWindow(start: 0, end:, hasSlid: true)`, never read from the context: `publishLiveWindow`
+  would find no `hls_live` tag and call the stream ended), and plays the media as live (`isLive`, no duration). The
+  manifest stays a static one: FFmpeg's DASH demuxer does not seek a `dynamic` MPD, starts it a minute before its end and
+  reloads it from its address.
+- **The timeline is rebased to zero** (`timelineOrigin` = the first segment's start, as for MPEG-TS and HLS), and
+  `MediaInfo.timelineOrigin` keeps the stream's time at that zero. A position is saved in the stream's time (time plus
+  origin): the window's start moves between runs, the stream's time does not.
+- **Times of segments are read from the segments** (`FragmentStartTime`, the `tfdt` in the first 2 KB of a ranged
+  request): their lengths are not one (mostly 5 s, runs of 4.933 s, the odd 1.667 s). The manifest has the length that
+  fits two segments whose times were read, an hour apart (`SegmentedDASHManifest.window(through:…)`), so a seek lands
+  within seconds of its target, on the segment's keyframe. Every run says where it starts (`t=`), from the exact lengths:
+  the demuxer adds up lengths in whole milliseconds, up to half of one off in each segment, which is a third of a second
+  over a run of an hour and would pile up over a day of runs. `SegmentTimeSearch.oldestAvailable` finds the first segment the server still has.
+- **The picture is H.264 in MP4, up to 1080p60 and SDR, on purpose, and that is what HLS gives too.** The times of
+  segments are read from the `moof` of an MP4 (`FragmentStartTime`), which a WebM (VP9, YouTube's 1440p and 2160p) has
+  none of, and AV1 in MP4 is more than a software decoder does at 4K60. Measured on seven live streams called 4K or HDR
+  (2026-11-07): the HLS playlist of every one ended at 1080p (or 1014p) in H.264 and SDR; their segments hold 2160p in
+  VP9 (SDR), and on one in AV1 with HDR10. So the history loses nothing against HLS, and 4K / HDR of a live stream is a
+  gain to be had (`docs/OPEN_ISSUES.md`). The sound is the same (the 144 kbit/s AAC, itag 140, which HLS's "high" is made
+  of, by its address).
+- **Depth is a day** (`YouTubeLiveHistory.maxHistory`) on purpose: the server's edge answers 404, 500 and 503 for seconds
+  per request, finding it cost 41 s of start on NASA's stream, and a day is as deep as the web player's DVR.
+- **FFmpeg's DASH demuxer is patched to return an error when it is interrupted**
+  (`scripts/patches/ffmpeg-dashdec-interrupt.patch`; its build says `nits-dash-interrupt` in its version, and the tests
+  that interrupt a DASH read check it). Unpatched, `dash_read_packet` returns 0, "a packet read", from a read that was
+  interrupted before it read one, and libavformat reads again for as long as the interrupt lasts: at 100% of a core,
+  holding the input. A seek that interrupted the read only lets go of the interrupt once it has the input (a live-lock:
+  three runs in four, within 150 seeks). So the seek of a live history yields as HLS's does (`lockIO(yielding:)`). A
+  cancel (a stop, a load that replaces the media) goes through the same callback, but a read cut short inside a segment
+  ends with an error, and the loop needs the interrupt between two segments: none of 400 cancels at random moments (150 in the test)
+  looped on the unpatched library (`cancelsAReadAtAnyMoment` holds the patched one to it).
+- **The head is followed by waiting** (`LiveSegmentGate`, in `FFmpegIOByteCounter`'s `io_open`). The manifest, static, goes
+  on a day past the head (`YouTubeLiveHistory.futureSegments`), and names a stream by a key, never by its signed address
+  (`https://live.nits.invalid/<format id>?sq=N`, `LiveHistory.streamAddress`): the gate asks the source
+  (`LiveSegmentSource`, YouTube's is `YouTubeLiveSource`) for the real address of each, so the signature, which expires in
+  about six hours, is renewed in one place: ahead of its `expire` by a margin (yt-dlp is asked for the page again), and
+  at once when a segment is refused (403, once). A segment past the newest known to have been read is waited for, not
+  failed: YouTube holds the request for the next two or three until they exist and answers the ones beyond with 204 after
+  7.5 s (404, 5xx and timeouts happen too), and FFmpeg's DASH demuxer takes any failure for a segment to skip. A skip is a
+  hole in the time of that stream, not a shift of it (the next segment carries its own timestamps; the other stream goes
+  on, so picture and sound stay together; `skipsASegmentThatFails`), but of a picture that stands, not one to make of a
+  segment that is merely late. So a failure of one past the head is retried every 250 ms while the stream is alive:
+  - the head is asked for every `headPollInterval` (a request without `sq`, whose answers all carry `X-Head-Seqnum` and
+    `X-Head-Time-Millis`); a segment the head says is there and the server does not give is left to the demuxer after
+    `reportedSegmentGrace` (seconds, a few lengths of a segment);
+  - when the head stood still for `segmentWaitLimit` (a minute), **the source decides whether the stream is over**
+    (`LiveSegmentSource.hasEnded`; YouTube's asks yt-dlp for the page, `is_live`, as the player knows it): over, the window
+    is published with `hasEnded` and every request past the last segment fails at once, which the demuxer takes for the
+    end of its input and `LiveStream` for a recording; still on the air (an encoder restarting, a source gone silent), the
+    wait goes on with no limit, asked again after another limit; no answer: with the server answering (any answer, a refusal without a head too: it is there) and its head
+    standing, a few asks more and it is the end (yt-dlp fails on a page whose stream is gone, "recording is not
+    available"); with the server not answering either, it is the network, and the wait goes on with no limit. So the only
+    segment a gate gives the demuxer to skip is the one the head reports and the server does not give.
+  A segment the CDN **redirects** is followed (`HTTPSessionTransport.open(followsRedirects:)`, for the gate's requests
+  only: the address of a segment is whole, where an HLS playlist's relative addresses are resolved by FFmpeg against where
+  it was served from, so those redirects stay FFmpeg's): YouTube's 4K tier (itag 401, AV1) is on another server, and a
+  CDN may do it to any segment. A refusal from where a redirect led (403) renews the signature as any other.
+  A failure of a segment up to the head (expired, a seek far back) is a failure at once. The wait gives way to a seek or a
+  close within 10 ms (`shouldAbort`, the demuxer's yield). Measured on a real stream (Sky News, 1080p60): four minutes
+  through the edge in real time, the longest gap 5.1 s (a segment's length), two renewals of the signature meanwhile with
+  nothing noticed.
+- **The last frame or two of a stream that ended are lost.** The end is a segment that fails to open, found by the stream
+  the DASH demuxer reads first (the one whose time is behind, mostly the sound): its failed reopen ends everything, and
+  what the other holds of its last segment, a frame in decode order, is not read. A clean end by the timeline does not
+  do it. Of no consequence for a recording after the end of a broadcast.
+- **The position is kept in the stream's time** (`MediaInfo.timelineOrigin` plus the engine's), not the window's, whose
+  start moves between runs, and shared with the recording that follows the stream (the same history key, `youtube:<id>`).
+  `saveCurrentPlaybackProgress` saves it for a live history, which has no duration (`PlaybackRecord.duration` is how long
+  the stream was then: the window's end in the stream's time, a lower bound), and with it the speed and the other
+  preferences. On the air it is not "watched to the end": `PlaybackRecord.wasAtLiveEdge` says whether it was left within
+  `LiveStream.edgeTolerance` of the edge. A load starts a live history where it was left (`LiveStream.resumeTarget`) if it
+  was not at the edge and the window still holds it (a margin after its start, before the edge), else at the edge as
+  every live stream does. Once the stream ended it is judged as any recording: a position at its end starts over.
+  Not verified on a real stream: that the recording YouTube makes of a broadcast counts its time from the stream's
+  start, as the segments do (a position saved on the air would then resume at the same moment of the recording).
+
 ### Backpressure
 
 - **Video** — the feeding task stops decoding once `FrameQueue` holds 40 frames and resumes below

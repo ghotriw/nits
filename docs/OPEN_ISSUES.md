@@ -339,8 +339,36 @@ Accepted for now, noted for later.
 - **`FormatDescriptionCacheTests`** failed twice on CI with VideoToolbox returning 1–3 frames of 30 (always 30
   locally). The failure message now reports fed samples, session creation status, decode error statuses and the
   last callback status.
+- **The HTTP, HLS and DASH suites together, with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`** (`--filter
+  "HLSOverHTTPTests|AdaptiveBitrateTests|DASH|MediaDemuxer|InlineDASH|LiveStreamTests"`, a one-thread pool, 121 tests,
+  about 165 s) fail on timing at the last commit (33d5fe9, 2026-11-07, with the bundled FFmpeg 1.5.0 build), without any of
+  the live-history work: run 1, `AdaptiveBitrateTests.swift:117` (`consumer.stalled - stalledSlow < 0.5`) and
+  `DASHLadderTests.swift:289` (`consumer.stalled < 1.5`); run 2, `DASHLadderTests.swift:289` alone. With the live-history
+  suites and their two loops (`seeksRepeatedlyWhileReading`, `cancelsAReadAtAnyMoment`, which hold a thread for 3 s and
+  8 s) the failures were more, in two runs (2 and 4): `SegmentIndexTests.swift:334`, `DASHLadderTests.swift:289`, three
+  tests of `HLSOverHTTPTests` (`engine.waitUntil` timeouts) and `AdaptiveBitrateTests.swift:146`. With the loops skipped
+  (`notInStrictPool`, so in this mode they are) it was 2 and 1 again: `AdaptiveBitrateTests.swift:117` with
+  `HLSOverHTTPTests.swift:312` (`waitForPlayback`, an engine playing an HLS URL: the one that also failed in the first
+  run with the loops), then `DASHLadderTests.swift:289` alone. Each passes alone (`HLSOverHTTPTests` 18 of 18, twice, in
+  the strict mode), and the run without the strict mode passes (134 and 140 tests). So the strict mode is at the edge of
+  the pool by itself, and a suite that blocks its thread for seconds tips more tests over it. Not looked into: the stall
+  measures of the two ladder tests are the ones to judge first; `HLSOverHTTPTests.swift:312` showed up in 2 of 6 runs with
+  the live-history suites and in none of 2 without, too few to tell if they have a part in it. Two runs more with the head
+  of the stream added (`LiveSegmentGate`, `YouTubeLive` suites; 4 and 2 failures): `DASHLadderTests.swift:289`,
+  `HLSOverHTTPTests.swift:312` and `AdaptiveBitrateTests.swift:146` (twice); then one of the new engine tests, which
+  asserted that a stream was not yet ended right after its load, that took 45 s there (fixed: a load in a one-thread pool
+  can outlast any wait a test sets).
 
 ## Live streams: a window of a few segments, and an outage that stands the picture
+
+**A live stream's history is capped at 1080p60 SDR H.264, as HLS is (2026-11-07).** The segments of the streams called 4K
+or HDR hold more: 2160p in VP9 (WebM), and on one of seven, AV1 with HDR10 in MP4. Not taken: a WebM has no `moof` for
+`FragmentStartTime` (its clusters' timecodes would be read instead), and AV1 at 4K60 is software decoding (dav1d) on a Mac
+without a hardware decoder. To judge first: which formats the Mac decodes in hardware (`VideoDecoderFactory`), so that the
+selector (`YTDLPResolver.liveHistorySelector`) asks for the best of those; HDR10 AV1 MP4 is the case that costs nothing in
+the parser. The load times are logged by part now (`YouTubeLiveHistory.Timings` in the yt-dlp log, "Opened … in" in the
+engine's), for the 43 s load seen once (the likeliest the search for the edge of the history, which takes 41 s on a
+server that answers 404, 500 and 503 for seconds each: the line says "by looking for the edge of the history" if so).
 
 **Not checked on a real stream (2026-11-04)**:
 

@@ -138,6 +138,8 @@ struct LaunchArgumentsTests {
         #expect(parsed.ytdlpPath == "/opt/yt-dlp")
         #expect(parsed.sponsorBlock == false)
         #expect(settings(["Nits", "--sponsorblock"], base: AppSettings(sponsorBlock: false)).sponsorBlock)
+        #expect(settings(["Nits", "--no-live-history"]).liveHistory == false)
+        #expect(settings(["Nits", "--live-history"], base: AppSettings(liveHistory: false)).liveHistory)
     }
 
     @Test("A later flag for the same setting wins")

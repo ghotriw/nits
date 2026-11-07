@@ -13,6 +13,13 @@ public struct MediaInfo: Equatable, Sendable {
     public var isNetworkSource = false
     /// A live stream, which has no `duration` (0): its window moves, and `PlayerEngine.live` tells it.
     public var isLive = false
+    /// Seconds of the stream's own time that the timeline's zero stands for: nonzero for a live stream's history
+    /// (`LiveHistory`), whose segments carry the stream's time, hours in. What is saved of a position is its time plus
+    /// this, as the window's start moves between runs and the stream's time does not.
+    public var timelineOrigin = 0.0
+    /// A live stream given as segments the resolver numbered (`LiveHistory`): its position is saved in the stream's time
+    /// (`timelineOrigin` plus the engine's), and restored from there.
+    public var isLiveHistory = false
     /// The video stream; empty when there is none (`hasVideo`).
     public var video = VideoInfo()
 
@@ -55,6 +62,8 @@ extension MediaInfo {
         hasVideo = demuxer.hasVideo
         isNetworkSource = demuxer.isNetworkSource
         isLive = demuxer.isLive
+        timelineOrigin = demuxer.streamTimeOrigin
+        isLiveHistory = demuxer.liveHistory != nil
         guard demuxer.hasVideo else { return }
         video.width = demuxer.width
         video.height = demuxer.height

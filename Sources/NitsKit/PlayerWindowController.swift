@@ -80,7 +80,9 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         guard engine.mediaResolver == nil || engine.mediaResolver is YTDLPResolver else { return }
         engine.mediaResolver =
             settings.resolvesWithYTDLP
-            ? YTDLPResolver(customPath: settings.ytdlpPath, sponsorBlock: settings.sponsorBlock) : nil
+            ? YTDLPResolver(
+                customPath: settings.ytdlpPath, sponsorBlock: settings.sponsorBlock, liveHistory: settings.liveHistory)
+            : nil
     }
 
     private func applyOSDSettings(_ settings: AppSettings) {

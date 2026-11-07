@@ -121,6 +121,19 @@ public final class LiveStream {
         return max(window.start, window.end - Self.edgeMargin)
     }
 
+    /// Where a live stream's history opens when it was left at `streamTime` (the stream's own time, which the engine's is
+    /// that minus `origin`): there, if the window still holds it. Not at the edge (a stream left there is watched live
+    /// again, whatever the time that has passed since), nor before the window's start, which moves on with the clock (a
+    /// margin after it: the oldest segments expire as they are fetched), nor at or past where the stream starts from, the
+    /// edge: those start at the edge. `nil`: at the edge.
+    func resumeTarget(
+        streamTime: Double, wasAtEdge: Bool, origin: Double, now: ContinuousClock.Instant = .now
+    ) -> Double? {
+        guard !wasAtEdge, let window = window(at: now), let edge = edgeTarget(now: now) else { return nil }
+        let target = streamTime - origin
+        return target >= window.start + Self.startMargin && target < edge ? target : nil
+    }
+
     /// `seconds` within the window: of a stream that ended, all of it; of one that goes on, from a margin after its
     /// start to a margin before its edge. Not before 0 when there is none (yet).
     func clamp(_ seconds: Double, now: ContinuousClock.Instant = .now) -> Double {

@@ -20,6 +20,80 @@ struct PlaybackHistoryStoreTests {
         #expect(retrieved == 120.0)
     }
 
+    @Test(
+        "A live stream's history keeps its position in the stream's time, at its edge too, and says it was at the edge")
+    func testLiveHistoryPositions() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        let media = MediaHistoryIdentity(historyKey: "youtube:live")
+        // Ten days into a stream that is 20 days old (1 728 000 s), its window's end the stream's time now.
+        let streamAge = 1_728_000.0
+        store.savePosition(for: media, position: 864_000, duration: streamAge, isLive: true, wasAtLiveEdge: false)
+        let left = store.savedLivePosition(for: media)
+        #expect(left?.position == 864_000)
+        #expect(left?.wasAtEdge == false)
+
+        // At the edge: not "finished", as a recording near its end would be: kept, and marked.
+        store.savePosition(for: media, position: streamAge - 4, duration: streamAge, isLive: true, wasAtLiveEdge: true)
+        let atEdge = store.savedLivePosition(for: media)
+        #expect(atEdge?.position == streamAge - 4)
+        #expect(atEdge?.wasAtEdge == true)
+        // The recording of it that follows the stream is judged as any: a position at its end starts over, one before
+        // it resumes.
+        #expect(store.savedPosition(for: media) == nil)
+        store.savePosition(for: media, position: 864_000, duration: streamAge, isLive: true, wasAtLiveEdge: false)
+        #expect(store.savedPosition(for: media) == 864_000)
+        // A recording's own save at its end (not live) is finished, and a live one of nothing is not saved.
+        store.savePosition(for: media, position: streamAge - 4, duration: streamAge)
+        #expect(store.savedPosition(for: media) == nil)
+        #expect(store.savedLivePosition(for: media) == nil, "a finished recording has no position to resume")
+    }
+
+    @Test("A live position survives a save of preferences, and an old record without the mark is not at the edge")
+    func testLiveHistoryPositionKeepsItsMark() throws {
+        let defaults = InMemoryUserDefaults()
+        let store = PlaybackHistoryStore(userDefaults: defaults)
+        let media = MediaHistoryIdentity(historyKey: "youtube:live2")
+        store.savePosition(for: media, position: 5000, duration: 9000, isLive: true, wasAtLiveEdge: true)
+        store.savePreferences(for: media, duration: 9100, PlaybackPreferences(audioDelay: 0.25))
+        let kept = store.savedLivePosition(for: media)
+        #expect(kept?.position == 5000)
+        #expect(kept?.wasAtEdge == true)
+        #expect(store.savedPreferences(for: media)?.audioDelay == 0.25)
+
+        // A record from before the mark existed, as it was written.
+        let old = MediaHistoryIdentity(historyKey: "youtube:old")
+        store.savePosition(for: old, position: 700, duration: 3600)
+        #expect(store.savedLivePosition(for: old)?.wasAtEdge == false)
+    }
+
+    @Test(
+        "The end of a media is a share of it but no more than ten minutes: a long stream is not finished an hour from its end"
+    )
+    func testCompletionTailIsCapped() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        let twentyHours = 72_000.0
+        let stream = MediaHistoryIdentity(historyKey: "youtube:long")
+        // 5% of twenty hours is an hour; the tail counts ten minutes of it.
+        store.savePosition(for: stream, position: twentyHours - 2_880, duration: twentyHours)
+        #expect(store.savedPosition(for: stream) == twentyHours - 2_880, "forty-eight minutes from the end resumes")
+        store.savePosition(for: stream, position: twentyHours - 540, duration: twentyHours)
+        #expect(store.savedPosition(for: stream) == nil, "nine minutes from the end starts over")
+
+        // A film's 5% is under ten minutes, so it is as it was: a share of it, and its last 30 s.
+        let film = MediaHistoryIdentity(historyKey: "/Users/test/Movies/film.mkv")
+        let twoHours = 7_200.0
+        store.savePosition(for: film, position: twoHours - 400, duration: twoHours)
+        #expect(store.savedPosition(for: film) == twoHours - 400, "6 min 40 s from the end of a film: 5% is 6 min")
+        store.savePosition(for: film, position: twoHours - 300, duration: twoHours)
+        #expect(store.savedPosition(for: film) == nil)
+        // A short one: the share is under 30 s, the last 30 s count.
+        let clip = MediaHistoryIdentity(historyKey: "/Users/test/Movies/clip.mkv")
+        store.savePosition(for: clip, position: 180 - 29, duration: 180)
+        #expect(store.savedPosition(for: clip) == nil)
+        store.savePosition(for: clip, position: 90, duration: 180)
+        #expect(store.savedPosition(for: clip) == 90)
+    }
+
     @Test("PlaybackHistoryStore discards position under startThreshold")
     func testDiscardsUnderStartThreshold() {
         let defaults = InMemoryUserDefaults()

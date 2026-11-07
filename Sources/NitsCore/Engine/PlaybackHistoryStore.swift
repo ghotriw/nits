@@ -4,8 +4,16 @@ import os
 
 /// Represents a persistent playback progress record for a media resource.
 public struct PlaybackRecord: Codable, Sendable, Equatable {
+    /// Seconds into the media; of a live stream's history (`LiveHistory`) the stream's own time, which the segments
+    /// carry: the window's start moves between runs, the stream's time does not, and the recording that follows the
+    /// stream counts in it too.
     public let position: Double
+    /// Of a live stream's history, how long the stream was when the position was saved (a lower bound: the time of the
+    /// window's end), so that a recording of it can tell a position near its end.
     public let duration: Double
+    /// Saved from a live stream's history at its edge (within `LiveStream.edgeTolerance`): to watch it live, not from
+    /// there, when it is opened again. `nil` for media that was not live, and in older records.
+    public let wasAtLiveEdge: Bool?
     public let lastUpdated: Date
     /// Selected audio track id (`nil` if unknown / not recorded); `PlaybackRecord.externalAudio` the file at
     /// `externalAudioPath`.
@@ -57,10 +65,12 @@ public struct PlaybackRecord: Codable, Sendable, Equatable {
         duration: Double,
         lastUpdated: Date = Date(),
         preferences: PlaybackPreferences = PlaybackPreferences(),
-        mediaPath: String? = nil
+        mediaPath: String? = nil,
+        wasAtLiveEdge: Bool? = nil
     ) {
         self.position = position
         self.duration = duration
+        self.wasAtLiveEdge = wasAtLiveEdge
         self.lastUpdated = lastUpdated
         self.audioTrackId = preferences.audioTrackId
         self.subtitleTrackId = preferences.subtitleTrackId
@@ -310,23 +320,43 @@ public final class PlaybackHistoryStore: Sendable {
         return keyPrefix + hexString
     }
 
+    /// The most of a media's end that counts as watched, in seconds, whatever the share it is of its length: the threshold
+    /// is a share of the duration (`endThresholdRatio`, 5% of what is left at 95%), but of a stream of twenty hours that is
+    /// an hour of it, and a position forty minutes from its end is not one to start over from.
+    public static let maximumUnwatchedTail = 600.0
+
+    /// Whether `position` of a media of `duration` is its end, to start over from rather than resume: within what is left
+    /// by `endThresholdRatio` (at 95%, the last 5%) but no more than `maximumUnwatchedTail`, or, for a media over a minute,
+    /// within its last 30 s.
+    static func isPastCompletion(position: Double, duration: Double, endThresholdRatio: Double) -> Bool {
+        let remaining = duration - position
+        let tail = min(duration * (1 - endThresholdRatio), maximumUnwatchedTail)
+        return remaining <= tail || (duration > 60.0 && remaining <= 30.0)
+    }
+
     /// Saves the current playback position for a media resource identified by `media`, respecting start and end
     /// thresholds, along with `preferences` (`nil` fields keep the saved value), unless excluded by `exclusionPolicy`.
     /// A position under `startThreshold` or past completion is stored as 0, so a finished file keeps its preferences;
     /// a record with neither is removed.
+    ///
+    /// A live stream's history on the air (`isLive`) has no end to have watched to: its position is not past completion
+    /// at its edge, which `wasAtLiveEdge` says instead.
     public func savePosition(
         for media: MediaHistoryIdentity,
         position: Double,
         duration: Double,
         startThreshold: Double = 15.0,
         endThresholdRatio: Double = 0.95,
+        isLive: Bool = false,
+        wasAtLiveEdge: Bool? = nil,
         preferences: PlaybackPreferences = PlaybackPreferences()
     ) {
         guard duration > 0 else { return }
 
         // Watched past the end threshold (e.g. credits at 95% or last 30s for media > 60s): finished, start over.
-        let endThresholdSeconds = duration * endThresholdRatio
-        let isPastCompletion = position >= endThresholdSeconds || (duration > 60.0 && (duration - position) <= 30.0)
+        let isPastCompletion =
+            !isLive
+            && Self.isPastCompletion(position: position, duration: duration, endThresholdRatio: endThresholdRatio)
         let effectivePosition = position < startThreshold || isPastCompletion ? 0.0 : position
 
         let key = storageKey(for: media.historyKey)
@@ -356,7 +386,8 @@ public final class PlaybackHistoryStore: Sendable {
                     position: effectivePosition,
                     duration: duration,
                     preferences: merged,
-                    mediaPath: resolvedPath
+                    mediaPath: resolvedPath,
+                    wasAtLiveEdge: isLive && effectivePosition > 0 ? wasAtLiveEdge : nil
                 ),
                 forKey: key,
                 isNewRecord: existingRecord == nil,
@@ -393,7 +424,8 @@ public final class PlaybackHistoryStore: Sendable {
                 position: existingRecord?.position ?? 0.0,
                 duration: duration > 0 ? duration : (existingRecord?.duration ?? 0.0),
                 preferences: preferences.merged(over: existingRecord?.preferences),
-                mediaPath: resolvedPath
+                mediaPath: resolvedPath,
+                wasAtLiveEdge: existingRecord?.wasAtLiveEdge
             )
             store(record, forKey: key, isNewRecord: existingRecord == nil, state: &state)
             return true
@@ -410,6 +442,19 @@ public final class PlaybackHistoryStore: Sendable {
         endThresholdRatio: Double = 0.95
     ) -> Double? {
         savedRecord(for: media, startThreshold: startThreshold, endThresholdRatio: endThresholdRatio)?.position
+    }
+
+    /// The saved position of a live stream's history, in the stream's time, and whether it was saved at the edge; `nil`
+    /// when there is none, or the media is excluded. Not judged by a duration or by how far it is: a stream on the air has
+    /// no end to be past, and the window it falls in is for the engine to tell.
+    public func savedLivePosition(for media: MediaHistoryIdentity) -> (position: Double, wasAtEdge: Bool)? {
+        let key = storageKey(for: media.historyKey)
+        return lock.withLock { state in
+            guard let record = record(forKey: key), record.position > 0,
+                !Self.isExcluded(media, recordMediaPath: record.mediaPath, policy: state.exclusionPolicy)
+            else { return nil }
+            return (record.position, record.wasAtLiveEdge ?? false)
+        }
     }
 
     /// Retrieves the saved preferences (tracks, subtitle delay) for a media resource identified by `media` if present and not excluded.
@@ -460,11 +505,10 @@ public final class PlaybackHistoryStore: Sendable {
             guard record.duration > 0 else { return nil }
             guard record.position >= startThreshold else { return nil }
 
-            let endThresholdSeconds = record.duration * endThresholdRatio
-            let isPastCompletion =
-                record.position >= endThresholdSeconds
-                || (record.duration > 60.0 && (record.duration - record.position) <= 30.0)
-            guard !isPastCompletion else {
+            guard
+                !Self.isPastCompletion(
+                    position: record.position, duration: record.duration, endThresholdRatio: endThresholdRatio)
+            else {
                 return nil
             }
 

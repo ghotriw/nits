@@ -39,7 +39,7 @@ final class HTTPSessionTransport: Sendable {
     private let cookieOrigin: URL?
     /// FFmpeg's `cookies` option last stored in the session's cookies.
     private let storedCookies = OSAllocatedUnfairLock<String?>(initialState: nil)
-    private let shouldAbort: @Sendable () -> Bool
+    let shouldAbort: @Sendable () -> Bool
 
     /// `headers` are the source's (the user agent among them), sent with every request; `shouldAbort` interrupts the
     /// waits for an answer and for data, as FFmpeg's interrupt callback does its own I/O.
@@ -84,7 +84,8 @@ final class HTTPSessionTransport: Sendable {
     /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
     /// master was served from, after its redirects).
     func open(
-        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?, whileOpening: Bool = false
+        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?, whileOpening: Bool = false,
+        followsRedirects: Bool = false
     ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
         if let cookies {
@@ -94,7 +95,8 @@ final class HTTPSessionTransport: Sendable {
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let input = HTTPSessionInput(
             session: session, request: request, offset: offset, end: end, meter: meter,
-            openingLimit: whileOpening ? openingLimit : nil, shouldAbort: shouldAbort)
+            openingLimit: whileOpening ? openingLimit : nil, followsRedirects: followsRedirects,
+            shouldAbort: shouldAbort)
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()
@@ -324,6 +326,10 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     private let openingLimit: OpeningLimit?
+    /// A redirect is followed here, and the answer of where it leads is the input's. For a request whose address is whole
+    /// and whose answer needs no other address to be read (a live stream's segment, `LiveSegmentGate`); an HLS playlist's
+    /// is FFmpeg's, which resolves the relative addresses in it against where it was served from.
+    private let followsRedirects: Bool
     private var highWater: Int { openingLimit?.isLimited == true ? Self.openingHighWater : Self.highWater }
     private var lowWater: Int { openingLimit?.isLimited == true ? Self.openingLowWater : Self.lowWater }
     /// Seconds before asking again for a body cut short, a retry each: FFmpeg's `reconnect` waits 0, 1, 2, … s.
@@ -344,8 +350,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     init(
         session: URLSession, request: URLRequest, offset: Int64, end: Int64?, meter: NetworkTransferMeter,
-        openingLimit: OpeningLimit? = nil, shouldAbort: @escaping @Sendable () -> Bool
+        openingLimit: OpeningLimit? = nil, followsRedirects: Bool = false, shouldAbort: @escaping @Sendable () -> Bool
     ) {
+        self.followsRedirects = followsRedirects
         self.openingLimit = openingLimit
         self.session = session
         self.request = request
@@ -533,12 +540,15 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     // MARK: URLSessionDataDelegate
 
-    /// A redirect isn't followed: its answer goes to FFmpeg, which asks for it again and follows it itself.
+    /// A redirect isn't followed, but for the input that asked to (`followsRedirects`): its answer goes to FFmpeg, which
+    /// asks for it again and follows it itself.
     func urlSession(
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
-        completionHandler(nil)
+        // Not to a plainer scheme than the request's: a segment asked for over https is not given up to http.
+        let isDowngrade = response.url?.scheme == "https" && request.url?.scheme != "https"
+        completionHandler(followsRedirects && !isDowngrade ? request : nil)
     }
 
     func urlSession(
@@ -560,7 +570,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 setTransferring(true, in: &state)
                 return true
             }
-            let answer = Self.answer(to: response, url: requestURL, offset: offset, end: end)
+            let answer = Self.answer(
+                to: response, url: requestURL, offset: offset, end: end, followsRedirects: followsRedirects)
             var answered = answer
             if state.isChunked, (response as? HTTPURLResponse)?.statusCode != 206 { state.isChunked = false }
             if state.isChunked, case .open = answer.answer, let http = response as? HTTPURLResponse,
@@ -684,11 +695,12 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// What FFmpeg is told of `response`, the file's size, and the body bytes it serves.
-    private static func answer(to response: URLResponse, url: URL, offset: Int64, end: Int64?) -> (
-        answer: Answer, fileSize: Int64?, remaining: Int64?
-    ) {
+    private static func answer(to response: URLResponse, url: URL, offset: Int64, end: Int64?, followsRedirects: Bool)
+        -> (answer: Answer, fileSize: Int64?, remaining: Int64?)
+    {
         guard let http = response as? HTTPURLResponse else { return (.notServed, nil, nil) }
-        guard http.url?.absoluteString == url.absoluteString else { return (.notServed, nil, nil) }
+        // Answered from another address: a redirect followed, which FFmpeg is to open itself, unless it was asked to follow.
+        guard followsRedirects || http.url?.absoluteString == url.absoluteString else { return (.notServed, nil, nil) }
         let length = http.expectedContentLength >= 0 ? http.expectedContentLength : nil
         switch http.statusCode {
         case 200:
@@ -715,7 +727,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// `FFERRTAG(a, b, c, d)`, which doesn't import into Swift: FFmpeg's `AVERROR_HTTP_*`.
-    private static func ffErrorTag(_ a: UInt8, _ b: Character, _ c: Character, _ d: Character) -> Int32 {
+    static func ffErrorTag(_ a: UInt8, _ b: Character, _ c: Character, _ d: Character) -> Int32 {
         let tag =
             UInt32(a) | UInt32(b.asciiValue ?? 0) << 8 | UInt32(c.asciiValue ?? 0) << 16
             | UInt32(d.asciiValue ?? 0) << 24

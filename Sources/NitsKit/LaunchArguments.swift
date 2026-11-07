@@ -152,6 +152,10 @@ public struct LaunchArguments {
                 set(\.sponsorBlock, false)
             } else if arg == "--sponsorblock" {
                 set(\.sponsorBlock, true)
+            } else if arg == "--no-live-history" {
+                set(\.liveHistory, false)
+            } else if arg == "--live-history" {
+                set(\.liveHistory, true)
             } else if arg == "--no-network-thumbnails" {
                 set(\.networkThumbnailPolicy, .never)
             } else if arg == "--always-network-thumbnails" {

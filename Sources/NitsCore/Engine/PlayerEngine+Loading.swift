@@ -304,6 +304,7 @@ extension PlayerEngine {
         var resolvedTitle: String?
         var chaptersFromResolver: [MediaChapter] = []
         var buttonsFromResolver: [PlaybackActionButton] = []
+        var liveHistory: LiveHistory?
         let resolver: (any MediaResolver)? = MediaResolverChain(codecs: configuration.videoCodecs, host: mediaResolver)
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
         let order =
@@ -367,6 +368,7 @@ extension PlayerEngine {
                     return file
                 }
             historyKey = resolved.historyKey ?? path
+            liveHistory = resolved.liveHistory
             chaptersFromResolver = resolved.chapters
             buttonsFromResolver = resolved.actionButtons
             if request.title?.isEmpty ?? true, let title = resolved.title, !title.isEmpty {
@@ -383,6 +385,7 @@ extension PlayerEngine {
         /// Opens `source` as media, again on a transient network failure; `nil` when it can't be (or the load ended).
         func openSource() async -> MediaDemuxer? {
             let (sourcePath, sourceHeaders, requestSize) = (source.path, source.headers, source.httpRequestSize)
+            let history = liveHistory
             // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
             var isNetwork = MediaURL.isNetworkURL(sourcePath) || MediaURL.isInlineDASHManifest(sourcePath)
             if !isNetwork {
@@ -391,15 +394,24 @@ extension PlayerEngine {
                 }.value
             }
             let maxAttempts = isNetwork ? Self.networkOpenAttempts : 1
+            let openBegan = ContinuousClock.now
             for attempt in 1...maxAttempts {
                 if currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled { return nil }
                 let opened = await Task.detached(priority: .userInitiated) { () -> MediaDemuxer? in
                     guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
                     return MediaDemuxer(
                         url: sourcePath, headers: sourceHeaders, httpRequestSize: requestSize,
-                        interruptContext: interruptContext)
+                        interruptContext: interruptContext, liveHistory: history)
                 }.value
-                if let opened { return opened }
+                if let opened {
+                    if isNetwork {
+                        AppLog.info(
+                            .engine,
+                            "Opened '\(MediaURL.loggable(sourcePath))' in \(ContinuousClock.now - openBegan) (attempt \(attempt))"
+                        )
+                    }
+                    return opened
+                }
                 if currentLoadID != loadID || Task.isCancelled || interruptContext.isCancelled { return nil }
                 guard let err = interruptContext.lastError, attempt < maxAttempts else { return nil }
                 // A stream the resolver just gave is refused (403) for its first seconds on some CDNs (YouTube's:
@@ -644,24 +656,34 @@ extension PlayerEngine {
     }
 
     public func saveCurrentPlaybackProgress() {
-        guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 else { return }
+        let isLiveHistory = media.isLiveHistory
+        guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 || isLiveHistory else { return }
 
         let identity = MediaHistoryIdentity(historyKey: path, path: currentPath, sourcePath: currentSourcePath)
         let progressTime = chase?.seconds ?? currentTime
-        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime)s / \(media.duration)s")
+        // A live stream's history is saved in the stream's time (the engine's plus where its zero stands), which the
+        // recording that follows it counts in too, and for the length of it what is known: to the end of the window.
+        // On the air it has no end to be past, but an edge to have been at; once it ended it is a recording.
+        let origin = isLiveHistory ? media.timelineOrigin : 0
+        let duration =
+            isLiveHistory ? origin + max(live.window()?.end ?? progressTime, progressTime) : media.duration
+        let isOnTheAir = isLiveHistory && live.isLive && !live.isEnded
+        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime + origin)s / \(duration)s")
         if progressTime > 0 {
             historyStore.savePosition(
                 for: identity,
-                position: progressTime,
-                duration: media.duration,
+                position: progressTime + origin,
+                duration: duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
+                isLive: isOnTheAir,
+                wasAtLiveEdge: isOnTheAir ? live.isAtEdge(progressTime) : nil,
                 preferences: preferencesForHistory
             )
         } else {
             historyStore.savePreferences(
                 for: identity,
-                duration: media.duration,
+                duration: duration,
                 preferencesForHistory
             )
         }
@@ -1082,12 +1104,26 @@ extension PlayerEngine {
         let effectiveStartTime: Double
         if let edge = live.edgeTarget() {
             // A live stream plays from its edge: its timeline starts where the window does (minutes behind, and what
-            // expires with time), and a saved position names a moment gone by.
-            effectiveStartTime = edge
-            AppLog.info(
-                .engine,
-                "Starting a live stream at its edge: \(edge)s"
-                    + (requestedStartTime.map { " (the start requested, \($0)s, is ignored)" } ?? ""))
+            // expires with time), and a saved position names a moment gone by. But for a live stream's history, whose
+            // position is saved in the stream's time, and which was not left at the edge: from where it was left, if
+            // the window still holds it.
+            // (A start the request asks for is not to be overridden by what was saved, here as for any media: but a live
+            // stream has no time to be asked for in but the stream's own, so it starts at the edge.)
+            if media.isLiveHistory, configuration.resumePlayback, requestedStartTime == nil,
+                let saved = historyStore.savedLivePosition(for: mediaIdentity),
+                let resumed = live.resumeTarget(
+                    streamTime: saved.position, wasAtEdge: saved.wasAtEdge, origin: media.timelineOrigin)
+            {
+                effectiveStartTime = resumed
+                AppLog.info(
+                    .engine, "Resuming a live stream's history at \(resumed)s (the stream's \(saved.position)s)")
+            } else {
+                effectiveStartTime = edge
+                AppLog.info(
+                    .engine,
+                    "Starting a live stream at its edge: \(edge)s"
+                        + (requestedStartTime.map { " (the start requested, \($0)s, is ignored)" } ?? ""))
+            }
         } else if let explicit = requestedStartTime {
             effectiveStartTime = min(max(0.0, explicit), max(0.0, self.media.duration - 1.0))
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")

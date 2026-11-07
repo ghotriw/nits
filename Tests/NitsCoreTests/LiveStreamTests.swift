@@ -54,6 +54,82 @@ struct LiveStreamTests {
     }
 
     @MainActor
+    @Test("A live stream's history opens where it was left in the stream's time, if the window still holds that")
+    func resumesWhereItWasLeft() {
+        // A window of 24 h from the stream's time 1 000 000 s (zero of the engine's), the edge six seconds before its end.
+        let live = LiveStream()
+        let t0 = ContinuousClock.now
+        live.begin(isLive: true, window: LiveWindow(start: 0, end: 86_400, hasSlid: true), at: t0)
+        let origin = 1_000_000.0
+
+        // Left three hours in: there.
+        #expect(live.resumeTarget(streamTime: origin + 10_800, wasAtEdge: false, origin: origin, now: t0) == 10_800)
+        // Left at the edge: at the edge, whatever time has passed.
+        #expect(live.resumeTarget(streamTime: origin + 86_000, wasAtEdge: true, origin: origin, now: t0) == nil)
+        // Before the window (the day it held moved on since) and in its first seconds, whose segments expire: the edge.
+        #expect(live.resumeTarget(streamTime: origin - 3_600, wasAtEdge: false, origin: origin, now: t0) == nil)
+        #expect(live.resumeTarget(streamTime: origin + 5, wasAtEdge: false, origin: origin, now: t0) == nil)
+        #expect(
+            live.resumeTarget(
+                streamTime: origin + LiveStream.startMargin + 1, wasAtEdge: false, origin: origin, now: t0)
+                == LiveStream.startMargin + 1)
+        // At or past the edge, however it was saved: the edge.
+        #expect(live.resumeTarget(streamTime: origin + 86_399, wasAtEdge: false, origin: origin, now: t0) == nil)
+        #expect(live.resumeTarget(streamTime: origin + 90_000, wasAtEdge: false, origin: origin, now: t0) == nil)
+        // The window slides: a second later it starts a second on, and 5 + 10 s in is held no more at a minute's end.
+        #expect(
+            live.resumeTarget(streamTime: origin + 30, wasAtEdge: false, origin: origin, now: t0 + .seconds(60)) == nil)
+    }
+
+    @MainActor
+    @Test("The window the gate finds more of keeps the start it had slid to: the slide is not taken back to the load")
+    func theStartKeepsSlidingWhenTheGateFindsTheHead() throws {
+        let t0 = ContinuousClock.now
+        let first = LiveReport(window: LiveWindow(start: 0, end: 10_000, hasSlid: true), loadedAt: t0)
+        // Five minutes on, the head is found further.
+        let found = LiveSegmentGate.Change.headAdvanced(LiveHead(number: 7, startTime: 12_000))
+        let next = MediaDemuxer.applying(found, to: first, origin: 0, now: t0 + .seconds(300))
+        #expect(abs(next.window.start - 300) < 0.001, "\(next.window)")
+        #expect(next.window.end == 12_005)
+        #expect(next.loadedAt == t0 + .seconds(300))
+
+        // What the engine makes of it: the start goes on from 300, not from 0 again.
+        let live = LiveStream()
+        live.begin(isLive: true, window: first.window, at: t0)
+        live.update(window: next.window, at: next.loadedAt)
+        let start = try #require(live.window(at: t0 + .seconds(310))).start
+        #expect(abs(start - 310) < 0.5, "\(start)")
+
+        // The end of the stream: its end, and the start it had reached, and no more sliding.
+        let ended = MediaDemuxer.applying(
+            .ended(lastNumber: 9, endTime: 11_000), to: next, origin: 0, now: t0 + .seconds(400))
+        #expect(ended.window.hasEnded)
+        #expect(abs(ended.window.start - 400) < 0.001)
+        #expect(ended.window.end == 12_005, "an end never goes back")
+        // A window that does not slide keeps its start; one never past its end.
+        let still = MediaDemuxer.applying(
+            found, to: LiveReport(window: LiveWindow(start: 5, end: 100), loadedAt: t0), origin: 0,
+            now: t0 + .seconds(60))
+        #expect(still.window.start == 5)
+        let late = MediaDemuxer.applying(
+            .headAdvanced(LiveHead(number: 1, startTime: 0)),
+            to: LiveReport(window: LiveWindow(start: 0, end: 50, hasSlid: true), loadedAt: t0), origin: 0,
+            now: t0 + .seconds(500))
+        #expect(late.window.start <= late.window.end)
+    }
+
+    @MainActor
+    @Test("A stream that ended, or is not live, has no edge to resume before")
+    func resumesNothingWithoutAnEdge() {
+        let live = LiveStream()
+        live.begin(isLive: true, window: LiveWindow(start: 0, end: 1000, hasEnded: true))
+        #expect(live.resumeTarget(streamTime: 500, wasAtEdge: false, origin: 0) == nil)
+        let notLive = LiveStream()
+        notLive.begin(isLive: false, window: nil)
+        #expect(notLive.resumeTarget(streamTime: 500, wasAtEdge: false, origin: 0) == nil)
+    }
+
+    @MainActor
     @Test("A start that moves between two loads slides with the clock")
     func slidingPlaylist() throws {
         let live = LiveStream()

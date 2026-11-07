@@ -201,6 +201,11 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// A live HLS stream: opened as a playlist that slides and has no end yet (it stays set once the playlist ends,
     /// `LiveWindow.hasEnded`). It has no duration (`durationSeconds` is 0); what can be seeked in is `liveWindow`.
     public internal(set) var isLive = false
+    /// A live stream given as the segments of its past (`LiveHistory`): played as live, though its manifest is a static
+    /// one the demuxer reads the end of, on a timeline from zero. Its window is told by the resolver, not by the format
+    /// context (`publishLiveWindow`), and `streamTimeOrigin` is the stream's time at the timeline's zero.
+    public internal(set) var liveHistory: LiveHistory?
+    public var streamTimeOrigin: Double { liveHistory?.origin ?? 0 }
     public var liveWindow: LiveWindow? { liveReport?.window }
     /// `liveWindow` and when its playlist was loaded.
     public var liveReport: LiveReport? {
@@ -598,8 +603,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         headers: [String: String] = [:],
         httpRequestSize: Int? = nil,
         interruptContext: InterruptContext? = nil,
-        audioOnly: Bool = false
+        audioOnly: Bool = false,
+        liveHistory: LiveHistory? = nil
     ) {
+        self.liveHistory = liveHistory
         let ctxContext = interruptContext ?? InterruptContext()
         self.interruptContext = ctxContext
         self.ownsInterruptContext = (interruptContext == nil)
@@ -611,6 +618,22 @@ public final class MediaDemuxer: @unchecked Sendable {
         // `self.interruptContext` keeps a strong reference to `ctxContext` across the lifetime of MediaDemuxer.
         ctxContext.install(on: allocatedCtx)
         ioBytes.install(on: allocatedCtx)
+        // The segments of a live stream's history are asked for through the source, and those to come are waited for.
+        // What the gate finds (a head further on, the end of the stream) moves the window the engine is told of.
+        if let history = liveHistory, let source = history.source {
+            let windowState = liveWindowState
+            let origin = history.origin
+            ioBytes.liveSegments = LiveSegmentGate(
+                source: source,
+                head: LiveHead(
+                    number: history.headNumber, startTime: history.end - LiveSegmentGate.nominalSegmentDuration)
+            ) { change in
+                windowState.withLock { state in
+                    guard let report = state else { return }
+                    state = Self.applying(change, to: report, origin: origin, now: .now)
+                }
+            }
+        }
         // Until the opening is done (whichever way it ends), the inputs a DASH demuxer opens for the start of each
         // rung of a ladder are not downloaded whole.
         let openingBytes = ioBytes
@@ -684,6 +707,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         self.timelineOrigin = Self.timelineOrigin(of: formatCtx)
+        // The segments of a live stream's past carry the stream's time (hours in): the timeline starts at the first.
+        if let liveHistory { timelineOrigin = Int64((liveHistory.origin * Double(AV_TIME_BASE)).rounded()) }
         // FFmpeg indexes what its seeks read past `readPacket` elsewhere (the MPEG-TS timestamp search, the generic
         // seek): only the index of Matroska and MP4 comes from the file.
         if !Self.describesStreams(formatCtx) { storeSubtitleIndex([:]) }
@@ -752,6 +777,12 @@ public final class MediaDemuxer: @unchecked Sendable {
             isLive = true
             durationSeconds = 0
             publishLiveWindow(from: formatCtx)
+        } else if let liveHistory {
+            isLive = true
+            durationSeconds = 0
+            // The window starts at the timeline's zero; `hasSlid` as the server's oldest segments expire as time goes.
+            let window = LiveWindow(start: 0, end: liveHistory.end - liveHistory.origin, hasSlid: true)
+            liveWindowState.withLock { $0 = LiveReport(window: window, loadedAt: .now) }
         }
         self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
     }
@@ -831,7 +862,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             // input, which is none, so nothing below (the end of the input's bookkeeping) is done for it.
             if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
             // The playlist is reloaded inside the read: the window it tells moved.
-            if isLive { publishLiveWindow(from: ctx) }
+            if isLive, liveHistory == nil { publishLiveWindow(from: ctx) }
             if ret >= 0 {
                 Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
                 if variantSwitch != nil, !admitDuringVariantSwitch(&pkt, in: ctx) {
