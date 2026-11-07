@@ -484,10 +484,7 @@ public enum SyntheticTestMediaFactory {
             guard made else { return nil }
             let published = URL(fileURLWithPath: targetPath).deletingLastPathComponent().deletingLastPathComponent()
                 .path
-            guard rename(directory.path, published) == 0 || FileManager.default.fileExists(atPath: targetPath) else {
-                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
-                return nil
-            }
+            guard publish(directory, at: published, holding: targetPath, preset: preset) else { return nil }
             return targetPath
         }
 
@@ -522,11 +519,7 @@ public enum SyntheticTestMediaFactory {
                 guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return nil }
             }
             let published = URL(fileURLWithPath: targetPath).deletingLastPathComponent().path
-            // Another process may have published its copy meanwhile: a directory can't be replaced atomically.
-            guard rename(directory.path, published) == 0 || FileManager.default.fileExists(atPath: targetPath) else {
-                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(errno)")
-                return nil
-            }
+            guard publish(directory, at: published, holding: targetPath, preset: preset) else { return nil }
             return targetPath
         }
 
@@ -969,6 +962,27 @@ public enum SyntheticTestMediaFactory {
             }
         }
         return true
+    }
+
+    /// Renames the media made in `directory` into place at `published`, which `target` is in. A directory can't be
+    /// replaced atomically: another process (or test) may have published its copy meanwhile, which is kept. A copy
+    /// without `target` is a broken one (macOS empties `$TMPDIR`'s files not used for three days, leaving the
+    /// directories), which every later run would fail to replace: it is removed and the rename tried again.
+    private static func publish(
+        _ directory: URL, at published: String, holding target: String, preset: Preset
+    ) -> Bool {
+        for attempt in 0..<2 {
+            if rename(directory.path, published) == 0 { return true }
+            let error = errno
+            if FileManager.default.fileExists(atPath: target) { return true }
+            guard attempt == 0, error == ENOTEMPTY || error == EEXIST else {
+                print("[SyntheticTestMediaFactory] Failed to publish \(preset.rawValue): errno \(error)")
+                return false
+            }
+            print("[SyntheticTestMediaFactory] Replacing a broken copy of \(preset.rawValue) (no \(target))")
+            try? FileManager.default.removeItem(atPath: published)
+        }
+        return FileManager.default.fileExists(atPath: target)
     }
 
     /// Runs FFmpeg to completion. stderr is drained while the process runs (a full pipe would block it)
