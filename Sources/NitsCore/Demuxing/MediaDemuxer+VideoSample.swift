@@ -8,7 +8,7 @@ extension MediaDemuxer {
     var videoFormat: VideoPacketFormat {
         VideoPacketFormat(
             description: formatDescription, isAnnexB: isAnnexBStream, timebase: timebase,
-            variantGeneration: variantGeneration)
+            variantGeneration: variantGeneration, sampleAspectRatio: sampleAspectRatio)
     }
 
     /// A queued packet keeps the format it was read with: a variant switch can change it while the packet waits.
@@ -213,47 +213,54 @@ extension MediaDemuxer {
         return parsed.sets
     }
 
+    /// The parameter sets a key frame brings: as new extradata, or in band before its slices.
+    private func keyframeParameterSets(of pkt: AVPacket) -> VideoFormatDescriptionBuilder.ParameterSets? {
+        if let fromSideData = newExtradataSets(of: pkt) { return fromSideData }
+        guard isAnnexBStream, let bytes = pkt.data, pkt.size > 0 else { return nil }
+        // The sets come before the slices: the start of the packet holds them.
+        let head = Data(bytes: bytes, count: min(Int(pkt.size), 4096))
+        guard let parsed = VideoFormatDescriptionBuilder.parameterSets(fromExtradata: head, codec: codec),
+            parsed.isAnnexB, parsed.sets.sps != nil, parsed.sets.pps != nil,
+            codec != .hevc || parsed.sets.vps != nil
+        else { return nil }
+        return parsed.sets
+    }
+
     private func refreshVideoFormat(from pkt: AVPacket) {
-        guard codec.requiresParameterSets, pkt.flags & AV_PKT_FLAG_KEY != 0 else { return }
-        let sets: VideoFormatDescriptionBuilder.ParameterSets
-        if let fromSideData = newExtradataSets(of: pkt) {
-            sets = fromSideData
-        } else {
-            guard isAnnexBStream, let bytes = pkt.data, pkt.size > 0 else { return }
-            // The sets come before the slices: the start of the packet holds them.
-            let head = Data(bytes: bytes, count: min(Int(pkt.size), 4096))
-            guard let parsed = VideoFormatDescriptionBuilder.parameterSets(fromExtradata: head, codec: codec),
-                parsed.isAnnexB, parsed.sets.sps != nil, parsed.sets.pps != nil,
-                codec != .hevc || parsed.sets.vps != nil
-            else { return }
-            sets = parsed.sets
-        }
-        let seen = lastSeenParameterSets
-        lastSeenParameterSets = sets
+        guard pkt.flags & AV_PKT_FLAG_KEY != 0 else { return }
         // The first keyframe after a slow seek tells the size it lands at, whatever came before it: the player may be
         // showing the size of another stretch (content, an advertisement, content again), which the reading, further on,
-        // has left.
+        // has left. Told at that keyframe, whatever it brings (without parameter sets, the size of the description now: a
+        // keyframe further on with other sets tells the change), as told later, at a change further on, the landing would
+        // replace the changes before it (`PlayerEngine.videoSizeWillPlay`).
         let landing = reportsVideoSizeAtNextKeyframe
         reportsVideoSizeAtNextKeyframe = false
         var sizeChanged = false
         // `seen` are the sets the description now is made of (`makeVideoFormatDescription`).
-        if let seen, Self.parameterSetsDiffer(seen, sets) {
-            var codecParameters: UnsafePointer<AVCodecParameters>?
-            if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
-                codecParameters = UnsafePointer(stream.pointee.codecpar)
+        if codec.requiresParameterSets, let sets = keyframeParameterSets(of: pkt) {
+            let seen = lastSeenParameterSets
+            lastSeenParameterSets = sets
+            if let seen, Self.parameterSetsDiffer(seen, sets) {
+                var codecParameters: UnsafePointer<AVCodecParameters>?
+                if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+                    codecParameters = UnsafePointer(stream.pointee.codecpar)
+                }
+                if let description = makeVideoFormatDescription(parameterSets: sets, codecParameters: codecParameters) {
+                    formatDescription = description
+                    let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+                    // Other sets for the same pictures (an encoder varying its SPS' timing) change the description, not
+                    // the size the player draws at: it is told when that changes.
+                    sizeChanged = Int(dimensions.width) != width || Int(dimensions.height) != height
+                    width = Int(dimensions.width)
+                    height = Int(dimensions.height)
+                } else {
+                    // The description is still of the sets before (which `makeVideoFormatDescription` replaced): the
+                    // next keyframe with these tries again.
+                    lastSeenParameterSets = seen
+                    AppLog.warning(
+                        .demuxer, "Parameter sets changed in the stream, but no format description came of them")
+                }
             }
-            guard let description = makeVideoFormatDescription(parameterSets: sets, codecParameters: codecParameters)
-            else {
-                AppLog.warning(.demuxer, "Parameter sets changed in the stream, but no format description came of them")
-                return
-            }
-            formatDescription = description
-            let dimensions = CMVideoFormatDescriptionGetDimensions(description)
-            // Other sets for the same pictures (an encoder varying its SPS' timing) change the description, not the
-            // size the player draws at: it is told when that changes.
-            sizeChanged = Int(dimensions.width) != width || Int(dimensions.height) != height
-            width = Int(dimensions.width)
-            height = Int(dimensions.height)
         }
         guard sizeChanged || landing else { return }
         // From the description the pictures carry, as a variant's change takes it: `width` and `height` are what the open
@@ -266,7 +273,8 @@ extension MediaDemuxer {
         AppLog.info(.demuxer, "The pictures are \(reportedWidth)x\(reportedHeight) from \(seconds)s")
         onVideoSizeChanged?(
             VideoSizeChange(
-                seconds: seconds, width: reportedWidth, height: reportedHeight, sampleAspectRatio: sampleAspectRatio))
+                seconds: seconds, width: reportedWidth, height: reportedHeight, sampleAspectRatio: sampleAspectRatio,
+                isLanding: landing))
     }
 }
 

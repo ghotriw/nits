@@ -307,6 +307,9 @@ extension PlayerEngine {
 
         // Immediately apply actual completed PTS so timer and subtitles match the displayed keyframe
         self.currentTime = completedSeconds
+        // The size and variant of the frame shown: a keyframe seek forward lands past its target, where a change told
+        // for the landing waits (`videoSizeWillPlay` applies by the target), and paused nothing else applies it.
+        applyDueVariantChanges(at: completedSeconds + 0.1)
         subtitles.timeDidChange(to: completedSeconds, .seekLanded)
         onTimeUpdate?(completedSeconds, media.duration)
 

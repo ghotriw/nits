@@ -136,6 +136,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         public let width: Int
         public let height: Int
         public let sampleAspectRatio: RationalAspectRatio
+        /// Told where a seek lands, changed or not: the size from there on, which replaces what was told before (the
+        /// changes past it are told again after it: read again, or from the packet cache).
+        public var isLanding = false
     }
 
     /// Called on the reading thread where the size of the pictures read changes (see `VideoSizeChange`). Set before

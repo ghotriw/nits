@@ -256,6 +256,67 @@ struct HLSDiscontinuityTests {
         #expect(CVPixelBufferGetWidth(buffer) == 320, "\(CVPixelBufferGetWidth(buffer))")
         #expect(engine.media.video.width == 320 && engine.media.video.height == 180)
     }
+
+    @Test("A seek the packet cache serves tells the size it lands at and the changes cached past it")
+    func cachedSeekTellsTheSizes() throws {
+        guard let (demuxer, server) = try Self.open(.hlsDiscontinuityResize) else { return }
+        defer { server.stop() }
+        let events = OSAllocatedUnfairLock(initialState: [MediaDemuxer.VideoSizeChange]())
+        demuxer.onVideoSizeChanged = { change in events.withLock { $0.append(change) } }
+        demuxer.startReadAhead(limits: .init(seconds: 600, bytes: 100 << 20, backBytes: 64 << 20))
+        let deadline = ContinuousClock.now + .seconds(20)
+        while !demuxer.readAheadEnded, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        try #require(demuxer.readAheadHitEOF, "The whole playlist was read")
+        // Played into the third segment (320x180 again, from 8 s), past the advertisement (640x360, 4 to 8 s).
+        while let sample = demuxer.nextVideoSample(), Self.seconds(sample, demuxer) < 9.0 {}
+        events.withLock { $0.removeAll() }
+
+        let requestsBefore = server.requests.count
+        #expect(demuxer.seekReportingCache(to: 1.0, exact: true).fromCache, "The seek back was not the cache's")
+        #expect(server.requests.count == requestsBefore)
+        let told = events.withLock { $0 }
+        #expect(told.map(\.width) == [320, 640, 320], "\(told)")
+        #expect(told.map(\.isLanding) == [true, false, false], "\(told)")
+        if told.count == 3 {
+            #expect(
+                told[0].seconds <= 1.05 && abs(told[1].seconds - 4) < 0.1 && abs(told[2].seconds - 8) < 0.1, "\(told)")
+        }
+    }
+
+    @Test("Paused, seeks the packet cache serves show the size of the frame they land on", .realtimePlayback)
+    @MainActor
+    func pausedCachedSeeksFollowTheSize() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuityResize) else { return }
+        let url = URL(fileURLWithPath: path)
+        let server = try TestHTTPServer(root: url.deletingLastPathComponent())
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+        engine.load(path: server.url(url.lastPathComponent))
+        #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
+        engine.play()
+        // In the advertisement (4 to 8 s, 640x360), the whole playlist read ahead.
+        #expect(await engine.waitUntil { engine.currentTime > 5.0 && engine.media.video.width == 640 })
+        let demuxer = try #require(engine.demuxer)
+        #expect(await engine.waitUntil { demuxer.readAheadEnded })
+        engine.pause()
+        let requestsBefore = server.requests.count
+
+        // Back to the content before it.
+        engine.seek(to: 1.0, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(engine.media.video.width == 320, "Back at 1 s: \(engine.media.video.width)")
+        // Into the advertisement again: its size, told again by the seek (the player had applied and forgotten it).
+        engine.seek(to: 5.0, exact: true)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(engine.media.video.width == 640, "At 5 s: \(engine.media.video.width)")
+        // A keyframe seek forward lands past its target (keyframes every second), on the third segment's first (8 s).
+        engine.seek(to: 7.5, exact: false, forward: true)
+        #expect(await engine.waitForSeekToSettle())
+        #expect(engine.currentTime > 7.9, "Landed at \(engine.currentTime) s")
+        #expect(engine.media.video.width == 320, "Landed at \(engine.currentTime) s: \(engine.media.video.width)")
+        #expect(server.requests.count == requestsBefore, "A seek read the input again")
+    }
 }
 
 @Suite(

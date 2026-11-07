@@ -1,4 +1,5 @@
 import CFFmpeg
+import CoreMedia
 import Foundation
 import os
 
@@ -233,6 +234,9 @@ extension MediaDemuxer {
         // 4. Reposition cursors
         if let videoTargetIndex {
             videoQueue.seekTo(elementIndex: videoTargetIndex)
+            // A slow seek's landing not told yet (no keyframe read since) would be told further on, as this one.
+            reportsVideoSizeAtNextKeyframe = false
+            reportCachedVideoSizes(fromKeyframe: videoTargetIndex)
         }
         if let audioTargetIndex {
             audioQueue.seekTo(elementIndex: audioTargetIndex)
@@ -257,6 +261,43 @@ extension MediaDemuxer {
             "In-cache seek succeeded to seconds: \(seconds) (exact: \(exact), forward: \(forward))"
         )
         return landsExactly
+    }
+
+    /// After a seek the cache served: the size the pictures land at, and every change of it in the packets cached past
+    /// that, as their reading told them (`refreshVideoFormat`). The player applies a change once it plays there and
+    /// forgets it, and these packets are not read again: without it, a seek back across a stretch of another size (an
+    /// advertisement) would keep that size, and the stretch played again would not get its own. Behind `queueLock`.
+    ///
+    /// The keyframes past the landing are in time order: a break in the timestamps ahead of the cursor moves the
+    /// buffer's `searchFloor` past it, and the cache serves no seek then (`isBeforeBreak`).
+    private func reportCachedVideoSizes(fromKeyframe index: Int) {
+        guard let onVideoSizeChanged else { return }
+        var reported: (width: Int32, height: Int32, aspect: RationalAspectRatio)?
+        // Packets of one stretch share their description: the size is read once a description.
+        var lastFormat: (description: CMVideoFormatDescription, aspect: RationalAspectRatio)?
+        for keyframe in videoQueue.keyframeIndices where keyframe >= index {
+            // The landing is the keyframe landed on: a description it lacks is no size to tell, and a later keyframe
+            // told as the landing would replace the changes before it (`PlayerEngine.videoSizeWillPlay`).
+            guard let packet = videoQueue.peekAt(keyframe), let description = packet.format.description,
+                packet.format.timebase.den > 0
+            else {
+                if keyframe == index { return }
+                continue
+            }
+            let aspect = packet.format.sampleAspectRatio
+            if let lastFormat, lastFormat.description === description, lastFormat.aspect == aspect { continue }
+            lastFormat = (description, aspect)
+            let size = CMVideoFormatDescriptionGetDimensions(description)
+            if let reported, reported == (size.width, size.height, aspect) { continue }
+            let timebase = packet.format.timebase
+            let seconds = Double(packet.effectivePTS) * Double(timebase.num) / Double(timebase.den)
+            let isLanding = reported == nil
+            reported = (size.width, size.height, aspect)
+            onVideoSizeChanged(
+                VideoSizeChange(
+                    seconds: seconds, width: Int(size.width), height: Int(size.height), sampleAspectRatio: aspect,
+                    isLanding: isLanding))
+        }
     }
 
     /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are

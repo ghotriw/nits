@@ -178,13 +178,19 @@ extension PlayerEngine {
     }
 
     /// The demuxer reads pictures of another size (the parameter sets changed) from `change.seconds` on: as for a
-    /// variant, read ahead the change waits for playback to get there.
+    /// variant, read ahead the change waits for playback to get there. Where a seek lands (`isLanding`), the size from
+    /// there on replaces every change told before: those before it were skipped (a seek forward would apply them one
+    /// after the other), and those after it are told again.
     func videoSizeWillPlay(_ change: MediaDemuxer.VideoSizeChange) {
         guard demuxer?.readsAhead == true else {
             videoSizeDidChange(to: change)
             return
         }
-        pendingVideoSizeChanges.removeAll { $0.seconds >= change.seconds }
+        if change.isLanding {
+            pendingVideoSizeChanges.removeAll()
+        } else {
+            pendingVideoSizeChanges.removeAll { $0.seconds >= change.seconds }
+        }
         pendingVideoSizeChanges.append(change)
         applyDueVariantChanges(at: (chase?.seconds ?? currentTime) + 0.1)
     }

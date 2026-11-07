@@ -30,6 +30,9 @@ extension MediaDemuxer {
         /// `MediaDemuxer.variantGeneration` when the packet was read: packets of one generation come from one stretch
         /// of one variant (the parameter sets within it may change, the description with them).
         let variantGeneration: Int
+        /// The pixel aspect of the stream read: a variant switch changes it, and a description may not tell it (made of
+        /// H.264 parameter sets, or square).
+        let sampleAspectRatio: RationalAspectRatio
     }
 
     /// A demuxed video packet, queued while the audio pump reads ahead so no video is lost.

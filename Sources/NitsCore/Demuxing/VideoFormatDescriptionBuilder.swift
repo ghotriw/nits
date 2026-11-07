@@ -178,12 +178,15 @@ struct VideoFormatDescriptionBuilder {
                 atoms[atomKey] = dolbyVision.configData
                 newExts[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] = atoms
 
+                // The base's size: made from the parameter sets, it is theirs, and in-band sets of another stretch
+                // change it while `width` and `height` still tell the one before (`refreshVideoFormat`).
+                let size = CMVideoFormatDescriptionGetDimensions(baseDesc)
                 var dvDesc: CMVideoFormatDescription?
                 let status = CMVideoFormatDescriptionCreate(
                     allocator: kCFAllocatorDefault,
                     codecType: kCMVideoCodecType_DolbyVisionHEVC,
-                    width: Int32(width),
-                    height: Int32(height),
+                    width: size.width,
+                    height: size.height,
                     extensions: newExts as CFDictionary,
                     formatDescriptionOut: &dvDesc
                 )
