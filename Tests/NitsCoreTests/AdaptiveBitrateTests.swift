@@ -176,6 +176,19 @@ struct AdaptiveBitrateTests {
         #expect(consumer.playedWidth == 480, "Playing \(String(describing: consumer.playedWidth))")
     }
 
+    @Test("A link the opening's prefetch proves slow starts on the variant it carries, not the best")
+    func slowLinkStartsLower() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        // 1.5 Mbit/s carries the 0.97 Mbit/s variant (480), not the 2.66 one (640) the ladder's best is.
+        server.setLinkRate(1_500_000 / 8)
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        let selected = try #require(demuxer.variants.first { $0.id == demuxer.selectedVariantId })
+        #expect(selected.width == 480, "Started on \(selected.width)")
+        #expect(demuxer.variants.first?.width == 640)
+    }
+
     @Test("A fast link measures from the low variant's small segments, and steps up to what it carries at once")
     func fastLinkMeasuresSmallSegments() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }

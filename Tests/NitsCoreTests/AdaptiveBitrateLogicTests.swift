@@ -153,15 +153,85 @@ struct AdaptiveBitrateLogicTests {
         #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 15, at: 12.5) == 2)
     }
 
-    @Test("Between `upSafety` and `safety` of the estimate a variant is kept, but not stepped up to")
+    @Test("Between `upSafety` and `safety` of the estimate a variant is kept, and stepped up to only by a probe")
     func holdsBetweenTheSafeties() {
         var logic = AdaptiveBitrateLogic()
-        // 6.6 Mbit/s: 5 Mbit/s takes 0.76 of it, within 0.95, over 0.7.
+        // 6.6 Mbit/s: 5 Mbit/s takes 0.76 of it, within 0.95 and 0.85, over 0.7.
         Self.measure(&logic, bitsPerSecond: 6_600_000, seconds: 10, at: 0)
         #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 5, at: 10) == nil)
         #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 15, at: 10) == nil)
-        // A full read-ahead, long after a switch, doesn't probe past what a recent estimate fits either.
-        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 19) == nil)
+        // A live stream's raised read-ahead is none.
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, isReadAheadReal: false, at: 19) == nil)
+        // A full, real one probes the next variant, which the estimate fits within `probeSafety`.
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 19) == 2)
+    }
+
+    @Test("A variant just stepped up to survives a dip of the estimate that a long-held one wouldn't")
+    func newStepUpIsHeldThroughADip() {
+        var logic = AdaptiveBitrateLogic()
+        // 6.6 Mbit/s: a probe from 1.5 to 5 Mbit/s (0.76).
+        Self.measure(&logic, bitsPerSecond: 6_600_000, seconds: 10, at: 0)
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 25, at: 19) == 2)
+        // The estimate dips to 5.3 Mbit/s: 5 Mbit/s over 0.95 of it, within 1.0.
+        Self.measure(&logic, bitsPerSecond: 5_000_000, seconds: 8, at: 20)
+        let estimate = logic.estimate ?? 0
+        #expect(estimate < 5_263_000 && estimate > 5_000_000, "\(estimate)")
+        #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 10, at: 28) == nil)
+        // A latency share on top of it makes 5 Mbit/s not fit 1.0 of the estimate, though it fits the estimate itself:
+        // that is left only once it has held for `holdDebounce`, not on a second's dip.
+        logic.addLatency(1, media: 8)
+        #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 10, at: 29) == nil)
+        #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 10, at: 32) == nil)
+        #expect(logic.choose(current: 2, among: Self.ladder, readAhead: 10, at: 34) == 1)
+        // A variant the estimate can't carry at all comes down at once.
+        var fallen = AdaptiveBitrateLogic()
+        Self.measure(&fallen, bitsPerSecond: 6_600_000, seconds: 10, at: 0)
+        #expect(fallen.choose(current: 1, among: Self.ladder, readAhead: 25, at: 19) == 2)
+        Self.measure(&fallen, bitsPerSecond: 3_000_000, seconds: 3, at: 20)
+        #expect(fallen.choose(current: 2, among: Self.ladder, readAhead: 10, at: 23) == 1)
+    }
+
+    @Test("A variant held through a dip, with a stale estimate, isn't left for a probe up")
+    func heldVariantIsNotProbedPast() {
+        let ladder = Self.ladder + [.init(id: 3, bandwidth: 9_000_000)]
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 6_600_000, seconds: 10, at: 0)
+        #expect(logic.choose(current: 1, among: ladder, readAhead: 25, at: 19) == 2)
+        // 5 Mbit/s over 0.95 of the estimate (5.1), within 1.0: held. The estimate is stale by 50 s.
+        Self.measure(&logic, bitsPerSecond: 5_100_000, seconds: 8, at: 20)
+        #expect(logic.choose(current: 2, among: ladder, readAhead: 25, at: 50) == nil)
+    }
+
+    @Test("A probe on an estimate takes a rung of unknown size for no smaller")
+    func probeTakesUnknownSize() {
+        let ladder: [AdaptiveBitrateLogic.Variant] = [
+            .init(id: 0, bandwidth: 1_000_000, pixels: 640 * 360), .init(id: 1, bandwidth: 2_800_000),
+        ]
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 3_600_000, seconds: 10, at: 0)
+        #expect(logic.choose(current: 0, among: ladder, readAhead: 25, at: 19) == 1)
+    }
+
+    @Test("A probe on an estimate needs `probeSafety` to fit and skips variants of fewer pixels")
+    func probeOnEstimateLimits() {
+        let ladder: [AdaptiveBitrateLogic.Variant] = [
+            .init(id: 0, bandwidth: 11_000_000, pixels: 1920 * 1080),
+            .init(id: 1, bandwidth: 19_000_000, pixels: 3840 * 2160),
+            .init(id: 2, bandwidth: 21_500_000, pixels: 2560 * 1440),
+            .init(id: 3, bandwidth: 39_000_000, pixels: 3840 * 2160),
+        ]
+        var logic = AdaptiveBitrateLogic()
+        // 25 Mbit/s: 19 takes 0.76, 21.5 takes 0.86.
+        Self.measure(&logic, bitsPerSecond: 25_000_000, seconds: 10, at: 0)
+        #expect(logic.choose(current: 0, among: ladder, readAhead: 25, at: 19) == 1)
+        // From 3840 × 2160 at 19, 21.5 has fewer pixels and 39 doesn't fit: it stays.
+        var held = AdaptiveBitrateLogic()
+        Self.measure(&held, bitsPerSecond: 25_000_000, seconds: 10, at: 0)
+        #expect(held.choose(current: 1, among: ladder, readAhead: 25, at: 19) == nil)
+        // 21.5 over 0.85 of 25 Mbit/s isn't tried from a variant it would be a step up from.
+        var over = AdaptiveBitrateLogic()
+        Self.measure(&over, bitsPerSecond: 25_000_000, seconds: 10, at: 0)
+        #expect(over.choose(current: 0, among: Array(ladder.filter { $0.id != 1 }), readAhead: 25, at: 19) == nil)
     }
 
     @Test("Without a recent estimate a full read-ahead steps up one variant at a time")

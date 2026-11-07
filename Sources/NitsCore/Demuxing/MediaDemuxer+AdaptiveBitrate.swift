@@ -123,13 +123,17 @@ extension MediaDemuxer {
         guard selection.isAutomatic, selection.requested == nil, let current = selection.selected else { return }
         var readAhead = readAheadState.withLock { $0 } - consumedSeconds
         guard readAhead.isFinite else { return }
+        var isReadAheadReal = true
         if let edge = adaptiveBitrate.liveEdgeReachedAt, now - edge <= Self.liveEdgeMemory {
             readAhead = max(readAhead, adaptiveBitrate.logic.config.highBuffer)
+            isReadAheadReal = false
         }
         let ladder = variants.filter(\.isSwitchable).map {
-            AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth)
+            AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth, pixels: $0.width * $0.height)
         }
-        guard let chosen = adaptiveBitrate.logic.choose(current: current, among: ladder, readAhead: readAhead, at: now)
+        guard
+            let chosen = adaptiveBitrate.logic.choose(
+                current: current, among: ladder, readAhead: readAhead, isReadAheadReal: isReadAheadReal, at: now)
         else { return }
         let estimate = adaptiveBitrate.logic.estimate.map { "\(Int($0 / 1000)) kbit/s" } ?? "none"
         let latency = adaptiveBitrate.logic.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"

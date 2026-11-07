@@ -234,4 +234,22 @@ struct HLSPrefetchTests {
         #expect(HLSPlaylistPrefetcher.probedInputs(in: mixed) == [.init(uri: "a.ts", offset: 100, length: 500)])
         #expect(HLSPlaylistPrefetcher.probedInputs(in: "#EXTM3U\n#EXT-X-BYTERANGE:x\n#EXTINF:2.0,\na.ts").isEmpty)
     }
+
+    @Test("The prefetch proves a link slow only by enough bodies under the limit, never fast")
+    func provenSlowRate() {
+        typealias Throughput = HLSPlaylistPrefetcher.Throughput
+        func throughput(count: Int = 30, kilobytes: Int = 1087, busy: Double) -> Throughput {
+            .init(
+                count: count, bytes: kilobytes << 10, wallSeconds: busy * 2, medianWaitSeconds: 0.2, busySeconds: busy)
+        }
+        // 1087 KB of bodies in 5.1 s (DSL 2 Mbit/s): 1.75 Mbit/s.
+        #expect(throughput(busy: 5.09).provenSlowRate.map { $0 > 1_700_000 && $0 < 1_800_000 } == true)
+        // 4.8 Mbit/s, the lowest read on a fast link, and 17 on a 25 Mbit/s one, prove nothing.
+        #expect(throughput(busy: 1.8).provenSlowRate == nil)
+        #expect(throughput(busy: 0.5).provenSlowRate == nil)
+        // Too few starts, or too few bytes.
+        #expect(throughput(count: 1, busy: 5).provenSlowRate == nil)
+        #expect(throughput(kilobytes: 200, busy: 1).provenSlowRate == nil)
+        #expect(throughput(busy: 0).provenSlowRate == nil)
+    }
 }

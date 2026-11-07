@@ -126,7 +126,7 @@ Accepted for now, noted for later.
   1.1–1.5 s (RTT 25 ms) / 4.4 s (RTT 175 ms) before, 7–10 ms after; keyframe seek back 0.6 s / 3.2 s before, 2 ms after;
   no bytes. Adaptive playback in real time with a seek back every 10-30 s (probe `LadderABRSeekMeasurement`, 2026-11-07):
   Wi-Fi alone, no switch, 60 of 60 served from the cache; with NLC "DSL" (2 Mbit/s) the stream mostly stalled (the
-  start is the top variant, ~10 Mbit/s; one run lost a segment, "failed too many times") and the few switches came
+  start was the top variant, ~10 Mbit/s, before the slow-link start of 2026-11-07; one run lost a segment, "failed too many times") and the few switches came
   when the cursor was past them: 7 of 8 and 3 of 3 served. One seek of 8, at the up-switch the line's release caused
   (target before the splice at 68 s, cursor after it), was slow (447 ms, 1.3 MB); its reason was not recorded (it did not
   repeat), the splice rule explains it. How often seeks cross a splice on a real stream is therefore unmeasured; a
@@ -135,6 +135,16 @@ Accepted for now, noted for later.
   is possible; not measured); live. mpv caches both (it picks one HLS variant at open), and keeps several
   cached ranges where we keep one. Live needs to agree with `LiveStream.clamp` and `trackLiveWindow` (a seek back would
   no longer depend on the playlist's window).
+- **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only a prefetch rate under
+  3 Mbit/s starts lower (`provenSlowRate`): the rate follows the CDN's answers as much as the link (4.8 Mbit/s on a
+  fast one), so a higher limit would start low on fast links. The first estimate comes after a whole segment of the
+  best variant, so a 5–10 Mbit/s link against a 39 Mbit/s top stalls until it (0 to 4.8 s in the plain runs at 25 Mbit/s;
+  not measured at 5–10). The ways out are a lower start by default (hls.js, VLC, ExoPlayer do), which shows low
+  quality for ~30 s on a fast link (the switch splices after the read-ahead), or an estimate from a request under way
+  with a rollback to the current frame (not built; `PlayerEngine.selectVariant` is how a seek to it works).
+- **A variant at the edge of the link flaps.** With a latency share of 0.15 and an estimate of 22–23 Mbit/s, 18.9 Mbit/s
+  fits neither the hold (0.95 less the share) nor leaves room, and the stream went 18.9 → 11.3 → 18.9 every 15–25 s in
+  one of eight 25 Mbit/s runs. The probe's backoff only lengthens the climbs.
 - **How long a read-ahead takes to end after its server goes away is not known.** A test stopped the server mid-file
   and waited for `readAheadEnded` for 10 s; it did not come (the test was dropped, as a read error cannot be made to
   happen the same way every time). FFmpeg's reconnects or the input's read timeout (`rw_timeout`) may be waiting; not

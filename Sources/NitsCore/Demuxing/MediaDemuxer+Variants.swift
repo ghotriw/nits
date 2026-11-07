@@ -126,7 +126,12 @@ extension MediaDemuxer {
     /// Lists the variants of an HLS master playlist and selects the one with the highest bandwidth. Returns the
     /// indexes of the streams to read (the selected program's, and any stream outside every program), or nil when
     /// the input has no variants. FFmpeg puts the `EXT-X-MEDIA` renditions a variant refers to in its program.
-    func discoverVariants(in formatCtx: UnsafeMutablePointer<AVFormatContext>) -> Set<Int>? {
+    /// `slowLinkRate` is what an HLS master's prefetch measured, when that proves the link slow
+    /// (`HLSPlaylistPrefetcher.Throughput.provenSlowRate`): playback starts on the variant it carries, not the best, whose
+    /// first segment would take a minute (2 Mbit/s against 39: 62 to 70 s stalled of 120).
+    func discoverVariants(
+        in formatCtx: UnsafeMutablePointer<AVFormatContext>, slowLinkRate: Double? = nil
+    ) -> Set<Int>? {
         if let dash = Self.dashVariants(in: formatCtx) {
             return adoptVariants(dash, in: formatCtx, linkRate: ioBytes.transport?.openingThroughput)
         }
@@ -170,7 +175,7 @@ extension MediaDemuxer {
                     subtitles: streams.subtitles.filter { (videosWith[$0]?.count ?? 0) > 1 }, all: streams.all)
             )
         }
-        return adoptVariants(found, in: formatCtx)
+        return adoptVariants(found, in: formatCtx, linkRate: slowLinkRate)
     }
 
     /// The variants of a DASH manifest, when it lists a ladder of pictures: FFmpeg's DASH demuxer has one program and

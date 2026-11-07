@@ -691,7 +691,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         // An audio-only input plays no variants: their selection would enable a picture again.
-        let streamsToRead = audioOnly ? nil : discoverVariants(in: formatCtx)
+        let streamsToRead =
+            audioOnly
+            ? nil : discoverVariants(in: formatCtx, slowLinkRate: prefetcher?.measuredThroughput?.provenSlowRate)
         for i in 0..<Int(formatCtx.pointee.nb_streams) {
             let stream = formatCtx.pointee.streams[i]!
             let codecType = stream.pointee.codecpar.pointee.codec_type

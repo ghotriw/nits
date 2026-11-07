@@ -579,6 +579,27 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     on its first estimate (76 Mbit/s, before TCP had opened up; then 150–180): 4K's 38.5 Mbit/s read within 0.84 of a
     second, and the read-ahead grew all the same. Waiting for a full read-ahead to step up, the step back up came
     17 s in, and showed 21 s later still: a switch splices at the read position.
+  - *Stepping up past the estimate's reach*: a variant held at 0.7 to 0.85 of the link never climbed (the estimate
+    steps up at 0.7, a full read-ahead probed only without a recent estimate): on a 25 Mbit/s link Apple's AV1 example
+    stood on 1080p at 11.3 Mbit/s for 100 s, the link carrying 4K at 18.9. With a recent estimate, a full read-ahead
+    (`highBuffer`) and `upSwitchInterval` (times the failed probes' backoff) after the last switch, the logic now tries
+    the next variant of more bandwidth and no fewer pixels (21.5 Mbit/s at 2560 wide after 18.9 at 3840 isn't a step up;
+    an unknown size counts as no fewer) when 0.85 of the estimate less the latency share fits it (`probeSafety`). Not
+    at a live edge: there the read-ahead is raised to stand for a full one while seconds are buffered
+    (`isReadAheadReal`).
+  - *Hysteresis*: a variant just stepped up to (within `failedProbeWindow`) is left only when it doesn't fit 1.0 of the
+    estimate (`probeHoldSafety`, its peak bandwidth against the estimate), not 0.95, and when that has held for 5 s
+    (`holdDebounce`), unless its bandwidth is over the estimate itself or the read-ahead is under `urgentBuffer`. A
+    steady 25 Mbit/s link's estimate dipped to 20 for a second (23 to 20.7 with 0.1 of latency) and took 18.9 down 8
+    to 13 s after the step. A variant reached by a step down has no such hold: with 0.15 of latency a second of 18.9
+    costs 0.99 s of wall time at 22.4 Mbit/s, and leaving it is right.
+  - *Start on a slow link*: an HLS opening's prefetch (`HLSPlaylistPrefetcher.Throughput.rate`, bodies only) follows
+    the CDN's answer as much as the link (4.8 to 62 Mbit/s on fast links, 17–24 on a true 25, 1.6–1.9 on 2), so it
+    proves a link slow and never fast. Under 3 Mbit/s (`slowLinkLimit`, below the lowest read on a fast link), from two
+    starts and 256 KB on, the start is the highest variant within `safety` of it (as DASH's `OpeningLimit.throughput`
+    does), else the lowest; otherwise the best, as before. On 2 Mbit/s (NLC "DSL") a start on the top variant (39
+    Mbit/s) stalled 62–70 s of 120, the first estimate coming after a 10 MB segment; on the variant the rate carries,
+    0 s in two runs. A link between 3 Mbit/s and the best variant's bandwidth still starts on the best.
   - Measured on Apple's AV1 example (2026-10-24, Wi-Fi, three runs each, 45 s from the start, time below 3840 wide):
     - 34 ms round trip, warm cache: FFmpeg's HTTP and the transport alike 3840 throughout; the estimate's lowest
       17–20 Mbit/s through FFmpeg, 276–286 through the transport.

@@ -90,6 +90,21 @@ final class HLSPlaylistPrefetcher: Sendable {
         var rate: Double { busySeconds > 0 ? Double(bytes) * 8 / busySeconds : 0 }
         /// Bits a second over the whole window, the waits included.
         var wallRate: Double { wallSeconds > 0 ? Double(bytes) * 8 / wallSeconds : 0 }
+
+        /// Bits a second under which the bodies prove the link slow. The rate follows the CDN's answers as much as the
+        /// link: on fast links it read 4.8 to 62 Mbit/s (Apple's AV1 example), at 25 Mbit/s 17 to 24, at 2 Mbit/s 1.6 to
+        /// 1.75. So it proves a link slow, never fast, and only under the lowest it read on a fast one.
+        static let slowLinkLimit = 3_000_000.0
+        /// Segment starts that must be measured, and bytes they must bring, before the rate says anything.
+        static let slowLinkMinimumCount = 2
+        static let slowLinkMinimumBytes = 256 << 10
+
+        /// The bodies' rate when it proves the link slow (`slowLinkLimit`); nil otherwise: the start is then the best
+        /// variant, adaptive bitrate adapts.
+        var provenSlowRate: Double? {
+            guard count >= Self.slowLinkMinimumCount, bytes >= Self.slowLinkMinimumBytes else { return nil }
+            return rate > 0 && rate < Self.slowLinkLimit ? rate : nil
+        }
     }
 
     /// The segments' starts downloaded so far, nil before the first.

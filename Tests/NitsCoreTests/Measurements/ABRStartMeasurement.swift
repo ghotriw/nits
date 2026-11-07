@@ -54,6 +54,12 @@ struct ABRStartMeasurement {
 /// `NITS_MEASURE_START_URL`, `NITS_MEASURE_START_SECONDS` (default 25).
 @Suite("ABR start measurement, real stream", .serialized)
 struct ABRStartRealMeasurement {
+    private static func latencyShare(of demuxer: MediaDemuxer) -> Double? {
+        demuxer.queueLock.lock()
+        defer { demuxer.queueLock.unlock() }
+        return demuxer.adaptiveBitrate.logic.latencyShare
+    }
+
     private static func estimate(of demuxer: MediaDemuxer) -> Double? {
         demuxer.queueLock.lock()
         defer { demuxer.queueLock.unlock() }
@@ -70,12 +76,24 @@ struct ABRStartRealMeasurement {
         let demuxer = try #require(MediaDemuxer(url: url))
         let open = (ContinuousClock.now - openStart) / .seconds(1)
         let prefetch = LogStore.shared.snapshot().last { $0.message.hasPrefix("HLS prefetch") }?.message ?? "none"
+        // NITS_MEASURE_START_KBPS: start on the switchable variant nearest that bandwidth (adaptive bitrate stays on),
+        // to tell what a better start would be worth.
+        if let kbps = Int(ProcessInfo.processInfo.environment["NITS_MEASURE_START_KBPS"] ?? ""),
+            let target = demuxer.variants.filter(\.isSwitchable).min(by: {
+                abs($0.bandwidth / 1000 - kbps) < abs($1.bandwidth / 1000 - kbps)
+            })
+        {
+            demuxer.selectVariant(id: target.id)
+            demuxer.seek(to: demuxer.videoStartTime)
+            demuxer.setAdaptiveBitrate(true)
+        }
         let first = demuxer.selectedVariantId.flatMap { id in demuxer.variants.first { $0.id == id } }
         demuxer.startReadAhead(limits: .init())
         let readStart = ContinuousClock.now
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer)
         var firstPicture: Double?
         var estimates: [Int] = []
+        var latencies: [Int] = []
         var decided: [String] = []
         var shown: [String] = []
         var lastDecided: Int?
@@ -99,13 +117,17 @@ struct ABRStartRealMeasurement {
                     decided.append("\(variant.width)p@\(variant.bandwidth / 1000)k@\(String(format: "%.1f", now))s")
                 }
             }
-            if tick % 10 == 0 { estimates.append(Int((Self.estimate(of: demuxer) ?? 0) / 1000)) }
+            if tick % 10 == 0 {
+                estimates.append(Int((Self.estimate(of: demuxer) ?? 0) / 1000))
+                latencies.append(Int((Self.latencyShare(of: demuxer) ?? 0) * 1000))
+            }
         }
         consumer.stop()
         demuxer.stopReadAhead()
         print(
             "MEASURE-REAL label=\(ProcessInfo.processInfo.environment["NITS_MEASURE_LABEL"] ?? "-") url=\(url) open=\(String(format: "%.1f", open)) s start=\(first.map { "\($0.width)p@\($0.bandwidth / 1000)k" } ?? "-") "
                 + "firstPicture=\(firstPicture.map { String(format: "%.1f", $0) } ?? "none") s stalled=\(String(format: "%.1f", consumer.stalled)) s "
-                + "prefetch=[\(prefetch)] estimate(kbit/s, per s)=\(estimates) decided=\(decided) shown=\(shown)")
+                + "prefetch=[\(prefetch)] estimate(kbit/s, per s)=\(estimates) latencyShare(ms/s)=\(latencies) decided=\(decided) shown=\(shown)"
+        )
     }
 }

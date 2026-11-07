@@ -250,6 +250,13 @@ flowchart TD
     a new connection's latency measured apart, as its share of the media; HLS segment prefetch off, connections kept
     open but for live. See "Network read-ahead" in `docs/ARCHITECTURE.md`. Tested against `TestHTTPServer` with a
     throttled link.
+  - [x] Dead zone of the step up, hysteresis, start on a slow link (2026-11-07, Apple's AV1 example, NLC 25 Mbit/s and
+    "DSL" 2 Mbit/s, 120 s runs; data in `.agents/abr-measurements/`): a probe of the next variant on a recent estimate
+    (`probeSafety`, no fewer pixels, not at a live edge): from 11.3 to 18.9 Mbit/s at 10–16 s, held to the end, 0 s
+    stalled (was 100 s on 11.3). A variant stepped up to is left only past 1.0 of the estimate for 5 s
+    (`probeHoldSafety`, `holdDebounce`). A start under a prefetch rate that proves the link slow (`provenSlowRate`,
+    under 3 Mbit/s): on 2 Mbit/s 0 s stalled in both runs (was 62–70 s), a fast link still starts on the top variant.
+    See "Network read-ahead" in `docs/ARCHITECTURE.md`.
   - [ ] Check adaptive bitrate by hand on real networks (Network Link Conditioner, a real HLS ladder, Emby), VOD
     and live; and the Quality picker in the app bundle (UI is judged from the bundle only). Streams that worked on
     2026-10-22: 3cat Canal 324, live, 0.85–4 Mbit/s

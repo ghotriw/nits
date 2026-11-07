@@ -17,6 +17,11 @@ import Foundation
 ///   AV1 example at 184 ms of round trip: answers after 0.7 s, 300 ms of them a second of media) that came down a
 ///   step on its first estimate stepped up 17 s in, on the estimate it had 8 s in, and the switch, spliced at the read
 ///   position, showed 21 s later still.
+/// - **Up** by a probe on a recent estimate that fits nothing higher with `upSafety`: with a real full read-ahead and
+///   `upSwitchInterval` (and the backoff) after the last switch, to the next variant of more bandwidth and no fewer
+///   pixels when `probeSafety` of the estimate fits it. A variant held at 0.7 to 0.85 of the link would otherwise never
+///   climb.
+///   A variant stepped up to is left within `failedProbeWindow` only when it doesn't fit `probeHoldSafety` (hysteresis).
 /// - **Up** otherwise: only with a full read-ahead (`highBuffer`) and `upSwitchInterval` after the last switch, one
 ///   step up without a recent estimate. With the read-ahead full the thread reads
 ///   what the socket buffered while it idled and measures nothing, however fast the network, so it probes: a step
@@ -37,6 +42,19 @@ struct AdaptiveBitrateLogic: Sendable {
         var estimateUpBuffer = 10.0
         /// Share of the throughput estimate a variant stepped up to on an estimate may take.
         var upSafety = 0.7
+        /// Share of the estimate the next variant may take for a probe at a full read-ahead, with a recent estimate that
+        /// fits it with `upSafety` no higher. Apple's AV1 example: 18.9 Mbit/s takes 0.76 of a 25 Mbit/s link, 21.5 takes
+        /// 0.86, which a variant stood on would not keep.
+        var probeSafety = 0.85
+        /// Share of the estimate a variant stepped up to may take within `failedProbeWindow` of the step before it is left.
+        /// A 15 % dip of the estimate (23 to 20 Mbit/s on a steady link) took 18.9 Mbit/s down 8 s after the step at
+        /// `safety`.
+        var probeHoldSafety = 1.0
+        /// Seconds a variant just stepped up to must keep not fitting `probeHoldSafety` before it is left: the estimate of
+        /// one second (20.7 of 23 Mbit/s, 0.1 of latency) took 18.9 Mbit/s down 13 s after the step.
+        var holdDebounce = 5.0
+        /// Read-ahead seconds below which that wait is skipped.
+        var urgentBuffer = 5.0
         /// Seconds after a switch before stepping down.
         var downSwitchInterval = 2.0
         /// Seconds an estimate stays recent enough to step up to the variant it fits.
@@ -60,6 +78,7 @@ struct AdaptiveBitrateLogic: Sendable {
             var config = Config()
             config.highBuffer = min(config.highBuffer, seconds * 2 / 3)
             config.estimateUpBuffer = min(config.estimateUpBuffer, seconds / 3)
+            config.urgentBuffer = min(config.urgentBuffer, config.highBuffer / 4)
             return config
         }
     }
@@ -68,6 +87,8 @@ struct AdaptiveBitrateLogic: Sendable {
         let id: Int
         /// Bits a second.
         let bandwidth: Int
+        /// Width × height; 0 when the playlist doesn't say.
+        var pixels = 0
     }
 
     let config: Config
@@ -80,6 +101,8 @@ struct AdaptiveBitrateLogic: Sendable {
     private var lastStepUpTime = -Double.infinity
     private var lastStepDownTime = -Double.infinity
     private var probeBackoff = 1.0
+    /// Since when the current variant didn't fit `probeHoldSafety`, while it does not.
+    private var misfitSince: Double?
 
     init(config: Config = Config()) {
         self.config = config
@@ -130,7 +153,11 @@ struct AdaptiveBitrateLogic: Sendable {
     }
 
     /// The variant to switch to, or nil to stay. `variants` are the switchable ones; `current` is read now.
-    mutating func choose(current: Int, among variants: [Variant], readAhead: Double, at time: Double) -> Int? {
+    /// `isReadAheadReal` is false when `readAhead` was raised to stand for a full one (a live stream at its edge, where
+    /// only seconds are buffered): the estimate-based probe, which a drained buffer would not survive, waits.
+    mutating func choose(
+        current: Int, among variants: [Variant], readAhead: Double, isReadAheadReal: Bool = true, at time: Double
+    ) -> Int? {
         let ladder = variants.sorted { $0.bandwidth < $1.bandwidth }
         guard ladder.count > 1, let position = ladder.firstIndex(where: { $0.id == current }) else { return nil }
         let sinceSwitch = time - lastSwitchTime
@@ -151,10 +178,25 @@ struct AdaptiveBitrateLogic: Sendable {
         let fittingUp = isRecent ? fits(config.upSafety) : nil
         // A step up that held this long without coming down was no failed probe: the waits start over.
         if lastStepUpTime > lastStepDownTime, time - lastStepUpTime > config.failedProbeWindow { probeBackoff = 1 }
+        // A variant just stepped up to is left only when it doesn't fit `probeHoldSafety` (its peak bandwidth within the
+        // estimate): a step up was made at `upSafety` or `probeSafety`, and a dip of the estimate by the difference to
+        // `safety` is noise, not a failed probe. What it comes down to is what fits `safety`.
+        let isNewStepUp = lastStepUpTime > lastStepDownTime && time - lastStepUpTime <= config.failedProbeWindow
+        let leaving = isNewStepUp ? fits(config.probeHoldSafety) : fitting
+        if let leaving, leaving < position { misfitSince = misfitSince ?? time } else { misfitSince = nil }
+        // ...and, while its bandwidth is within the estimate, only when that holds for `holdDebounce` (a second's dip with
+        // the latency share is noise), unless the read-ahead is nearly out.
+        let cannotCarry = estimate.map { Double(ladder[position].bandwidth) > $0 } ?? true
+        let isSettled =
+            !isNewStepUp || cannotCarry || readAhead < config.urgentBuffer
+            || misfitSince.map { time - $0 >= config.holdDebounce } == true
 
         var target = position
         if let fitting, fitting < position {
-            if readAhead < config.highBuffer, sinceSwitch >= config.downSwitchInterval {
+            // Held through a dip (`leaving` fits) it neither comes down nor, with the current variant over `safety`, goes up.
+            if let leaving, leaving < position, readAhead < config.highBuffer,
+                sinceSwitch >= config.downSwitchInterval, isSettled
+            {
                 target = fitting
                 lastStepDownTime = time
                 if time - lastStepUpTime <= config.failedProbeWindow {
@@ -167,8 +209,22 @@ struct AdaptiveBitrateLogic: Sendable {
             {
                 target = fittingUp
             } else if readAhead >= config.highBuffer, sinceSwitch >= config.upSwitchInterval * probeBackoff {
-                if let fittingUp {
+                if let fittingUp, let estimate {
                     target = max(fittingUp, position)
+                    // The next variant is out of `upSafety`'s reach but within `probeSafety`'s: try it, as the estimate
+                    // alone never lets a stream stand on 0.7 to 0.85 of the link climb to it. A variant of fewer
+                    // pixels isn't a step up whatever its bandwidth; one whose size is unknown is taken for no fewer.
+                    if target == position, isReadAheadReal {
+                        let current = ladder[position]
+                        let budget = estimate * (config.probeSafety - latencyShare)
+                        if let next = ladder.indices.dropFirst(position + 1).first(where: {
+                            ladder[$0].bandwidth > current.bandwidth
+                                && (ladder[$0].pixels == 0 || current.pixels == 0
+                                    || ladder[$0].pixels >= current.pixels)
+                        }), Double(ladder[next].bandwidth) <= budget, !isLatencyBound {
+                            target = next
+                        }
+                    }
                 } else if position + 1 < ladder.count, !isLatencyBound {
                     target = position + 1
                 }
@@ -177,6 +233,7 @@ struct AdaptiveBitrateLogic: Sendable {
         }
         guard target != position else { return nil }
         lastSwitchTime = time
+        misfitSince = nil
         return ladder[target].id
     }
 }
