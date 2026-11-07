@@ -1,0 +1,24 @@
+FFmpeg's DASH demuxer returns 0, "a packet was read", from dash_read_packet when it is interrupted before it read one: the
+loop that reads (while (!ff_check_interrupt(...) && !ret)) ends on the interrupt with ret still 0, and the function
+returns ret. libavformat takes 0 for a packet (an empty one), reads again, and gets the same for as long as the interrupt
+lasts: a loop in av_read_frame at 100% of a core that only the end of the interrupt breaks. A user of the demuxer that
+interrupts a read to take the input from it (a seek) and holds the interrupt until it has the input waits for good: three
+times in four within a hundred and fifty seeks, in Nits' tests. (A cancel followed by a close met it in none of four
+hundred tries: a read cut short inside a segment ends with an error; it takes the interrupt between two segments.) Other
+demuxers return AVERROR_EXIT (or the error of the I/O that failed) for an interrupted read, as the HLS demuxer does.
+Upstream master (libavformat/dashdec.c as of 2026-11-07) has the loop as it is in 9.0.2; not reported there
+yet. Applied by scripts/build_dependencies.sh to FFmpeg 9.0.2.
+
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -2409,7 +2409,9 @@
+             return FFERROR_REDO;
+         }
+     }
+-    return ret;
++    /* The loop also ends when interrupted, with nothing read and ret still 0: 0 says a packet was read, and libavformat
++     * (ff_read_packet) asks again, for as long as the interrupt lasts. */
++    return ret ? ret : AVERROR_EXIT;
+ }
+ 
+ static int dash_close(AVFormatContext *s)
