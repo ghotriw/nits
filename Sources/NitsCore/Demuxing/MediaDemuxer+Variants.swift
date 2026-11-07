@@ -123,7 +123,7 @@ extension MediaDemuxer {
 
     // MARK: - Discovery
 
-    /// Lists the variants of an HLS master playlist and selects the one with the highest bandwidth. Returns the
+    /// Lists the variants of an HLS master playlist and selects the top of its ladder (`adoptVariants`). Returns the
     /// indexes of the streams to read (the selected program's, and any stream outside every program), or nil when
     /// the input has no variants. FFmpeg puts the `EXT-X-MEDIA` renditions a variant refers to in its program.
     /// `slowLinkRate` is what an HLS master's prefetch measured, when that proves the link slow
@@ -204,20 +204,49 @@ extension MediaDemuxer {
         return found
     }
 
-    /// Takes `found` as the variants of the input, the one with the highest bandwidth selected; see
+    /// Takes `found` as the variants of the input, the top of the ladder selected (or the rung a known link carries); see
     /// `discoverVariants`.
     private func adoptVariants(
         _ found: [(id: Int, bandwidth: Int, streams: VariantStreams)],
         in formatCtx: UnsafeMutablePointer<AVFormatContext>, linkRate: Double? = nil
     ) -> Set<Int>? {
         guard let best = found.max(by: { $0.bandwidth < $1.bandwidth }) else { return nil }
-        // A DASH ladder is read side by side while it opens, so the link's rate is measured by then: start on the
-        // rung it carries, not the best (its first segment, megabytes, downloaded before a switch could splice).
-        var start = best
+        // Playback starts on a rung of the ladder: a variant without pictures (sound only) or one the adaptive bitrate
+        // cannot switch from (another codec, kept outside the ladder) would be played to the end. The ladder is a group
+        // of variants that play through one set of decoders (`canSwitch`, false without pictures): the best's when it
+        // has another rung (an HDR ladder above a longer SDR one), else the largest. The best alone is the odd one (one
+        // HEVC rendition above a ladder of H.264). Without pictures in any, every variant is a rung (sound only).
+        let group = { (variant: (id: Int, bandwidth: Int, streams: VariantStreams)) in
+            found.filter { Self.canSwitch(from: variant.streams, to: $0.streams, in: formatCtx) }
+        }
+        let bestGroup = group(best)
+        // Of groups as large, the one whose top is better, not the one listed first.
+        let rank = { (group: [(id: Int, bandwidth: Int, streams: VariantStreams)]) in
+            (group.count, group.map(\.bandwidth).max() ?? 0)
+        }
+        let largest = found.map(group).max { rank($0) < rank($1) } ?? []
+        let ladder =
+            if bestGroup.count > 1 {
+                bestGroup
+            } else if largest.count > 1 {
+                largest
+            } else if !bestGroup.isEmpty {
+                // No ladder: the best, alone in its decoders as every other.
+                bestGroup
+            } else if !largest.isEmpty {
+                // The best without pictures: one with them.
+                largest
+            } else {
+                found
+            }
+        // Its top, unless the link's rate is known: a DASH ladder is read side by side while it opens, and an HLS
+        // master's prefetch may prove the link slow (`slowLinkRate`). Then the rung it carries, not the top (its first
+        // segment, megabytes, downloaded before a switch could splice).
+        var start = ladder.max { $0.bandwidth < $1.bandwidth } ?? best
         if let linkRate {
             let share = AdaptiveBitrateLogic.Config().safety
-            let fitting = found.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
-            start = fitting ?? found.min { $0.bandwidth < $1.bandwidth } ?? best
+            let fitting = ladder.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
+            start = fitting ?? ladder.min { $0.bandwidth < $1.bandwidth } ?? best
         }
 
         let selected = start
