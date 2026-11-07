@@ -44,12 +44,79 @@ final class HLSPlaylistPrefetcher: Sendable {
         var isCancelled = false
     }
 
+    /// The metrics of each download of a segment's start (those asked for with a `Range`), from the session's task
+    /// metrics: when the request went out, when the answer began and when its body ended.
+    private final class Metrics: NSObject, URLSessionTaskDelegate, Sendable {
+        struct Sample: Sendable {
+            let requested: Date
+            let answered: Date
+            let ended: Date
+            let bytes: Int
+        }
+
+        private let samples = OSAllocatedUnfairLock(initialState: [Sample]())
+
+        var all: [Sample] { samples.withLock { $0 } }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics)
+        {
+            guard task.originalRequest?.value(forHTTPHeaderField: "Range") != nil,
+                let transaction = metrics.transactionMetrics.last,
+                let requested = transaction.fetchStartDate,
+                let answered = transaction.responseStartDate, let ended = transaction.responseEndDate
+            else { return }
+            samples.withLock {
+                $0.append(
+                    Sample(
+                        requested: requested, answered: answered, ended: ended, bytes: Int(task.countOfBytesReceived)))
+            }
+        }
+    }
+
+    /// What the downloads of the segments' starts carried, side by side (`measuredThroughput`), with the time spent
+    /// waiting for answers told apart from the time the bodies came in: a cold CDN cache answers after half a second
+    /// whatever the link, which says nothing of its rate.
+    struct Throughput: Sendable {
+        let count: Int
+        let bytes: Int
+        /// From the first request to the last body's end.
+        let wallSeconds: Double
+        /// The middle wait between a request and the start of its answer, connection included.
+        let medianWaitSeconds: Double
+        /// Time during which at least one body was coming in.
+        let busySeconds: Double
+
+        /// Bits a second while bodies came in: the link's, as far as 128 KB bodies at TCP's slow start show it.
+        var rate: Double { busySeconds > 0 ? Double(bytes) * 8 / busySeconds : 0 }
+        /// Bits a second over the whole window, the waits included.
+        var wallRate: Double { wallSeconds > 0 ? Double(bytes) * 8 / wallSeconds : 0 }
+    }
+
+    /// The segments' starts downloaded so far, nil before the first.
+    var measuredThroughput: Throughput? {
+        let samples = metrics.all
+        guard let first = samples.map(\.requested).min(), let last = samples.map(\.ended).max() else { return nil }
+        let waits = samples.map { $0.answered.timeIntervalSince($0.requested) }.sorted()
+        // The union of the bodies' intervals.
+        var busy = 0.0
+        var reached = Date.distantPast
+        for sample in samples.sorted(by: { $0.answered < $1.answered }) {
+            let start = max(sample.answered, reached)
+            if sample.ended > start { busy += sample.ended.timeIntervalSince(start) }
+            reached = max(reached, sample.ended)
+        }
+        return Throughput(
+            count: samples.count, bytes: samples.reduce(0) { $0 + $1.bytes },
+            wallSeconds: last.timeIntervalSince(first), medianWaitSeconds: waits[waits.count / 2], busySeconds: busy)
+    }
+
     /// Bytes of a segment downloaded: FFmpeg's probe reads up to some 40 KB of a segment, an init section less.
     static let segmentStart = 128 << 10
 
     private let masterURL: URL
     private let headers: [String: String]
     private let session: URLSession
+    private let metrics: Metrics
     private let state = OSAllocatedUnfairLock(initialState: State())
     /// Signalled when a download ends, for the one thread that waits in `take` (FFmpeg's, opening the input).
     private let changed = DispatchSemaphore(value: 0)
@@ -64,7 +131,9 @@ final class HLSPlaylistPrefetcher: Sendable {
         // An HTTP/1.1 server (Apple's CDN) answers a request per connection at a time: 6, the default, took six
         // rounds of answers for 36 playlists.
         configuration.httpMaximumConnectionsPerHost = 16
-        session = URLSession(configuration: configuration)
+        let collector = Metrics()
+        metrics = collector
+        session = URLSession(configuration: configuration, delegate: collector, delegateQueue: nil)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -132,11 +201,21 @@ final class HLSPlaylistPrefetcher: Sendable {
 
     /// FFmpeg opened the input: what is left isn't needed.
     func cancel() {
+        let measured = measuredThroughput
         state.withLock {
             $0.isCancelled = true
             $0.entries.removeAll()
         }
         session.invalidateAndCancel()
+        if let measured {
+            AppLog.info(
+                .demuxer,
+                "HLS prefetch: \(measured.count) segment starts, \(measured.bytes >> 10) KB; "
+                    + "wait \(Int(measured.medianWaitSeconds * 1000)) ms (median), "
+                    + "bodies \(String(format: "%.2f", measured.busySeconds)) s = \(Int(measured.rate / 1000)) kbit/s, "
+                    + "window \(String(format: "%.2f", measured.wallSeconds)) s = \(Int(measured.wallRate / 1000)) kbit/s"
+            )
+        }
     }
 
     private static func key(_ url: String, _ offset: Int64) -> String {
