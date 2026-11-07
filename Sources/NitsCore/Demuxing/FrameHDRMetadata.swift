@@ -16,7 +16,8 @@ public struct FrameHDRMetadata: Sendable, Equatable {
     /// one pass over its NAL units, or an AV1 packet's HDR10+ metadata OBU. HDR10+ only matters to a PQ stream
     /// (`readsHDR10Plus`), and only without L1, which takes its place: its SEIs are parsed only then.
     init?(
-        packet bytes: UnsafePointer<UInt8>, count: Int, codec: VideoCodec, isAnnexB: Bool, readsRPU: Bool,
+        packet bytes: UnsafePointer<UInt8>, count: Int, codec: VideoCodec, isAnnexB: Bool, lengthSize: Int,
+        readsRPU: Bool,
         readsHDR10Plus: Bool
     ) {
         switch codec {
@@ -24,7 +25,8 @@ public struct FrameHDRMetadata: Sendable, Equatable {
             var rpu: DolbyVisionFrameMetadata?
             // Prefix SEIs come before the RPU, which ends the access unit: kept until it tells whether L1 is there.
             var seis: [UnsafeBufferPointer<UInt8>] = []
-            NALUnitParser.forEachHEVCNALUnit(bytes: bytes, count: count, isAnnexB: isAnnexB) { type, nalu in
+            NALUnitParser.forEachHEVCNALUnit(bytes: bytes, count: count, isAnnexB: isAnnexB, lengthSize: lengthSize) {
+                type, nalu in
                 if type == 62, readsRPU, rpu == nil {
                     rpu = DolbyVisionRPUParser.parse(naluData: Data(nalu))
                 } else if type == 39, readsHDR10Plus {

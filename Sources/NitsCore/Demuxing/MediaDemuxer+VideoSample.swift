@@ -6,9 +6,22 @@ import VideoToolbox
 extension MediaDemuxer {
     /// The format packets are read as now (`DemuxedVideoPacket.format`).
     var videoFormat: VideoPacketFormat {
-        VideoPacketFormat(
-            description: formatDescription, isAnnexB: isAnnexBStream, timebase: timebase,
-            variantGeneration: variantGeneration, sampleAspectRatio: sampleAspectRatio)
+        var codecParameters: UnsafePointer<AVCodecParameters>?
+        if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+            codecParameters = UnsafePointer(stream.pointee.codecpar)
+        }
+        return VideoPacketFormat(
+            description: formatDescription, isAnnexB: isAnnexBStream,
+            unitLengthSize: unitLengthSize(of: codecParameters),
+            timebase: timebase, variantGeneration: variantGeneration, sampleAspectRatio: sampleAspectRatio)
+    }
+
+    /// The size of the unit lengths in the video packets of a stream with these parameters: what its `avcC` / `hvcC`
+    /// declares, 4 for Annex B packets (rewritten with them) and anything else. The description is made with it
+    /// (`VideoFormatDescriptionBuilder.nalUnitHeaderLength`).
+    func unitLengthSize(of codecParameters: UnsafePointer<AVCodecParameters>?) -> Int {
+        guard !isAnnexBStream, let codecParameters else { return 4 }
+        return NALUnitParser.lengthSize(of: codecParameters, codec: codec)
     }
 
     /// A queued packet keeps the format it was read with: a variant switch can change it while the packet waits.
@@ -37,7 +50,7 @@ extension MediaDemuxer {
         guard let formatDesc = format.description, let bytes, count > 0 else { return nil }
 
         let hdrMetadata = FrameHDRMetadata(
-            packet: bytes, count: count, codec: codec, isAnnexB: format.isAnnexB,
+            packet: bytes, count: count, codec: codec, isAnnexB: format.isAnnexB, lengthSize: format.unitLengthSize,
             readsRPU: dolbyVisionProfile != nil,
             readsHDR10Plus: transferFunction == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
 

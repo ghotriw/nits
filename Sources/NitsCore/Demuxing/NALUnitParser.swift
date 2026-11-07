@@ -1,10 +1,24 @@
+import CFFmpeg
 import Foundation
 
 /// Annex B / length-prefixed (avcC, hvcC) NAL unit utilities for H.264 and HEVC bitstreams.
 enum NALUnitParser {
+    /// The size of the unit lengths in the packets of a stream whose extradata is an `avcC` / `hvcC` record
+    /// (`lengthSizeMinusOne` + 1); 4, as nearly every muxer writes them, for anything else (Annex B included).
+    /// VideoToolbox takes 1, 2 and 4.
+    static func lengthSize(of parameters: UnsafePointer<AVCodecParameters>, codec: VideoCodec) -> Int {
+        let size = Int(parameters.pointee.extradata_size)
+        guard let extradata = parameters.pointee.extradata, size > 0, extradata[0] == 1 else { return 4 }
+        switch codec {
+        case .h264 where size >= 5: return Int(extradata[4] & 3) + 1
+        case .hevc where size >= 23: return Int(extradata[21] & 3) + 1
+        default: return 4
+        }
+    }
+
     /// Parses NAL units from either Annex B byte stream (0x000001 or 0x00000001 start codes)
-    /// or MP4/hvcC format (4-byte big endian length prefixed).
-    static func extractNALUnits(from data: Data, isAnnexB: Bool? = nil) -> [Data] {
+    /// or MP4/hvcC format (big endian length prefixed, `lengthSize` bytes).
+    static func extractNALUnits(from data: Data, isAnnexB: Bool? = nil, lengthSize: Int) -> [Data] {
         guard data.count >= 4 else { return [] }
 
         let bytes = [UInt8](data)
@@ -51,11 +65,9 @@ enum NALUnitParser {
             // Standard MP4 length-prefixed format
             var nalus: [Data] = []
             var offset = 0
-            while offset + 4 <= count {
-                let naluLen =
-                    Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
-                    | Int(bytes[offset + 3])
-                offset += 4
+            while offset + lengthSize <= count {
+                let naluLen = (0..<lengthSize).reduce(0) { $0 << 8 | Int(bytes[offset + $1]) }
+                offset += lengthSize
                 guard naluLen > 0, offset + naluLen <= count else { break }
                 nalus.append(data.subdata(in: offset..<(offset + naluLen)))
                 offset += naluLen
@@ -67,7 +79,7 @@ enum NALUnitParser {
     /// Calls `body` with the type and bytes (header included) of each HEVC NAL unit of a packet, without copying,
     /// until it returns false.
     static func forEachHEVCNALUnit(
-        bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool,
+        bytes: UnsafePointer<UInt8>, count: Int, isAnnexB: Bool, lengthSize: Int,
         _ body: (UInt8, UnsafeBufferPointer<UInt8>) -> Bool
     ) {
         guard count >= 5 else { return }
@@ -110,11 +122,9 @@ enum NALUnitParser {
             }
         } else {
             var offset = 0
-            while offset + 4 <= count {
-                let naluLen =
-                    Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8
-                    | Int(bytes[offset + 3])
-                offset += 4
+            while offset + lengthSize <= count {
+                let naluLen = (0..<lengthSize).reduce(0) { $0 << 8 | Int(bytes[offset + $1]) }
+                offset += lengthSize
                 guard naluLen > 0, offset + naluLen <= count else { break }
                 let nalType = (bytes[offset] >> 1) & 0x3F
                 guard body(nalType, UnsafeBufferPointer(start: bytes + offset, count: naluLen)) else { return }

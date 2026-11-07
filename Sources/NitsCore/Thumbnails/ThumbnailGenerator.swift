@@ -204,6 +204,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         let videoCodec = VideoCodec.from(codecId: codecpar.pointee.codec_id)
         let isPQ = codecpar.pointee.color_trc == AVCOL_TRC_SMPTE2084 || dolbyVisionProfile == 5
         let isAnnexB = videoCodec.map { Self.isAnnexB(codecpar, codec: $0) } ?? false
+        let lengthSize = videoCodec.map { NALUnitParser.lengthSize(of: codecpar, codec: $0) } ?? 4
         /// The dynamic HDR metadata of the packets sent since the last seek, by their PTS, for the frames they decode to.
         var hdrMetadataByPts: [Int64: FrameHDRMetadata] = [:]
 
@@ -211,6 +212,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             if let videoCodec, let data = packet.pointee.data, packet.pointee.size > 4,
                 let metadata = FrameHDRMetadata(
                     packet: data, count: Int(packet.pointee.size), codec: videoCodec, isAnnexB: isAnnexB,
+                    lengthSize: lengthSize,
                     readsRPU: dolbyVisionProfile != nil, readsHDR10Plus: isPQ)
             {
                 hdrMetadataByPts[packet.pointee.pts] = metadata

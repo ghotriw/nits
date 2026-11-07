@@ -26,6 +26,8 @@ extension MediaDemuxer {
         let description: CMVideoFormatDescription?
         /// Start codes rather than length prefixes.
         let isAnnexB: Bool
+        /// The size of the unit lengths in the packets (`MediaDemuxer.unitLengthSize`): 4 for Annex B ones.
+        let unitLengthSize: Int
         let timebase: AVRational
         /// `MediaDemuxer.variantGeneration` when the packet was read: packets of one generation come from one stretch
         /// of one variant (the parameter sets within it may change, the description with them).

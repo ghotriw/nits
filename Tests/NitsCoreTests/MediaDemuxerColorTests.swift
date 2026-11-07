@@ -84,7 +84,7 @@ struct MediaDemuxerColorTests {
         streamData.append(contentsOf: spsBytes)
         streamData.append(contentsOf: ppsBytes)
 
-        let nalus = NALUnitParser.extractNALUnits(from: streamData)
+        let nalus = NALUnitParser.extractNALUnits(from: streamData, lengthSize: 4)
         #expect(nalus.count == 3)
         #expect((nalus[0][0] >> 1) & 0x3F == 32)
         #expect((nalus[1][0] >> 1) & 0x3F == 33)
@@ -124,7 +124,7 @@ struct MediaDemuxerColorTests {
         streamData.append(contentsOf: spsBytes)
         streamData.append(contentsOf: ppsBytes)
 
-        let nalus = NALUnitParser.extractNALUnits(from: streamData)
+        let nalus = NALUnitParser.extractNALUnits(from: streamData, lengthSize: 4)
         #expect(nalus.count == 2)
         #expect(nalus[0][0] & 0x1F == 7)  // SPS
         #expect(nalus[1][0] & 0x1F == 8)  // PPS
@@ -417,7 +417,7 @@ struct MediaDemuxerColorTests {
         packetData.append(contentsOf: nalPayload)
 
         // With isAnnexB = false (standard MP4/MKV stream)
-        let nalus = NALUnitParser.extractNALUnits(from: packetData, isAnnexB: false)
+        let nalus = NALUnitParser.extractNALUnits(from: packetData, isAnnexB: false, lengthSize: 4)
         #expect(nalus.count == 1)
         #expect(nalus[0].count == 65538)
 

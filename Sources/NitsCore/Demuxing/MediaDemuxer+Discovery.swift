@@ -332,7 +332,7 @@ extension MediaDemuxer {
         var firstKeyframePTS: Int64?
         var skippedBytes = 0
         var pkt = AVPacket()
-        let nalLengthSize = codecParameters.map { ClosedCaptions.nalLengthSize(of: $0, codec: codec) } ?? 4
+        let nalLengthSize = unitLengthSize(of: codecParameters)
 
         while videoPacketsScanned < maxVideoPacketsToScan && readPacket(ctx, &pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
@@ -366,7 +366,8 @@ extension MediaDemuxer {
                 let nalus =
                     codec.requiresParameterSets
                     ? NALUnitParser.extractNALUnits(
-                        from: Data(bytes: pkt.data, count: Int(pkt.size)), isAnnexB: self.isAnnexBStream)
+                        from: Data(bytes: pkt.data, count: Int(pkt.size)), isAnnexB: self.isAnnexBStream,
+                        lengthSize: nalLengthSize)
                     : []
                 for naluData in nalus {
                     guard !naluData.isEmpty else { continue }
@@ -462,6 +463,7 @@ extension MediaDemuxer {
             masteringDisplay: masteringDisplay,
             contentLightLevel: contentLightLevel,
             parameterSets: parameterSets,
+            nalUnitHeaderLength: unitLengthSize(of: codecParameters),
             dolbyVision: dolbyVisionProfile.flatMap { profile in
                 dolbyVisionConfigData.map { (profile: profile, configData: $0) }
             }

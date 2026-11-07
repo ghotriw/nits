@@ -9,7 +9,7 @@ struct ClosedCaptionTests {
     private typealias Factory = SyntheticTestMediaFactory
 
     private func triplets(_ bytes: [UInt8], codec: VideoCodec) -> [UInt8] {
-        bytes.withUnsafeBytes { ClosedCaptions.cea608Triplets(in: $0, codec: codec) }
+        bytes.withUnsafeBytes { ClosedCaptions.cea608Triplets(in: $0, codec: codec, lengthSize: 4) }
     }
 
     private func lengthPrefixed(_ units: [[UInt8]]) -> [UInt8] {
@@ -70,7 +70,7 @@ struct ClosedCaptionTests {
         let parameters = try #require(avcodec_parameters_alloc())
         var freed: UnsafeMutablePointer<AVCodecParameters>? = parameters
         defer { avcodec_parameters_free(&freed) }
-        #expect(ClosedCaptions.nalLengthSize(of: parameters, codec: .h264) == 4, "No extradata")
+        #expect(NALUnitParser.lengthSize(of: parameters, codec: .h264) == 4, "No extradata")
         // configurationVersion, profile, compatibility, level, then six reserved bits and lengthSizeMinusOne.
         let avcC: [UInt8] = [0x01, 0x64, 0x00, 0x1F, 0xFD, 0xE0]
         let extradata = try #require(av_mallocz(avcC.count + Int(AV_INPUT_BUFFER_PADDING_SIZE)))
@@ -78,7 +78,7 @@ struct ClosedCaptionTests {
         extradata.update(from: avcC, count: avcC.count)
         parameters.pointee.extradata = extradata
         parameters.pointee.extradata_size = Int32(avcC.count)
-        #expect(ClosedCaptions.nalLengthSize(of: parameters, codec: .h264) == 2)
+        #expect(NALUnitParser.lengthSize(of: parameters, codec: .h264) == 2)
     }
 
     @Test("Field 2 is listed only with more than null padding")

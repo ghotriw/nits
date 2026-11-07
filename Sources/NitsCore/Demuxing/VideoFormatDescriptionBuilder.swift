@@ -35,6 +35,10 @@ struct VideoFormatDescriptionBuilder {
     var masteringDisplay: Data?
     var contentLightLevel: Data?
     var parameterSets: ParameterSets
+    /// The size of the unit lengths in the packets the description is for (1, 2 or 4; `MediaDemuxer.unitLengthSize`):
+    /// what the container wrote (an MP4 from 2010 can have 2), 4 for Annex B packets, which are rewritten with them.
+    /// Told wrong, VideoToolbox reads the units wrong and decodes nothing.
+    var nalUnitHeaderLength: Int
     /// Profile and dvcC/dvvC payload of a Dolby Vision HEVC stream.
     var dolbyVision: (profile: Int, configData: Data)?
 
@@ -133,7 +137,7 @@ struct VideoFormatDescriptionBuilder {
                                 parameterSetCount: 3,
                                 parameterSetPointers: pointers,
                                 parameterSetSizes: sizes,
-                                nalUnitHeaderLength: 4,
+                                nalUnitHeaderLength: Int32(nalUnitHeaderLength),
                                 extensions: extensionsDict as CFDictionary,
                                 formatDescriptionOut: &baseFormatDesc
                             )
@@ -156,7 +160,7 @@ struct VideoFormatDescriptionBuilder {
                             parameterSetCount: 2,
                             parameterSetPointers: pointers,
                             parameterSetSizes: sizes,
-                            nalUnitHeaderLength: 4,
+                            nalUnitHeaderLength: Int32(nalUnitHeaderLength),
                             formatDescriptionOut: &formatDesc
                         )
                     }
@@ -216,7 +220,7 @@ struct VideoFormatDescriptionBuilder {
 
         // Case 1: Raw Annex B in extradata (starts with 0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
         if size >= 3 && data[0] == 0 && data[1] == 0 && (data[2] == 1 || (size > 3 && data[2] == 0 && data[3] == 1)) {
-            let nalus = NALUnitParser.extractNALUnits(from: data)
+            let nalus = NALUnitParser.extractNALUnits(from: data, lengthSize: 4)
             var sets = ParameterSets()
             for nalu in nalus {
                 if codec == .hevc {

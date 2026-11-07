@@ -9,8 +9,8 @@ enum ClosedCaptions {
     /// The CEA-608 triplets of a video packet's `cc_data`, in bitstream order, as FFmpeg's `cc_dec` takes them:
     /// `cc_valid` set and `cc_type` 0 (field 1) or 1 (field 2). CEA-708 ones (types 2 and 3) are left out. Empty when
     /// the packet carries none. `lengthSize` is the size of the unit lengths in Matroska and MP4 packets
-    /// (`nalLengthSize(of:codec:)`).
-    static func cea608Triplets(in packet: UnsafeRawBufferPointer, codec: VideoCodec, lengthSize: Int = 4) -> [UInt8] {
+    /// (`NALUnitParser.lengthSize(of:codec:)`).
+    static func cea608Triplets(in packet: UnsafeRawBufferPointer, codec: VideoCodec, lengthSize: Int) -> [UInt8] {
         var triplets: [UInt8] = []
         switch codec {
         case .h264:
@@ -46,18 +46,6 @@ enum ClosedCaptions {
             }
         }
         return fields
-    }
-
-    /// The size of the unit lengths in the packets of a stream whose extradata is an `avcC` / `hvcC` record
-    /// (`lengthSizeMinusOne` + 1); 4, as nearly every muxer writes them, for anything else.
-    static func nalLengthSize(of parameters: UnsafePointer<AVCodecParameters>, codec: VideoCodec) -> Int {
-        let size = Int(parameters.pointee.extradata_size)
-        guard let extradata = parameters.pointee.extradata, size > 0, extradata[0] == 1 else { return 4 }
-        switch codec {
-        case .h264 where size >= 5: return Int(extradata[4] & 3) + 1
-        case .hevc where size >= 23: return Int(extradata[21] & 3) + 1
-        default: return 4
-        }
     }
 
     /// Calls `body` with each H.264 / HEVC NAL unit of the packet before the first slice: SEI precedes the picture's
@@ -255,7 +243,7 @@ final class ClosedCaptionDecoder {
                 return nil
             }
             self.videoCodec = videoCodec
-            lengthSize = ClosedCaptions.nalLengthSize(of: parameters, codec: videoCodec)
+            lengthSize = NALUnitParser.lengthSize(of: parameters, codec: videoCodec)
             // FFmpeg's guess from the stream may fall short; four covers the B-frame pyramids encoders use.
             reorderDepth = min(max(Int(parameters.pointee.video_delay), 4), 16)
         } else {

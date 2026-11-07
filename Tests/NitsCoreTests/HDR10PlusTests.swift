@@ -62,7 +62,8 @@ struct HDR10PlusTests {
         let packet: [UInt8] = [0, 0, 0, 1] + nalu + [0, 0, 0, 1, 1 << 1, 1, 0xAF, 0x10, 0x20]
         var units: [(type: UInt8, data: Data)] = []
         packet.withUnsafeBufferPointer {
-            NALUnitParser.forEachHEVCNALUnit(bytes: $0.baseAddress!, count: $0.count, isAnnexB: true) { type, nalu in
+            NALUnitParser.forEachHEVCNALUnit(bytes: $0.baseAddress!, count: $0.count, isAnnexB: true, lengthSize: 4) {
+                type, nalu in
                 units.append((type, Data(nalu)))
                 return true
             }
