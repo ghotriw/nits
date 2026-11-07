@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .build/dependencies
-          key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
+          key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh', 'scripts/patches/*.patch') }}
 
       - name: Build Nits.app
         run: ./scripts/bundle_app.sh --release --version="${{ steps.meta.outputs.version }}"

@@ -46,7 +46,16 @@ index 2ac9032..6ea6c3d 100644
  };
  
  struct rendition;
-@@ -163,6 +167,16 @@ struct playlist {
+@@ -127,6 +131,8 @@ struct playlist {
+     int64_t start_time_offset;
+     int n_segments;
+     struct segment **segments;
++    /* Sum of the durations of segments[0 .. n_segments), kept as the list changes (read for every packet moved). */
++    int64_t segments_duration;
+     int needed;
+     int broken;
+     int64_t cur_seq_no;
+@@ -163,6 +169,16 @@ struct playlist {
      /* Constant offset of this playlist's DTS baseline relative to
       * c->first_timestamp. */
      int64_t ts_offset;
@@ -63,7 +72,15 @@ index 2ac9032..6ea6c3d 100644
      int64_t seek_timestamp;
      int seek_flags;
      int seek_stream_index; /* into subdemuxer stream array */
-@@ -335,6 +349,12 @@ static void free_rendition_list(HLSContext *c)
+@@ -269,6 +285,7 @@ static void free_segment_list(struct playlist *pls)
+     free_segment_dynarray(pls->segments, pls->n_segments);
+     av_freep(&pls->segments);
+     pls->n_segments = 0;
++    pls->segments_duration = 0;
+ }
+ 
+ static void free_init_section_list(struct playlist *pls)
+@@ -335,6 +352,12 @@ static void free_rendition_list(HLSContext *c)
      c->n_renditions = 0;
  }
  
@@ -76,7 +93,7 @@ index 2ac9032..6ea6c3d 100644
  static struct playlist *new_playlist(HLSContext *c, const char *url,
                                       const char *base)
  {
-@@ -360,6 +380,7 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
+@@ -360,6 +383,7 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
      }
      av_strlcpy(pls->url, abs_url, sizeof(pls->url));
      pls->ts_offset = AV_NOPTS_VALUE;
@@ -84,7 +101,7 @@ index 2ac9032..6ea6c3d 100644
      pls->seek_timestamp = AV_NOPTS_VALUE;
      pls->first_read_seq_no = -1;
  
-@@ -833,7 +854,7 @@ static int is_variant_playlist(HLSContext *c, struct playlist *pls)
+@@ -833,7 +857,7 @@ static int is_variant_playlist(HLSContext *c, struct playlist *pls)
  static int parse_playlist(HLSContext *c, const char *url,
                            struct playlist *pls, AVIOContext *in)
  {
@@ -93,7 +110,15 @@ index 2ac9032..6ea6c3d 100644
      int64_t duration = 0;
      enum KeyType key_type = KEY_NONE;
      uint8_t iv[16] = "";
-@@ -1029,6 +1050,8 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -901,6 +925,7 @@ static int parse_playlist(HLSContext *c, const char *url,
+         prev_n_segments = pls->n_segments;
+         pls->segments = NULL;
+         pls->n_segments = 0;
++        pls->segments_duration = 0;
+ 
+         pls->finished = 0;
+         pls->type = PLS_TYPE_UNSPECIFIED;
+@@ -1029,6 +1054,8 @@ static int parse_playlist(HLSContext *c, const char *url,
                                                  "invalid, it will be ignored");
                  continue;
              }
@@ -102,7 +127,7 @@ index 2ac9032..6ea6c3d 100644
          } else if (av_strstart(line, "#EXT-X-ENDLIST", &ptr)) {
              if (pls)
                  pls->finished = 1;
-@@ -1125,6 +1148,10 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1125,8 +1152,14 @@ static int parse_playlist(HLSContext *c, const char *url,
                      duration = 0.001 * AV_TIME_BASE;
                  }
                  seg->duration = duration;
@@ -112,8 +137,12 @@ index 2ac9032..6ea6c3d 100644
 +                discont_pending = 0;
                  seg->key_type = key_type;
                  dynarray_add(&pls->segments, &pls->n_segments, seg);
++                /* av_dynarray_add empties the list when it cannot grow it. */
++                pls->segments_duration = pls->n_segments ? pls->segments_duration + seg->duration : 0;
                  is_segment = 0;
-@@ -1857,8 +1884,19 @@ restart:
+ 
+                 seg->size = seg_size;
+@@ -1857,8 +1890,19 @@ restart:
          }
          segment_retries = 0;
          just_opened = 1;
@@ -133,7 +162,7 @@ index 2ac9032..6ea6c3d 100644
      }
  
      if (c->http_multiple == -1) {
-@@ -2675,6 +2713,24 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -2675,6 +2719,24 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
              pls->pb.pub.eof_reached = 0;
@@ -158,7 +187,7 @@ index 2ac9032..6ea6c3d 100644
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
                  /* catch up */
                  pls->seek_timestamp = c->cur_timestamp +
-@@ -2764,6 +2820,88 @@ static int metadata_has_changed(const AVDictionary *current,
+@@ -2764,6 +2826,86 @@ static int metadata_has_changed(const AVDictionary *current,
      return 0;
  }
  
@@ -230,10 +259,8 @@ index 2ac9032..6ea6c3d 100644
 +         * holds the last pictures until more data arrives) is on timestamps of its own, not of the new segment: it
 +         * would land far off the playlist's timeline, and stays where it was. */
 +        if (c->first_timestamp != AV_NOPTS_VALUE) {
-+            int64_t end = c->first_timestamp, margin = 2 * threshold;
++            int64_t end = c->first_timestamp + pls->segments_duration, margin = 2 * threshold;
 +
-+            for (int i = 0; i < pls->n_segments; i++)
-+                end += pls->segments[i]->duration;
 +            if (ts + pls->dts_offset < c->first_timestamp - margin || ts + pls->dts_offset > end + margin)
 +                return;
 +        }
@@ -247,7 +274,7 @@ index 2ac9032..6ea6c3d 100644
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
-@@ -2797,6 +2935,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2797,6 +2939,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                      fill_timing_for_id3_timestamped_stream(pls);
                  }
  
@@ -257,7 +284,7 @@ index 2ac9032..6ea6c3d 100644
                  if (pls->pkt->dts != AV_NOPTS_VALUE &&
                      (pls->ts_offset == AV_NOPTS_VALUE ||
                       (!c->first_timestamp_locked &&
-@@ -3127,6 +3266,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3127,6 +3272,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          }
  
          pls->last_seq_no = pls->cur_seq_no;
