@@ -3,7 +3,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("HLS segments without an extension", .serialized, .hostDependent)
+@Suite("HLS segments without an extension", .serialized, .hostDependent, .networkServer)
 struct HLSSegmentExtensionTests {
     /// Google's ad server names segments `.../videoplayback/...` with no extension: FFmpeg's HLS demuxer refuses them
     /// unless `extension_picky` is off.

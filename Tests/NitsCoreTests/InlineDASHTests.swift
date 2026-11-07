@@ -9,7 +9,7 @@ import Testing
 /// FFmpeg's DASH demuxer reads it, and the segments (their URLs without an extension, each with the initialization
 /// data in it) from `TestHTTPServer`. Needs FFmpeg built with libxml2 (the bundled one; Homebrew's has no DASH
 /// demuxer), else the tests do nothing.
-@Suite("Inline DASH manifest", .serialized, .hostDependent)
+@Suite("Inline DASH manifest", .serialized, .hostDependent, .networkServer)
 struct InlineDASHTests {
     private static var count: Int { SyntheticTestMediaFactory.dashSegmentCount }
 

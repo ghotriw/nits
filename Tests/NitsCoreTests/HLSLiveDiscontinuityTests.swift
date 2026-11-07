@@ -9,7 +9,7 @@ import Testing
 /// the segments on one timeline while `ffmpeg-hls-live-seek.patch` moves the window. Serialized for the same reason as
 /// `LiveStreamTests`.
 @Suite(
-    "Live HLS with discontinuities", .serialized, .hostDependent,
+    "Live HLS with discontinuities", .serialized, .hostDependent, .networkServer,
     .enabled(if: hasHLSTimelinePatch, "needs the bundled FFmpeg's patches"))
 struct HLSLiveDiscontinuityTests {
     /// What the segments of the stream are.

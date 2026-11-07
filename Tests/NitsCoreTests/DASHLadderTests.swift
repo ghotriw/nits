@@ -10,7 +10,7 @@ import os
 /// `TestHTTPServer` as the resolver's manifest of it: FFmpeg's DASH demuxer lists the rungs as variants, and the
 /// demuxer switches between them without losing or repeating a picture. Need FFmpeg built with libxml2, else they do
 /// nothing.
-@Suite("DASH ladder", .serialized, .hostDependent)
+@Suite("DASH ladder", .serialized, .hostDependent, .networkServer)
 struct DASHLadderTests {
     private static var count: Int { SyntheticTestMediaFactory.dashLadderSegmentCount }
     private static var pictures: Int { 25 * count }

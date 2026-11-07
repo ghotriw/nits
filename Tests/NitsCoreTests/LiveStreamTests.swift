@@ -25,7 +25,7 @@ private let needsBundledFFmpeg: ConditionTrait = .enabled(
 /// Serialized: the demuxer tests below block a thread of the cooperative pool each while FFmpeg reads from a test server,
 /// and a run of the HTTP suites together has no thread left for the servers once enough of them do (every thread blocked
 /// on a server that has none to answer on). Mine are one at a time.
-@Suite("Live stream", .serialized)
+@Suite("Live stream", .serialized, .networkServer)
 struct LiveStreamTests {
     // MARK: LiveStream
 
@@ -251,7 +251,7 @@ extension LiveStreamPlaylistTests {
 /// What a live stream does that a single sliding playlist does not show: a master playlist whose active variant is not
 /// the first, and a playlist that ends.
 /// Serialized, as `LiveStreamTests`.
-@Suite("Live stream playlists", .serialized)
+@Suite("Live stream playlists", .serialized, .networkServer)
 struct LiveStreamPlaylistTests {
     private static let segmentCount = 20
 

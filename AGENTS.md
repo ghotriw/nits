@@ -250,7 +250,9 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
   Even on a machine with a full pool the HTTP, HLS and DASH suites run together at the edge of it: a suite of more such
   tests than a few, or an `async` one waiting in it, can stand the whole run still (every pool thread blocked on a
   server that has no thread to answer on; `sample` shows 12 cooperative threads and no other). Give the suite
-  `.serialized`, keep its tests synchronous (an `async` one that has to be there goes into the same serialized suite: with
+  `.serialized` and `.networkServer` (`NetworkServerTrait`: a third of the pool's threads for such tests across all
+  suites, waited for with an `await`; without it the HTTP, HLS and DASH suites together held all 12 and the run's async
+  tests failed by their timeouts), keep its tests synchronous (an `async` one that has to be there goes into the same serialized suite: with
   a pool of one thread it waits for the thread behind the tests that sleep, its timeouts and the clock going on), and run
   it together with the other HTTP suites
   (`--filter "HLSOverHTTPTests|AdaptiveBitrateTests|DASH|MediaDemuxer|<yours>"`) before pushing.

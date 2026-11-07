@@ -4,7 +4,7 @@ import Testing
 
 @testable import NitsCore
 
-@Suite("Network Cached Seek Tests", .serialized, .hostDependent)
+@Suite("Network Cached Seek Tests", .serialized, .hostDependent, .networkServer)
 struct NetworkCachedSeekTests {
     private static func parseRangeStart(_ rangeHeader: String?) -> Int64? {
         guard let rangeHeader, rangeHeader.hasPrefix("bytes=") else { return nil }

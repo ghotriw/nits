@@ -6,7 +6,7 @@ import Testing
 @testable import NitsCore
 
 /// HLS served by `TestHTTPServer`: FFmpeg's HLS demuxer reads it as it reads any HTTP stream.
-@Suite("HLS over HTTP", .hostDependent)
+@Suite("HLS over HTTP", .hostDependent, .networkServer)
 struct HLSOverHTTPTests {
     private static func server() throws -> TestHTTPServer? {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return nil }
@@ -147,7 +147,7 @@ struct HLSOverHTTPTests {
 }
 
 /// Audio and subtitle renditions (`EXT-X-MEDIA`): each a playlist of its own, downloaded only while selected.
-@Suite("HLS renditions over HTTP", .hostDependent)
+@Suite("HLS renditions over HTTP", .hostDependent, .networkServer)
 struct HLSRenditionTests {
     private static func open() throws -> (TestHTTPServer, MediaDemuxer, opened: Int)? {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return nil }

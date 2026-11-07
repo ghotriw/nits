@@ -5,7 +5,7 @@ import Testing
 
 /// The rate a transfer reports is the link's: every byte received while it ran, whoever's (`Transfer.linkBytes`), as at a
 /// variant switch, where the old variant's segment is read on while the new one's comes.
-@Suite("Network transfer meter", .serialized, .hostDependent)
+@Suite("Network transfer meter", .serialized, .hostDependent, .networkServer)
 struct NetworkTransferMeterTests {
     private static func files(_ sizes: [String: Int]) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(

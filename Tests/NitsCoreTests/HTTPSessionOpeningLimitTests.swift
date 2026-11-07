@@ -6,7 +6,7 @@ import Testing
 /// A body nobody reads isn't downloaded whole while a DASH demuxer opens (`HTTPSessionInput.OpeningLimit`): it reads
 /// the start of each rung of a ladder, a few kilobytes of segments of megabytes, and they would take a slow link's
 /// seconds each.
-@Suite("Inputs opened while a demuxer opens", .serialized, .hostDependent)
+@Suite("Inputs opened while a demuxer opens", .serialized, .hostDependent, .networkServer)
 struct HTTPSessionOpeningLimitTests {
     static let size = 4 << 20
 

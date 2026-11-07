@@ -14,7 +14,7 @@ let hasHLSTimelinePatch = String(cString: av_version_info()).contains("nits-hls-
 
 @Suite(
     "HLS discontinuities (bundled FFmpeg's timeline patch)",
-    .serialized, .hostDependent, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
+    .serialized, .hostDependent, .networkServer, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
 struct HLSDiscontinuityTests {
     private static func open(_ preset: SyntheticTestMediaFactory.Preset) throws -> (
         demuxer: MediaDemuxer, server: TestHTTPServer
@@ -211,7 +211,7 @@ struct HLSDiscontinuityTests {
         defer { engine.stop() }
         engine.load(path: server.url("media.m3u8"))
         #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
-        let demuxer = try #require(engine.demuxer)
+        _ = try #require(engine.demuxer)
         engine.seek(to: 2.5, exact: true)
         #expect(await engine.waitForSeekToSettle())
         engine.play()
@@ -321,7 +321,7 @@ struct HLSDiscontinuityTests {
 
 @Suite(
     "HLS discontinuities in fragmented MP4 (a new EXT-X-MAP)",
-    .serialized, .hostDependent, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
+    .serialized, .hostDependent, .networkServer, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
 struct HLSDiscontinuityFMP4Tests {
     @Test("The pictures of a segment with another init section play, drawn at their size", .realtimePlayback)
     @MainActor

@@ -5,7 +5,7 @@ import Testing
 
 /// `HLSPlaylistPrefetcher`: what FFmpeg's opening of a master playlist reads, downloaded side by side and served from
 /// memory.
-@Suite("HLS opening prefetch", .serialized)
+@Suite("HLS opening prefetch", .serialized, .networkServer)
 struct HLSPrefetchTests {
     private static func serve(_ preset: SyntheticTestMediaFactory.Preset) throws -> TestHTTPServer? {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return nil }

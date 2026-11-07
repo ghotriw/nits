@@ -6,7 +6,7 @@ import Testing
 
 /// Measurement (skipped unless asked for, see README.md): how adaptive bitrate starts on a slow link, on the synthetic ladder behind `TestHTTPServer`
 /// at a rate. `NITS_MEASURE_START=1`, `NITS_LINK_KBPS` (default "1500,600").
-@Suite("ABR start measurement", .serialized)
+@Suite("ABR start measurement", .serialized, .networkServer)
 struct ABRStartMeasurement {
     @Test(
         "Start on a slow link", .timeLimit(.minutes(10)),
@@ -52,7 +52,7 @@ struct ABRStartMeasurement {
 
 /// Measurement (skipped unless asked for, see README.md): the opening's prefetch rate against the estimate playback reaches, on a real stream.
 /// `NITS_MEASURE_START_URL`, `NITS_MEASURE_START_SECONDS` (default 25).
-@Suite("ABR start measurement, real stream", .serialized)
+@Suite("ABR start measurement, real stream", .serialized, .networkServer)
 struct ABRStartRealMeasurement {
     private static func latencyShare(of demuxer: MediaDemuxer) -> Double? {
         demuxer.queueLock.lock()

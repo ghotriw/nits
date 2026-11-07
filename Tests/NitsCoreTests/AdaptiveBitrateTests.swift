@@ -7,7 +7,7 @@ import os
 
 /// Adaptive bitrate against `TestHTTPServer` throttled: the demuxer reads ahead as for any network source, and a
 /// stand-in for playback takes pictures in real time.
-@Suite("Adaptive bitrate over HTTP", .serialized, .hostDependent, .timeLimit(.minutes(2)))
+@Suite("Adaptive bitrate over HTTP", .serialized, .hostDependent, .networkServer, .timeLimit(.minutes(2)))
 struct AdaptiveBitrateTests {
     /// Takes pictures as playback does: from when the read-ahead holds `startAhead` seconds, each at its time,
     /// pausing (and counting the pause as a stall) when the next isn't read yet. Audio is taken as it comes.
