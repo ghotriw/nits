@@ -551,6 +551,12 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     the rate (a live stream at 1.5 Mbit/s: the read-ahead empty for 7 s), and a task suspended once answered took
     its body all the same, into the socket's buffer. A sample comes once a request ends: a link collapsing in the
     middle of a 4K segment shows in the estimate only after it (hls.js samples a fragment loading, to abandon it).
+    Transfers that run side by side share the link, each at a part of it: at a switch the old variant's segment is
+    still read while the new one's comes (both are enabled until the splice). A sample's rate is the link's: all the
+    bytes every transfer received while this one ran (`NetworkTransferMeter.received`, `Transfer.linkBytes`) over its
+    seconds, however they divided it (a share assumed equal overrated a heavy segment beside a light one). Taken as
+    each one's own, 1.5 Mbit/s read as 0.8–0.9 for the two transfers of the first switch and took the estimate under
+    the variant switched to (0.95 of 1.05 < 1.08), down to the lowest (`switchOverlapIsNoCollapse`).
   - *Latency*, the time inside `io_open` waiting for answers, counts as seconds per second of media read
     (`latencyShare`), the same for every variant: a variant fits when a second of it reads, transfer and latency,
     within its share of a second (dash.js weighs latency so too). A server slower to answer than its segments last

@@ -151,6 +151,31 @@ struct AdaptiveBitrateTests {
         #expect(estimate > 6_000_000, "Measured \(Int(estimate / 1000)) kbit/s of 8000")
     }
 
+    /// At a switch the old variant's segment is still read while the new one's comes: two transfers share the link and
+    /// each ran at about half of it. Taken as the link's rate, the estimate fell below the variant switched to
+    /// (0.95 of 1.05 Mbit/s < 1.08) and playback went on down to the lowest.
+    @Test("The two transfers of a switch share the link: the estimate stays the link's, the variant it carries stays")
+    func switchOverlapIsNoCollapse() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        #expect(demuxer.variants.map(\.width) == [640, 480, 320])
+        // The defaults (`MediaDemuxer.startReadAhead`), not the test's quick ones.
+        server.setLinkRate(1_500_000 / 8)
+        demuxer.startReadAhead(limits: .init(seconds: 30))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+
+        #expect(
+            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 480 },
+            "Playing \(String(describing: consumer.playedWidth))")
+        // Past the switch, long enough for the estimate to have fallen if it was going to.
+        try await Task.sleep(for: .seconds(8))
+        #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the link carries")
+        #expect(consumer.playedWidth == 480, "Playing \(String(describing: consumer.playedWidth))")
+    }
+
     @Test("A fast link measures from the low variant's small segments, and steps up to what it carries at once")
     func fastLinkMeasuresSmallSegments() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }

@@ -140,14 +140,36 @@ final class NetworkTransferMeter: Sendable {
     struct Transfer: Sendable {
         let bytes: Int
         let seconds: Double
+        /// Bytes every transfer received during this one's `seconds`, its own included: the requests of a switch's old
+        /// and new variant, side by side, share the link, and the rate of the link is what all of them carried, however
+        /// they divided it. Never below `bytes`.
+        let linkBytes: Int
+
+        init(bytes: Int, seconds: Double, linkBytes: Int? = nil) {
+            self.bytes = bytes
+            self.seconds = seconds
+            self.linkBytes = max(linkBytes ?? bytes, bytes)
+        }
     }
 
     private struct State {
         var transfers: [Transfer] = []
         var oneTimeWaits = 0.0
+        /// Body bytes received by every transfer so far.
+        var receivedBytes = 0
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// `count` body bytes came, to whichever transfer.
+    func received(_ count: Int) {
+        state.withLock { $0.receivedBytes += count }
+    }
+
+    /// Body bytes received by every transfer so far: a transfer's share of the link is the difference over its spells.
+    var receivedBytes: Int {
+        state.withLock { $0.receivedBytes }
+    }
 
     func add(_ transfer: Transfer) {
         state.withLock { $0.transfers.append(transfer) }
@@ -217,6 +239,11 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         /// Since when the transfer runs, while it does, and for how long it ran before.
         var transferringSince: ContinuousClock.Instant?
         var transferSeconds = 0.0
+        /// The meter's count of bytes received (by every transfer) when this one began its spell, and the sum over its
+        /// spells of what every transfer received during them, itself included; the opening's spells are left out as
+        /// `limitedSeconds` is.
+        var meterBytesAtStart = 0
+        var meterBytes = 0
         var isReported = false
         /// The task asked for a piece of the body (`makeTask`), and the body goes on past it once it ends.
         var isChunked = false
@@ -407,12 +434,17 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         if transferring {
             if state.transferringSince == nil {
                 state.transferringSince = .now
+                state.meterBytesAtStart = meter.receivedBytes
                 openingLimit?.transferBegan()
             }
         } else if let since = state.transferringSince {
             let seconds = (ContinuousClock.now - since) / .seconds(1)
             state.transferSeconds += seconds
-            if state.isOpeningTask { state.limitedSeconds += seconds }
+            if state.isOpeningTask {
+                state.limitedSeconds += seconds
+            } else {
+                state.meterBytes += meter.receivedBytes - state.meterBytesAtStart
+            }
             state.transferringSince = nil
             openingLimit?.transferEnded()
         }
@@ -428,7 +460,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         let bytes = state.received - state.limitedBytes
         let seconds = state.transferSeconds - state.limitedSeconds
         guard bytes >= HTTPSessionTransport.oneTimeRequestBytes, seconds > 0 else { return }
-        meter.add(.init(bytes: bytes - state.untimed, seconds: seconds))
+        meter.add(.init(bytes: bytes - state.untimed, seconds: seconds, linkBytes: state.meterBytes))
     }
 
     // MARK: FFmpegInputSource
@@ -560,6 +592,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             state.chunks.append(data)
             state.buffered += data.count
             state.received += data.count
+            meter.received(data.count)
             let isOpening = state.isOpeningTask
             if isOpening {
                 openingLimit?.received(data.count)  // Ignored once lifted: the rate is the opening's alone.

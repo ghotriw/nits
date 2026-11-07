@@ -106,8 +106,10 @@ struct AdaptiveBitrateLogic: Sendable {
         latency = (keep * latency.waited + waited, keep * latency.media + media)
     }
 
-    /// `bytes` transferred in `seconds`, `media` seconds of it, at `time`: a request's transfer
-    /// (`HTTPSessionTransport`), whose media is what its bytes are at the variant's bandwidth.
+    /// `bytes` transferred in `seconds` at `time`, and `media` seconds of them: a request's transfer
+    /// (`HTTPSessionTransport`). `bytes` are what the link carried in those seconds, the bytes of other requests running
+    /// meanwhile included (`NetworkTransferMeter.Transfer.linkBytes`); `media` is the request's own bytes at the
+    /// variant's bandwidth.
     ///
     /// The sample weighs its media alone, slow or not (its seconds without media). Weighed by its seconds when slower
     /// than in real time, one slow for its size (half a megabyte of audio on a connection TCP starts slowly, 5.7 Mbit/s

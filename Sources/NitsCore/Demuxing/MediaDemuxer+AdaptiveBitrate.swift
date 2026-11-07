@@ -65,7 +65,8 @@ extension MediaDemuxer {
 
     /// A read of the read-ahead thread from `mark` on. Behind `lock` and `queueLock`.
     ///
-    /// The transfers are the requests' own (`NetworkTransferMeter`), a sample each, whatever the read waited for:
+    /// The transfers are the requests' own (`NetworkTransferMeter`), a sample each, whatever the read waited for, at the
+    /// rate of the link (what every request received meanwhile, as at a switch two run side by side):
     /// weighed by the media their bytes are at the variant's bandwidth, so a segment's counts by its share of the
     /// stream (an audio segment's, a twentieth of a 4K video one's), slow or not, and the first estimate waits for a
     /// second of the variant's media measured.
@@ -104,8 +105,9 @@ extension MediaDemuxer {
         let selected = variantSwitch?.target.id ?? variantSelection.withLock { $0.selected }
         let bandwidth = variants.first { $0.id == selected }.map { Double($0.bandwidth) } ?? 0
         for transfer in transfers {
+            // The rate is the link's (the transfers side by side at a switch share it); the media is the bytes' own.
             adaptiveBitrate.logic.addSample(
-                bytes: transfer.bytes, seconds: transfer.seconds,
+                bytes: transfer.linkBytes, seconds: transfer.seconds,
                 media: bandwidth > 0 ? Double(transfer.bytes) * 8 / bandwidth : 0, at: adaptiveTime)
         }
     }
