@@ -712,7 +712,8 @@ extension PlayerSession: PlayerActions {
     }
 
     public var canJumpToTime: Bool {
-        engine.isLoaded && engine.media.duration > 0
+        // An open dialog can always be closed; a mini player has no room to open one.
+        uiState.isJumpToPresented || (engine.isLoaded && engine.media.duration > 0 && !uiState.isCompact)
     }
 
     public var isJumpToPresented: Bool {

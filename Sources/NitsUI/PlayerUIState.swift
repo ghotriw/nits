@@ -43,6 +43,17 @@ public final class PlayerUIState {
     public var isCapturingScreen: Bool = false
     /// The performance HUD is on screen; `ContentView` has the engine collect the metrics it shows while it is.
     public var isDebugHUDVisible: Bool = false
+    /// The player is shown small (a mini player in a corner of the host's window): no minimum size, no header strip, no
+    /// side panels or Jump to Time, and controls cut down to play / pause and a thin progress bar
+    /// (`CompactControlsOverlay`). Set by the host; turning it on closes an open side panel and Jump to Time, leaving
+    /// `wasPlayingBeforeJumpTo` for `ContentView` to resume the playback the dialog paused.
+    public var isCompact: Bool = false {
+        didSet {
+            guard isCompact else { return }
+            sidePanel = nil
+            isJumpToPresented = false
+        }
+    }
     public let osd: OSDManager
     public let controlsConfig: ControlsConfiguration
     public let actionButton: ActionButtonPresenter
@@ -80,8 +91,9 @@ public final class PlayerUIState {
     }
 
     /// Opens `panel`, replacing any other open panel (or switching the playlist panel's tab), or
-    /// closes it if it is already open.
+    /// closes it if it is already open. Does nothing while `isCompact`.
     public func toggleSidePanel(_ panel: PlayerSidePanel) {
+        guard !isCompact else { return }
         sidePanel = sidePanel == panel ? nil : panel
     }
 
@@ -105,6 +117,7 @@ public final class PlayerUIState {
     }
 
     private func togglePlaylistPanel(from tab: PlayerSidePanel) {
+        guard !isCompact else { return }
         guard opensWholePlaylistPanel(tab) else {
             toggleSidePanel(tab)
             return
@@ -124,6 +137,7 @@ public final class PlayerUIState {
     }
 
     public func showJumpTo(wasPlaying: Bool) {
+        guard !isCompact else { return }
         wasPlayingBeforeJumpTo = wasPlaying
         isJumpToPresented = true
     }
@@ -142,7 +156,7 @@ public final class PlayerUIState {
             return (false, resume)
         } else {
             showJumpTo(wasPlaying: isPlaying)
-            return (true, false)
+            return (isJumpToPresented, false)
         }
     }
 }

@@ -10,6 +10,8 @@ public struct PlaybackActionButtonView: View {
     var areControlsVisible: Bool
     /// Width taken by an open side panel; the button stays beside it.
     var trailingInset: CGFloat = 0
+    /// The player is a mini player (`PlayerUIState.isCompact`): the button keeps closer to the edges, above its thin bar.
+    var isCompact: Bool = false
     /// Whether the pointer is over the buttons: the host keeps the controls (and the cursor) up meanwhile, so the
     /// button doesn't slide away from under it.
     @Binding var isHovered: Bool
@@ -19,12 +21,14 @@ public struct PlaybackActionButtonView: View {
         presenter: ActionButtonPresenter,
         areControlsVisible: Bool,
         trailingInset: CGFloat = 0,
+        isCompact: Bool = false,
         isHovered: Binding<Bool> = .constant(false)
     ) {
         self.engine = engine
         self.presenter = presenter
         self.areControlsVisible = areControlsVisible
         self.trailingInset = trailingInset
+        self.isCompact = isCompact
         self._isHovered = isHovered
     }
 
@@ -38,9 +42,9 @@ public struct PlaybackActionButtonView: View {
                     actionButton(button)
                 }
                 .onHover { isHovered = $0 }
-                .padding(.trailing, 28 + trailingInset)
+                .padding(.trailing, (isCompact ? 10 : 28) + trailingInset)
                 // Clear of the control bar while it is up.
-                .padding(.bottom, areControlsVisible ? 72 : 32)
+                .padding(.bottom, isCompact ? 28 : areControlsVisible ? 72 : 32)
                 .transition(.opacity)
             }
         }

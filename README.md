@@ -246,6 +246,11 @@ controls); `adoptsTitleBar: false` leaves it the host's. Closing the window ends
   `PlayerKeyMonitor(actions: session, window:)` for the keys and, for fullscreen, sets `session.presentation` (a
   `PlayerPresentation`; without one the double click on the picture and `F` are left to the host). The player never
   moves the host's window unless the host asks (`uiState.movesWindow`).
+- A mini player (the player shrunk to a corner while the host's page goes on under it): `session.uiState.isCompact =
+  true` drops the minimum size, the header strip and the side panels and cuts the controls down to play / pause and a
+  thin progress bar; the host's overlay buttons (expand, close) stay. Keep the same `makeContentView()` in place and
+  change only its frame, so the picture isn't recreated. After `presentation.detach()` the window is the host's again:
+  it ends the session itself when the window closes.
 - With the focus in a text input (any `NSTextInputClient`, a web view included) keys stay the host's. A SwiftUI
   window's hosting view is one too: such a host passes `ignoresResponder: { $0 is NSTextView }`, and one that wants the
   player's keys with the focus in its web view its own judgment.

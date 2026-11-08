@@ -67,11 +67,7 @@ public struct QuickMediaInfoPane: View {
                 // Audio Stream Info (Audio-only file)
                 QuickSettingsSection("Audio Stream", systemImage: "waveform") {
                     infoRow(label: "Codec", value: currentTrack.codecName.uppercased())
-                    let kHz = Double(currentTrack.sampleRate) / 1000.0
-                    let formattedRate =
-                        kHz.truncatingRemainder(dividingBy: 1) == 0
-                        ? String(format: "%.0f kHz", kHz) : String(format: "%.1f kHz", kHz)
-                    infoRow(label: "Sample Rate", value: formattedRate)
+                    infoRow(label: "Sample Rate", value: currentTrack.sampleRateText)
                     infoRow(label: "Channels", value: "\(currentTrack.channels) ch")
                     if !currentTrack.language.isEmpty {
                         infoRow(label: "Language", value: currentTrack.language.uppercased())

@@ -202,6 +202,16 @@ takes the click that activates the window, `NativeVideoHostView.acceptsActivatin
 another window is key) and `supportsFullscreen` (set from the presentation; off, the control bar's fullscreen item hides and a double click on the picture is the
 host's). NitsUI never zooms or moves the key window itself.
 
+A mini player (the player shrunk to a corner of the host's window while the host's page goes on under it) is the same
+`makeContentView()` with `uiState.isCompact` on: no minimum size, no header strip, play / pause and a thin progress bar
+(`CompactControlsOverlay`) instead of the control bar, the host's buttons and the action button closer to the edges. Side
+panels and Jump to Time have no room there: turning it on closes them, and they don't open while it is on. The host keeps
+the view in place in its hierarchy and changes only its frame, so the picture's `NativeVideoHostView` stays the same
+(a new one would take the engine's layers over, which also works, but redraws). The window's part is the host's: a
+presentation of its own for the mini player (the window for PiP, no fullscreen, no `movesWindow`, no
+`PlayerKeyMonitor`, so the page keeps its keys) and `session.end()` when the window closes, which
+`HostWindowPresentation` stops doing on `detach()`.
+
 ## Video pipeline
 
 ### Decode → queue → present

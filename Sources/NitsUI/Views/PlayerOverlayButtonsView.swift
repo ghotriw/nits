@@ -22,14 +22,14 @@ struct PlayerOverlayButtonsView: View {
             Color.clear
                 .allowsHitTesting(false)
             corner(.topTrailing)
-                // Below the windowed player's top bar (40 pt); fullscreen has none.
-                .padding(.top, uiState.isFullscreen ? 28 : 52)
-                .padding(.trailing, 28 + trailingInset)
+                // Below the windowed player's top bar (40 pt); fullscreen and a mini player have none.
+                .padding(.top, uiState.isCompact ? edge : uiState.isFullscreen ? 28 : 52)
+                .padding(.trailing, edge + trailingInset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             corner(.bottomLeading)
-                // Above the control bar, as the action button is while the bar is up.
-                .padding(.bottom, 72)
-                .padding(.leading, 28)
+                // Above the control bar, as the action button is while the bar is up; above a mini player's thin bar.
+                .padding(.bottom, uiState.isCompact ? 28 : 72)
+                .padding(.leading, edge)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
         .animation(.easeInOut(duration: 0.2), value: shown)
@@ -44,6 +44,9 @@ struct PlayerOverlayButtonsView: View {
             isHovered = false
         }
     }
+
+    /// Distance from the picture's edges: a mini player has little picture to spare.
+    private var edge: CGFloat { uiState.isCompact ? 10 : 28 }
 
     private var shown: [PlayerOverlayButton] {
         uiState.overlayButtons.filter { $0.visibility == .always || areControlsVisible }

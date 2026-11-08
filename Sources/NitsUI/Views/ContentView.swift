@@ -73,70 +73,33 @@ public struct ContentView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
 
-                VStack(spacing: 20) {
-                    if let artworkData = engine.artworkData, let nsImage = NSImage(data: artworkData) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: 280, maxHeight: 280)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
-                    } else {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 110, weight: .light))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(width: 200, height: 160)
-                            .shadow(color: .white.opacity(0.15), radius: 24, x: 0, y: 0)
-                    }
-
-                    VStack(spacing: 6) {
-                        Text(engine.mediaTitle)
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-
-                        if !engine.audioTracks.isEmpty,
-                            let currentTrack = engine.audioTracks.first(where: { $0.id == engine.selectedAudioTrackId })
-                        {
-                            let kHz = Double(currentTrack.sampleRate) / 1000.0
-                            let formattedRate =
-                                kHz.truncatingRemainder(dividingBy: 1) == 0
-                                ? String(format: "%.0f", kHz) : String(format: "%.1f", kHz)
-                            Text(
-                                "\(currentTrack.codecName.uppercased()) • \(formattedRate) kHz • \(currentTrack.channels) ch"
-                            )
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.6))
-                        }
-                    }
-                }
-                .padding(32)
-                .allowsHitTesting(false)
+                AudioOnlyArtworkView(engine: engine, isCompact: uiState.isCompact)
+                    .allowsHitTesting(false)
             }
 
-            LoadingOverlayView(engine: engine)
+            LoadingOverlayView(engine: engine, isCompact: uiState.isCompact)
 
             // Error display banner if stream/file fails to load
             if let error = engine.loadError {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 32))
+                        .font(.system(size: uiState.isCompact ? 20 : 32))
                         .foregroundStyle(.yellow)
                     Text("Playback Error")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white)
                     Text(error)
-                        .font(.system(size: 13))
+                        .font(.system(size: uiState.isCompact ? 11 : 13))
                         .foregroundStyle(.white.opacity(0.8))
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
+                        .lineLimit(uiState.isCompact ? 3 : nil)
+                        .padding(.horizontal, uiState.isCompact ? 4 : 24)
                 }
-                .padding(20)
+                .padding(uiState.isCompact ? 10 : 20)
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(radius: 12)
+                .padding(.horizontal, uiState.isCompact ? 12 : 0)
             }
 
             // Subtitles Overlay
@@ -181,8 +144,8 @@ public struct ContentView: View {
                                 DebugOSDStackView(messages: uiState.osd.debugMessages)
                             }
                         }
-                        .padding(.top, 28)
-                        .padding(.leading, 28)
+                        .padding(.top, uiState.isCompact ? 12 : 28)
+                        .padding(.leading, uiState.isCompact ? 12 : 28)
                         Spacer()
                     }
                     Spacer()
@@ -191,7 +154,7 @@ public struct ContentView: View {
             }
 
             // Performance Telemetry HUD
-            if uiState.isDebugHUDVisible && !uiState.isCapturingScreen {
+            if uiState.isDebugHUDVisible && !uiState.isCapturingScreen && !uiState.isCompact {
                 VStack {
                     HStack {
                         Spacer()
@@ -230,7 +193,10 @@ public struct ContentView: View {
             }
 
             // Controls Overlay
-            if showsControls {
+            if showsControls && uiState.isCompact {
+                CompactControlsOverlay(engine: engine, isInteracting: $isUserInteracting)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+            } else if showsControls {
                 ControlsOverlay(
                     engine: engine,
                     uiState: uiState,
@@ -249,6 +215,7 @@ public struct ContentView: View {
                 presenter: uiState.actionButton,
                 areControlsVisible: showsControls,
                 trailingInset: uiState.sidePanel?.width ?? 0,
+                isCompact: uiState.isCompact,
                 isHovered: $isActionButtonHovered
             )
             .ignoresSafeArea()
@@ -313,7 +280,8 @@ public struct ContentView: View {
             .ignoresSafeArea()
             .zIndex(90)
         }
-        .frame(minWidth: 700, minHeight: 450)
+        // A mini player is as small as the host makes it.
+        .frame(minWidth: uiState.isCompact ? nil : 700, minHeight: uiState.isCompact ? nil : 450)
         .onContinuousHover { phase in
             switch phase {
             case .active:
@@ -329,6 +297,14 @@ public struct ContentView: View {
             } else {
                 scheduleControlsHide()
             }
+        }
+        // What has no room in a mini player closes as it becomes one; the side panel is closed by `PlayerUIState`.
+        .onChange(of: uiState.isCompact) { _, compact in
+            isUserInteracting = false
+            // `PlayerUIState` closed Jump to Time; the playback it paused goes on.
+            guard compact, uiState.wasPlayingBeforeJumpTo else { return }
+            uiState.wasPlayingBeforeJumpTo = false
+            engine.play()
         }
         .onChange(of: uiState.isJumpToPresented) { _, presented in
             if presented {
@@ -362,7 +338,7 @@ public struct ContentView: View {
             showControlsTemporarily()
         }
         // From the state, not the HUD's appear / disappear, which a fade out can deliver after the next appear.
-        .onChange(of: uiState.isDebugHUDVisible, initial: true) { _, visible in
+        .onChange(of: uiState.isDebugHUDVisible && !uiState.isCompact, initial: true) { _, visible in
             engine.isCollectingMetrics = visible
         }
         .focusable()
@@ -505,6 +481,7 @@ public struct ContentView: View {
 /// buffering state changes do not re-evaluate `ContentView`.
 private struct LoadingOverlayView: View {
     let engine: PlayerEngine
+    var isCompact = false
 
     @State private var isSeekSpinnerVisible = false
 
@@ -519,9 +496,9 @@ private struct LoadingOverlayView: View {
                 && engine.loadError == nil
             {
                 ProgressView()
-                    .controlSize(.large)
+                    .controlSize(isCompact ? .regular : .large)
                     .tint(.white)
-                    .padding(16)
+                    .padding(isCompact ? 10 : 16)
                     .background(.black.opacity(0.40), in: Circle())
                     .environment(\.colorScheme, .dark)
             }
@@ -545,5 +522,55 @@ private struct LoadingOverlayView: View {
         .onChange(of: engine.isLoading || engine.loadError != nil) { _, reset in
             if reset { isSeekSpinnerVisible = false }
         }
+    }
+}
+
+/// What stands in for the picture of audio-only media: the artwork (or a waveform symbol), the title and the audio
+/// track's format; a mini player shows the artwork alone, smaller.
+private struct AudioOnlyArtworkView: View {
+    let engine: PlayerEngine
+    let isCompact: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            if let artworkData = engine.artworkData, let nsImage = NSImage(data: artworkData) {
+                let side: CGFloat = isCompact ? 120 : 280
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: side, maxHeight: side)
+                    .clipShape(RoundedRectangle(cornerRadius: isCompact ? 10 : 16, style: .continuous))
+                    .shadow(color: .black.opacity(0.4), radius: isCompact ? 10 : 20, x: 0, y: isCompact ? 5 : 10)
+            } else {
+                Image(systemName: "waveform")
+                    .font(.system(size: isCompact ? 56 : 110, weight: .light))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: isCompact ? 100 : 200, height: isCompact ? 80 : 160)
+                    .shadow(color: .white.opacity(0.15), radius: 24, x: 0, y: 0)
+            }
+
+            if !isCompact {
+                VStack(spacing: 6) {
+                    Text(engine.mediaTitle)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+
+                    if let format = audioFormatText {
+                        Text(format)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+            }
+        }
+        .padding(isCompact ? 12 : 32)
+    }
+
+    /// The selected audio track's codec, sample rate and channels.
+    private var audioFormatText: String? {
+        engine.audioTracks.first(where: { $0.id == engine.selectedAudioTrackId })?.formatSummary
     }
 }

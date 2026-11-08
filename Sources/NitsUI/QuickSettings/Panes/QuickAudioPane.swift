@@ -71,16 +71,9 @@ public struct QuickAudioPane: View {
                                         .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                                         .foregroundStyle(isSelected ? .white : .white.opacity(0.8))
 
-                                        let kHz = Double(track.sampleRate) / 1000.0
-                                        let formattedRate =
-                                            kHz.truncatingRemainder(dividingBy: 1) == 0
-                                            ? String(format: "%.0f", kHz) : String(format: "%.1f", kHz)
-
-                                        Text(
-                                            "\(track.codecName.uppercased()) • \(formattedRate) kHz • \(track.channels) ch"
-                                        )
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.white.opacity(0.5))
+                                        Text(track.formatSummary)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.white.opacity(0.5))
                                     }
 
                                     Spacer()
