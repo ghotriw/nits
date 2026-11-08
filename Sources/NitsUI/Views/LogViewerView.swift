@@ -211,12 +211,21 @@ public struct LogViewerView: View {
                 .padding(.vertical, 6)
             }
             .background(Color(NSColor.textBackgroundColor))
-            .onChange(of: viewModel.filteredEntries.count) {
+            // The count for a filter changed, the last entry for one added: once the log is full the count stays at
+            // `maxCapacity`.
+            .onChange(
+                of: ScrollTrigger(count: viewModel.filteredEntries.count, lastID: viewModel.filteredEntries.last?.id)
+            ) {
                 if viewModel.autoScroll, let last = viewModel.filteredEntries.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }
+    }
+
+    private struct ScrollTrigger: Equatable {
+        var count: Int
+        var lastID: UUID?
     }
 
     @ViewBuilder
