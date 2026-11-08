@@ -54,3 +54,13 @@ extension NSWindow {
         makeKeyAndOrderFront(nil)
     }
 }
+
+extension NSToolbar {
+    /// A toolbar without items for a window whose `toolbarStyle` is `.unifiedCompact`: it makes the title bar as tall as
+    /// the player's header strip and centers the traffic lights in it (without one they sit above the strip's middle).
+    static func headerStripStandIn() -> NSToolbar {
+        let toolbar = NSToolbar()
+        toolbar.displayMode = .iconOnly
+        return toolbar
+    }
+}

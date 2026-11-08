@@ -38,9 +38,16 @@ public final class HostWindowPresentation: PlayerPresentation {
     /// The toolbar the presentation gave a window that had none: a compact one makes the title bar as tall as the
     /// header strip and centers the traffic lights in it.
     @ObservationIgnored private var installedToolbar: NSToolbar?
+    /// Follows the window's toolbar while the title bar is adopted: a host's may go away after it (SwiftUI removes a
+    /// toolbar left without items, as a host hiding its items behind the player leaves it), which would leave a title
+    /// bar shorter than the header strip and the traffic lights above its middle.
+    @ObservationIgnored private var toolbarObservation: NSKeyValueObservation?
     /// The window entered fullscreen while presenting the player, so `detach()` leaves it; one that was in fullscreen
     /// already stays.
     @ObservationIgnored private var enteredFullscreen = false
+    /// The window is in fullscreen, from its style at the start and its notifications after: this window's own, not the
+    /// session's `uiState`, which another presentation of the session may set.
+    @ObservationIgnored private var windowIsFullscreen = false
     @ObservationIgnored private var isAttached = true
 
     /// - Parameters:
@@ -61,7 +68,8 @@ public final class HostWindowPresentation: PlayerPresentation {
         // keep its keys and close handling (and, in the same window, hand this one its title bar as the original).
         (session.presentation as? HostWindowPresentation)?.detach()
         session.presentation = self
-        session.uiState.isFullscreen = window.styleMask.contains(.fullScreen)
+        windowIsFullscreen = window.styleMask.contains(.fullScreen)
+        session.uiState.isFullscreen = windowIsFullscreen
         session.uiState.movesWindow = true
         session.uiState.titleBarDoubleClicked = { [weak window] in
             window?.performTitleBarDoubleClickAction()
@@ -172,6 +180,7 @@ public final class HostWindowPresentation: PlayerPresentation {
     }
 
     private func fullscreenChanged(_ isFullscreen: Bool) {
+        windowIsFullscreen = isFullscreen
         session.uiState.isFullscreen = isFullscreen
         // However it was entered: the player's `F`, its double click, or the green button over its header strip.
         enteredFullscreen = isFullscreen
@@ -199,30 +208,43 @@ public final class HostWindowPresentation: PlayerPresentation {
             appearsTransparent: window.titlebarAppearsTransparent,
             hasFullSizeContent: window.styleMask.contains(.fullSizeContentView)
         )
-        if window.toolbar == nil {
-            let toolbar = NSToolbar()
-            toolbar.displayMode = .iconOnly
-            installedToolbar = toolbar
-        }
         window.styleMask.insert(.fullSizeContentView)
         window.toolbarStyle = .unifiedCompact
         window.titlebarSeparatorStyle = .none
-        applyTitleBar(isFullscreen: window.styleMask.contains(.fullScreen))
+        applyTitleBar(isFullscreen: windowIsFullscreen)
+        // A host's toolbar may go away after this (SwiftUI removes one left without items, as a host hiding its items
+        // behind the player leaves it), in fullscreen too: the title bar is applied again, here and as fullscreen ends.
+        // Fullscreen as the notifications tell it, not the style: that has it from the start of the animation, and an
+        // entry refused then sends none, which would leave a windowed title bar applied as a fullscreen one.
+        toolbarObservation = window.observe(\.toolbar) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.applyTitleBar(isFullscreen: self.windowIsFullscreen)
+            }
+        }
     }
 
     /// Windowed, the header strip stands in for the title bar; in fullscreen the title bar that slides in with the menu
-    /// bar is an ordinary one, as in the player window. A host's own toolbar stays (its items are the host's to hide).
+    /// bar is an ordinary one, as in the player window. The one place that decides on the presentation's toolbar:
+    /// windowed, it stands in whenever the window has none (from the start, or once the host's went away), so the title
+    /// bar is as tall as the strip; a toolbar the host puts back replaces it. In fullscreen it goes; a host's own stays
+    /// (its items are the host's to hide).
     private func applyTitleBar(isFullscreen: Bool) {
         guard let window, savedTitleBar != nil else { return }
         window.titleVisibility = isFullscreen ? .visible : .hidden
         window.titlebarAppearsTransparent = !isFullscreen
-        if let installedToolbar {
-            window.toolbar = isFullscreen ? nil : installedToolbar
+        if isFullscreen {
+            if let installedToolbar, window.toolbar === installedToolbar { window.toolbar = nil }
+        } else if window.toolbar == nil {
+            let toolbar = installedToolbar ?? .headerStripStandIn()
+            installedToolbar = toolbar
+            window.toolbar = toolbar
         }
     }
 
     private func restoreTitleBar() {
         guard let window, let saved = savedTitleBar else { return }
+        toolbarObservation = nil
         window.setStandardButtonsVisible(true, animated: false)
         savedTitleBar = nil
         if let installedToolbar, window.toolbar === installedToolbar { window.toolbar = nil }

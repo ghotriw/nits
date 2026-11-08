@@ -196,9 +196,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         if isFullscreen {
             window.toolbar = nil
         } else {
-            let toolbar = NSToolbar()
-            toolbar.displayMode = .iconOnly
-            window.toolbar = toolbar
+            window.toolbar = .headerStripStandIn()
             window.toolbarStyle = .unifiedCompact
         }
     }

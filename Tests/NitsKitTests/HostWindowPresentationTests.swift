@@ -73,6 +73,67 @@ struct HostWindowPresentationTests {
         plain.detach()
     }
 
+    @Test("A host's toolbar that goes away after attaching gives way to the presentation's, which detaching removes")
+    func testHostToolbarRemovedAfterAttaching() {
+        let session = PlayerSession(engine: .makeForTesting())
+        defer { session.end() }
+        let hostToolbar = NSToolbar()
+        let window = makeWindow(toolbar: hostToolbar)
+
+        let presentation = HostWindowPresentation(session: session, window: window)
+        #expect(window.toolbar === hostToolbar)
+        // SwiftUI drops a toolbar whose items the host hid behind the player.
+        window.toolbar = nil
+        let installed = window.toolbar
+        #expect(installed != nil && installed !== hostToolbar)
+        #expect(window.toolbarStyle == .unifiedCompact)
+
+        // The host's coming back replaces it and stays.
+        window.toolbar = hostToolbar
+        #expect(window.toolbar === hostToolbar)
+
+        window.toolbar = nil
+        presentation.detach()
+        #expect(window.toolbar == nil)
+        #expect(window.toolbarStyle == .automatic)
+    }
+
+    @Test("A host's toolbar that goes away in fullscreen is stood in for once the window is out of it")
+    func testHostToolbarRemovedInFullscreen() {
+        let session = PlayerSession(engine: .makeForTesting())
+        defer { session.end() }
+        let hostToolbar = NSToolbar()
+        let window = FullscreenReportingWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.toolbar = hostToolbar
+        let presentation = HostWindowPresentation(session: session, window: window)
+        defer { presentation.detach() }
+
+        // Fullscreen as the window has it once entered: the style and the notification.
+        window.isFullscreen = true
+        NotificationCenter.default.post(name: NSWindow.didEnterFullScreenNotification, object: window)
+        #expect(window.toolbar === hostToolbar)
+        // The host's goes away in fullscreen: nothing stands in there (the title bar that slides in is an ordinary one).
+        window.toolbar = nil
+        #expect(window.toolbar == nil)
+
+        window.isFullscreen = false
+        NotificationCenter.default.post(name: NSWindow.didExitFullScreenNotification, object: window)
+        let installed = window.toolbar
+        #expect(installed != nil && installed !== hostToolbar, "Out of fullscreen with no toolbar")
+        #expect(window.toolbarStyle == .unifiedCompact)
+
+        // Into fullscreen again: the stand-in goes, and comes back on the way out.
+        window.isFullscreen = true
+        NotificationCenter.default.post(name: NSWindow.didEnterFullScreenNotification, object: window)
+        #expect(window.toolbar == nil)
+        window.isFullscreen = false
+        NotificationCenter.default.post(name: NSWindow.didExitFullScreenNotification, object: window)
+        #expect(window.toolbar === installed)
+    }
+
     @Test("Closing the window ends the session and detaches before the host hears of it")
     func testWindowClose() {
         let session = PlayerSession(engine: .makeForTesting())
@@ -129,5 +190,17 @@ struct HostWindowPresentationTests {
         #expect(!window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
         #expect(window.toolbar == nil)
+    }
+}
+
+/// A window that reports fullscreen in its style without being in it: AppKit refuses `.fullScreen` set from outside, and
+/// a test has no screen to enter it on. The presentation reads fullscreen from the style when it is made, and from the
+/// window's didEnter / didExit notifications after, which a test posts itself.
+private final class FullscreenReportingWindow: NSWindow {
+    var isFullscreen = false
+
+    override var styleMask: NSWindow.StyleMask {
+        get { isFullscreen ? super.styleMask.union(.fullScreen) : super.styleMask }
+        set { super.styleMask = newValue.subtracting(.fullScreen) }
     }
 }
