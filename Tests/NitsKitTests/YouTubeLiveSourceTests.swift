@@ -60,7 +60,7 @@ struct YouTubeLiveSourceTests {
             return reply.withLock { $0 }
         }
         #expect(source.segmentWaitLimit == .seconds(5))
-        let head = try #require(source.head(shouldAbort: { false }))
+        let head = source.head(shouldAbort: { false })
         #expect(head == .head(LiveHead(number: 329_078, startTime: 1_637_915.4)))
         // A request without a number, for the first byte, with the player's headers.
         let request = try #require(asked.withLock { $0.first })
