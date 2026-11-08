@@ -5,20 +5,9 @@ import simd
 /// ETSI GS CCM 001 gives the semantics of the values (pivots, coefficients, NLQ parameters, the DM signal description),
 /// not the RPU bitstream, so its clauses are cited for what a value means.
 public enum DolbyVisionRPUParser {
-    /// SMPTE ST 2084 PQ to Linear optical nits conversion.
+    /// SMPTE ST 2084 PQ to Linear optical nits conversion (`PQ.toNits`).
     public static func pqToNits(_ pq: Float) -> Float {
-        guard pq > 0.0 else { return 0.0 }
-        let c1: Float = 0.8359375
-        let c2: Float = 18.8515625
-        let c3: Float = 18.6875
-        let m1: Float = 0.1593017578125
-        let m2: Float = 78.84375
-
-        let p = pow(max(pq, 0.0), 1.0 / m2)
-        let num = max(p - c1, 0.0)
-        let den = max(c2 - c3 * p, 1e-6)
-        let l = pow(num / den, 1.0 / m1)
-        return l * 10000.0
+        PQ.toNits(pq)
     }
 
     private final class BitReader {

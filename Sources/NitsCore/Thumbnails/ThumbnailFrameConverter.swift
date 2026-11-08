@@ -340,25 +340,9 @@ enum ThumbnailToneMapper {
         return UInt8(min(255, max(0, (encoded * 255).rounded())))
     }
 
-    static func nitsToPQ(_ nits: Float) -> Float {
-        let m1: Float = 2610 / 16384
-        let m2: Float = 2523 / 32
-        let c1: Float = 3424 / 4096
-        let c2: Float = 2413 / 128
-        let c3: Float = 2392 / 128
-        let y = pow(max(nits, 0) / 10000, m1)
-        return pow((c1 + c2 * y) / (1 + c3 * y), m2)
-    }
+    static func nitsToPQ(_ nits: Float) -> Float { PQ.fromNits(nits) }
 
-    static func pqToNits(_ value: Float) -> Float {
-        let m1: Float = 2610 / 16384
-        let m2: Float = 2523 / 32
-        let c1: Float = 3424 / 4096
-        let c2: Float = 2413 / 128
-        let c3: Float = 2392 / 128
-        let p = pow(max(value, 0), 1 / m2)
-        return 10000 * pow(max(p - c1, 0) / (c2 - c3 * p), 1 / m1)
-    }
+    static func pqToNits(_ value: Float) -> Float { PQ.toNits(value) }
 
     static func hlgToSceneLinear(_ value: Float) -> Float {
         let a: Float = 0.17883277
