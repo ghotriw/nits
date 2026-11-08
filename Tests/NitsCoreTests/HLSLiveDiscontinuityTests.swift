@@ -62,21 +62,23 @@ struct HLSLiveDiscontinuityTests {
     private static let pictures = 450
 
     /// The playlist lists `windowCount` segments from number `firstAtOpen` (a window that had slid when it was opened)
-    /// and slides by one every `secondsPerSegment`.
+    /// and slides by one every `secondsPerSegment`, from the first request for it. `slides` gets how far it had slid at
+    /// its last answer.
     private static func liveServer(
-        _ kind: Kind, windowCount: Int, secondsPerSegment: Double, firstAtOpen: Int
+        _ kind: Kind, windowCount: Int, secondsPerSegment: Double, firstAtOpen: Int,
+        slides: OSAllocatedUnfairLock<Int>? = nil
     ) throws -> TestHTTPServer? {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: kind.preset) else { return nil }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: path).deletingLastPathComponent())
-        // The window slides from the first request for the playlist, not from the server's start: a test that waits to
-        // open it (a full run's pool of threads) would find it slid already (a window starting at 16 s, once).
         let started = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
         server.setResponder(forPath: "live.m3u8") {
             let start = started.withLock { started in
                 if started == nil { started = .now }
                 return started!
             }
-            let first = firstAtOpen + Int((ContinuousClock.now - start) / .seconds(secondsPerSegment))
+            let slid = Int((ContinuousClock.now - start) / .seconds(secondsPerSegment))
+            slides?.withLock { $0 = slid }
+            let first = firstAtOpen + slid
             var lines = [
                 "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:4", "#EXT-X-MEDIA-SEQUENCE:\(first)",
                 "#EXT-X-DISCONTINUITY-SEQUENCE:\(first)",
@@ -124,9 +126,10 @@ struct HLSLiveDiscontinuityTests {
     func windowStartsAtZero(_ setup: Setup) throws {
         // Ten segments listed: reading begins near the edge (see `Setup`), so the segments before it lie earlier
         // than the timestamp it starts at. The engine counts on times from 0.
+        let slides = OSAllocatedUnfairLock(initialState: 0)
         guard
             let server = try Self.liveServer(
-                setup.kind, windowCount: 10, secondsPerSegment: 1, firstAtOpen: setup.firstAtOpen)
+                setup.kind, windowCount: 10, secondsPerSegment: 1, firstAtOpen: setup.firstAtOpen, slides: slides)
         else {
             return
         }
@@ -134,7 +137,10 @@ struct HLSLiveDiscontinuityTests {
         let demuxer = try #require(MediaDemuxer(url: server.url("live.m3u8")))
         let window = try #require(demuxer.liveWindow)
         #expect(demuxer.isLive)
-        #expect(abs(window.start) < 0.5, "opened with \(window)")
+        // At 0, unless the open took a segment's length (4 s, in a full run): FFmpeg loads the playlist again before the
+        // next segment then, and the window has slid by the server's slides of 4 s since (16 s, twice).
+        let slid = slides.withLock { $0 }
+        #expect(abs(window.start - Double(slid) * 4) < 0.5, "opened with \(window) after \(slid) slide(s)")
         #expect(window.length > 30, "\(window)")
         demuxer.startReadAhead()
 

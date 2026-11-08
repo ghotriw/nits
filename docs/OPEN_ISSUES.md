@@ -336,11 +336,6 @@ Accepted for now, noted for later.
   the dub's first audio fed at 1.04 s against `fed < 1`; it passes alone. The dub is joined to the picture's clock
   (`AudioJoin`), which cuts the audio to where the clock is plus the output latency, so under load the first buffer
   moves on with the clock. If it recurs, judge it against the clock at the selection, not a fixed second.
-- **`HLSLiveDiscontinuityTests` "A window that had slid when opened starts at 0…"** (timestamps restart, opened at 3)
-  failed once in a full local run (2026-11-08): `abs(window.start) < 0.5` with `LiveWindow(start: 16.0, end: 56.0)`, the
-  playlist slid 4 segments (one a second) before the window was read; it opens in ~0.08 s alone, 5 of 5. The playlist
-  slid from the server's start then; it slides from the first request for it now. If it recurs, the time went inside
-  the open (FFmpeg's reads under a full run's load), not before it: let the test measure the open, or tolerate a slide.
 - **`FormatDescriptionCacheTests`** failed twice on CI with VideoToolbox returning 1–3 frames of 30 (always 30
   locally). The failure message now reports fed samples, session creation status, decode error statuses and the
   last callback status.
