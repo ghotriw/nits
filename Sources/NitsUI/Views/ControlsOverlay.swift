@@ -144,6 +144,8 @@ public struct ControlsOverlay: View {
             ControlQuickSettingsToggleButton(uiState: uiState)
         case .pictureInPicture:
             ControlPictureInPictureButton(engine: engine, uiState: uiState)
+        case .fullscreen:
+            ControlFullscreenButton(uiState: uiState)
         }
     }
 

@@ -18,8 +18,8 @@ public final class ControlsConfiguration {
         .volume,
         .audioTrack,
         .subtitleTrack,
-        .chapters,
         .playlist,
+        .chapters,
         .quickSettings,
     ]
 

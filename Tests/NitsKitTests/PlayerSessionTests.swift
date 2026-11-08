@@ -111,3 +111,33 @@ struct PlayerSessionEndedTests {
         #expect(!(view is any NSTextInputClient))
     }
 }
+
+@Suite("Control bar: fullscreen item")
+@MainActor
+struct FullscreenControlItemTests {
+    @Test("The fullscreen button is not on the default control bar; the user can add it")
+    func testOffByDefault() {
+        let config = ControlsConfiguration(userDefaults: nil)
+        #expect(!config.isVisible(.fullscreen))
+        config.setEnabled(.fullscreen, isEnabled: true)
+        #expect(config.isVisible(.fullscreen))
+        // A layout saved before the item existed still loads.
+        #expect(ControlBarItem(rawValue: "fullscreen") == .fullscreen)
+    }
+
+    @Test("A session wires the button to its fullscreen, which the presentation provides")
+    func testSessionWiresToggle() {
+        final class Presentation: PlayerPresentation {
+            var toggles = 0
+            var supportsFullscreen: Bool { true }
+            func toggleFullscreen() { toggles += 1 }
+        }
+        let session = PlayerSession(engine: .makeForTesting())
+        defer { session.end() }
+        let presentation = Presentation()
+        session.presentation = presentation
+        #expect(session.uiState.supportsFullscreen)
+        session.uiState.toggleFullscreen?()
+        #expect(presentation.toggles == 1)
+    }
+}

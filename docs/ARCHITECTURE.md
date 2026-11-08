@@ -181,7 +181,7 @@ and belong to the session. A host subscribes through the session's own (`onTimeU
 `onPlaybackEnded`, `onClose`), never on `engine`: it would silently stop Now Playing and the saved progress.
 What the window owns in `NitsUI` is switched by `PlayerUIState`, off until a window turns it on: `titleBarDoubleClicked`
 (the window's meaning of a double click on the title strip; `nil` does nothing), `movesWindow` (a drag of the strip
-moves the window) and `supportsFullscreen` (set from the presentation; off, a double click on the picture is the
+moves the window) and `supportsFullscreen` (set from the presentation; off, the control bar's fullscreen item hides and a double click on the picture is the
 host's). NitsUI never zooms or moves the key window itself.
 
 ## Video pipeline

@@ -396,6 +396,35 @@ public struct ControlPictureInPictureButton: View {
     }
 }
 
+/// Fullscreen, off the control bar unless the user adds it (Settings ▸ Controls). Not offered where the host has no
+/// fullscreen to toggle.
+public struct ControlFullscreenButton: View {
+    let uiState: PlayerUIState?
+
+    public init(uiState: PlayerUIState?) {
+        self.uiState = uiState
+    }
+
+    public var body: some View {
+        if let uiState, uiState.supportsFullscreen, let toggle = uiState.toggleFullscreen {
+            Button {
+                toggle()
+            } label: {
+                Image(
+                    systemName: uiState.isFullscreen
+                        ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+                )
+                .font(.system(size: 16))
+                .foregroundStyle(Color.white.opacity(0.85))
+                .padding(.all, 7)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(uiState.isFullscreen ? "Exit Full Screen (⌃⌘F)" : "Enter Full Screen (⌃⌘F)")
+        }
+    }
+}
+
 // MARK: - Quick Settings Toggle Button
 public struct ControlQuickSettingsToggleButton: View {
     let uiState: PlayerUIState?

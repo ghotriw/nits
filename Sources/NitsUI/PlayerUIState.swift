@@ -22,6 +22,8 @@ public final class PlayerUIState {
     public var isPictureInPicturePossible: Bool = false
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
     @ObservationIgnored public var togglePictureInPicture: (() -> Void)?
+    /// Enters or leaves fullscreen; set by the host that has one, `nil` hides the control bar's button.
+    @ObservationIgnored public var toggleFullscreen: (() -> Void)?
     /// Does what a double click on a title bar does by the system setting; set by the host that owns the window, for
     /// the controls' top bar standing in for the title bar. `nil` does nothing: a double click never zooms a window the
     /// player does not own.

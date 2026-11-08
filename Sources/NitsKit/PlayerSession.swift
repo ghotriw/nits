@@ -133,6 +133,7 @@ public final class PlayerSession {
         self.pictureInPicture = PictureInPictureWindowCoordinator(engine: engine, uiState: uiState)
         nowPlayingController.actions = self
         uiState.supportsFullscreen = false  // until a presentation says it has one
+        uiState.toggleFullscreen = { [weak self] in self?.toggleFullscreen() }
         applySettings(settings)
 
         engine.onMediaLoaded = { [weak self] request, historyKey, title, duration in
