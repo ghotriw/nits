@@ -126,8 +126,7 @@ package struct SegmentedDASHManifest: Sendable {
             if let frameRate = stream.frameRate, frameRate > 0 { attributes.append(#"frameRate="\#(frameRate)""#) }
             if let sampleRate = stream.sampleRate { attributes.append(#"audioSamplingRate="\#(sampleRate)""#) }
             attributes.append(#"bandwidth="\#(stream.bandwidth ?? 0)""#)
-            let separator = stream.url.contains("?") ? "&" : "?"
-            let media = Self.escaped(stream.url + separator + "sq=$Number$")
+            let media = Self.escaped(LiveHistory.segmentAddress(stream.url, number: "$Number$"))
             // The timeline, not just a duration, ends the stream at its last segment: FFmpeg counts one segment more
             // from the duration alone, and asks the server for a segment that is not there.
             lines += [

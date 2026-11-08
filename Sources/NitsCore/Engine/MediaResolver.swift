@@ -76,6 +76,17 @@ public struct LiveHistory: Sendable, Equatable {
     /// known and whose length is not, and the length of those to come.
     public static let nominalSegmentDuration = 5.0
 
+    /// The address of segment `number` of the stream at `base` (YouTube's `sq=N`); `number` may be a manifest's
+    /// `$Number$`.
+    package static func segmentAddress(_ base: String, number: String) -> String {
+        base + (base.contains("?") ? "&" : "?") + "sq=" + number
+    }
+
+    /// `segmentAddress` as a URL; nil when `base` is not one.
+    package static func segmentURL(_ base: String, number: Int) -> URL? {
+        URL(string: segmentAddress(base, number: String(number)))
+    }
+
     /// What a manifest names the stream `key` by: the address its segments are asked for (with `sq=N`) through the
     /// source (`LiveSegmentSource.url(for:number:)`), not an address that exists.
     package static func streamAddress(_ key: String) -> String {

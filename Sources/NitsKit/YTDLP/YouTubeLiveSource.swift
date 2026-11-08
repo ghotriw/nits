@@ -82,7 +82,7 @@ final class YouTubeLiveSource: LiveSegmentSource {
 
     func url(for key: String, number: Int) -> URL? {
         guard let base = state.withLock({ $0.urls[key] }) else { return nil }
-        return URL(string: base + (base.contains("?") ? "&" : "?") + "sq=\(number)")
+        return LiveHistory.segmentURL(base, number: number)
     }
 
     func head(shouldAbort: () -> Bool) -> LiveHeadAnswer {

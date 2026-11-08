@@ -75,10 +75,12 @@ enum YouTubeLiveHistory {
     enum Failure: Error, Equatable, CustomStringConvertible {
         case noHead
         case unreadable(Int)
+        case invalidAddress
 
         var description: String {
             switch self {
             case .noHead: "the server didn't tell where the stream's head is"
+            case .invalidAddress: "the stream's address is not a URL"
             case .unreadable(let number): "segment \(number) has no readable start time"
             }
         }
@@ -133,9 +135,11 @@ enum YouTubeLiveHistory {
             lap = .now
         }
 
-        @Sendable func request(number: Int?, range: String) -> URLRequest {
-            let separator = reference.url.contains("?") ? "&" : "?"
-            var request = URLRequest(url: URL(string: reference.url + (number.map { "\(separator)sq=\($0)" } ?? ""))!)
+        // The address comes from yt-dlp: one that is not a URL fails the window, not the app.
+        @Sendable func request(number: Int?, range: String) throws -> URLRequest {
+            let url = number.map { LiveHistory.segmentURL(reference.url, number: $0) } ?? URL(string: reference.url)
+            guard let url else { throw Failure.invalidAddress }
+            var request = URLRequest(url: url)
             request.timeoutInterval = 20
             for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
             request.setValue("bytes=\(range)", forHTTPHeaderField: "Range")
