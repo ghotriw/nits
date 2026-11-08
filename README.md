@@ -52,7 +52,8 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
 **Embedding**
 - `NitsKit` / `NitsCore` for host apps: a player window, the player with its controls in a window of the
   host's (`PlayerSession`), or a bare video view with an engine API
-- Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
+- Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue, the
+  host's own buttons over the picture
 
 Planned: night mode (dynamic range compression), black-bar detection. Details and status:
 [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -191,6 +192,21 @@ ControlsConfiguration.shared.unavailableItems = [.playlist, .playlistRepeat, .pl
 ```
 
 They leave the control bar and the Controls settings. Without `.playlist` the side panel shows chapters only.
+
+The host's own buttons over the picture (a like, a close), in the two corners the player leaves free. Unlike action
+buttons they aren't the media's: they stay through loads until the host replaces them, e.g. with the next episode's
+like state. Each picks its corner and whether it hides with the controls; Nits reports which one was pressed:
+
+```swift
+controller.setOverlayButtons([
+    PlayerOverlayButton(id: "close", title: "Close", systemImage: "xmark",   // title: tooltip, accessibility label
+                        placement: .topTrailing, visibility: .always),       // shown while the controls are hidden too
+    PlayerOverlayButton(id: "like", title: "Like", systemImage: isLiked ? "heart.fill" : "heart",
+                        placement: .bottomLeading),                          // visibility: .withControls by default
+    PlayerOverlayButton(id: "library", title: "Back to Library"),            // no systemImage: a text button
+])
+controller.onOverlayButton = { id in /* ... then setOverlayButtons(...) again for a changed state */ }
+```
 
 ### Player in your own window (`PlayerSession`)
 

@@ -31,6 +31,10 @@ public final class PlayerUIState {
     /// A drag of the controls' top bar or of the picture moves the window; set by the host whose window it is. Off, a drag
     /// there is the host's.
     public var movesWindow: Bool = false
+    /// The host's buttons over the picture (a like, a close), in the order given within each corner.
+    public var overlayButtons: [PlayerOverlayButton] = []
+    /// Called with the button's `id` when one of `overlayButtons` is pressed; set by the host that gave them.
+    @ObservationIgnored public var onOverlayButton: ((_ id: String) -> Void)?
     /// The host has a fullscreen to toggle; off, a double click on the picture is left to the host.
     public var supportsFullscreen: Bool = true
     public var selectedQuickSettingsTab: QuickSettingsTab = .video

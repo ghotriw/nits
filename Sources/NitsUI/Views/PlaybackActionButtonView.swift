@@ -165,12 +165,9 @@ public struct PlaybackActionButtonView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.85))
                 .frame(width: 32, height: 32)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.5))
-                .contentShape(Circle())
+                .overlayButtonChrome(Circle())
         }
         .buttonStyle(.plain)
-        .shadow(color: .black.opacity(0.25), radius: 14, x: 0, y: 0)
         .help("Dismiss (Esc)")
         .accessibilityLabel("Dismiss")
     }

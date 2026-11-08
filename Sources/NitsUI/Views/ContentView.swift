@@ -14,6 +14,8 @@ public struct ContentView: View {
     @State private var isUserInteracting: Bool = false
     /// The pointer is over the action button; holds the controls like hovering the control bar does.
     @State private var isActionButtonHovered: Bool = false
+    /// The pointer is over one of the host's overlay buttons; holds the controls as the action button does.
+    @State private var isOverlayButtonHovered: Bool = false
     @State private var hideTimer: Task<Void, Never>?
     /// Size of the video area, to turn drags into pan.
     @State private var videoAreaSize: CGSize = .zero
@@ -213,6 +215,18 @@ public struct ContentView: View {
                     }
                     // It covers the picture: a drag of it moves the window as one of the picture does.
                     .gesture(WindowDragGesture(), isEnabled: uiState.movesWindow && !uiState.isFullscreen)
+            }
+
+            // Host overlay buttons (a like, a close) - Top Trailing and Bottom Leading. Below the controls, so what rises
+            // from the control bar (the timeline's preview) stays over them.
+            if !uiState.overlayButtons.isEmpty && !uiState.isCapturingScreen {
+                PlayerOverlayButtonsView(
+                    uiState: uiState,
+                    areControlsVisible: showsControls,
+                    trailingInset: uiState.sidePanel?.width ?? 0,
+                    isHovered: $isOverlayButtonHovered
+                )
+                .ignoresSafeArea()
             }
 
             // Controls Overlay
@@ -417,7 +431,7 @@ public struct ContentView: View {
     }
 
     private var isInteracting: Bool {
-        isUserInteracting || isActionButtonHovered
+        isUserInteracting || isActionButtonHovered || isOverlayButtonHovered
     }
 
     private var showsControls: Bool {

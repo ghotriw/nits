@@ -57,6 +57,18 @@ public final class PlayerSession {
         set { engine.actionButtons.onPress = newValue }
     }
 
+    /// Called with the button's `id` when one of the host's overlay buttons (`setOverlayButtons(_:)`) is pressed.
+    public var onOverlayButton: ((_ id: String) -> Void)? {
+        get { uiState.onOverlayButton }
+        set { uiState.onOverlayButton = newValue }
+    }
+
+    /// Replaces the host's buttons over the picture (`PlayerOverlayButton`). Unlike action buttons they are not the
+    /// media's: they stay through loads until the host replaces them, e.g. with the next item's like state.
+    public func setOverlayButtons(_ buttons: [PlayerOverlayButton]) {
+        uiState.overlayButtons = buttons
+    }
+
     /// Set by a host that keeps its own queue (a media server client's series): Next and Previous from the control
     /// bar, menu, keyboard and media keys call it instead of moving through the playlist, and the end of the media no
     /// longer plays the playlist's next item. The host answers by opening the item it moves to.

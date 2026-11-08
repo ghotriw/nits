@@ -189,6 +189,11 @@ and belong to the session. A host subscribes through the session's own (`onTimeU
 that keeps progress of its own reads it from `engine.playbackProgress` (`PlaybackProgress`), which is what the history
 saves (a live stream's history in the stream's own time, against the end of its window), rather than working it out
 from `MediaInfo` and `engine.live`.
+A host's buttons over the picture (a like, a close) are `PlayerOverlayButton`s it gives the session
+(`setOverlayButtons(_:)`, pressed ones reported to `onOverlayButton`): data, not views, so they look like the player's
+own and show in fullscreen too. Each goes in one of the two corners the player leaves free (top trailing, bottom
+leading) and shows with the controls or always. They are not the media's, as action buttons are (a span of the
+timeline, one at a time, auto-press): they stay through loads until the host replaces them.
 What the window owns in `NitsUI` is switched by `PlayerUIState`, off until a window turns it on: `titleBarDoubleClicked`
 (the window's meaning of a double click on the title strip; `nil` does nothing), `movesWindow` (a drag of the strip,
 or of the picture unless it pans it, moves the window: the view does it with `WindowDragGesture`, not the window's

@@ -39,8 +39,13 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         get { session.onTrackNavigation }
         set { session.onTrackNavigation = newValue }
     }
+    public var onOverlayButton: ((_ id: String) -> Void)? {
+        get { session.onOverlayButton }
+        set { session.onOverlayButton = newValue }
+    }
 
     public func setActionButtons(_ buttons: [PlaybackActionButton]) { session.setActionButtons(buttons) }
+    public func setOverlayButtons(_ buttons: [PlayerOverlayButton]) { session.setOverlayButtons(buttons) }
     public func setTrackNavigation(_ navigation: TrackNavigation) { session.setTrackNavigation(navigation) }
     public func applyConfiguration(_ config: PlayerConfiguration) { session.applyConfiguration(config) }
     public func applySettings(_ settings: AppSettings) { session.applySettings(settings) }
