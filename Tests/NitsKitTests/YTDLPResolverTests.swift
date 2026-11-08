@@ -498,7 +498,8 @@ struct YTDLPResolverTests {
         let resolver = YTDLPResolver(locator: YTDLPLocator(customPath: script.path))
         let resolving = Task { try await resolver.resolve(Self.page, headers: [:]) }
         var child: pid_t?
-        for _ in 0..<50 where child == nil {
+        // Up to 5 s: two shells and a sleep to start took over a second in a full run.
+        for _ in 0..<250 where child == nil {
             try await Task.sleep(for: .milliseconds(20))
             child = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap {
                 pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines))
