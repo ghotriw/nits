@@ -16,7 +16,7 @@
 # notes of everything since the last release.
 # The release notes (the tag's message, which release.yml publishes) list breaking changes (the BREAKING CHANGE
 # paragraph, else the subject: what a host has to change), features and fixes; a breaking feature or fix is in both.
-# refactor, build and revert go under "Other"; test, docs, ci, style and chore are left out.
+# refactor, build and revert go under "Other"; test, docs, ci, style and chore are left out, and alone make no release.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -147,14 +147,17 @@ while IFS=$'\x1f' read -r -d $'\x1e' hash subject body; do
             level=$((level < 1 ? 1 : level))
             ;;
         *)
-            # test, docs, ci, style, chore: in the release, not in its notes.
-            level=$((level < 1 ? 1 : level))
+            # test, docs, ci, style, chore: in a release with others, not in its notes, and no release of their own.
             ;;
     esac
 done < <(git log --reverse --no-merges --format='%H%x1f%s%x1f%b%x1e' "$range")
 
-if ((commits == 0)) && [[ -z "$override" ]]; then
-    echo "Nothing since $last_tag."
+if ((level == 0)) && [[ -z "$override" ]]; then
+    if ((commits == 0)); then
+        echo "Nothing since $last_tag."
+    else
+        echo "Nothing to release since $last_tag: $commits commit(s) of test, docs, ci, style or chore only."
+    fi
     exit 0
 fi
 
