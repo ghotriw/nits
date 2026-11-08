@@ -13,19 +13,34 @@ stream, so audio and video of a segment stay together. It is taken
  - at the first packet of a playlist taken up (a variant switch, a rendition), which has the offset of the playlists read
    before it when it has none: the variants of a stream share the baseline of their timestamps;
  - when reading on, at the first packet after a segment that follows a discontinuity whose timestamp jumps by more than 2
-   seconds against the last packet of its own stream (the packets of the segment before may still come out of the
+   seconds (half a target duration where that is less, a second at least: a restart jumps by about a segment's length)
+   against the last packet of its own stream (the packets of the segment before may still come out of the
    subdemuxer after the segment changed, the h264 parser holding the last pictures, so the jump tells which packet is
    the first). Left untaken once reading has gone past the next segment with no jump (a server that keeps its timestamps).
+ - in the same way, after FFmpeg skipped segments that expired from a live playlist while the read was behind it: the
+   playlist's first segment it goes on with lists no EXT-X-DISCONTINUITY before it, whose tag went with the segments
+   (none is listed before a first segment), and kept the offset of the segment read before (20 s on instead of 8, or
+   1011 s back from an advertisement). The skip makes a jump of its own, also for a server that keeps its timestamps;
+   where the playlist puts the segment is estimated across the expired ones (first_timestamp counts those it never
+   listed as a target duration, or follows the time), so the difference is taken from half a target duration, as after
+   a seek. A seek or a variant switch whose segment expired before it was read (the playlist loaded again as it is
+   read: one far enough from the window's start not to load it for the seek, or a variant's not played meanwhile) is
+   placed at the first packet still, in the segment read instead.
 A difference of less than half a target duration is not taken at the first packet after a seek (a server that keeps its timestamps across the discontinuity); for a jump found while reading, which shows a restart by itself, one under a second is not. A packet that the offset would put outside the playlist's timeline keeps its own timestamps (a late packet
-of the segment before), and where the playlist puts the segment is not known the offset stays as it is. A break that
-restarts the timestamps by less than 2 seconds is not seen: it is not worth seeing, the error is that small. A playlist
-without the tag is unchanged: the code does nothing until a segment follows one.
+of the segment before), unless it comes out after a skip, before the offset of the segment read next is taken, and lies
+before the window: it has its own segment's offset then, right for it there, as the window slid past that segment.
+Where the playlist puts the segment is not known the offset stays as it is. A break that restarts the timestamps by less than that jump is not seen: it is
+not worth seeing, the error is that small, except after a skip, where the segment keeps the offset of the one read
+before and is the skipped segments' length off; there a restart jumps by about a segment's length, which is seen for
+segments of a second or more. A playlist without the tag is unchanged: the code does nothing until a
+segment follows one.
 
 Restricted to libavformat/hls.c. Applied by scripts/build_dependencies.sh to FFmpeg 9.0.2, after ffmpeg-hls-live-seek.patch.
-build_dependencies.sh also sets --extra-version=nits-hls-timeline, which the tests read to tell this build from another.
+build_dependencies.sh also sets --extra-version=nits-hls-timeline, which the tests read to tell this build from another,
+and nits-hls-skip for the placing after a skip of expired segments, which a build of an earlier version of it lacks.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 2ac9032..6ea6c3d 100644
+index 2ac9032..c0423e2 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -68,6 +68,8 @@
@@ -64,7 +79,7 @@ index 2ac9032..6ea6c3d 100644
 +    /* Timestamps of the segments after a discontinuity restart (or jump): their packets are moved onto the playlist's
 +     * timeline by dts_offset (AV_TIME_BASE units). dts_anchor says when the offset is taken: 1 at the first packet whose
 +     * timestamp jumps after a segment that follows a discontinuity (dts_anchor_seq), 2 at the first packet after a seek
-+     * (the segment it landed in). */
++     * (the segment it landed in), 3 as 1 after a skip of segments that expired unread (see read_data). */
 +    int dts_anchor;
 +    int64_t dts_anchor_seq;
 +    int64_t dts_offset;
@@ -142,27 +157,49 @@ index 2ac9032..6ea6c3d 100644
                  is_segment = 0;
  
                  seg->size = seg_size;
-@@ -1857,8 +1890,19 @@ restart:
+@@ -1772,6 +1805,19 @@ reload:
+                    "skipping %"PRId64" segments ahead, expired from playlists\n",
+                    v->start_seq_no - v->cur_seq_no);
+             v->cur_seq_no = v->start_seq_no;
++            /* The playlist's first segment comes after segments that expired unread, and may come after a break whose
++             * tag went with them (a playlist lists none before its first segment): its packets are placed as those of a
++             * segment after a discontinuity are, at the first whose timestamp jumps, which the skip makes one even for a
++             * server that keeps its timestamps. Where the playlist puts it is estimated across the expired segments
++             * (first_timestamp counts those it never listed as a target duration, or follows the time), so a difference
++             * under half a target duration is not taken, as after a seek: that server's segment stays where it is. A
++             * seek or a variant switch whose segment expired before it was read is placed at the first packet still, in
++             * the segment read instead. */
++            if (v->has_discont && !v->is_subtitle) {
++                if (v->dts_anchor != 2)
++                    v->dts_anchor = 3;
++                v->dts_anchor_seq = v->cur_seq_no;
++            }
+         }
+         if (v->cur_seq_no > v->last_seq_no) {
+             v->last_seq_no = v->cur_seq_no;
+@@ -1857,8 +1903,21 @@ restart:
          }
          segment_retries = 0;
          just_opened = 1;
-+        if (v->dts_anchor == 1 && v->cur_seq_no > v->dts_anchor_seq + 1) {
-+            /* Reading has gone past the segment after the discontinuity with no jump in its timestamps (a server that
-+             * keeps them): a later jump is not that discontinuity's. */
++        if ((v->dts_anchor == 1 || v->dts_anchor == 3) && v->cur_seq_no > v->dts_anchor_seq + 1) {
++            /* Reading has gone past the segment after the discontinuity (or the skip) with no jump in its timestamps (a
++             * server that keeps them): a later jump is not that discontinuity's. */
 +            v->dts_anchor = 0;
 +        }
          if (v->first_read_seq_no < 0)
              v->first_read_seq_no = v->cur_seq_no;
-+        else if (seg->discont && v->dts_anchor != 2) {
++        else if (seg->discont && v->dts_anchor != 2 &&
++                 !(v->dts_anchor == 3 && v->dts_anchor_seq == v->cur_seq_no)) {
 +            /* The packets of this segment come after a discontinuity, with timestamps of their own: the first whose
-+             * timestamp jumps is moved onto the playlist's timeline (see hls_move_to_timeline). */
++             * timestamp jumps is moved onto the playlist's timeline (see hls_move_to_timeline). A segment a skip went
++             * on with keeps the skip's anchor, whose tag a server may still list before it. */
 +            v->dts_anchor = 1;
 +            v->dts_anchor_seq = v->cur_seq_no;
 +        }
      }
  
      if (c->http_multiple == -1) {
-@@ -2675,6 +2719,24 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -2675,6 +2734,24 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
              pls->pb.pub.eof_reached = 0;
@@ -187,7 +224,7 @@ index 2ac9032..6ea6c3d 100644
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
                  /* catch up */
                  pls->seek_timestamp = c->cur_timestamp +
-@@ -2764,6 +2826,86 @@ static int metadata_has_changed(const AVDictionary *current,
+@@ -2764,6 +2841,90 @@ static int metadata_has_changed(const AVDictionary *current,
      return 0;
  }
  
@@ -210,8 +247,9 @@ index 2ac9032..6ea6c3d 100644
 + * of this demuxer finds the segment by the playlist's durations and then drops packets until their timestamps reach
 + * its start there, which the restarted ones never do, so the packets of such a segment are moved onto the playlist's
 + * timeline: by the difference of where the playlist puts the segment and the timestamp of its first packet, taken
-+ * (see dts_anchor) at the first packet after a seek or the first that jumps after the segment. After a seek a difference
-+ * under half a target duration (a server that keeps its timestamps) is not taken; while reading, one under a second. */
++ * (see dts_anchor) at the first packet after a seek or the first that jumps after the segment. After a seek, or a skip of
++ * expired segments, a difference under half a target duration (a server that keeps its timestamps) is not taken; while
++ * reading, one under a second. */
 +static void hls_move_to_timeline(HLSContext *c, struct playlist *pls, AVPacket *pkt)
 +{
 +    AVRational tb;
@@ -235,7 +273,7 @@ index 2ac9032..6ea6c3d 100644
 +
 +    if (pls->dts_anchor &&
 +        (pls->dts_anchor == 2 ||
-+         (last && *last != AV_NOPTS_VALUE && FFABS(ts - *last) > 2 * AV_TIME_BASE))) {
++         (last && *last != AV_NOPTS_VALUE && FFABS(ts - *last) > FFMIN(2 * AV_TIME_BASE, threshold)))) {
 +        int64_t expected = expected_segment_start(c, pls, pls->dts_anchor_seq);
 +
 +        /* Where the playlist puts the segment is not known (a live window that moved on, a playlist that has not set
@@ -243,7 +281,7 @@ index 2ac9032..6ea6c3d 100644
 +        if (expected != AV_NOPTS_VALUE) {
 +            int64_t diff = expected - ts;
 +
-+            pls->dts_offset = FFABS(diff) >= (pls->dts_anchor == 2 ? threshold : AV_TIME_BASE) ? diff : 0;
++            pls->dts_offset = FFABS(diff) >= (pls->dts_anchor == 1 ? AV_TIME_BASE : threshold) ? diff : 0;
 +            av_log(c->ctx, AV_LOG_DEBUG, "Playlist %d: segment %"PRId64" expected at %"PRId64", packet at %"PRId64
 +                   ": offset %"PRId64"\n", pls->index, pls->dts_anchor_seq, expected, ts, pls->dts_offset);
 +        }
@@ -257,11 +295,14 @@ index 2ac9032..6ea6c3d 100644
 +
 +        /* A packet of the segment before that comes out of the subdemuxer after the offset was taken (the h264 parser
 +         * holds the last pictures until more data arrives) is on timestamps of its own, not of the new segment: it
-+         * would land far off the playlist's timeline, and stays where it was. */
++         * would land far off the playlist's timeline, and stays where it was. One that comes out after a skip, while
++         * the offset of the segment read next is still to be taken, has the offset of its own segment, which is right
++         * for it even before the window (that segment expired, and the window slid past it). */
 +        if (c->first_timestamp != AV_NOPTS_VALUE) {
 +            int64_t end = c->first_timestamp + pls->segments_duration, margin = 2 * threshold;
 +
-+            if (ts + pls->dts_offset < c->first_timestamp - margin || ts + pls->dts_offset > end + margin)
++            if ((ts + pls->dts_offset < c->first_timestamp - margin && pls->dts_anchor != 3) ||
++                ts + pls->dts_offset > end + margin)
 +                return;
 +        }
 +        if (pkt->dts != AV_NOPTS_VALUE)
@@ -274,7 +315,7 @@ index 2ac9032..6ea6c3d 100644
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
-@@ -2797,6 +2939,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2797,6 +2958,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                      fill_timing_for_id3_timestamped_stream(pls);
                  }
  
@@ -284,7 +325,7 @@ index 2ac9032..6ea6c3d 100644
                  if (pls->pkt->dts != AV_NOPTS_VALUE &&
                      (pls->ts_offset == AV_NOPTS_VALUE ||
                       (!c->first_timestamp_locked &&
-@@ -3127,6 +3272,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3127,6 +3291,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          }
  
          pls->last_seq_no = pls->cur_seq_no;

@@ -24,6 +24,15 @@ struct HLSLiveDiscontinuityTests {
 
         var testDescription: String { self == .restart ? "timestamps restart" : "content on a running timeline" }
 
+        /// Whether a break comes before the segment of number `sequence`: before and after a segment that restarts its
+        /// timestamps (the second advertisement segment restarts too), none between two of content.
+        func isBreak(before sequence: Int) -> Bool {
+            segment(sequence).isRestart || segment(sequence - 1).isRestart
+        }
+
+        /// The last number the preset has a segment for (content is made up to number 29), or `nil` for any.
+        var lastSegment: Int? { self == .ssai ? 29 : nil }
+
         var preset: SyntheticTestMediaFactory.Preset { self == .restart ? .hlsDiscontinuityTiming : .hlsLiveAds }
 
         /// The segment of number `sequence`, and whether its timestamps restart (an advertisement does).
@@ -63,10 +72,15 @@ struct HLSLiveDiscontinuityTests {
 
     /// The playlist lists `windowCount` segments from number `firstAtOpen` (a window that had slid when it was opened)
     /// and slides by one every `secondsPerSegment`, from the first request for it. `slides` gets how far it had slid at
-    /// its last answer.
+    /// its last answer, `firsts` the number of the first segment of every answer.
+    ///
+    /// A segment lasts 4 s: a window that slides faster than that moves on faster than the time goes, and a read that
+    /// falls behind it (a full run's load) finds segments expired, which FFmpeg skips. Only a test of that skip slides it
+    /// faster. With `pinnedFirst` the window does not slide with the time: it starts at the number the test sets there.
     private static func liveServer(
         _ kind: Kind, windowCount: Int, secondsPerSegment: Double, firstAtOpen: Int,
-        slides: OSAllocatedUnfairLock<Int>? = nil
+        slides: OSAllocatedUnfairLock<Int>? = nil, firsts: OSAllocatedUnfairLock<[Int]>? = nil,
+        pinnedFirst: OSAllocatedUnfairLock<Int>? = nil
     ) throws -> TestHTTPServer? {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: kind.preset) else { return nil }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: path).deletingLastPathComponent())
@@ -78,16 +92,20 @@ struct HLSLiveDiscontinuityTests {
             }
             let slid = Int((ContinuousClock.now - start) / .seconds(secondsPerSegment))
             slides?.withLock { $0 = slid }
-            let first = firstAtOpen + slid
+            // The window stops at the preset's last segment: a read slow enough to get there then finds the window still,
+            // not segments the server does not have (FFmpeg would skip them).
+            let unbounded = pinnedFirst?.withLock { $0 } ?? firstAtOpen + slid
+            let first = kind.lastSegment.map { min(unbounded, $0 - windowCount + 1) } ?? unbounded
+            firsts?.withLock { $0.append(first) }
+            // The number of breaks before the first segment listed, as a playlist that slid tells it.
+            let breaks = first > 0 ? (1...first).count { kind.isBreak(before: $0) } : 0
             var lines = [
                 "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:4", "#EXT-X-MEDIA-SEQUENCE:\(first)",
-                "#EXT-X-DISCONTINUITY-SEQUENCE:\(first)",
+                "#EXT-X-DISCONTINUITY-SEQUENCE:\(breaks)",
             ]
             for index in first..<(first + windowCount) {
                 let segment = kind.segment(index)
-                // A break before and after a segment that restarts its timestamps (the second advertisement segment
-                // restarts too), none between two of content.
-                if index > first, segment.isRestart || kind.segment(index - 1).isRestart {
+                if index > first, kind.isBreak(before: index) {
                     lines.append("#EXT-X-DISCONTINUITY")
                 }
                 lines += ["#EXTINF:4.000000,", segment.name + ".ts"]
@@ -126,10 +144,12 @@ struct HLSLiveDiscontinuityTests {
     func windowStartsAtZero(_ setup: Setup) throws {
         // Ten segments listed: reading begins near the edge (see `Setup`), so the segments before it lie earlier
         // than the timestamp it starts at. The engine counts on times from 0.
+        // The playlist slides at the pace of the clock: a slide a second made a read slowed down by a full run fall
+        // behind the window, and FFmpeg skipped the segments that had expired (a step of 24 s between pictures, once).
         let slides = OSAllocatedUnfairLock(initialState: 0)
         guard
             let server = try Self.liveServer(
-                setup.kind, windowCount: 10, secondsPerSegment: 1, firstAtOpen: setup.firstAtOpen, slides: slides)
+                setup.kind, windowCount: 10, secondsPerSegment: 4, firstAtOpen: setup.firstAtOpen, slides: slides)
         else {
             return
         }
@@ -138,7 +158,7 @@ struct HLSLiveDiscontinuityTests {
         let window = try #require(demuxer.liveWindow)
         #expect(demuxer.isLive)
         // At 0, unless the open took a segment's length (4 s, in a full run): FFmpeg loads the playlist again before the
-        // next segment then, and the window has slid by the server's slides of 4 s since (16 s, twice).
+        // next segment then, and the window has slid by the server's slides of 4 s since.
         let slid = slides.withLock { $0 }
         #expect(abs(window.start - Double(slid) * 4) < 0.5, "opened with \(window) after \(slid) slide(s)")
         #expect(window.length > 30, "\(window)")
@@ -167,18 +187,120 @@ struct HLSLiveDiscontinuityTests {
         #expect(worstGap < 0.15, "A gap or overlap of \(worstGap) s in the sound")
     }
 
-    @Test("Read from content near the edge through an advertisement and back to content, the timeline goes on")
-    func edgeThroughAnAdvertisement() throws {
-        // Where the engine reads a live stream from: content (number 10, on 1012 s), then the advertisement (13, 14, from
-        // 0 s), then content again (15 on) whose timestamps are already 8 s on, on the time of the stream: the offset the
-        // advertisement took is dropped there (a difference of 0 against the playlist). The playlist slides while this is
-        // read, a segment a second: the content is made up to number 29, and the playlist of a test must not reach past it.
-        guard let server = try Self.liveServer(.ssai, windowCount: 10, secondsPerSegment: 1, firstAtOpen: 3) else {
+    @Test(
+        "Segments that expired while the read was behind are skipped, and what follows is where the playlist puts it",
+        .enabled(if: hasHLSSkipPatch, "needs the timeline patch's skip of expired segments"), arguments: Setup.all)
+    func expiredSegmentsKeepTheTimeline(_ setup: Setup) throws {
+        // Each segment takes 1.2 s to come while the playlist slides a segment a second: at its next load (a segment's
+        // length after the last) the read is behind the window, and FFmpeg skips to the window's first segment. That one
+        // has no EXT-X-DISCONTINUITY before it (a playlist lists none before its first segment), and its timestamps used
+        // to keep the offset of the segment read before: 20 s on instead of 8, or 1011 s back for an advertisement's.
+        let firsts = OSAllocatedUnfairLock<[Int]>(initialState: [])
+        guard
+            let server = try Self.liveServer(
+                setup.kind, windowCount: 10, secondsPerSegment: 1, firstAtOpen: setup.firstAtOpen, firsts: firsts)
+        else {
+            return
+        }
+        defer { server.stop() }
+        server.setBehavior(.init(delay: .milliseconds(1200)), forPaths: { $0.hasSuffix(".ts") })
+        let demuxer = try #require(MediaDemuxer(url: server.url("live.m3u8")))
+        demuxer.startReadAhead()
+
+        var times: [Double] = []
+        var audio: [(start: Double, end: Double)] = []
+        let audioTimebase = demuxer.audioTimebase
+        // Until 2 s past the first skip, or 30 s of pictures.
+        var skippedAt: Int?
+        while times.count < 900, let sample = demuxer.nextVideoSample() {
+            times.append(Self.seconds(sample))
+            if skippedAt == nil, times.count > 1, abs(times[times.count - 1] - times[times.count - 2]) > 0.2 {
+                skippedAt = times.count - 1
+            }
+            while let packet = demuxer.nextAudioPacket() {
+                let start = Double(packet.pts) * Double(audioTimebase.num) / Double(audioTimebase.den)
+                let length = Double(packet.duration) * Double(audioTimebase.num) / Double(audioTimebase.den)
+                audio.append((start, start + length))
+                if start > (times.last ?? 0) + 0.5 { break }
+            }
+            if let skippedAt, times.count > skippedAt + 60 { break }
+        }
+        let skip = try #require(skippedAt, "No segment was skipped in \(times.count) pictures")
+
+        // The timeline's 0 is the start of number `firstAtOpen`, and a segment lasts 4 s. FFmpeg skips at the first load
+        // of the playlist whose window starts after the segment it is to read next, the one after the picture before the
+        // skip (whose end is the next whole segment), and goes on with that window's first segment: no earlier window
+        // started after it (FFmpeg would have skipped then), so it is the earliest such start the server answered.
+        let starts = Set(firsts.withLock { $0 }).map { Double($0 - setup.firstAtOpen) * 4 }.sorted()
+        let before = times[skip - 1]
+        let after = times[skip]
+        // A segment's pictures lie within its 4 s (from 0.02 s on to 3.99 s): the one of the picture before is whole
+        // segments of it, its last picture included (rounding up from it would pass to the segment after).
+        let next = ((before / 4).rounded(.down) + 1) * 4
+        let expected = try #require(starts.first { $0 > next + 0.1 }, "No window started after \(next) s: \(starts)")
+        #expect(
+            abs(after - expected) < 0.25, "From \(before) s to \(after) s, not to \(expected) s; windows at \(starts)")
+        let rest = zip(times[skip...], times[skip...].dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        #expect(rest < 0.2, "A step of \(rest) s between pictures after the skip to \(after) s")
+
+        // The sound skips with the picture, to the same place: its gap is the one that goes on past the picture before the
+        // skip (an earlier one, at a splice, would be another event, and fails the other tests).
+        let gap = try #require(
+            zip(audio, audio.dropFirst()).first { abs($1.start - $0.end) > 0.15 && $1.start > before + 0.5 },
+            "The sound had no gap past \(before) s")
+        #expect(
+            abs(gap.1.start - after) < 0.25,
+            "The sound went from \(gap.0.end) s to \(gap.1.start) s, the picture to \(after) s")
+    }
+
+    @Test(
+        "A seek whose segment expired before it was read lands where the playlist puts the segment read instead",
+        .enabled(if: hasHLSSkipPatch, "needs the timeline patch's skip of expired segments"),
+        arguments: [Kind.restart, .ssai])
+    func expiredSeekTarget(_ kind: Kind) throws {
+        // The window is moved by the test, not the time: it starts at 9 (an advertisement's, or a restart's, timestamps
+        // from 0) once the playlist was loaded, and a target duration later a seek to number 7 (16 s on the window FFmpeg
+        // has; far enough from its start not to load the playlist for it) has FFmpeg load the playlist before it reads 7,
+        // find it expired and go on with 9. The seek's offset used to be looked for at number 7, which the playlist no
+        // longer has: number 9 kept its own timestamps. A variant switch goes the same way, with the playlist of a
+        // variant not played, which is not loaded meanwhile.
+        let pinned = OSAllocatedUnfairLock(initialState: 3)
+        guard
+            let server = try Self.liveServer(
+                kind, windowCount: 10, secondsPerSegment: 4, firstAtOpen: 3, pinnedFirst: pinned)
+        else {
             return
         }
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("live.m3u8")))
         let window = try #require(demuxer.liveWindow)
+        pinned.withLock { $0 = 9 }
+        Thread.sleep(forTimeInterval: 4.2)
+        _ = demuxer.seek(to: window.start + 17, exact: false)
+        let sample = try #require(demuxer.nextVideoSample(), "No picture after the seek")
+        let landed = Self.seconds(sample)
+        #expect(abs(landed - 24) < 0.25, "Number 9 starts at 24 s; the picture after the seek is at \(landed) s")
+    }
+
+    @Test("Read from content near the edge through an advertisement and back to content, the timeline goes on")
+    func edgeThroughAnAdvertisement() throws {
+        // Where the engine reads a live stream from: content (number 10, on 1012 s), then the advertisement (13, 14, from
+        // 0 s), then content again (15 on) whose timestamps are already 8 s on, on the time of the stream: the offset the
+        // advertisement took is dropped there (a difference of 0 against the playlist). The test moves the window, not the
+        // time: once opened, it lists number 7 to 16, so the segments past the window's end at the open (13 on) are there
+        // at FFmpeg's next load of the playlist, and nothing the read needs expires however slow it is (a slide a second
+        // left a read slowed down by a full run little time; the pace of the clock made the test wait 16 s).
+        let pinned = OSAllocatedUnfairLock(initialState: 3)
+        guard
+            let server = try Self.liveServer(
+                .ssai, windowCount: 10, secondsPerSegment: 4, firstAtOpen: 3, pinnedFirst: pinned)
+        else {
+            return
+        }
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("live.m3u8")))
+        let window = try #require(demuxer.liveWindow)
+        pinned.withLock { $0 = 7 }
         demuxer.startReadAhead()
         let edge = window.start + 28
         _ = demuxer.seek(to: edge, exact: false)
@@ -197,8 +319,7 @@ struct HLSLiveDiscontinuityTests {
             }
         }
         // That the read went through the advertisement and on to content again (the picture times alone cannot tell):
-        // the segments asked for. The playlist slides a segment a second, so a read that took longer than about 13 s from
-        // the open would find number 16 gone from it.
+        // the segments asked for.
         let asked = Set(server.requests.map(\.path))
         #expect(asked.isSuperset(of: ["c15.ts", "c16.ts"]), "Segments asked for: \(asked.sorted())")
         #expect(times.count == 840, "\(times.count) pictures")
@@ -217,7 +338,7 @@ struct HLSLiveDiscontinuityTests {
     func seekInTheWindow(_ setup: Setup) throws {
         guard
             let server = try Self.liveServer(
-                setup.kind, windowCount: 10, secondsPerSegment: 1, firstAtOpen: setup.firstAtOpen)
+                setup.kind, windowCount: 10, secondsPerSegment: 4, firstAtOpen: setup.firstAtOpen)
         else {
             return
         }

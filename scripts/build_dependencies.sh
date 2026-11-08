@@ -119,7 +119,7 @@ EOF
 
 FFMPEG_CONFIGURE_FLAGS=(
     --prefix="$PREFIX"
-    --extra-version=nits-hls-timeline+nits-dash-interrupt
+    --extra-version=nits-hls-timeline+nits-hls-skip+nits-dash-interrupt
     --arch="$DEPS_ARCH"
     --target-os=darwin
     --cc=clang

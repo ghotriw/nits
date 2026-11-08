@@ -235,7 +235,8 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
 - **Timestamps that restart or jump at an HLS `EXT-X-DISCONTINUITY`** (ads, splices) are moved onto the playlist's
   timeline inside the bundled FFmpeg (`scripts/patches/ffmpeg-hls-timeline.patch`): the demuxer sees one timeline, so
   don't add offsets of your own in Nits for HLS. Tests that need the patch check the build's version string
-  (`--extra-version=nits-hls-timeline`) and are skipped on a Homebrew FFmpeg. Background: "Discontinuities in HLS" in
+  (`--extra-version=nits-hls-timeline`, and `nits-hls-skip` for a skip of expired live segments) and are skipped on a
+  Homebrew FFmpeg. Background: "Discontinuities in HLS" in
   `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add

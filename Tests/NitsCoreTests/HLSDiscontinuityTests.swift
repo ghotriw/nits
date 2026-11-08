@@ -12,6 +12,10 @@ import os
 /// discontinuity stay as they are.
 let hasHLSTimelinePatch = String(cString: av_version_info()).contains("nits-hls-timeline")
 
+/// Whether the timeline patch also places what follows a skip of expired live segments (`nits-hls-skip`): a build of the
+/// patch from before it has the same `nits-hls-timeline`.
+let hasHLSSkipPatch = String(cString: av_version_info()).contains("nits-hls-skip")
+
 @Suite(
     "HLS discontinuities (bundled FFmpeg's timeline patch)",
     .serialized, .hostDependent, .networkServer, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))

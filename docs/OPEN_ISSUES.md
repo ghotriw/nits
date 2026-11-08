@@ -251,6 +251,33 @@ Accepted for now, noted for later.
   - A segment whose timestamps restart with no `EXT-X-DISCONTINUITY` before it is not seen: PlayOn's stream has one (the
     8 s segment before its last tag), which lands at -6.4 to 1.6 s and leaves a hole at 97.5 to 105.6 s in the timeline.
     The tag is what tells where to take the offset; guessing from a jump alone is what the patch avoids.
+  - The last pictures of a segment that the h264 parser lets out after the next segment's offset was taken (read from
+    the code, a review of 2026-11-09; not seen in a test). The offset is the playlist's, not the stream's: the first
+    packet that jumps takes it, an audio one as often as not, and pictures of the segment before that come out after it
+    get the new segment's offset. The guard leaves a packet its own timestamps only when that puts it beyond the window's
+    ends by twice the threshold (4 s with 4 s segments); one of a restart (raw 3.9 s, the new segment's offset placing
+    0 s at its start) lands about 4 s before the new segment's start, inside the margin, so it is moved: a picture out of
+    order, behind the ones before it. It was so before the skip of expired segments too, at any break. Seen only
+    before the offset (`expiredSegmentsKeepTheTimeline`: two pictures of the expired segment came out first and keep its
+    offset). An offset per stream until each has jumped would place them; the patch keeps one per playlist so that audio
+    and video of a segment stay together.
+  - The skip of segments that expired while the read was behind (read from the code, a review of 2026-11-09; left on
+    purpose, each needs the read behind by more than the whole window, or a case not seen):
+    - Where the playlist puts the segment a skip goes on with is estimated: `first_timestamp` counts segments the
+      playlist never listed (it slid past the whole window between two loads) as a target duration each, or follows the
+      time. A server that keeps its timestamps whose segments are shorter than the target (6 s target, 5.005 s segments)
+      is more than half a target duration off after 3 such segments, and takes that as an offset.
+    - A break whose tag only expired segments had, none of FFmpeg's loads listed (`has_discont` still 0), is not seen:
+      the segment after the skip keeps its timestamps, as one that restarts without a tag does.
+    - While the skip's offset is still to be taken, the guard leaves every packet before the window its offset, not only
+      the late ones of the expired segment: a packet of another kind there (a stream with no packet before it) would
+      be moved off the window instead of keeping its own timestamps. Not seen.
+    - The way to all three is `EXT-X-DISCONTINUITY-SEQUENCE`, which FFmpeg skips now: with each segment's number of
+      breaks, a skip tells whether a break lies between the segment read last and the one after (none: the offset stays,
+      no estimate), and sees breaks whose tags no load listed. A server without the tag keeps the present behaviour.
+    - `expiredSegmentsKeepTheTimeline` slides its playlist a segment a second up to the advertisement preset's last
+      segment (number 29), where the window stops: a read slow enough to still run 17 s after the open then finds no
+      skip and the test fails as such, not on segments the server does not have.
   - A live stream with breaks (`HLSLiveDiscontinuityTests`, synthetic, 2026-11-06), in two kinds: every 4 s segment
     restarting its timestamps at 0, and server-side ad insertion (`hlsLiveAds`: content on a running timeline from 1000 s,
     two advertisement segments from 0 after every three of content, so the content after the advertisement is already on

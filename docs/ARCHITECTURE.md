@@ -689,12 +689,16 @@ does). The bundled HLS demuxer is patched (`scripts/patches/ffmpeg-hls-timeline.
 `ffmpeg-hls-live-seek.patch`) to move the packets of the segments after a discontinuity onto the playlist's timeline: by
 where the playlist's durations put the segment, minus the timestamp of its first packet, one offset per playlist so audio
 and video stay together, taken at the first packet after a seek or a variant switch, and at the first packet that jumps
-(by 2 s against its own stream's last) after a segment that follows a discontinuity. A server that keeps its timestamps
-is not touched (after a seek a difference under half a target duration is not taken; while reading, a jump of 2 s or more is taken from a second of difference), nor is a playlist without the tag. So the
+(by 2 s against its own stream's last, or half a target duration where that is less, a second at least) after a segment that follows a discontinuity, or after segments of a live playlist
+that expired while the read was behind it, which FFmpeg skips: the window's first segment it goes on with lists no tag
+before it (the tag went with the expired ones), and kept the offset of the segment read before: 20 s on instead of 8,
+1011 s back from an advertisement (`expiredSegmentsKeepTheTimeline`). A server that keeps its timestamps
+is not touched (after a seek a difference under half a target duration is not taken; while reading, a jump is taken from a second of difference), nor is a playlist without the tag. So the
 demuxer's timeline is the playlist's: the engine, the read-ahead's measure (`readAheadState` against `consumedSeconds`)
 and the packet cache see one, and the cache's `searchFloor` (a timestamp going back) is a safety for what the patch does
 not cover (a file of segments cut and joined, an MPEG-TS with a reset). Tests of the patch read the build's version string
-(`--extra-version=nits-hls-timeline`) and are skipped on another FFmpeg, which has none of it.
+(`--extra-version=nits-hls-timeline`; the tests of a skip of expired segments `nits-hls-skip`) and are skipped on another
+FFmpeg, which has none of it.
 
 The picture's size can change at a break too (an advertisement in another encoding): the parameter sets in the stream
 change, and the demuxer starts a new format description where a keyframe carries others (`videoPacket(from:)`, for
