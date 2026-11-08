@@ -2,6 +2,7 @@ import CFFmpeg
 import CoreMedia
 import Foundation
 import Testing
+import os
 
 @testable import NitsCore
 
@@ -67,9 +68,15 @@ struct HLSLiveDiscontinuityTests {
     ) throws -> TestHTTPServer? {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: kind.preset) else { return nil }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: path).deletingLastPathComponent())
-        let started = ContinuousClock.now
+        // The window slides from the first request for the playlist, not from the server's start: a test that waits to
+        // open it (a full run's pool of threads) would find it slid already (a window starting at 16 s, once).
+        let started = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
         server.setResponder(forPath: "live.m3u8") {
-            let first = firstAtOpen + Int((ContinuousClock.now - started) / .seconds(secondsPerSegment))
+            let start = started.withLock { started in
+                if started == nil { started = .now }
+                return started!
+            }
+            let first = firstAtOpen + Int((ContinuousClock.now - start) / .seconds(secondsPerSegment))
             var lines = [
                 "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:4", "#EXT-X-MEDIA-SEQUENCE:\(first)",
                 "#EXT-X-DISCONTINUITY-SEQUENCE:\(first)",
