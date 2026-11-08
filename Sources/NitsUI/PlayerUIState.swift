@@ -28,7 +28,8 @@ public final class PlayerUIState {
     /// the controls' top bar standing in for the title bar. `nil` does nothing: a double click never zooms a window the
     /// player does not own.
     @ObservationIgnored public var titleBarDoubleClicked: (() -> Void)?
-    /// The controls' top bar drags the window; set by the host whose window it is. Off, a drag there is the host's.
+    /// A drag of the controls' top bar or of the picture moves the window; set by the host whose window it is. Off, a drag
+    /// there is the host's.
     public var movesWindow: Bool = false
     /// The host has a fullscreen to toggle; off, a double click on the picture is left to the host.
     public var supportsFullscreen: Bool = true

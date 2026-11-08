@@ -10,8 +10,10 @@ public protocol PlayerPresentation: AnyObject {
     var isFullscreen: Bool { get }
     func toggleFullscreen()
     func exitFullscreen()
-    /// The window the picture is in, which an HDR screenshot reads from the screen; `nil` captures nothing that way.
-    var captureWindow: NSWindow? { get }
+    /// The window the picture is in. An HDR screenshot reads the picture from it on the screen, and Picture in Picture
+    /// moves it aside and brings it back as `AppSettings` asks (hiding it, entering PiP when it is minimized); `nil`
+    /// does neither. Read once, when the presentation is set.
+    var window: NSWindow? { get }
 }
 
 extension PlayerPresentation {
@@ -19,5 +21,5 @@ extension PlayerPresentation {
     public var isFullscreen: Bool { false }
     public func toggleFullscreen() {}
     public func exitFullscreen() {}
-    public var captureWindow: NSWindow? { nil }
+    public var window: NSWindow? { nil }
 }

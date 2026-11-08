@@ -201,25 +201,38 @@ session's view in it instead. The callbacks, opening media and the actions above
 import NitsKit
 
 let session = PlayerSession()
-session.onTimeUpdate = { currentTime, duration in /* save progress */ }
+session.onTimeUpdate = { [weak session] _, _ in
+    // Where the media stands as its history tells it (a live stream's in the stream's own time), to save in the
+    // host's own store; `nil` while nothing is loaded.
+    if let progress = session?.engine.playbackProgress { /* save progress.position, progress.duration */ }
+}
 session.onClose = { finalTime, duration in /* ... */ }
 
-// The video with the control bar, OSD and panels, in any SwiftUI container:
+// The video with the control bar, OSD and panels, in any SwiftUI container of the host's window:
 session.makeContentView()
+let presentation = HostWindowPresentation(session: session, window: hostWindow)
 
-// The player's keys (Space, arrows, m, …) in the host's window; hold it while the player is shown:
-let keys = PlayerKeyMonitor(actions: session, window: hostWindow)
+session.openStream(url: streamURL, headers: ["Authorization": "Bearer secret_token"], startTime: 120, presents: true)
 
-session.openStream(url: streamURL, headers: ["Authorization": "Bearer secret_token"], startTime: 120)
-
-// There is no window to close: end the session yourself (reports onClose, clears Now Playing, stops the engine).
+// Done with the player: end the session (reports onClose, clears Now Playing, stops the engine) and give the window back.
 session.end()
+presentation.detach()
 ```
 
-- Fullscreen is the presentation's (`session.presentation`, a `PlayerPresentation`): without one, the double click
-  on the picture and `F` are left to the host. The player never zooms or moves the host's window.
-- With the focus in a text input (any `NSTextInputClient`, a web view included) keys stay the host's. A host that
-  wants the player's keys with the focus in its web view passes its own `ignoresResponder`.
+`HostWindowPresentation` gives the session what the player window has, in the host's window: its fullscreen, the
+player's keys (Space, arrows, m, …), drags of the picture and the header strip moving the window, the window brought
+forward when media opens, and Picture in Picture moving it aside as `AppSettings` asks. By default it takes the title
+bar over as the player window has it (the player at the top of the window, the traffic lights fading with the
+controls); `adoptsTitleBar: false` leaves it the host's. Closing the window ends the session (`onWindowClose`), and
+`detach()` gives the window back as it was.
+
+- In a pane, or with window handling of its own, a host does without it: it shows `session.makeContentView()`, holds a
+  `PlayerKeyMonitor(actions: session, window:)` for the keys and, for fullscreen, sets `session.presentation` (a
+  `PlayerPresentation`; without one the double click on the picture and `F` are left to the host). The player never
+  moves the host's window unless the host asks (`uiState.movesWindow`).
+- With the focus in a text input (any `NSTextInputClient`, a web view included) keys stay the host's. A SwiftUI
+  window's hosting view is one too: such a host passes `ignoresResponder: { $0 is NSTextView }`, and one that wants the
+  player's keys with the focus in its web view its own judgment.
 - Menus: `PlayerCommands` acts on the focused session (`playerActions`).
 
 Details: "Session and presentation" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

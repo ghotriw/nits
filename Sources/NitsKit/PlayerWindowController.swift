@@ -3,9 +3,9 @@ import NitsCore
 import NitsUI
 import SwiftUI
 
-/// A window of the player's own around a `PlayerSession`: the title bar and its traffic lights, the toolbar, the
-/// fullscreen animation and the window side of Picture in Picture (`PictureInPictureWindowCoordinator`). What is not
-/// the window's (callbacks, Now Playing, actions, opening media) is the session's; the members below forward to it.
+/// A window of the player's own around a `PlayerSession`: the title bar and its traffic lights, the toolbar and the
+/// fullscreen animation. What is not the window's (callbacks, Now Playing, Picture in Picture, actions, opening media)
+/// is the session's; the members below forward to it.
 @MainActor
 public final class PlayerWindowController: NSWindowController, NSWindowDelegate {
     public let session: PlayerSession
@@ -47,11 +47,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
 
     /// The windowed frame while the window is in or entering fullscreen: the exit animation returns to it.
     private var frameBeforeFullscreen: NSRect?
-    private var standardButtons: [NSButton] {
-        ([.closeButton, .miniaturizeButton, .zoomButton] as [NSWindow.ButtonType]).compactMap {
-            window?.standardWindowButton($0)
-        }
-    }
 
     /// - Parameters:
     ///   - configuration: The engine's settings (`applyConfiguration(_:)`), for a session that creates its engine.
@@ -77,16 +72,13 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         session.presentation = self
         session.uiState.movesWindow = true
-        session.pictureInPicture.window = window
         window.actionHandler = session
         session.uiState.titleBarDoubleClicked = { [weak window] in
             window?.performTitleBarDoubleClickAction()
         }
-        session.onControlsVisibilityChanged = { [weak self] isVisible in
-            self?.updateTrafficLightsVisibility(isVisible: isVisible)
-            if !isVisible, self?.window?.isKeyWindow == true {
-                NSCursor.setHiddenUntilMouseMoves(true)
-            }
+        session.onControlsVisibilityChanged = { [weak window] isVisible in
+            window?.setStandardButtonsVisible(isVisible)
+            if !isVisible { window?.hideCursorWithPlayerControls() }
         }
         session.onOpenStream = { [weak self] presents in
             self?.streamOpened(presentsWindow: presents)
@@ -95,7 +87,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
-        window.isMovableByWindowBackground = true
         observeMediaTitle()
 
         window.center()
@@ -160,12 +151,11 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
     /// The session loaded a stream: the controls come back, and the window with them if asked. Not called once the
     /// session ended, so a window closed while a link resolved stays closed.
     private func streamOpened(presentsWindow: Bool) {
-        updateTrafficLightsVisibility(isVisible: true)
+        window?.setStandardButtonsVisible(true)
         guard presentsWindow else { return }
 
         showWindow(nil)
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        window?.presentForPlayback()
         if let contentView = window?.contentView {
             window?.makeFirstResponder(contentView)
         }
@@ -193,17 +183,6 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
             exitFullscreen()
         } else {
             super.cancelOperation(sender)
-        }
-    }
-
-    private func updateTrafficLightsVisibility(isVisible: Bool) {
-        guard let window, !window.styleMask.contains(.fullScreen) else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            for button in standardButtons {
-                button.animator().alphaValue = isVisible ? 1.0 : 0.0
-            }
         }
     }
 
@@ -289,9 +268,7 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         window?.titleVisibility = .visible
         window?.titlebarAppearsTransparent = false
         uiState.isFullscreen = true
-        for button in standardButtons {
-            button.alphaValue = 1.0
-        }
+        window?.setStandardButtonsVisible(true, animated: false)
     }
 
     public func windowDidFailToEnterFullScreen(_ window: NSWindow) {
@@ -322,20 +299,8 @@ public final class PlayerWindowController: NSWindowController, NSWindowDelegate 
         uiState.isFullscreen = false
     }
 
-    public func windowDidMiniaturize(_ notification: Notification) {
-        session.pictureInPicture.windowDidMiniaturize()
-    }
-
-    public func windowDidChangeOcclusionState(_ notification: Notification) {
-        session.pictureInPicture.windowDidChangeOcclusionState()
-    }
-
-    public func windowDidDeminiaturize(_ notification: Notification) {
-        session.pictureInPicture.windowDidDeminiaturize()
-    }
-
     public func windowWillClose(_ notification: Notification) {
-        session.end()
+        session.end(windowClosing: true)
     }
 }
 
@@ -349,6 +314,4 @@ extension PlayerWindowController: PlayerPresentation {
     public func toggleFullscreen() {
         window?.toggleFullScreen(nil)
     }
-
-    public var captureWindow: NSWindow? { window }
 }

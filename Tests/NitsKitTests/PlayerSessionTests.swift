@@ -32,6 +32,29 @@ struct PlayerSessionTests {
         session.end()
     }
 
+    /// A host's window shown through a presentation of its own.
+    private final class WindowPresentation: PlayerPresentation {
+        let window: NSWindow?
+        init(window: NSWindow) { self.window = window }
+    }
+
+    @Test("Picture in Picture moves aside the window the presentation names, a host's as well")
+    func testPictureInPictureFollowsPresentationWindow() {
+        let session = PlayerSession(engine: .makeForTesting())
+        defer { session.end() }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180), styleMask: [.titled], backing: .buffered,
+            defer: true)
+        window.isReleasedWhenClosed = false
+        let presentation = WindowPresentation(window: window)
+
+        session.presentation = presentation
+        #expect(session.pictureInPicture.window === window)
+
+        session.presentation = nil
+        #expect(session.pictureInPicture.window == nil)
+    }
+
     @Test("The session takes the engine's callbacks and passes them on to the host's")
     func testCallbacksGoThroughSession() {
         let session = PlayerSession(engine: .makeForTesting())

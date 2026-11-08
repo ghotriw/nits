@@ -18,14 +18,19 @@ public final class PlayerSession {
     public let uiState: PlayerUIState
     public let nowPlayingController: any NowPlayingController
 
-    /// What the place the session is shown in can do. Without it there is no fullscreen and no screen capture of HDR.
-    /// Held weakly: the host keeps the presentation (a window controller, its view model) alive. `supportsFullscreen`
-    /// is read once, when it is set.
+    /// What the place the session is shown in can do. Without it there is no fullscreen, no screen capture of HDR and
+    /// no window for Picture in Picture to move aside. Held weakly: the host keeps the presentation (a window
+    /// controller, its view model) alive. `supportsFullscreen` and `window` are read once, when it is set.
     public weak var presentation: (any PlayerPresentation)? {
-        didSet { uiState.supportsFullscreen = presentation?.supportsFullscreen ?? false }
+        didSet {
+            uiState.supportsFullscreen = presentation?.supportsFullscreen ?? false
+            pictureInPicture.window = presentation?.window
+        }
     }
 
-    /// Called by `end()` before the session stops the engine: (finalTime, duration).
+    /// Called by `end()` before the session stops the engine: (finalTime, duration), the engine's. A host that saves
+    /// progress reads `engine.playbackProgress` here instead, which is what the history saves (a live stream's history
+    /// in the stream's own time, against the end of its window; its duration here is 0).
     public var onClose: ((_ finalTime: Double, _ duration: Double) -> Void)?
     /// Periodic time observer callback: (currentTime, duration)
     public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)?
@@ -256,7 +261,13 @@ public final class PlayerSession {
 
     /// Ends the session: reports `onClose`, ends Picture in Picture and Now Playing and stops the engine. What a
     /// window does as it closes; a host without a window of the player's calls it itself. Later opens do nothing.
+    /// A presentation's window that Picture in Picture moved aside comes back: the window stays the host's.
     public func end() {
+        end(windowClosing: false)
+    }
+
+    /// `end()` as the presentation's window closes: Picture in Picture leaves the closing window where it is.
+    func end(windowClosing: Bool) {
         guard !isEnded else { return }
         let finalTime = engine.currentTime
         let finalDuration = engine.media.duration
@@ -266,7 +277,7 @@ public final class PlayerSession {
         )
         onClose?(finalTime, finalDuration)
         isEnded = true
-        pictureInPicture.windowWillClose()
+        pictureInPicture.sessionEnded(windowClosing: windowClosing)
         nowPlayingController.clear()
         engine.stop()
     }
@@ -577,7 +588,7 @@ extension PlayerSession: PlayerActions {
             guard let self else { return }
             // HDR the display layer maps to the screen itself: what it shows, from the screen.
             if engine.activeRenderMode == .system, engine.media.video.isHDR,
-                let window = presentation?.captureWindow,
+                let window = presentation?.window,
                 let host = Self.videoHostView(in: window.contentView), !host.presentedVideoRect.isEmpty
             {
                 await captureScreenStill(

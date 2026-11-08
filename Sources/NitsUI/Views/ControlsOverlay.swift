@@ -80,6 +80,10 @@ public struct ControlsOverlay: View {
                     .fill(Color(NSColor.separatorColor))
                     .frame(height: 1)
             }
+            // A drag of the bar between its controls moves the window, as one of the header strip does; the controls'
+            // own gestures (the timeline, the volume) come first.
+            .contentShape(Rectangle())
+            .gesture(WindowDragGesture(), isEnabled: (uiState?.movesWindow ?? false) && !isFullscreen)
             .onHover { hovering in
                 isBottomHovered = hovering
                 updateInteractionState()

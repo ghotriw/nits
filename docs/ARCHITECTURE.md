@@ -30,7 +30,7 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
   intermediate view-model; views re-evaluate only on the properties they read. Exports the
   `NativeVideoHostView` canvas. Builds only for macOS today but is kept portable to iOS / tvOS
   (see "Platform layer").
-- **NitsKit** — `@MainActor` session (`PlayerSession`) and its window presentation (`PlayerWindowController`, `PlayerWindow`), menu
+- **NitsKit** — `@MainActor` session (`PlayerSession`) and its presentations (`PlayerWindowController` and `PlayerWindow`, `HostWindowPresentation` for a host's window), menu
   commands (`PlayerCommands`), system media integration (`NowPlayingController`), the app's command
   line (`LaunchArguments`).
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
@@ -162,14 +162,21 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
 `PlayerSession` (NitsKit) is everything around the engine that does not depend on where the picture is shown: the
 engine's callbacks, `PlayerUIState`, Now Playing, the Picture in Picture controller, recent media, opening media and
 the `PlayerActions` that menus, keys and media keys call. `PlayerWindowController` is one presentation of it: it adds
-the window, its title bar and toolbar, the fullscreen animation and the window side of PiP
-(`PictureInPictureWindowCoordinator`, which hides and restores *its* window; a session in a host's window has none, so
-PiP leaves the host's window alone). A host with a window or pane already does without the controller:
+the window, its title bar and toolbar and the fullscreen animation. `HostWindowPresentation` is another, for a window
+the host already has: it does everything in the list below but showing the view and ending the session (the window's
+fullscreen, keys, moving the window, bringing it forward, and, by default, a title bar that looks like the player
+window's, the traffic lights fading with the controls), gives the window back on `detach()` and ends the session when
+the window closes. The window helpers both share (`NSWindow.performTitleBarDoubleClickAction()`, the traffic lights,
+the cursor) are in `NSWindow+Player.swift`. A host with a pane, or one that wants its own window handling, does without
+either:
 
 - shows `session.makeContentView()` (the picture with the control bar, OSD and panels, or `VideoSurfaceView` alone);
-- sets `session.presentation` (`PlayerPresentation`): what its place can do. Fullscreen, `captureWindow` (HDR
-  screenshots read the screen) default to none, and the embedded mode is deliberately not equal to the window: no
-  custom fullscreen, no minimize-started PiP. `session.supportsFullscreen` tells;
+- sets `session.presentation` (`PlayerPresentation`): what its place can do. Fullscreen and `window` default to none.
+  The window is the one the picture is in: HDR screenshots read it from the screen, and PiP
+  (`PictureInPictureWindowCoordinator`, following the window's minimize, restore and occlusion itself) moves it aside
+  and back as `AppSettings` asks, the player's window or a host's alike; without one PiP leaves every window alone.
+  The embedded mode is otherwise deliberately not equal to the window: no custom fullscreen animation.
+  `session.supportsFullscreen` tells;
 - keeps a `PlayerKeyMonitor(actions: session, window:)` as long as the session is shown: the unmodified keys are
   `PlayerKeyRouter`'s (physical key codes, any layout, focus in a panel), the same code `PlayerWindow.sendEvent` runs.
   Without it the embedded player has no keyboard;
@@ -178,10 +185,16 @@ PiP leaves the host's window alone). A host with a window or pane already does w
 
 The engine's callbacks (`onTimeUpdate`, `onPlaybackStateChanged`, `onTrackNavigationChanged`, …) are single closures
 and belong to the session. A host subscribes through the session's own (`onTimeUpdate`, `onPlaybackStateChanged`,
-`onPlaybackEnded`, `onClose`), never on `engine`: it would silently stop Now Playing and the saved progress.
+`onPlaybackEnded`, `onClose`), never on `engine`: it would silently stop Now Playing and the saved progress. A host
+that keeps progress of its own reads it from `engine.playbackProgress` (`PlaybackProgress`), which is what the history
+saves (a live stream's history in the stream's own time, against the end of its window), rather than working it out
+from `MediaInfo` and `engine.live`.
 What the window owns in `NitsUI` is switched by `PlayerUIState`, off until a window turns it on: `titleBarDoubleClicked`
-(the window's meaning of a double click on the title strip; `nil` does nothing), `movesWindow` (a drag of the strip
-moves the window) and `supportsFullscreen` (set from the presentation; off, the control bar's fullscreen item hides and a double click on the picture is the
+(the window's meaning of a double click on the title strip; `nil` does nothing), `movesWindow` (a drag of the strip,
+or of the picture unless it pans it, moves the window: the view does it with `WindowDragGesture`, not the window's
+`isMovableByWindowBackground`, which a host's content around the player cuts into pieces; the picture's AppKit view
+takes the click that activates the window, `NativeVideoHostView.acceptsActivatingClick`, so the drag also works while
+another window is key) and `supportsFullscreen` (set from the presentation; off, the control bar's fullscreen item hides and a double click on the picture is the
 host's). NitsUI never zooms or moves the key window itself.
 
 ## Video pipeline
@@ -975,8 +988,8 @@ observation (the engine's callbacks have one slot each, which the host uses), so
 toggles it and moves its window aside and back (`onActiveChanged`, `onRestoreUserInterface`). The
 player window's behaviour around PiP (the settings in `AppSettings`: hiding the window, pausing,
 entering PiP on minimize, and the workarounds for restoring from the Dock) is
-`PictureInPictureWindowCoordinator`'s, which owns the controller and gets the window's events from
-`PlayerWindowController`. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
+`PictureInPictureWindowCoordinator`'s, which owns the controller and follows the events of the presentation's window
+(`PlayerPresentation.window`) itself. The private `PIP.framework` (IINA, VLC) was rejected: it would show any view (Metal
 included), but a broken private API means no PiP at all, while AVKit's bugs below are cosmetic.
 
 - **Render mode and pacing.** PiP only sees the display layer, so `.metalToneMap` falls back to
@@ -1030,9 +1043,10 @@ can't drift apart.
   host view lays the layer out with the default settings and gives the window's geometry back when
   it ends.
 - **Pan** is stored per axis in `-1...1` of how far the picture overhangs the view, not in points,
-  so it can't move the picture off the view and survives a resize. While the picture overhangs,
-  `NativeVideoHostView.mouseDownCanMoveWindow` is `false`, so a drag pans instead of moving the
-  window.
+  so it can't move the picture off the view and survives a resize. While the picture overhangs, a
+  drag pans instead of moving the window: `ContentView` turns its `WindowDragGesture` off, and
+  `NativeVideoHostView.mouseDownCanMoveWindow` is `false` for a host that moves its window by the
+  background around the bare view.
 - **Persistence.** Aspect override and crop describe the file and go to `PlaybackHistoryStore`
   (`PlaybackPreferences.noGeometryOverride` records "none", since `nil` keeps the saved value);
   scaling is a session choice with a default in Settings; zoom and pan reset on load.

@@ -655,36 +655,55 @@ extension PlayerEngine {
         playbackState = .idle
     }
 
+    /// Where the playback of the loaded media stands, as its history tells it (`PlaybackProgress`): what a host that
+    /// keeps progress of its own saves, in `onTimeUpdate` or `onClose`. A seek still on its way counts as done. `nil`
+    /// with nothing loaded, while loading, and for media without a duration that is not a live stream's history.
+    public var playbackProgress: PlaybackProgress? {
+        guard isLoaded, !isLoading, media.duration > 0 || media.isLiveHistory else { return nil }
+        return playbackProgress(at: chase?.seconds ?? currentTime)
+    }
+
+    /// The progress at `time`, the engine's. A live stream's history is told in the stream's time (the engine's plus
+    /// where its zero stands), which the recording that follows it counts in too, and for the length of it what is
+    /// known: to the end of the window. On the air it has no end to be past, but an edge to have been at; once it
+    /// ended it is a recording.
+    private func playbackProgress(at time: Double) -> PlaybackProgress {
+        guard media.isLiveHistory else { return PlaybackProgress(position: time, duration: media.duration) }
+        let origin = media.timelineOrigin
+        let isOnTheAir = live.isLive && !live.isEnded
+        return PlaybackProgress(
+            position: origin + time,
+            duration: origin + max(live.window()?.end ?? time, time),
+            isLive: isOnTheAir,
+            wasAtLiveEdge: isOnTheAir && live.isAtEdge(time))
+    }
+
     public func saveCurrentPlaybackProgress() {
-        let isLiveHistory = media.isLiveHistory
-        guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 || isLiveHistory else { return }
+        guard isLoaded, !isLoading, let path = currentHistoryKey, media.duration > 0 || media.isLiveHistory else {
+            return
+        }
 
         let identity = MediaHistoryIdentity(historyKey: path, path: currentPath, sourcePath: currentSourcePath)
         let progressTime = chase?.seconds ?? currentTime
-        // A live stream's history is saved in the stream's time (the engine's plus where its zero stands), which the
-        // recording that follows it counts in too, and for the length of it what is known: to the end of the window.
-        // On the air it has no end to be past, but an edge to have been at; once it ended it is a recording.
-        let origin = isLiveHistory ? media.timelineOrigin : 0
-        let duration =
-            isLiveHistory ? origin + max(live.window()?.end ?? progressTime, progressTime) : media.duration
-        let isOnTheAir = isLiveHistory && live.isLive && !live.isEnded
-        AppLog.debug(.engine, "Saving playback progress for '\(path)' at \(progressTime + origin)s / \(duration)s")
+        let progress = playbackProgress(at: progressTime)
+        AppLog.debug(
+            .engine, "Saving playback progress for '\(path)' at \(progress.position)s / \(progress.duration)s")
         if progressTime > 0 {
             historyStore.savePosition(
                 for: identity,
-                position: progressTime + origin,
-                duration: duration,
+                position: progress.position,
+                duration: progress.duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
                 maximumUnwatchedTail: configuration.resumeMaximumUnwatchedTail,
-                isLive: isOnTheAir,
-                wasAtLiveEdge: isOnTheAir ? live.isAtEdge(progressTime) : nil,
+                isLive: progress.isLive,
+                wasAtLiveEdge: progress.isLive ? progress.wasAtLiveEdge : nil,
                 preferences: preferencesForHistory
             )
         } else {
             historyStore.savePreferences(
                 for: identity,
-                duration: duration,
+                duration: progress.duration,
                 preferencesForHistory
             )
         }

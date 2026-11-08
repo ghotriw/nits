@@ -44,23 +44,32 @@ public struct ContentView: View {
             VideoSurfaceView(engine: engine) { urls in
                 loadMedia(urls: urls)
             }
+            .acceptsActivatingClick(movesWindowFromPicture)
             .ignoresSafeArea()
             .onGeometryChange(for: CGSize.self) {
                 $0.size
             } action: {
                 videoAreaSize = $0
             }
-            .gesture(
+            // As on the header strip: the double click goes alongside the window's drag, so neither waits for the other.
+            .gesture(WindowDragGesture(), including: movesWindowFromPicture ? .all : .subviews)
+            .simultaneousGesture(
                 TapGesture(count: 2).onEnded { onToggleFullscreen?() },
-                isEnabled: uiState.supportsFullscreen && onToggleFullscreen != nil
+                including: uiState.supportsFullscreen && onToggleFullscreen != nil ? .all : .subviews
             )
             .gesture(panGesture, including: canPanVideo ? .all : .subviews)
             .simultaneousGesture(zoomGesture, including: engine.media.hasVideo ? .all : .subviews)
+            // The window moves from a drag of the picture while another window is key, as one movable by its background
+            // does: the picture's AppKit view takes the activating click (`acceptsActivatingClick` above), and its
+            // gestures handle it.
+            .allowsWindowActivationEvents()
 
-            // In audio-only mode, mask video layer with a solid black backdrop behind artwork
+            // In audio-only mode, mask video layer with a solid black backdrop behind artwork. It lets the pointer
+            // through to the video surface, whose gestures (moving the window, double click) stay the area's.
             if engine.isLoaded && !engine.media.hasVideo {
                 Color.black
                     .ignoresSafeArea()
+                    .allowsHitTesting(false)
 
                 VStack(spacing: 20) {
                     if let artworkData = engine.artworkData, let nsImage = NSImage(data: artworkData) {
@@ -202,6 +211,8 @@ public struct ContentView: View {
                     .onTapGesture {
                         closeSidePanel()
                     }
+                    // It covers the picture: a drag of it moves the window as one of the picture does.
+                    .gesture(WindowDragGesture(), isEnabled: uiState.movesWindow && !uiState.isFullscreen)
             }
 
             // Controls Overlay
@@ -369,6 +380,13 @@ public struct ContentView: View {
     /// The picture is larger than the view, so a drag moves it instead of the window.
     private var canPanVideo: Bool {
         engine.media.hasVideo && !engine.isPictureInPictureActive && videoLayout.panLimit != .zero
+    }
+
+    /// A drag of the picture moves the window (`PlayerUIState.movesWindow`), as the header strip's does, unless it pans
+    /// the picture. The view does it itself rather than the window's `isMovableByWindowBackground`: in a host's
+    /// window, its own content around the player cuts the background AppKit moves the window by into pieces.
+    private var movesWindowFromPicture: Bool {
+        uiState.movesWindow && !uiState.isFullscreen && !canPanVideo
     }
 
     private var panGesture: some Gesture {

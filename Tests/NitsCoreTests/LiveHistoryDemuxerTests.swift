@@ -291,6 +291,7 @@ struct LiveHistoryEngineTests {
         let defaults = InMemoryUserDefaults()
         let engine = engine(server: server, defaults: defaults, end: 4)
         defer { engine.stop() }
+        #expect(engine.playbackProgress == nil)  // nothing loaded
         engine.load(MediaLoadRequest(path: Self.page))
         await engine.waitForPendingLoad()
         try #require(engine.isLoaded)
@@ -303,6 +304,15 @@ struct LiveHistoryEngineTests {
         #expect(saved.position > 1.3)
         // A window of three seconds is all edge.
         #expect(saved.wasAtEdge)
+
+        // What the engine tells a host that keeps progress of its own is what it saved: the stream's time, against
+        // the stream as far as it is known (the window's end, at least 4, moving on with the clock), on the air and at
+        // its edge.
+        let progress = try #require(engine.playbackProgress)
+        #expect(abs(progress.position - (engine.currentTime + 1)) < 0.5, "\(progress.position)")
+        #expect(progress.duration >= max(4, progress.position), "\(progress.duration)")
+        #expect(progress.isLive)
+        #expect(progress.wasAtLiveEdge)
     }
 
     @Test("A live history opens where it was left, if the window holds it and it was not left at the edge")

@@ -37,6 +37,15 @@
             !canPanVideo
         }
 
+        /// Whether the click that makes the window key also reaches the view (and gestures attached to it), as a drag
+        /// that moves the window from the picture needs; off, it only activates the window. Off by default: a host's
+        /// click handling over a bare canvas would otherwise act on a click meant to bring the window forward.
+        public var acceptsActivatingClick = false
+
+        public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            acceptsActivatingClick
+        }
+
         public func updateMode() {
             layers.updateMode()
             needsLayout = true
