@@ -6,9 +6,9 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 
 ## Environment
 
-- Build host / SDK: macOS 27, Apple Silicon. Deployment target: macOS 15.0.
+- Build host / SDK: macOS 27, Apple Silicon. Deployment target: macOS 15.4.
 - macOS 27 is the real, current OS — treat its SDK deprecation warnings as actionable. Fix them
-  with replacement APIs that work on 15.0+ rather than suppressing them.
+  with replacement APIs that work on 15.4+ rather than suppressing them.
 - Swift 6, strict concurrency (`-strict-concurrency=complete`), `ExistentialAny`.
 
 ## Tools & references
@@ -36,7 +36,7 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
   `scripts/setup_dependencies.sh` (versions, flags and the release checksum live in
   `scripts/deps_config.sh`; bump `DEPS_VERSION` when changing them). `format.sh` and CI build and
   test against `.build/dependencies` when present, otherwise SwiftPM falls back to Homebrew FFmpeg.
-  SwiftPM links with the deployment target (15.0) as the SDK version, so `swift run` binaries show
+  SwiftPM links with the deployment target (15.4) as the SDK version, so `swift run` binaries show
   the legacy (pre-Liquid Glass) look on macOS 26+; `bundle_app.sh` stamps the real SDK via `vtool`.
   Judge UI only from the bundle.
 - Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The app version comes
@@ -79,6 +79,11 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
 - `NitsKit` owns windows, menus and NowPlaying. `NitsUI` is declarative views plus
   `PlayerUIState` for transient UI state.
 - UI changes must not require changes to decoding, shaders or A/V sync.
+- What does not depend on the window (the engine's callbacks, Now Playing, PiP, actions, opening media) is
+  `PlayerSession`'s; `PlayerWindowController` only adds the window and is one `PlayerPresentation`. The engine's
+  callbacks are single closures that the session owns: hosts subscribe through the session, never on `engine`. The
+  unmodified keys live in `PlayerKeyRouter` (`PlayerWindow` and `PlayerKeyMonitor` both call it); NitsUI never zooms or
+  moves the key window itself (`titleBarDoubleClicked` is the window's). See "Session and presentation" in `docs/ARCHITECTURE.md`.
 - Keep the engine embeddable: `NativeVideoHostView` stays a bare canvas with no built-in controls;
   commands and events go through `PlayerEngineProtocol`; the demuxer must handle remote URLs with
   custom HTTP headers, not just `file://`.
@@ -239,7 +244,7 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
   an unmodified key (`Space`, arrows, `m`): menu shortcuts intercept keys before the view, and a
   disabled item swallows them.
 - Unmodified player keys (`Space`, arrows, `m`, `d`, `z` / `x`, `j` / `k`, `a` / `w`, `esc`) are handled in
-  `PlayerWindow.sendEvent` by physical key code, so they work on any keyboard layout and while focus is
+  `PlayerKeyRouter` (called by `PlayerWindow.sendEvent`, and by `PlayerKeyMonitor` in a host's window) by physical key code, so they work on any keyboard layout and while focus is
   in a panel (text fields excepted). The press of ←/→ begins scrubbing (`beginScrubbing()`), any key-up or the window
   resigning key ends it (`endScrubbing()`): seeks while scrubbing only show frames; never end it on a timer.
 

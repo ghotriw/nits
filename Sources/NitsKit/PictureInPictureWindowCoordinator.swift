@@ -11,7 +11,9 @@ import NitsUI
 final class PictureInPictureWindowCoordinator {
     private let engine: PlayerEngine
     private let uiState: PlayerUIState
-    private weak var window: NSWindow?
+    /// The window the coordinator moves aside and brings back; `PlayerWindowController` sets it. A session shown in a
+    /// host's window has none: PiP then leaves the host's window alone.
+    weak var window: NSWindow?
     /// Created with the coordinator, not on first toggle: it follows the engine from here on and prepares AVKit for
     /// the first video, and only then reports whether PiP can start (`uiState.isPictureInPicturePossible`).
     private let pictureInPicture: PictureInPictureController
@@ -30,10 +32,9 @@ final class PictureInPictureWindowCoordinator {
     /// Set by `windowWillClose()`; PiP callbacks that follow must not show the window again.
     private var isWindowClosing = false
 
-    init(engine: PlayerEngine, uiState: PlayerUIState, window: NSWindow) {
+    init(engine: PlayerEngine, uiState: PlayerUIState) {
         self.engine = engine
         self.uiState = uiState
-        self.window = window
         pictureInPicture = PictureInPictureController(engine: engine)
         pictureInPicture.onPossibleChanged = { [weak self] isPossible in
             self?.uiState.isPictureInPicturePossible = isPossible

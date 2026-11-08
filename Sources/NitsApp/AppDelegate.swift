@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.onKeyStatusChanged = { [weak self] isKey in
             if isKey {
-                self?.activePlayer = self?.playerWindowController
+                self?.activePlayer = self?.playerWindowController?.session
             }
         }
         playerWindowController = controller
@@ -158,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         welcomeWindowController?.close()
         welcomeWindowController = nil
         isPlayerActive = true
-        activePlayer = controller
+        activePlayer = controller.session
         return controller
     }
 

@@ -50,7 +50,8 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
 - macOS integration: Now Playing media keys, Control Center, sleep prevention
 
 **Embedding**
-- `NitsKit` / `NitsCore` for host apps: a player window or a bare video view with an engine API
+- `NitsKit` / `NitsCore` for host apps: a player window, the player with its controls in a window of the
+  host's (`PlayerSession`), or a bare video view with an engine API
 - Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue
 
 Planned: night mode (dynamic range compression), black-bar detection. Details and status:
@@ -191,6 +192,38 @@ ControlsConfiguration.shared.unavailableItems = [.playlist, .playlistRepeat, .pl
 
 They leave the control bar and the Controls settings. Without `.playlist` the side panel shows chapters only.
 
+### Player in your own window (`PlayerSession`)
+
+`PlayerWindowController` is one presentation of a `PlayerSession`; a host with a window of its own shows the
+session's view in it instead. The callbacks, opening media and the actions above are the session's too:
+
+```swift
+import NitsKit
+
+let session = PlayerSession()
+session.onTimeUpdate = { currentTime, duration in /* save progress */ }
+session.onClose = { finalTime, duration in /* ... */ }
+
+// The video with the control bar, OSD and panels, in any SwiftUI container:
+session.makeContentView()
+
+// The player's keys (Space, arrows, m, …) in the host's window; hold it while the player is shown:
+let keys = PlayerKeyMonitor(actions: session, window: hostWindow)
+
+session.openStream(url: streamURL, headers: ["Authorization": "Bearer secret_token"], startTime: 120)
+
+// There is no window to close: end the session yourself (reports onClose, clears Now Playing, stops the engine).
+session.end()
+```
+
+- Fullscreen is the presentation's (`session.presentation`, a `PlayerPresentation`): without one, the double click
+  on the picture and `F` are left to the host. The player never zooms or moves the host's window.
+- With the focus in a text input (any `NSTextInputClient`, a web view included) keys stay the host's. A host that
+  wants the player's keys with the focus in its web view passes its own `ignoresResponder`.
+- Menus: `PlayerCommands` acts on the focused session (`playerActions`).
+
+Details: "Session and presentation" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ### Logging
 
 Player logs go through `AppLog`, which writes to `os.Logger` and to `~/Library/Application Support/Nits/player.log`. A host app can use it too:
@@ -203,6 +236,11 @@ LogViewerWindowController.shared.showLogs() // or ⌥⌘L
 Details: [docs/LOGGING.md](docs/LOGGING.md).
 
 ### Low-level Rendering Engine (`NitsCore`)
+
+> [!IMPORTANT]
+> The engine's callbacks are single closures. With `NitsKit`, `onMediaLoaded`, `onTimeUpdate`,
+> `onPlaybackStateChanged`, `onTrackNavigationChanged` and `onRelativeSeekResolved` are the session's: subscribe
+> through `PlayerSession` / `PlayerWindowController`, or Now Playing and saved progress stop.
 
 ```swift
 import NitsCore
@@ -265,7 +303,7 @@ open build/Nits.app --args --start-time=120 ~/Movies/movie.mkv
 
 ## Requirements
 
-- macOS 15+
+- macOS 15.4+
 - Apple Silicon
 - FFmpeg: the app bundle ships its own LGPL build (`scripts/setup_dependencies.sh`); plain
   `swift build` / `swift test` fall back to Homebrew (`brew install ffmpeg`), which also provides

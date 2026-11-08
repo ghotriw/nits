@@ -23,8 +23,13 @@ public final class PlayerUIState {
     /// Starts or stops Picture in Picture; set by the host that owns it, `nil` hides the control.
     @ObservationIgnored public var togglePictureInPicture: (() -> Void)?
     /// Does what a double click on a title bar does by the system setting; set by the host that owns the window, for
-    /// the controls' top bar standing in for the title bar. `nil` zooms the window.
+    /// the controls' top bar standing in for the title bar. `nil` does nothing: a double click never zooms a window the
+    /// player does not own.
     @ObservationIgnored public var titleBarDoubleClicked: (() -> Void)?
+    /// The controls' top bar drags the window; set by the host whose window it is. Off, a drag there is the host's.
+    public var movesWindow: Bool = false
+    /// The host has a fullscreen to toggle; off, a double click on the picture is left to the host.
+    public var supportsFullscreen: Bool = true
     public var selectedQuickSettingsTab: QuickSettingsTab = .video
     /// Controls, OSD, HUD, subtitles and the action button are hidden while the window is captured for a still of the
     /// picture as the screen shows it.

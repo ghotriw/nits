@@ -50,9 +50,10 @@ public struct ContentView: View {
             } action: {
                 videoAreaSize = $0
             }
-            .onTapGesture(count: 2) {
-                onToggleFullscreen?()
-            }
+            .gesture(
+                TapGesture(count: 2).onEnded { onToggleFullscreen?() },
+                isEnabled: uiState.supportsFullscreen && onToggleFullscreen != nil
+            )
             .gesture(panGesture, including: canPanVideo ? .all : .subviews)
             .simultaneousGesture(zoomGesture, including: engine.media.hasVideo ? .all : .subviews)
 

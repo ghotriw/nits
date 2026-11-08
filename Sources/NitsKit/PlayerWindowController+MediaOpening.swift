@@ -7,13 +7,7 @@ extension PlayerWindowController {
     /// Returns the task resolving, opening and awaiting load completion of the media.
     @discardableResult
     public func openMedia(urls: [URL]) -> Task<Void, Never>? {
-        guard !urls.isEmpty else { return nil }
-        return Task { [weak self] in
-            let request = await MediaOpenRequest.resolving(urls, source: "Drop / open")
-            // The window may have closed while folders or a page resolved: nothing opens in it then.
-            guard let self, !self.isWindowClosing else { return }
-            await self.open(request, presentsWindow: false)
-        }
+        session.openMedia(urls: urls)
     }
 
     /// Opens `request` (`MediaOpenRequest.open(in:osd:load:)`) through `openStream`.
@@ -21,11 +15,8 @@ extension PlayerWindowController {
         _ request: MediaOpenRequest, startTime: Double? = nil, audioTrack: String? = nil, subtitleTrack: String? = nil,
         presentsWindow: Bool = true
     ) async {
-        await request.open(in: engine, osd: uiState.osd) { [weak self] url in
-            self?.openStream(
-                url: url, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
-                presentsWindow: presentsWindow)
-        }
-        await engine.waitForPendingLoad()
+        await session.open(
+            request, startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
+            presents: presentsWindow)
     }
 }

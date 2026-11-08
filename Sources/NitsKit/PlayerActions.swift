@@ -58,6 +58,10 @@ public protocol PlayerActions: AnyObject {
     func toggleChapters()
     func nextChapter()
     func previousChapter()
+    /// Whether the player is fullscreen; `esc` leaves it.
+    var isFullscreen: Bool { get }
+    /// Whether there is a fullscreen to toggle; `F` goes to the host when there is none.
+    var supportsFullscreen: Bool { get }
     func toggleFullscreen()
     func exitFullscreen()
     var isPictureInPictureActive: Bool { get }
@@ -140,6 +144,8 @@ extension PlayerActions {
     public func seekBackward() {
         seekRelative(by: -seekStepSeconds)
     }
+    public var isFullscreen: Bool { false }
+    public var supportsFullscreen: Bool { true }
     public var isPictureInPictureActive: Bool { false }
     public var canTogglePictureInPicture: Bool { false }
     public func togglePictureInPicture() {}

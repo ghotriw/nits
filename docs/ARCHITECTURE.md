@@ -30,7 +30,7 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
   intermediate view-model; views re-evaluate only on the properties they read. Exports the
   `NativeVideoHostView` canvas. Builds only for macOS today but is kept portable to iOS / tvOS
   (see "Platform layer").
-- **NitsKit** — `@MainActor` window lifecycle (`PlayerWindowController`, `PlayerWindow`), menu
+- **NitsKit** — `@MainActor` session (`PlayerSession`) and its window presentation (`PlayerWindowController`, `PlayerWindow`), menu
   commands (`PlayerCommands`), system media integration (`NowPlayingController`), the app's command
   line (`LaunchArguments`).
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
@@ -156,6 +156,33 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   for yt-dlp's generic extractor, whose ids are a URL's last component). The streams expire, so every load resolves
   again; `currentSourcePath` is the stream opened, which what reads the media again (thumbnails, embedded subtitles)
   opens.
+
+### Session and presentation (windowed and embedded hosts)
+
+`PlayerSession` (NitsKit) is everything around the engine that does not depend on where the picture is shown: the
+engine's callbacks, `PlayerUIState`, Now Playing, the Picture in Picture controller, recent media, opening media and
+the `PlayerActions` that menus, keys and media keys call. `PlayerWindowController` is one presentation of it: it adds
+the window, its title bar and toolbar, the fullscreen animation and the window side of PiP
+(`PictureInPictureWindowCoordinator`, which hides and restores *its* window; a session in a host's window has none, so
+PiP leaves the host's window alone). A host with a window or pane already does without the controller:
+
+- shows `session.makeContentView()` (the picture with the control bar, OSD and panels, or `VideoSurfaceView` alone);
+- sets `session.presentation` (`PlayerPresentation`): what its place can do. Fullscreen, `captureWindow` (HDR
+  screenshots read the screen) default to none, and the embedded mode is deliberately not equal to the window: no
+  custom fullscreen, no minimize-started PiP. `session.supportsFullscreen` tells;
+- keeps a `PlayerKeyMonitor(actions: session, window:)` as long as the session is shown: the unmodified keys are
+  `PlayerKeyRouter`'s (physical key codes, any layout, focus in a panel), the same code `PlayerWindow.sendEvent` runs.
+  Without it the embedded player has no keyboard;
+- calls `session.end()` when done: `onClose` (the saved progress), PiP, Now Playing, `engine.stop()`. For a window
+  `windowWillClose` does it.
+
+The engine's callbacks (`onTimeUpdate`, `onPlaybackStateChanged`, `onTrackNavigationChanged`, …) are single closures
+and belong to the session. A host subscribes through the session's own (`onTimeUpdate`, `onPlaybackStateChanged`,
+`onPlaybackEnded`, `onClose`), never on `engine`: it would silently stop Now Playing and the saved progress.
+What the window owns in `NitsUI` is switched by `PlayerUIState`, off until a window turns it on: `titleBarDoubleClicked`
+(the window's meaning of a double click on the title strip; `nil` does nothing), `movesWindow` (a drag of the strip
+moves the window) and `supportsFullscreen` (set from the presentation; off, a double click on the picture is the
+host's). NitsUI never zooms or moves the key window itself.
 
 ## Video pipeline
 

@@ -29,7 +29,9 @@ public final class PlayerWindow: NSWindow {
     private static let zoomFillSelector = Selector(("_zoomFill:"))
 
     public override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown, handleHardwareKey(event) {
+        if event.type == .keyDown, let actionHandler,
+            PlayerKeyRouter.handleKeyDown(event, firstResponder: firstResponder, actions: actionHandler)
+        {
             return
         }
         // An arrow key scrubs while down (see `handleHardwareKey`). Any key's release ends it: the arrow's own may come
@@ -45,140 +47,5 @@ public final class PlayerWindow: NSWindow {
     public override func resignKey() {
         super.resignKey()
         actionHandler?.endScrubbing()
-    }
-
-    private func handleHardwareKey(_ event: NSEvent) -> Bool {
-        // Do not intercept if user is typing in a text field
-        if firstResponder is NSTextView || firstResponder is NSText {
-            return false
-        }
-
-        guard let actionHandler else { return false }
-
-        let modifiers = event.modifierFlags.intersection([.command, .control, .option])
-
-        // Option-modified shortcuts (e.g. frame stepping)
-        if modifiers == [.option] {
-            switch event.keyCode {
-            case 0x7C:  // Option + Right Arrow
-                actionHandler.stepFrameForward()
-                return true
-            case 0x7B:  // Option + Left Arrow
-                actionHandler.stepFrameBackward()
-                return true
-            default:
-                return false
-            }
-        }
-
-        // If Command or Control are pressed, leave them to system/menu commands
-        guard modifiers.isEmpty else { return false }
-
-        // Unmodified shortcuts based on hardware keyCode (layout-independent)
-        switch event.keyCode {
-        case 0x31:  // Space
-            actionHandler.togglePlayPause()
-            return true
-        case 0x2B:  // Physical ',' (ANSI Comma, 0x2B / 43) -> Step 1 Frame Backward
-            actionHandler.stepFrameBackward()
-            return true
-        case 0x2F:  // Physical '.' (ANSI Period, 0x2F / 47) -> Step 1 Frame Forward
-            actionHandler.stepFrameForward()
-            return true
-        case 0x7B, 0x7C:  // Left / Right Arrow
-            // From the press to the release the seeks show frames, and playback resumes once, on release: a tap resumes
-            // as the finger lifts (or as its seek lands, if later), a held key after its last repeat. Begun at the press,
-            // not the first repeat, so the presses of a held key are one burst however long the system waits to repeat.
-            actionHandler.beginScrubbing()
-            if event.keyCode == 0x7B {
-                actionHandler.seekBackward()
-            } else {
-                actionHandler.seekForward()
-            }
-            return true
-        case 0x79:  // Page Down (fn+↓ on laptop keyboards) -> Next Chapter
-            guard actionHandler.hasChapters else { return false }
-            actionHandler.nextChapter()
-            return true
-        case 0x74:  // Page Up (fn+↑) -> Previous Chapter
-            guard actionHandler.hasChapters else { return false }
-            actionHandler.previousChapter()
-            return true
-        case 0x7E:  // Up Arrow
-            actionHandler.stepVolume(by: 0.05)
-            return true
-        case 0x7D:  // Down Arrow
-            actionHandler.stepVolume(by: -0.05)
-            return true
-        case 0x2E:  // Physical 'M' (ANSI M) -> Mute on any keyboard layout (Ukrainian, Hebrew, etc.)
-            actionHandler.toggleMute()
-            return true
-        case 0x02:  // Physical 'D' (ANSI D) -> Performance HUD on any layout
-            actionHandler.toggleDebugHUD()
-            return true
-        case 0x03:  // Physical 'F' (ANSI F) -> Toggle Fullscreen on any layout
-            actionHandler.toggleFullscreen()
-            return true
-        case 0x23:  // Physical 'P' (ANSI P) -> Toggle Playlist on any layout
-            actionHandler.togglePlaylist()
-            return true
-        case 0x08:  // Physical 'C' (ANSI C) -> Toggle Chapters on any layout, when the media has them
-            guard actionHandler.hasChapters else { return false }
-            actionHandler.toggleChapters()
-            return true
-        case 0x21:  // Physical '[' (ANSI LeftBracket, 0x21 / 33) -> Decrease Speed by 0.1x
-            actionHandler.stepPlaybackRate(by: -0.1)
-            return true
-        case 0x1E:  // Physical ']' (ANSI RightBracket, 0x1E / 30) -> Increase Speed by 0.1x
-            actionHandler.stepPlaybackRate(by: 0.1)
-            return true
-        case 0x2A, 0x33:  // Physical '\' (0x2A / 42) or Backspace (0x33 / 51) -> Reset Speed to 1.0x
-            actionHandler.resetPlaybackRate()
-            return true
-        case 0x06:  // Physical 'Z' (ANSI Z) -> Show subtitles 100 ms earlier
-            actionHandler.stepSubtitleDelay(by: -0.1)
-            return true
-        case 0x07:  // Physical 'X' (ANSI X) -> Show subtitles 100 ms later
-            actionHandler.stepSubtitleDelay(by: 0.1)
-            return true
-        case 0x26:  // Physical 'J' (ANSI J) -> Play audio 50 ms earlier (VLC's binding)
-            actionHandler.stepAudioDelay(by: -0.05)
-            return true
-        case 0x28:  // Physical 'K' (ANSI K) -> Play audio 50 ms later
-            actionHandler.stepAudioDelay(by: 0.05)
-            return true
-        case 0x00:  // Physical 'A' (ANSI A) -> Cycle the aspect ratio override (VLC / mpv)
-            guard actionHandler.hasVideo else { return false }
-            actionHandler.cycleVideoAspectRatio()
-            return true
-        case 0x0D:  // Physical 'W' (ANSI W) -> Cycle scaling: Fit, Fill, Stretch, Original Size (mpv's panscan key)
-            guard actionHandler.hasVideo else { return false }
-            actionHandler.cycleVideoScaling()
-            return true
-        case 0x24, 0x4C:  // Return / keypad Enter -> Press the action button ("Skip Intro") while it is on screen
-            guard actionHandler.isActionButtonVisible else { return false }
-            actionHandler.pressActionButton()
-            return true
-        case 0x35:  // Escape -> Dismiss dialogs/sidebars/action button if active, or Exit Fullscreen if active
-            if actionHandler.isJumpToPresented {
-                actionHandler.dismissJumpToTime()
-                return true
-            }
-            if actionHandler.isSidePanelPresented {
-                actionHandler.closeSidePanel()
-                return true
-            }
-            if actionHandler.isActionButtonVisible {
-                actionHandler.dismissActionButton()
-                return true
-            }
-            if styleMask.contains(.fullScreen) {
-                actionHandler.exitFullscreen()
-                return true
-            }
-            return false
-        default:
-            return false
-        }
     }
 }

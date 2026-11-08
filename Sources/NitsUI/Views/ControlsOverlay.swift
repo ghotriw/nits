@@ -43,14 +43,12 @@ public struct ControlsOverlay: View {
                         .frame(height: 1)
                 }
                 .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
+                .gesture(WindowDragGesture(), isEnabled: uiState?.movesWindow ?? false)
                 .simultaneousGesture(
                     TapGesture(count: 2).onEnded {
-                        if let titleBarDoubleClicked = uiState?.titleBarDoubleClicked {
-                            titleBarDoubleClicked()
-                        } else {
-                            (NSApp.keyWindow ?? NSApp.mainWindow)?.zoom(nil)
-                        }
+                        // The window's meaning of it (zoom, minimize); a host that embeds the player sets none, as
+                        // `NSApp.keyWindow` would be the host's own window.
+                        uiState?.titleBarDoubleClicked?()
                     }
                 )
                 .allowsWindowActivationEvents()

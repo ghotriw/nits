@@ -368,7 +368,7 @@ public struct PlayerCommands: Commands {
                 playerActions?.toggleFullscreen()
             }
             .keyboardShortcut("f", modifiers: [.control, .command])
-            .disabled(playerActions == nil)
+            .disabled(playerActions?.supportsFullscreen != true)
 
             Toggle(
                 "Picture in Picture",
