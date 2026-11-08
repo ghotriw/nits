@@ -87,7 +87,7 @@ jobs:
           prerelease: ${{ steps.meta.outputs.prerelease }}
           generate_release_notes: true
           body: |
-            Apple Silicon, macOS 15.0+.
+            Apple Silicon, macOS 15.4+.
 
             The app is ad-hoc signed, not notarized. After unzipping, either run
             `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in

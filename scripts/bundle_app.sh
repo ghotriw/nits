@@ -77,7 +77,7 @@ echo "==> Version $APP_VERSION (CFBundleShortVersionString $SHORT_VERSION, build
 
 DEPS_PREFIX="$DIR/.build/dependencies"
 if [ "$BUNDLE_DYLIBS" = true ]; then
-    echo "==> Setting up LGPL dependencies (macOS 15.0+)..."
+    echo "==> Setting up LGPL dependencies (macOS 15.4+)..."
     SETUP_OPTS=(--prefix="$DEPS_PREFIX")
     if [ "$FROM_SOURCE" = true ]; then
         SETUP_OPTS+=("--from-source")
@@ -110,7 +110,7 @@ fi
 cp "$BIN_PATH" "$MACOS_DIR/Nits"
 chmod +x "$MACOS_DIR/Nits"
 
-# Swift Build links via `swiftc` without SDKROOT, so clang records the deployment target (15.0) as
+# Swift Build links via `swiftc` without SDKROOT, so clang records the deployment target (15.4) as
 # the SDK version. AppKit/SwiftUI gate the current design (Liquid Glass) on the linked SDK, so such a
 # binary runs in the legacy look on macOS 26+. Stamp the real SDK version.
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
@@ -260,7 +260,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
+    <string>15.4</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Andrii Honcharov</string>
     <key>NSHighResolutionCapable</key>

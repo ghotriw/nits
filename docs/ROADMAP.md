@@ -8,7 +8,7 @@ The goal is to evolve the Apple Silicon dual-engine video rendering core into a 
 
 ## 1. Architectural Baseline & System Invariants
 
-- **Target Platform:** macOS 15.0+ (Sequoia) / Apple Silicon (ARM64).
+- **Target Platform:** macOS 15.4+ (Sequoia) / Apple Silicon (ARM64).
 - **Language Standard:** Swift 6 with complete concurrency checking enabled (`-strict-concurrency=complete`, `ExistentialAny`).
 - **Framework Stack:** Metal, QuartzCore (`CADisplayLink`), AVFoundation (`AVSampleBufferAudioRenderer`, `AVSampleBufferRenderSynchronizer`, `AVSampleBufferDisplayLayer`), VideoToolbox, CoreAudio, FFmpeg (`libavformat`, `libavcodec`, `libswresample`, `libdav1d`), Swift Observation (`@Observable`).
 - **Modular SPM Decomposition:**
@@ -830,7 +830,7 @@ flowchart TD
 
 ### Stage 7: Standalone Distribution & Release Bundling — [COMPLETED] ✓
 
-> Eliminate external dependencies on package managers (Homebrew FFmpeg) for zero-friction distribution on macOS 15+.
+> Eliminate external dependencies on package managers (Homebrew FFmpeg) for zero-friction distribution on macOS 15.4+.
 
 - [x] **7.1. App Bundle Packaging Script (`scripts/bundle_app.sh`):**
   - Assembly of `Nits.app` bundle hierarchy, resource compilation, `Info.plist` generation with document type associations, and ad-hoc code signing.
