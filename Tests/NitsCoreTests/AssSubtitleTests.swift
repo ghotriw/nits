@@ -503,11 +503,15 @@ struct AssSubtitleTrackTests {
         for _ in 0..<100 where engine.subtitles.images.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
         let authored = try #require(engine.subtitles.images.first)
 
+        // Waits for an image other than `previous`, not just for `previous` to go: a render in between can show nothing
+        // for a moment (an empty frame), which is not the redraw. Up to 5 s, for a full run's load.
         func redrawn(after previous: SubtitleImageCue) async throws -> SubtitleImageCue {
-            for _ in 0..<100 where engine.subtitles.images.first?.id == previous.id {
+            for _ in 0..<250 {
+                if let image = engine.subtitles.images.first, image.id != previous.id { return image }
                 try await Task.sleep(for: .milliseconds(20))
             }
-            return try #require(engine.subtitles.images.first, "Not redrawn")
+            return try #require(
+                engine.subtitles.images.first.flatMap { $0.id == previous.id ? nil : $0 }, "Not redrawn")
         }
         engine.subtitles.style.fontName = "Menlo"
         engine.subtitles.assStyleOverride = .font
