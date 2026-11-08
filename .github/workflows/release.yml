@@ -80,22 +80,45 @@ jobs:
           cd build/dist
           shasum -a 256 "${{ steps.meta.outputs.zip }}" > "${{ steps.meta.outputs.zip }}.sha256"
 
+      # The notes are the tag's message, which scripts/release.sh writes from the commits. A tag without them (a
+      # lightweight one, or one made by hand with a subject only) gets GitHub's generated notes instead, which follow
+      # the text below.
+      - name: Write release notes
+        id: notes
+        run: |
+          # actions/checkout may leave the tag lightweight; fetch the annotated one for its message.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          notes=build/dist/release-notes.md
+          : > "$notes"
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ]; then
+            git tag -l "$GITHUB_REF_NAME" --format='%(contents:body)' | sed -e '/./,$!d' > "$notes"
+          fi
+          if grep -q '[^[:space:]]' "$notes"; then
+            printf '\n---\n\n' >> "$notes"
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+          else
+            : > "$notes"
+            echo "generated=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat >> "$notes" <<'EOF'
+          Apple Silicon, macOS 15.4+.
+
+          The app is ad-hoc signed, not notarized. After unzipping, either run
+          `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
+          System Settings → Privacy & Security → Open Anyway.
+
+          Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause), libass ${{ steps.meta.outputs.libass }} (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak.
+          Their source archives are attached to
+          [deps-v${{ steps.meta.outputs.deps }}](https://github.com/${{ github.repository }}/releases/tag/deps-v${{ steps.meta.outputs.deps }}).
+          EOF
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Nits ${{ steps.meta.outputs.version }}
           prerelease: ${{ steps.meta.outputs.prerelease }}
-          generate_release_notes: true
-          body: |
-            Apple Silicon, macOS 15.4+.
-
-            The app is ad-hoc signed, not notarized. After unzipping, either run
-            `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
-            System Settings → Privacy & Security → Open Anyway.
-
-            Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause), libass ${{ steps.meta.outputs.libass }} (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak.
-            Their source archives are attached to
-            [deps-v${{ steps.meta.outputs.deps }}](https://github.com/${{ github.repository }}/releases/tag/deps-v${{ steps.meta.outputs.deps }}).
+          generate_release_notes: ${{ steps.notes.outputs.generated == 'true' }}
+          body_path: build/dist/release-notes.md
           files: |
             build/dist/${{ steps.meta.outputs.zip }}
             build/dist/${{ steps.meta.outputs.zip }}.sha256

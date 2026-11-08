@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Checks the subject against Conventional Commits, which scripts/release.sh counts the next version by:
+#   type(scope)!: description     — the scope and the "!" (a breaking change) optional
+# A breaking change can also be a "BREAKING CHANGE: ..." paragraph in the body.
+set -e
+
+# Comments stripped as git does (core.commentChar), then the first line with text.
+subject="$(git stripspace --strip-comments <"$1" | sed -n '/[^[:space:]]/{p;q;}')"
+
+# Commits git or tools write themselves.
+if [[ "$subject" =~ ^(Merge|Revert\ \"|fixup!|squash!|amend!) ]]; then
+    exit 0
+fi
+
+types="feat|fix|perf|refactor|build|docs|test|ci|style|chore|revert"
+if [[ "$subject" =~ ^($types)(\([a-z0-9][a-z0-9,/._-]*\))?!?:\ [^[:space:]] ]]; then
+    exit 0
+fi
+
+cat >&2 <<EOF
+✋ The commit subject is not a Conventional Commit:
+
+    $subject
+
+Write it as  type(scope): description  with type one of
+    ${types//|/, }
+and a "!" before the colon (or a "BREAKING CHANGE: ..." paragraph) for a breaking change.
+scripts/release.sh works out the next version from these. Skip the check with --no-verify.
+EOF
+exit 1

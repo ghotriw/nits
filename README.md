@@ -353,6 +353,27 @@ swift test
 ./scripts/format.sh check
 ```
 
+The repository's git hooks format staged Swift files, check commit subjects and run the checks before a push:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+### Commits and releases
+
+Commit subjects follow [Conventional Commits](https://www.conventionalcommits.org): `type(scope): description`,
+with type one of `feat`, `fix`, `perf`, `refactor`, `build`, `docs`, `test`, `ci`, `style`, `chore`, `revert`, and a
+`!` before the colon (or a `BREAKING CHANGE: …` paragraph) for a change that breaks the API hosts use.
+
+The next version is worked out from them since the last tag. Before 1.0 a breaking change raises the minor version
+and anything else the patch, so a host pinned with `.upToNextMinor(from:)` gets every fix and feature and no break;
+from 1.0 it is SemVer's (breaking → major, `feat` → minor, else patch).
+
+```bash
+./scripts/release.sh                # the next version and its release notes; changes nothing
+./scripts/release.sh --tag --push   # tag it (the notes are the tag's message) and push: release.yml publishes it
+```
+
 ## License
 
 [MIT](LICENSE)
