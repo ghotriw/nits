@@ -47,7 +47,7 @@ public final class ToneMapController {
         var staticTargetNits: Float = ToneMapController.referenceWhiteNits
         /// The scene's reference white, unscaled: the static one, which L1 moves (`applyFrame`).
         var sceneTargetNits: Float = ToneMapController.referenceWhiteNits
-        var targetNitsScale: Float = 1.0
+        var targetNitsScale: Float = PlayerConfiguration.defaultTargetNitsScale
         /// The reference white the curve targets: the scene's, scaled by the user's multiplier.
         var targetNits: Float { ToneMapController.scaledTargetNits(sceneTargetNits, scale: targetNitsScale) }
         /// The media has no static peak, and no RPU has set one yet (`applyFrame`).
@@ -99,7 +99,7 @@ public final class ToneMapController {
         didSet { updateShadowLiftUniform() }
     }
     /// Multiplier of the content-adapted reference white (0.5 ... 2.0 in UI, 0.1 ... 4.0 here).
-    public var targetNitsScale: Float = 1.0 {
+    public var targetNitsScale: Float = PlayerConfiguration.defaultTargetNitsScale {
         didSet {
             let clamped = max(0.1, min(4.0, targetNitsScale))
             if targetNitsScale != clamped {

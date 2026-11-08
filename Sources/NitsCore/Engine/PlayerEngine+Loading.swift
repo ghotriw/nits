@@ -676,6 +676,7 @@ extension PlayerEngine {
                 duration: duration,
                 startThreshold: configuration.resumeStartThreshold,
                 endThresholdRatio: configuration.resumeEndThresholdRatio,
+                maximumUnwatchedTail: configuration.resumeMaximumUnwatchedTail,
                 isLive: isOnTheAir,
                 wasAtLiveEdge: isOnTheAir ? live.isAtEdge(progressTime) : nil,
                 preferences: preferencesForHistory
@@ -1131,7 +1132,8 @@ extension PlayerEngine {
             let saved = historyStore.savedPosition(
                 for: mediaIdentity,
                 startThreshold: configuration.resumeStartThreshold,
-                endThresholdRatio: configuration.resumeEndThresholdRatio
+                endThresholdRatio: configuration.resumeEndThresholdRatio,
+                maximumUnwatchedTail: configuration.resumeMaximumUnwatchedTail
             )
         {
             effectiveStartTime = min(saved, max(0.0, self.media.duration - 1.0))

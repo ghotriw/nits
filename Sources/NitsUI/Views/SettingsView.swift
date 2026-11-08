@@ -3,22 +3,22 @@ import SwiftUI
 
 public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyEnableToneMapping)
-    private var enableToneMapping: Bool = true
+    private var enableToneMapping: Bool = PlayerConfiguration.defaultEnableToneMapping
 
     @AppStorage(PlayerConfiguration.keySharpness)
-    private var sharpness: Double = 0.5
+    private var sharpness: Double = Double(PlayerConfiguration.defaultSharpness)
 
     @AppStorage(PlayerConfiguration.keyTargetNitsScale)
-    private var targetNitsScale: Double = 1.0
+    private var targetNitsScale: Double = Double(PlayerConfiguration.defaultTargetNitsScale)
 
     @AppStorage(PlayerConfiguration.keyApplyDolbyVisionTrims)
-    private var applyDolbyVisionTrims: Bool = false
+    private var applyDolbyVisionTrims: Bool = PlayerConfiguration.defaultApplyDolbyVisionTrims
 
     @AppStorage(PlayerConfiguration.keyLocalContrast)
     private var localContrast: Double = Double(ToneMapController.defaultLocalContrast)
 
     @AppStorage(PlayerConfiguration.keyResumePlayback)
-    private var resumePlayback: Bool = true
+    private var resumePlayback: Bool = PlayerConfiguration.defaultResumePlayback
 
     @AppStorage(AppSettings.keyRememberRecentMedia)
     private var rememberRecentMedia: Bool = true
@@ -33,13 +33,16 @@ public struct SettingsView: View {
     private var rawHistoryExcludedDomains: String = "[]"
 
     @AppStorage(PlayerConfiguration.keyResumeStartThreshold)
-    private var resumeStartThreshold: Double = 15.0
+    private var resumeStartThreshold: Double = PlayerConfiguration.defaultResumeStartThreshold
 
     @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio)
-    private var resumeEndThresholdRatio: Double = 0.95
+    private var resumeEndThresholdRatio: Double = PlayerConfiguration.defaultResumeEndThresholdRatio
+
+    @AppStorage(PlayerConfiguration.keyResumeMaximumUnwatchedTail)
+    private var resumeMaximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail
 
     @AppStorage(PlayerConfiguration.keyCarriesPlaybackRate)
-    private var carriesPlaybackRate: Bool = false
+    private var carriesPlaybackRate: Bool = PlayerConfiguration.defaultCarriesPlaybackRate
 
     @AppStorage(AppSettings.keyEnableOSD)
     private var enableOSD: Bool = true
@@ -57,19 +60,19 @@ public struct SettingsView: View {
     private var debugOSDDuration: Double = 4.0
 
     @AppStorage(PlayerConfiguration.keyAutoLoadFolderMedia)
-    private var autoLoadFolderMedia: Bool = true
+    private var autoLoadFolderMedia: Bool = PlayerConfiguration.defaultAutoLoadFolderMedia
 
     @AppStorage(PlayerConfiguration.keySeekStepSeconds)
-    private var seekStepSeconds: Double = 5.0
+    private var seekStepSeconds: Double = PlayerConfiguration.defaultSeekStepSeconds
 
     @AppStorage(PlayerConfiguration.keyExactSeekOnSinglePress)
-    private var exactSeekOnSinglePress: Bool = true
+    private var exactSeekOnSinglePress: Bool = PlayerConfiguration.defaultExactSeekOnSinglePress
 
     @AppStorage(PlayerConfiguration.keyVideoScaling)
-    private var videoScaling: VideoScaling = .fit
+    private var videoScaling: VideoScaling = PlayerConfiguration.defaultVideoScaling
 
     @AppStorage(PlayerConfiguration.keyNetworkThumbnailPolicy)
-    private var networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
+    private var networkThumbnailPolicy: NetworkThumbnailPolicy = PlayerConfiguration.defaultNetworkThumbnailPolicy
 
     @AppStorage(AppSettings.keyPictureInPictureWindowBehavior)
     private var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide
@@ -270,6 +273,28 @@ public struct SettingsView: View {
                         Text("Playback past this point is considered finished and will not be resumed.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Longest unwatched ending:")
+                            Spacer()
+                            Text("\(Int(resumeMaximumUnwatchedTail / 60)) min")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: $resumeMaximumUnwatchedTail, in: PlayerConfiguration.resumeMaximumUnwatchedTailRange,
+                            step: 60
+                        )
+                        .onChange(of: resumeMaximumUnwatchedTail) { _, _ in
+                            notifyChange()
+                        }
+                        Text(
+                            "Caps the completion threshold for long videos: the last part of a video up to this long counts as finished."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
 

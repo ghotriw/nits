@@ -10,10 +10,10 @@ struct LanguagesSettingsPane: View {
     private var subtitleLanguages: String = ""
 
     @AppStorage(PlayerConfiguration.keyForcedSubtitleSelection)
-    private var forcedSubtitles: ForcedSubtitleSelection = .matchingAudio
+    private var forcedSubtitles: ForcedSubtitleSelection = TrackLanguagePreferences().forcedSubtitles
 
     @AppStorage(PlayerConfiguration.keySubtitlesWithKnownAudio)
-    private var subtitlesWithKnownAudio: SubtitlesWithKnownAudio = .forcedOnly
+    private var subtitlesWithKnownAudio: SubtitlesWithKnownAudio = TrackLanguagePreferences().subtitlesWithKnownAudio
 
     @AppStorage(PlayerConfiguration.keySubtitleEncoding)
     private var subtitleEncoding: String = ""

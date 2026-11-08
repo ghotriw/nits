@@ -14,9 +14,14 @@ public struct WelcomeView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSettings.keyRememberRecentMedia) private var rememberRecentMedia: Bool = true
-    @AppStorage(PlayerConfiguration.keyResumePlayback) private var resumePlayback: Bool = true
-    @AppStorage(PlayerConfiguration.keyResumeStartThreshold) private var resumeStartThreshold: Double = 15.0
-    @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio) private var resumeEndThresholdRatio: Double = 0.95
+    @AppStorage(PlayerConfiguration.keyResumePlayback) private var resumePlayback: Bool = PlayerConfiguration
+        .defaultResumePlayback
+    @AppStorage(PlayerConfiguration.keyResumeStartThreshold) private var resumeStartThreshold: Double =
+        PlayerConfiguration.defaultResumeStartThreshold
+    @AppStorage(PlayerConfiguration.keyResumeEndThresholdRatio) private var resumeEndThresholdRatio: Double =
+        PlayerConfiguration.defaultResumeEndThresholdRatio
+    @AppStorage(PlayerConfiguration.keyResumeMaximumUnwatchedTail)
+    private var resumeMaximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail
 
     @FocusState private var isFocused: Bool
     @State private var recentStore = RecentMediaStore.shared
@@ -74,7 +79,8 @@ public struct WelcomeView: View {
                     for: item,
                     resumePlayback: resumePlayback,
                     startThreshold: resumeStartThreshold,
-                    endThresholdRatio: resumeEndThresholdRatio
+                    endThresholdRatio: resumeEndThresholdRatio,
+                    maximumUnwatchedTail: resumeMaximumUnwatchedTail
                 )
             )
         }
@@ -156,6 +162,9 @@ public struct WelcomeView: View {
             updateDisplayState()
         }
         .onChange(of: resumeStartThreshold) { _, _ in
+            updateDisplayState()
+        }
+        .onChange(of: resumeMaximumUnwatchedTail) { _, _ in
             updateDisplayState()
         }
         .onChange(of: resumeEndThresholdRatio) { _, _ in

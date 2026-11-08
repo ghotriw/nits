@@ -431,3 +431,35 @@ struct PlaybackHistoryGeometryTests {
         #expect(preferences.videoAspectRatio == nil && preferences.videoCrop == nil)
     }
 }
+
+@Suite("PlaybackHistoryStore maximum unwatched tail")
+struct PlaybackHistoryStoreTailTests {
+    @Test("The tail limit decides what counts as the end of a long media")
+    func testTailLimitCapsCompletionThreshold() {
+        let store = PlaybackHistoryStore(userDefaults: InMemoryUserDefaults())
+        let media = MediaHistoryIdentity(historyKey: "/Users/test/Movies/long_stream.mkv")
+        // 10 hours: 5% is 30 minutes. 20 minutes from the end.
+        let duration = 36_000.0
+        let position = duration - 1_200.0
+
+        // With a 10-minute cap the position is well before the end: it resumes.
+        store.savePosition(
+            for: media, position: position, duration: duration, maximumUnwatchedTail: 600.0)
+        #expect(store.savedPosition(for: media, maximumUnwatchedTail: 600.0) == position)
+
+        // With a 30-minute cap the same position is within the end: it starts over.
+        #expect(store.savedPosition(for: media, maximumUnwatchedTail: 1_800.0) == nil)
+        store.savePosition(
+            for: media, position: position, duration: duration, maximumUnwatchedTail: 1_800.0)
+        #expect(store.savedPosition(for: media, maximumUnwatchedTail: 600.0) == nil)
+    }
+
+    @Test("A stored tail outside the settings' range is clamped on load")
+    func testStoredTailIsClamped() {
+        let defaults = InMemoryUserDefaults()
+        defaults.set(0.0, forKey: PlayerConfiguration.keyResumeMaximumUnwatchedTail)
+        #expect(
+            PlayerConfiguration.loadFromUserDefaults(userDefaults: defaults).resumeMaximumUnwatchedTail
+                == PlayerConfiguration.resumeMaximumUnwatchedTailRange.lowerBound)
+    }
+}

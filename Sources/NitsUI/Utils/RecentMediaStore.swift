@@ -289,8 +289,9 @@ public final class RecentMediaStore: Sendable {
     public func resumeInfo(
         for item: RecentMediaItem,
         resumePlayback: Bool = true,
-        startThreshold: Double = 15.0,
-        endThresholdRatio: Double = 0.95
+        startThreshold: Double = PlayerConfiguration.defaultResumeStartThreshold,
+        endThresholdRatio: Double = PlayerConfiguration.defaultResumeEndThresholdRatio,
+        maximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail
     ) -> (position: Double, duration: Double)? {
         guard resumePlayback else { return nil }
 
@@ -298,7 +299,8 @@ public final class RecentMediaStore: Sendable {
             let position = historyStore.savedPosition(
                 for: MediaHistoryIdentity(historyKey: item.historyKey, path: item.urlString),
                 startThreshold: startThreshold,
-                endThresholdRatio: endThresholdRatio
+                endThresholdRatio: endThresholdRatio,
+                maximumUnwatchedTail: maximumUnwatchedTail
             ), position > 0
         else {
             return nil

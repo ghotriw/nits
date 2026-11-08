@@ -320,15 +320,13 @@ public final class PlaybackHistoryStore: Sendable {
         return keyPrefix + hexString
     }
 
-    /// The most of a media's end that counts as watched, in seconds, whatever the share it is of its length: the threshold
-    /// is a share of the duration (`endThresholdRatio`, 5% of what is left at 95%), but of a stream of twenty hours that is
-    /// an hour of it, and a position forty minutes from its end is not one to start over from.
-    public static let maximumUnwatchedTail = 600.0
-
     /// Whether `position` of a media of `duration` is its end, to start over from rather than resume: within what is left
-    /// by `endThresholdRatio` (at 95%, the last 5%) but no more than `maximumUnwatchedTail`, or, for a media over a minute,
+    /// by `endThresholdRatio` (at 95%, the last 5%) but no more than `maximumUnwatchedTail` seconds (of a stream of twenty
+    /// hours 5% is an hour, and a position forty minutes from its end is not one to start over from), or, for a media over a minute,
     /// within its last 30 s.
-    static func isPastCompletion(position: Double, duration: Double, endThresholdRatio: Double) -> Bool {
+    static func isPastCompletion(
+        position: Double, duration: Double, endThresholdRatio: Double, maximumUnwatchedTail: Double
+    ) -> Bool {
         let remaining = duration - position
         let tail = min(duration * (1 - endThresholdRatio), maximumUnwatchedTail)
         return remaining <= tail || (duration > 60.0 && remaining <= 30.0)
@@ -345,8 +343,9 @@ public final class PlaybackHistoryStore: Sendable {
         for media: MediaHistoryIdentity,
         position: Double,
         duration: Double,
-        startThreshold: Double = 15.0,
-        endThresholdRatio: Double = 0.95,
+        startThreshold: Double = PlayerConfiguration.defaultResumeStartThreshold,
+        endThresholdRatio: Double = PlayerConfiguration.defaultResumeEndThresholdRatio,
+        maximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail,
         isLive: Bool = false,
         wasAtLiveEdge: Bool? = nil,
         preferences: PlaybackPreferences = PlaybackPreferences()
@@ -356,7 +355,9 @@ public final class PlaybackHistoryStore: Sendable {
         // Watched past the end threshold (e.g. credits at 95% or last 30s for media > 60s): finished, start over.
         let isPastCompletion =
             !isLive
-            && Self.isPastCompletion(position: position, duration: duration, endThresholdRatio: endThresholdRatio)
+            && Self.isPastCompletion(
+                position: position, duration: duration, endThresholdRatio: endThresholdRatio,
+                maximumUnwatchedTail: maximumUnwatchedTail)
         let effectivePosition = position < startThreshold || isPastCompletion ? 0.0 : position
 
         let key = storageKey(for: media.historyKey)
@@ -438,10 +439,13 @@ public final class PlaybackHistoryStore: Sendable {
     /// Retrieves the saved playback position for a media resource identified by `media`, or `nil` if not eligible or excluded.
     public func savedPosition(
         for media: MediaHistoryIdentity,
-        startThreshold: Double = 15.0,
-        endThresholdRatio: Double = 0.95
+        startThreshold: Double = PlayerConfiguration.defaultResumeStartThreshold,
+        endThresholdRatio: Double = PlayerConfiguration.defaultResumeEndThresholdRatio,
+        maximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail
     ) -> Double? {
-        savedRecord(for: media, startThreshold: startThreshold, endThresholdRatio: endThresholdRatio)?.position
+        savedRecord(
+            for: media, startThreshold: startThreshold, endThresholdRatio: endThresholdRatio,
+            maximumUnwatchedTail: maximumUnwatchedTail)?.position
     }
 
     /// The saved position of a live stream's history, in the stream's time, and whether it was saved at the edge; `nil`
@@ -492,7 +496,8 @@ public final class PlaybackHistoryStore: Sendable {
     private func savedRecord(
         for media: MediaHistoryIdentity,
         startThreshold: Double,
-        endThresholdRatio: Double
+        endThresholdRatio: Double,
+        maximumUnwatchedTail: Double
     ) -> PlaybackRecord? {
         let key = storageKey(for: media.historyKey)
 
@@ -507,7 +512,8 @@ public final class PlaybackHistoryStore: Sendable {
 
             guard
                 !Self.isPastCompletion(
-                    position: record.position, duration: record.duration, endThresholdRatio: endThresholdRatio)
+                    position: record.position, duration: record.duration, endThresholdRatio: endThresholdRatio,
+                    maximumUnwatchedTail: maximumUnwatchedTail)
             else {
                 return nil
             }

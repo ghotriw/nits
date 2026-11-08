@@ -71,6 +71,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// Fraction of video duration after which it is considered completed (default 0.95).
     public var resumeEndThresholdRatio: Double
 
+    /// The most of a media's end, in seconds, that counts as watched whatever its share of the length (default 600.0).
+    public var resumeMaximumUnwatchedTail: Double
+
     /// Whether local media files load synchronously on the main thread (used by programmatic test suites).
     /// Default is false: in production, demuxing and external audio open in a background task off the main thread,
     /// keeping the UI responsive, while applying demuxer state remains on the main actor.
@@ -164,19 +167,20 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public private(set) var historyExclusionPolicy: HistoryExclusionPolicy
 
     public init(
-        enableToneMapping: Bool = true,
+        enableToneMapping: Bool = PlayerConfiguration.defaultEnableToneMapping,
         defaultRenderMode: RenderMode = .auto,
         targetNits: Float = ToneMapController.referenceWhiteNits,
         targetNitsScale: Float? = nil,
-        sharpness: Float = 0.5,
-        applyDolbyVisionTrims: Bool = false,
+        sharpness: Float = PlayerConfiguration.defaultSharpness,
+        applyDolbyVisionTrims: Bool = PlayerConfiguration.defaultApplyDolbyVisionTrims,
         localContrast: Float = ToneMapController.defaultLocalContrast,
         initialVolume: Float = 1.0,
-        resumePlayback: Bool = true,
-        resumeStartThreshold: Double = 15.0,
-        resumeEndThresholdRatio: Double = 0.95,
+        resumePlayback: Bool = PlayerConfiguration.defaultResumePlayback,
+        resumeStartThreshold: Double = PlayerConfiguration.defaultResumeStartThreshold,
+        resumeEndThresholdRatio: Double = PlayerConfiguration.defaultResumeEndThresholdRatio,
+        resumeMaximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail,
         synchronousLocalLoads: Bool = false,
-        carriesPlaybackRate: Bool = false,
+        carriesPlaybackRate: Bool = PlayerConfiguration.defaultCarriesPlaybackRate,
         subtitleFontSize: Double = SubtitleStyle.defaultFontSize,
         subtitleFontName: String = SubtitleStyle.defaultFontName,
         subtitleFontWeight: String = SubtitleStyle.defaultFontWeight,
@@ -191,11 +195,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         subtitleScale: Double = 1.0,
         subtitlePosition: Double = SubtitleController.defaultPosition,
         secondarySubtitleInset: Double = SecondarySubtitles.defaultInset,
-        autoLoadFolderMedia: Bool = true,
-        seekStepSeconds: Double = 5.0,
-        exactSeekOnSinglePress: Bool = true,
-        videoScaling: VideoScaling = .fit,
-        networkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly,
+        autoLoadFolderMedia: Bool = PlayerConfiguration.defaultAutoLoadFolderMedia,
+        seekStepSeconds: Double = PlayerConfiguration.defaultSeekStepSeconds,
+        exactSeekOnSinglePress: Bool = PlayerConfiguration.defaultExactSeekOnSinglePress,
+        videoScaling: VideoScaling = PlayerConfiguration.defaultVideoScaling,
+        networkThumbnailPolicy: NetworkThumbnailPolicy = PlayerConfiguration.defaultNetworkThumbnailPolicy,
         trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences(),
         videoCodecs: VideoCodecPreference = VideoCodecPreference(),
         subtitleEncoding: String.Encoding? = nil,
@@ -216,6 +220,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.resumePlayback = resumePlayback
         self.resumeStartThreshold = resumeStartThreshold
         self.resumeEndThresholdRatio = resumeEndThresholdRatio
+        self.resumeMaximumUnwatchedTail = resumeMaximumUnwatchedTail
         self.synchronousLocalLoads = synchronousLocalLoads
         self.carriesPlaybackRate = carriesPlaybackRate
         self.subtitleFontSize = subtitleFontSize
@@ -257,6 +262,23 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyHistoryExcludedDomains = "Nits.historyExcludedDomains"
     public static let keyResumeStartThreshold = "Nits.resumeStartThreshold"
     public static let keyResumeEndThresholdRatio = "Nits.resumeEndThresholdRatio"
+    public static let keyResumeMaximumUnwatchedTail = "Nits.resumeMaximumUnwatchedTail"
+    public static let defaultEnableToneMapping = true
+    public static let defaultSharpness: Float = 0.5
+    public static let defaultTargetNitsScale: Float = 1.0
+    public static let defaultApplyDolbyVisionTrims = false
+    public static let defaultResumePlayback = true
+    public static let defaultCarriesPlaybackRate = false
+    public static let defaultAutoLoadFolderMedia = true
+    public static let defaultSeekStepSeconds: Double = 5.0
+    public static let defaultExactSeekOnSinglePress = true
+    public static let defaultVideoScaling: VideoScaling = .fit
+    public static let defaultNetworkThumbnailPolicy: NetworkThumbnailPolicy = .localNetworkOnly
+    public static let defaultResumeStartThreshold: Double = 15.0
+    public static let defaultResumeEndThresholdRatio: Double = 0.95
+    public static let defaultResumeMaximumUnwatchedTail: Double = 600.0
+    /// What the settings offer for it, in seconds; a stored value outside is clamped.
+    public static let resumeMaximumUnwatchedTailRange: ClosedRange<Double> = 60.0...1800.0
     public static let keyCarriesPlaybackRate = "Nits.carriesPlaybackRate"
     public static let keySubtitleFontSize = "Nits.subtitleFontSize"
     public static let keySubtitleFontName = "Nits.subtitleFontName"
@@ -316,6 +338,11 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if let endThreshold = userDefaults.object(forKey: keyResumeEndThresholdRatio) as? NSNumber {
             config.resumeEndThresholdRatio = endThreshold.doubleValue
+        }
+        if let tail = userDefaults.object(forKey: keyResumeMaximumUnwatchedTail) as? NSNumber {
+            config.resumeMaximumUnwatchedTail = min(
+                max(tail.doubleValue, resumeMaximumUnwatchedTailRange.lowerBound),
+                resumeMaximumUnwatchedTailRange.upperBound)
         }
         if userDefaults.object(forKey: keyCarriesPlaybackRate) != nil {
             config.carriesPlaybackRate = userDefaults.bool(forKey: keyCarriesPlaybackRate)
@@ -429,6 +456,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(resumePlayback, forKey: Self.keyResumePlayback)
         userDefaults.set(resumeStartThreshold, forKey: Self.keyResumeStartThreshold)
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
+        userDefaults.set(resumeMaximumUnwatchedTail, forKey: Self.keyResumeMaximumUnwatchedTail)
         userDefaults.set(carriesPlaybackRate, forKey: Self.keyCarriesPlaybackRate)
         userDefaults.set(subtitleFontSize, forKey: Self.keySubtitleFontSize)
         userDefaults.set(subtitleFontName, forKey: Self.keySubtitleFontName)
