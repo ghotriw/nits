@@ -397,6 +397,28 @@ the parser. The load times are logged by part now (`YouTubeLiveHistory.Timings` 
 engine's), for the 43 s load seen once (the likeliest the search for the edge of the history, which takes 41 s on a
 server that answers 404, 500 and 503 for seconds each: the line says "by looking for the edge of the history" if so).
 
+**A premiere's history counts the countdown; the video after it does not (2026-11-09).** A premiere on the air plays
+from its history as a live stream does (`source=yt_premiere_broadcast`, `YTDLPInfo.isBroadcastSegment`), and its
+position is saved in the stream's time (`PlayerEngine.playbackProgress(at:)`: `timelineOrigin` plus the engine's),
+which `PlaybackProgress` takes the recording that follows to count in too. For a premiere it does not: the broadcast's
+time holds the countdown, the video has none. Seen once: a position saved during a premiere and restored after its end
+(the page an ordinary video by then) landed about a minute further on, the premiere having had a countdown. Restoring
+while it is on the air is right (both sides in the stream's time). The fix is at saving: the countdown's length taken
+off a premiere's stream time (and added back when resuming on the air). Where to read that length from is not known:
+needs the yt-dlp JSON of a premiere on the air (`release_timestamp` against the head's time is the first to look at).
+Not checked, from the review of the same change:
+
+- Chapters and SponsorBlock segments (`resolvedChapters`, `buttons` in `YTDLPInfo.resolvedMedia`) are in the video's
+  time and are attached to the history's timeline as they are: with a countdown they would stand that much early. A live
+  stream had none; a premiere has. The same length fixes both.
+- A premiere that ends while its history is played behind the edge: the next renewal of the signature
+  (`YTDLPResolver.liveSegmentURLs`, at the expiry margin or a 403) may find no broadcast formats on what is a video's
+  page by then, throw, and the segments be refused: the picture stands, with no fallback to resolving it as a video.
+  Whether the server keeps a premiere's segments after its end, as it does a live stream's, is the thing to see.
+- The end of a premiere at the edge: the manifest goes on past the head for a day (`futureSegments`) though the end is
+  known (`duration`), so `LiveSegmentGate` waits `segmentWaitLimit` (60 s) and then asks yt-dlp before `hasEnded` is set:
+  a minute of buffering at the end, and no limit to it if yt-dlp still says `is_live` then.
+
 **Not checked on a real stream (2026-11-04)**:
 
 - A window shorter than about 10 s (three segments of 2 s) cannot be seeked in without the picture falling out of it
