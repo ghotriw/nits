@@ -7,25 +7,46 @@ struct ChapterListView: View {
     let engine: PlayerEngine
 
     var body: some View {
+        let thumbnails = engine.thumbnailManager
+        ChapterListContent(
+            chapters: engine.media.chapters,
+            currentIndex: engine.currentChapterIndex,
+            duration: engine.media.duration,
+            showsThumbnails: !thumbnails.thumbnails.isEmpty || thumbnails.isGenerating,
+            thumbnail: { thumbnails.thumbnail(at: $0) },
+            onSelect: { chapter in
+                // Picking a chapter means "watch from here", like picking a playlist item.
+                engine.seekToChapter(chapter)
+                if !engine.isPlaying {
+                    engine.play()
+                }
+            }
+        )
+    }
+}
+
+/// The tab's layout, apart from the engine so that a preview can fill it.
+private struct ChapterListContent: View {
+    let chapters: [MediaChapter]
+    let currentIndex: Int?
+    let duration: Double
+    let showsThumbnails: Bool
+    /// The preview frame nearest to a time, if one is generated.
+    let thumbnail: (Double) -> ThumbnailItem?
+    let onSelect: (MediaChapter) -> Void
+
+    var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                let showsThumbnails =
-                    !engine.thumbnailManager.thumbnails.isEmpty || engine.thumbnailManager.isGenerating
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(engine.media.chapters) { chapter in
+                        ForEach(chapters) { chapter in
                             ChapterRowView(
                                 chapter: chapter,
-                                thumbnail: engine.thumbnailManager.thumbnail(at: chapter.start),
+                                thumbnail: thumbnail(chapter.start),
                                 showsThumbnail: showsThumbnails,
-                                isCurrent: engine.currentChapterIndex == chapter.id,
-                                onSelect: {
-                                    // Picking a chapter means "watch from here", like picking a playlist item.
-                                    engine.seekToChapter(chapter)
-                                    if !engine.isPlaying {
-                                        engine.play()
-                                    }
-                                }
+                                isCurrent: currentIndex == chapter.id,
+                                onSelect: { onSelect(chapter) }
                             )
                             .id(chapter.id)
                         }
@@ -35,7 +56,7 @@ struct ChapterListView: View {
                 .onAppear {
                     scrollToCurrent(using: proxy, animated: false)
                 }
-                .onChange(of: engine.currentChapterIndex) { _, _ in
+                .onChange(of: currentIndex) { _, _ in
                     scrollToCurrent(using: proxy, animated: true)
                 }
             }
@@ -49,9 +70,9 @@ struct ChapterListView: View {
 
     private var footerView: some View {
         HStack {
-            let count = engine.media.chapters.count
+            let count = chapters.count
             Text(
-                engine.currentChapterIndex.map { "Chapter \($0 + 1) of \(count)" }
+                currentIndex.map { "Chapter \($0 + 1) of \(count)" }
                     ?? "\(count) \(count == 1 ? "chapter" : "chapters")"
             )
             .font(.system(size: 11, weight: .regular))
@@ -59,8 +80,8 @@ struct ChapterListView: View {
 
             Spacer()
 
-            if engine.media.duration > 0 {
-                Text(TimeParser.format(seconds: engine.media.duration))
+            if duration > 0 {
+                Text(TimeParser.format(seconds: duration))
                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.5))
             }
@@ -71,7 +92,7 @@ struct ChapterListView: View {
     }
 
     private func scrollToCurrent(using proxy: ScrollViewProxy, animated: Bool) {
-        guard let index = engine.currentChapterIndex else { return }
+        guard let index = currentIndex else { return }
         Task { @MainActor in
             if animated {
                 withAnimation(.easeInOut(duration: 0.25)) {
@@ -157,4 +178,51 @@ private struct ChapterRowView: View {
         .clipShape(shape)
         .overlay(shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
     }
+}
+
+#Preview("Chapters") {
+    let titles = [
+        "Opening Credits", "The Bridge", nil, "Night Market", "Rooftops",
+        "A Very Long Chapter Title That Does Not Fit Into the Panel", "The Chase", "Epilogue", "End Credits",
+    ]
+    let starts: [Double] = [0, 95, 410, 760, 1185, 1730, 2310, 3105, 3640]
+    let duration: Double = 3812
+    let chapters = titles.indices.map { index in
+        MediaChapter(
+            id: index, title: titles[index], start: starts[index],
+            end: index + 1 < starts.count ? starts[index + 1] : duration)
+    }
+    // A plain colour per chapter stands in for its frame.
+    let thumbnails = chapters.compactMap { chapter -> ThumbnailItem? in
+        let (width, height) = (128, 72)
+        guard
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        let hue = Double(chapter.id) / Double(chapters.count)
+        context.setFillColor(NSColor(hue: hue, saturation: 0.45, brightness: 0.55, alpha: 1).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage().map { ThumbnailItem(time: chapter.start, image: $0, width: width, height: height) }
+    }
+    SidePanelContainer(width: PlayerSidePanel.chapters.width) {
+        ChapterListContent(
+            chapters: chapters, currentIndex: 3, duration: duration, showsThumbnails: true,
+            // Each frame stands exactly at its chapter's start, the time the list asks for.
+            thumbnail: { time in thumbnails.first { $0.time == time } },
+            onSelect: { _ in })
+    }
+    .frame(height: 520)
+}
+
+#Preview("Chapters, no thumbnails") {
+    let chapters = (0..<4).map { index in
+        MediaChapter(id: index, title: nil, start: Double(index) * 600, end: Double(index + 1) * 600)
+    }
+    SidePanelContainer(width: PlayerSidePanel.chapters.width) {
+        ChapterListContent(
+            chapters: chapters, currentIndex: nil, duration: 2400, showsThumbnails: false,
+            thumbnail: { _ in nil }, onSelect: { _ in })
+    }
+    .frame(height: 320)
 }

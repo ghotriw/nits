@@ -126,3 +126,25 @@ public struct PlaylistRowView: View {
         }
     }
 }
+
+#Preview("Rows") {
+    let items = [
+        PlaylistItem(url: URL(filePath: "/Movies/Tears of Steel (2012) 2160p HDR10.mkv"), duration: 734),
+        PlaylistItem(url: URL(filePath: "/Movies/Sintel.mp4"), duration: 888),
+        PlaylistItem(
+            url: URL(filePath: "/Movies/A Very Long File Name of a Recording That Does Not Fit Into the Panel.mov"),
+            duration: 4521),
+        PlaylistItem(url: URL(filePath: "/Movies/Not Probed Yet.webm")),
+        PlaylistItem(url: URL(string: "https://example.com/live/master.m3u8")!, title: "Live Stream"),
+    ]
+    VStack(spacing: 0) {
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            PlaylistRowView(
+                item: item, index: index, isCurrent: index < 2, isPlaying: index == 0, onSelect: {}, onRemove: {})
+        }
+    }
+    .frame(width: PlayerSidePanel.playlist.width)
+    .padding(.vertical, 8)
+    .background(Color.black.opacity(0.85))
+    .environment(\.colorScheme, .dark)
+}

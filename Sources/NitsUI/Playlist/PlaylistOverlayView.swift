@@ -680,3 +680,65 @@ public struct PlaylistOverlayView: View {
         }
     }
 }
+
+/// A panel over an engine of its own with `items` in the playlist and the second one current. The engine's settings
+/// (repeat, shuffle, history) start empty on every run, so shuffle turned on in one run does not reorder the next.
+private struct PlaylistPreview: View {
+    private static let defaultsSuite = "NitsPreviews"
+
+    @State private var engine: PlayerEngine
+    @State private var uiState = PlayerUIState()
+
+    init(items: [PlaylistItem], searchQuery: String = "") {
+        let defaults = UserDefaults(suiteName: Self.defaultsSuite) ?? .standard
+        defaults.removePersistentDomain(forName: Self.defaultsSuite)
+        let engine = PlayerEngine(
+            configuration: PlayerConfiguration(), userDefaults: defaults,
+            durationCache: MediaDurationCache(fileURL: nil))
+        engine.playlist.replaceAll(items: items, startIndex: min(1, max(items.count - 1, 0)))
+        engine.playlist.searchQuery = searchQuery
+        _engine = State(initialValue: engine)
+    }
+
+    var body: some View {
+        SidePanelContainer(width: PlayerSidePanel.playlist.width) {
+            PlaylistOverlayView(engine: engine, uiState: uiState, onClose: {})
+        }
+        .frame(height: 560)
+    }
+}
+
+private let previewPlaylistItems: [PlaylistItem] = {
+    let files: [(title: String, duration: Double)] = [
+        ("Big Buck Bunny", 596),
+        ("Tears of Steel (2012) 2160p HDR10", 734),
+        ("Sintel", 888),
+        ("Elephants Dream", 654),
+        ("Cosmos Laundromat", 730),
+        ("Spring", 464),
+        ("Agent 327 Operation Barbershop", 231),
+        ("Caminandes Llamigos", 150),
+        ("Glass Half", 186),
+        ("Hero", 236),
+        ("Coffee Run", 184),
+        ("Sprite Fright", 629),
+    ]
+    let stream = PlaylistItem(url: URL(string: "https://example.com/live/master.m3u8")!, title: "Live Stream")
+    return files.map { PlaylistItem(url: URL(filePath: "/Movies/\($0.title).mkv"), duration: $0.duration) } + [stream]
+}()
+
+#Preview("Playlist") {
+    PlaylistPreview(items: previewPlaylistItems)
+}
+
+#Preview("Filtered") {
+    PlaylistPreview(items: previewPlaylistItems, searchQuery: "st")
+}
+
+#Preview("No matches") {
+    PlaylistPreview(items: previewPlaylistItems, searchQuery: "Lord of the Rings")
+}
+
+#Preview("Empty") {
+    PlaylistPreview(items: [])
+}
