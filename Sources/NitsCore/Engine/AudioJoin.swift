@@ -24,8 +24,6 @@ final class AudioJoin {
     /// How long the audio may take to come back before playback goes to buffering.
     static let timeout: Duration = .milliseconds(1500)
     static let pollInterval: Duration = .milliseconds(10)
-    /// How long an enqueue may wait on the renderer before it counts as full; an enqueue with room returns at once.
-    static let fullAfter: Duration = .milliseconds(50)
     /// How long after the hand-over the join waits for the new audio to get ahead of the clock (see the end of `run`).
     static let settleTimeout: Duration = .seconds(1)
 
@@ -130,19 +128,12 @@ final class AudioJoin {
         // The wait for the audio counts from the picture's start (its first frame can take a while on a slow source),
         // and from the beginning without a picture.
         var waitStart: ContinuousClock.Instant? = hasPicture ? nil : .now
-        // The enqueue waiting on the renderer, and since when: one that waits `fullAfter` has met a full renderer (an
-        // enqueue with room returns at once).
-        var blocked: (start: CMTime, since: ContinuousClock.Instant)?
         while !Task.isCancelled {
             try? await Task.sleep(for: pollInterval)
             guard !Task.isCancelled else { return false }
             if hasPicture, waitStart == nil, clock.isProvisional { waitStart = .now }
-            if let pending = sink.pendingStart {
-                if blocked?.start != pending { blocked = (pending, .now) }
-            } else {
-                blocked = nil
-            }
-            let isFull = blocked.map { ContinuousClock.now - $0.since >= fullAfter } ?? false
+            // An enqueue that has waited `fullAfter` on the renderer has met a full one.
+            let isFull = sink.isRendererFull()
             if isReady(engine, clock: clock, latency: latency, target: target, hasPicture: hasPicture, isFull: isFull) {
                 break
             }
@@ -188,12 +179,15 @@ final class AudioJoin {
         // run out (without a picture, it would hold the clock on a renderer that, held, never makes room).
         // The renderer holds the audio for the position only from then on (`isRendererStale`): a pause before it, with
         // the old audio still in, plays on through a join again, not over a renderer that a held clock never empties.
+        // Ahead by as much as a start needs, not by the low watermark itself: left at the watermark, the clock moving on
+        // by the next check of `checkForStarvation` reads as audio run out (seen at 1.7x: the join left with 0.257 s
+        // ahead against a watermark of 0.255 s, and the clock was held 2 ms later, with the old audio still in).
         let settleStart = ContinuousClock.now
         while !Task.isCancelled, ContinuousClock.now - settleStart < settleTimeout {
             let now = clock.currentTime()
             if engine.inputs?.isAudioEOF ?? true
                 || (now.isNumeric
-                    && engine.audioAhead(of: now) >= BufferingPolicy.audioLowWatermark * engine.playbackRate)
+                    && engine.audioAhead(of: now) >= BufferingPolicy.audioAheadToStart(rate: engine.playbackRate))
             {
                 engine.audioJoin.isRendererStale = false
                 break

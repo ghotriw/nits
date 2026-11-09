@@ -61,6 +61,35 @@ private final class GatedAudioSink: AudioRendererSink {
     }
 }
 
+/// Holds every buffer until released, oldest first: enqueues from more than one feeder at once.
+private final class QueuedGateAudioSink: AudioRendererSink {
+    private let waiting = OSAllocatedUnfairLock<[CheckedContinuation<Void, any Error>]>(initialState: [])
+
+    var waitingCount: Int {
+        waiting.withLock { $0.count }
+    }
+
+    func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            waiting.withLock { $0.append(continuation) }
+        }
+    }
+
+    func releaseOldest() {
+        waiting.withLock { waiting in
+            guard !waiting.isEmpty else { return }
+            waiting.removeFirst().resume()
+        }
+    }
+
+    func flush() {
+        waiting.withLock { waiting in
+            for continuation in waiting { continuation.resume(throwing: CancellationError()) }
+            waiting.removeAll()
+        }
+    }
+}
+
 @Suite("Audio delay sink")
 struct DelayedAudioSinkTests {
     /// Decoded audio from the start of the synthetic FLAC up to `seconds`, or `nil` without FFmpeg.
@@ -143,6 +172,28 @@ struct DelayedAudioSinkTests {
         #expect(sink.changeDelay(to: Self.seconds(0.1), keepingAudioAfter: .invalid).isEmpty)
     }
 
+    @Test("An old enqueue ending does not clear a newer one still waiting on the renderer")
+    func overlappingEnqueues() async throws {
+        guard let decoded = Self.decodedAudio(seconds: 0.1)?.first else { return }
+        nonisolated(unsafe) let buffer = decoded
+        let gate = QueuedGateAudioSink()
+        let sink = BufferTrackingAudioSink(wrapping: gate)
+
+        let old = Task { try await sink.enqueue(buffer) }
+        while gate.waitingCount < 1 { try await Task.sleep(for: .milliseconds(1)) }
+        let new = Task { try await sink.enqueue(buffer) }
+        while gate.waitingCount < 2 { try await Task.sleep(for: .milliseconds(1)) }
+
+        gate.releaseOldest()
+        try await old.value
+        #expect(sink.pendingStart != nil)
+        #expect(sink.isRendererFull(at: .now + BufferTrackingAudioSink.fullAfter))
+
+        gate.releaseOldest()
+        try await new.value
+        #expect(sink.pendingStart == nil)
+    }
+
     @Test("The audio the renderer holds back is known until it is taken or flushed")
     func pendingStartFollowsBackpressure() async throws {
         guard let decoded = Self.decodedAudio(seconds: 0.1)?.first else { return }
@@ -152,14 +203,21 @@ struct DelayedAudioSinkTests {
         sink.setDelay(Self.seconds(0.25))
         #expect(sink.pendingStart == nil)
 
+        let beforeEnqueue = ContinuousClock.now
         let taken = Task { try await sink.enqueue(buffer) }
         while !gate.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
         // On the clock's timeline, like `bufferedEnd`.
         let pending = try #require(sink.pendingStart?.seconds)
         #expect(abs(pending - (CMSampleBufferGetPresentationTimeStamp(buffer).seconds + 0.25)) < 1e-6)
+        // Full only once the buffer has waited `fullAfter`: an enqueue in flight for an instant is no sign of it. Asked
+        // at instants on either side of that, not at `.now`, which a loaded machine reaches past `fullAfter` already.
+        let fullAfter = BufferTrackingAudioSink.fullAfter
+        #expect(!sink.isRendererFull(at: beforeEnqueue))
+        #expect(sink.isRendererFull(at: .now + fullAfter))
         gate.release()
         try await taken.value
         #expect(sink.pendingStart == nil)
+        #expect(!sink.isRendererFull(at: .now + fullAfter))
 
         let flushed = Task { try await sink.enqueue(buffer) }
         while !gate.isWaiting { try await Task.sleep(for: .milliseconds(1)) }

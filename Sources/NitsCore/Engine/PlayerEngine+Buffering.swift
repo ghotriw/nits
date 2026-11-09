@@ -27,6 +27,10 @@ extension PlayerEngine {
     /// renderer stops taking audio once full, and with video at its limit the demuxer reads no further audio.
     static let bufferingAudioSettleTime: Duration = .milliseconds(500)
     static let bufferingPollInterval: Duration = .milliseconds(50)
+    /// When a buffering wait that has not ended first logs its levels; each next report waits twice as long, up to
+    /// `bufferingReportMaxInterval`, so a long outage does not fill the log.
+    static let bufferingReportInterval: Duration = .seconds(3)
+    static let bufferingReportMaxInterval: Duration = .seconds(60)
 
     var hasAudioStream: Bool {
         audioDecoder != nil && inputs?.audioSource != nil
@@ -47,6 +51,7 @@ extension PlayerEngine {
             hasVideo: media.hasVideo,
             isAudioSeparate: inputs.isAudioSeparate,
             isAudioEOF: inputs.isAudioEOF,
+            isAudioRendererFull: audioSink.isRendererFull(),
             isVideoReadAheadDry: inputs.main.isVideoReadAheadDry,
             secondsPastLastFrame: clock.seconds - frameQueue.getLastRenderedPTS(),
             frameDuration: nominalFrameDurationLock.withLock { $0 }
@@ -72,6 +77,22 @@ extension PlayerEngine {
         )
     }
 
+    /// Marks the renderer as holding the audio for the position (`AudioJoin.isRendererStale`) once, with the clock
+    /// running, the new audio is as far ahead as a start needs. A join that timed out, or a resume over a renderer full of
+    /// the old position's audio (`BufferingPolicy.holdsAudioForPosition`), leaves it stale; left so, every later pause
+    /// and play would go through a join, and its flush (~0.5 s of silence with multichannel on AirPods). Called by the
+    /// periodic time observer, which fires only while the clock runs.
+    func clearStaleRendererOnceAudioIsAhead() {
+        guard audioJoin.isRendererStale, !audioJoin.isActive, isPlaying, !isBuffering, !isSeeking, chase == nil,
+            !isPrerolling, playbackClock.rate > 0, let inputs
+        else { return }
+        let clock = playbackClock.currentTime()
+        guard clock.isNumeric else { return }
+        if inputs.isAudioEOF || audioAhead(of: clock) >= BufferingPolicy.audioAheadToStart(rate: playbackRate) {
+            audioJoin.isRendererStale = false
+        }
+    }
+
     /// Holds the clock at `clock` and waits for data to build up, then restarts it there.
     func holdForBuffering(at clock: CMTime, because reason: String) {
         // (A join that gives up to buffering ends itself and keeps its cut, which holds the renderer to the audio from
@@ -92,6 +113,8 @@ extension PlayerEngine {
         let startedAt = ContinuousClock.now
         var audioEnd = audioSink.bufferedEnd
         var audioChangedAt = ContinuousClock.now
+        var lastReportAt = ContinuousClock.now
+        var reportInterval = Self.bufferingReportInterval
         while !Task.isCancelled {
             try? await Task.sleep(for: Self.bufferingPollInterval)
             guard !Task.isCancelled, isBuffering else { return }
@@ -100,7 +123,26 @@ extension PlayerEngine {
                 audioChangedAt = .now
             }
             let isAudioSettled = ContinuousClock.now - audioChangedAt >= Self.bufferingAudioSettleTime
-            guard isReadyToResumeAfterBuffering(heldAt: clock, audioSettled: isAudioSettled) else { continue }
+            // `nil`: no input, or read to its end, so nothing is left to wait for. The clock is held at rate 0; the
+            // amounts are for the rate it resumes at.
+            let levels = inputs.flatMap { $0.isEOF ? nil : bufferingLevels(at: clock, inputs: $0) }
+            if let levels, !BufferingPolicy.isReadyToResume(levels, rate: playbackRate, audioSettled: isAudioSettled) {
+                // A wait that does not end says why: a hold with no data coming left nothing in the log.
+                if ContinuousClock.now - lastReportAt >= reportInterval {
+                    lastReportAt = .now
+                    reportInterval = min(reportInterval * 2, Self.bufferingReportMaxInterval)
+                    AppLog.warning(
+                        .engine,
+                        "Still buffering after \(ContinuousClock.now - startedAt) at "
+                            + "\(String(format: "%.3f", clock.seconds))s, rate \(playbackRate): audio "
+                            + "\(String(format: "%.3f", levels.audioAhead))s ahead (settled: \(isAudioSettled), "
+                            + "renderer full: \(levels.isAudioRendererFull), separate: "
+                            + "\(levels.isAudioSeparate), ended: \(levels.isAudioEOF)), \(levels.queuedFrames) "
+                            + "frame(s) queued, video read-ahead dry: \(levels.isVideoReadAheadDry)"
+                    )
+                }
+                continue
+            }
             AppLog.info(
                 .engine,
                 "Buffering ended after \(ContinuousClock.now - startedAt): audio "
@@ -109,18 +151,12 @@ extension PlayerEngine {
             )
             // Cancels this task and clears `isBuffering` (through `cancelPreroll`) before restarting the clock.
             startSynchronizerClockAfterPreroll(at: clock, alignWithBufferedAudio: true)
-            // The renderer holds the audio for this position now (it was fed from here while the clock was held), which
-            // a join that gave up to buffering never marked.
-            audioJoin.isRendererStale = false
+            // What a join that gave up to buffering never marked; left stale, the next play goes through a join.
+            if levels.map({ BufferingPolicy.holdsAudioForPosition($0, rate: playbackRate) }) ?? true {
+                audioJoin.isRendererStale = false
+            }
             return
         }
-    }
-
-    private func isReadyToResumeAfterBuffering(heldAt clock: CMTime, audioSettled: Bool) -> Bool {
-        guard let inputs, !inputs.isEOF else { return true }
-        // The clock is held at rate 0; the amounts are for the rate it resumes at.
-        return BufferingPolicy.isReadyToResume(
-            bufferingLevels(at: clock, inputs: inputs), rate: playbackRate, audioSettled: audioSettled)
     }
 
     /// Ends buffering without restarting the clock; whoever calls it re-anchors or stops the clock itself.

@@ -730,6 +730,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
                     self.applyDueVariantChanges(at: seconds)
                     self.subtitles.timeDidChange(to: seconds, .tick)
                     self.checkForStarvation()
+                    self.clearStaleRendererOnceAudioIsAhead()
                     self.checkForAudioRendererLag()
 
                     // Check if playback reached the end

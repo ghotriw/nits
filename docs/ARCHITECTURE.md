@@ -375,10 +375,12 @@ frames were running again). The rules that replaced it:
      `clock + latency` are dropped and the one that straddles it is shortened to the sample (`AudioSampleTrim`; an AAC
      packet is 21 ms, AC-3 32 ms, and whole-buffer cuts would put the audio off by that much from seek to seek).
   3. When the renderer holds `BufferingPolicy.audioAheadToStart` past the point it will start at (`clock + latency`), or is
-     full (a held synchronizer takes only so much: an enqueue that waits on it `fullAfter`, 50 ms; one with room returns
-     at once), or the audio has ended, the synchronizer takes the clock over. A renderer kept (step 1) is usually full of
+     full (a held synchronizer takes only so much: an enqueue that waits on it `BufferTrackingAudioSink.fullAfter`,
+     50 ms, `isRendererFull`; one with room returns at once), or the audio has ended, the synchronizer takes the clock
+     over. A renderer kept (step 1) is usually full of
      the old audio, which it drops as late only once the clock runs: the new gets in after the hand-over, so the join
-     stays on until it is ahead of the clock (`settleTimeout`, 1 s), and `checkForStarvation` leaves the audio out
+     stays on until it is `audioAheadToStart` ahead of the clock (`settleTimeout`, 1 s; not just the low watermark,
+     which the clock moving on by the next check would put it under), and `checkForStarvation` leaves the audio out
      meanwhile (without a picture it would hold the clock on a renderer that, held, never makes room). The hand-over:
      `PlaybackClock.handOver(after:)` gives it `setRate(rate, time: T(H1), atHostTime: H1)` with `H1 = now + latency`,
      `T(H1)` the position the provisional clock holds then. From `H1` on `currentTime()` reads the synchronizer, once it
@@ -912,6 +914,19 @@ pause:
   for 0.5 s counts as all there is (the held renderer is full, or the demuxer reads no audio past a full video
   packet queue): playback then resumes with it if it is above the trigger or video is ready, and stays held if
   neither, as nothing is arriving.
+- **A full renderer is never a shortage**, whatever is ahead. Full: one buffer has waited on it
+  `BufferTrackingAudioSink.fullAfter`, 50 ms (`isRendererFull`, which `AudioJoin` uses too; a buffer pending for an
+  instant is no sign of it). It may be full of the old position's audio, kept across a seek forward (see "The master
+  clock and resuming after a seek"), which it drops as late only while the clock runs. The audio then does not trigger
+  buffering. With one demuxer and the audio under the watermark, the picture decides, as with audio of its own: few
+  frames and its input run dry (`isVideoReadAheadDry`); not the frame queue alone, which with audio ahead is a decoder
+  behind, and the renderer is full through most of playback. A hold resumes once the audio has settled (and the
+  picture is ready); without a picture nothing else would end it. A resume with the renderer full and under the
+  watermark ahead leaves it marked stale (`BufferingPolicy.holdsAudioForPosition`, `isRendererStale`), until the
+  running clock has `audioAheadToStart` of new audio ahead (`clearStaleRendererOnceAudioIsAhead`, also after a join
+  that timed out): left stale, every pause and play would go through a join and its flush. Before, a hold at 1.7x
+  right after such a seek never ended: 0.254 s of new audio against a watermark of 0.255 s, and the held clock kept
+  the old audio in for good. A hold that lasts logs its levels after 3 s, then at doubling intervals up to a minute.
 - Every path that stops or re-anchors the clock goes through `cancelPreroll()`, which also ends buffering;
   buffering never starts while seeking, prerolling or after demuxer EOF.
 

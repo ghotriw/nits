@@ -92,6 +92,11 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         var end: CMTime?
         /// Start of the buffer waiting for the renderer to take it.
         var pending: CMTime?
+        /// When the enqueue of `pending` began.
+        var pendingSince: ContinuousClock.Instant?
+        /// Which enqueue `pending` is, so one ending (an old feeder's, unwinding) does not clear a newer one's.
+        var pendingEnqueue: UInt64 = 0
+        var enqueueCount: UInt64 = 0
         /// Bumped by `flush()`, so an enqueue that was in flight across it doesn't record pre-flush media.
         /// A flush is on its way (`expectFlush`) and has not run: `end` is still audio from before it.
         var isFlushOwed = false
@@ -135,17 +140,33 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         state.withLock { $0.pending }
     }
 
+    /// How long one buffer may wait on the renderer before the renderer counts as full: an enqueue with room returns at
+    /// once (or nearly: `Receiver` suspends even then), so a buffer seen pending for an instant is no sign of it.
+    static let fullAfter: Duration = .milliseconds(50)
+
+    /// The renderer is full: the buffer waiting for it has waited `fullAfter` by `now`. Full of what it was given,
+    /// which may be audio from before a seek forward that kept it (`AudioJoin`): it drops that only while the clock runs.
+    func isRendererFull(at now: ContinuousClock.Instant = .now) -> Bool {
+        state.withLock { state in
+            state.pendingSince.map { now - $0 >= Self.fullAfter } ?? false
+        }
+    }
+
     func enqueue(_ sampleBuffer: CMSampleBuffer) async throws {
         let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let end = start + CMSampleBufferGetDuration(sampleBuffer)
-        let generation = state.withLock { state in
+        let (generation, enqueue) = state.withLock { state in
+            state.enqueueCount &+= 1
             state.pending = start
-            return state.generation
+            state.pendingSince = .now
+            state.pendingEnqueue = state.enqueueCount
+            return (state.generation, state.enqueueCount)
         }
         defer {
             state.withLock { state in
-                guard state.generation == generation else { return }
+                guard state.generation == generation, state.pendingEnqueue == enqueue else { return }
                 state.pending = nil
+                state.pendingSince = nil
             }
         }
         try await wrapped.enqueue(sampleBuffer)
@@ -160,6 +181,7 @@ final class BufferTrackingAudioSink: AudioRendererSink {
         state.withLock { state in
             state.end = nil
             state.pending = nil
+            state.pendingSince = nil
             state.isFlushOwed = false
             state.generation &+= 1
         }
@@ -212,6 +234,11 @@ final class DelayedAudioSink: AudioRendererSink {
     /// Start of the audio waiting for the renderer to take it, on the clock's timeline (delay included).
     var pendingStart: CMTime? {
         wrapped.pendingStart
+    }
+
+    /// See `BufferTrackingAudioSink.isRendererFull(at:)`.
+    func isRendererFull(at now: ContinuousClock.Instant = .now) -> Bool {
+        wrapped.isRendererFull(at: now)
     }
 
     var isFlushOwed: Bool {
