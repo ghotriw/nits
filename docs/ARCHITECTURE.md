@@ -790,7 +790,7 @@ lists to the end of the last. Both ends move with real time.
 
 **A live stream's history as segments** (`ResolvedMedia.liveHistory`; the app's setting `AppSettings.liveHistory`, on, `--no-live-history` turns it off). YouTube's
 HLS playlist holds an hour at most (30 s where the broadcaster has no DVR), but the adaptive formats of a live stream are
-numbered segments of one URL (`…&sq=N`) the server keeps for days. The resolver builds a manifest of them
+numbered segments of one URL (`…&sq=N`) the server keeps for days; so are those of a premiere on the air (`source=yt_premiere_broadcast`, which the server numbers and times the same way). The resolver builds a manifest of them
 (`SegmentedDASHManifest`, `YouTubeLiveHistory`) and tells the demuxer, with `LiveHistory`, where the stream's time stands.
 
 - **The window is the resolver's.** The format context has no playlist to read it from, so the demuxer publishes the

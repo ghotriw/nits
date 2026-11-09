@@ -237,13 +237,20 @@ struct YTDLPInfo: Decodable, Sendable {
             videoFormats: pictures, selectedVideoFormatID: picture?.formatID)
     }
 
-    /// The picture and sound `-f` chose of a YouTube live stream that are numbered segments of one URL (`…&sq=N`,
-    /// which `formats=incomplete` lists: `YouTubeLiveHistory`); `nil` for any other page.
+    /// The picture and sound `-f` chose of a YouTube live stream or premiere on the air that are numbered segments of
+    /// one URL (`…&sq=N`, which `formats=incomplete` lists: `YouTubeLiveHistory`); `nil` for any other page.
     func liveHistoryFormats() -> [Format]? {
         guard isLive == true, extractorKey == "Youtube", let chosen = requestedFormats, !chosen.isEmpty,
-            chosen.allSatisfy({ $0.protocol == "https" && $0.url?.contains("source=yt_live_broadcast") == true })
+            chosen.allSatisfy({ $0.protocol == "https" && Self.isBroadcastSegment(url: $0.url) })
         else { return nil }
         return chosen
+    }
+
+    /// Whether `url` is a segment of a broadcast on the air: a live stream (`yt_live_broadcast`) or a premiere
+    /// (`yt_premiere_broadcast`), which the server numbers and times the same way.
+    static func isBroadcastSegment(url: String?) -> Bool {
+        guard let url else { return false }
+        return url.contains("source=yt_live_broadcast") || url.contains("source=yt_premiere_broadcast")
     }
 
     /// Whether `-f` chose formats yt-dlp calls incomplete (a live stream's adaptive segments, which the server ends after a

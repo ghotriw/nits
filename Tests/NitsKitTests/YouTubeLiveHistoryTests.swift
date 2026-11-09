@@ -228,6 +228,10 @@ struct YouTubeLiveHistoryTests {
             try info(Self.liveJSON.replacingOccurrences(of: "yt_live_broadcast", with: "yt_vod")).liveHistoryFormats()
                 == nil)
         #expect(try info(YTDLPResolverTests.separateStreams).liveHistoryFormats() == nil)
+        // A premiere on the air is numbered like a live stream.
+        #expect(
+            try info(Self.liveJSON.replacingOccurrences(of: "yt_live_broadcast", with: "yt_premiere_broadcast"))
+                .liveHistoryFormats() != nil)
     }
 
     @Test("The manifest of the window is the media; the page's title and history key stay")
@@ -370,5 +374,21 @@ struct YouTubeLiveHistoryTests {
         defer { try? FileManager.default.removeItem(at: directory3) }
         _ = try await plain.resolve(YTDLPResolverTests.page, headers: [:])
         #expect(asked.withLock { $0 } == 0)
+    }
+
+    @Test("A premiere on the air plays from the window, and its signature is renewed like a live stream's")
+    func resolvesPremierePage() async throws {
+        let premiere = Self.liveJSON.replacingOccurrences(of: "yt_live_broadcast", with: "yt_premiere_broadcast")
+        let server = Server(head: 4000, oldest: 100)
+        let (resolver, directory) = try scriptResolver(liveHistory: true, answer: premiere) { server.answer($0) }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let resolved = try #require(try await resolver.resolve(YTDLPResolverTests.page, headers: [:]))
+        let history = try #require(resolved.liveHistory)
+        let source = try #require(history.source as? YouTubeLiveSource)
+        // The renewal takes the addresses of a premiere's formats too (`liveSegmentURLs`), not only a live stream's.
+        let renewed = await onThread { source.renewSignature(shouldAbort: { false }) }
+        #expect(renewed)
+        let address = source.url(for: "134", number: 4001)?.absoluteString
+        #expect(address?.hasSuffix("source=yt_premiere_broadcast&sig=fresh&sq=4001") == true)
     }
 }

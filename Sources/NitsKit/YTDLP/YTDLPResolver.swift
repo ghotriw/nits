@@ -16,7 +16,7 @@ public final class YTDLPResolver: MediaResolver {
     let timeout: Duration
     /// Asks SponsorBlock for a YouTube video's segments to skip (sponsors, intros, …) and chapters; `nil`: none.
     let sponsorBlock: SponsorBlockClient?
-    /// Whether a YouTube live stream plays from its history (`YouTubeLiveHistory`: a day of it, the broadcaster
+    /// Whether a YouTube live stream (or premiere on the air) plays from its history (`YouTubeLiveHistory`: a day of it, the broadcaster
     /// allowing) in place of its HLS playlist (an hour at most). The app's setting (`AppSettings.liveHistory`, on);
     /// off here by default, for the callers that read no live window (tests).
     let liveHistory: Bool
@@ -84,7 +84,7 @@ public final class YTDLPResolver: MediaResolver {
         var urls: [String: String] = [:]
         for format in info.formats ?? [] {
             guard let id = format.formatID, keys.contains(id), format.protocol == "https",
-                let url = format.url, url.contains("source=yt_live_broadcast")
+                let url = format.url, YTDLPInfo.isBroadcastSegment(url: url)
             else { continue }
             urls[id] = url
         }
