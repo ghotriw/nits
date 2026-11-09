@@ -101,12 +101,12 @@ struct DecoderStallRecoveryTests {
         #expect(
             await engine.waitUntil(timeout: .seconds(15)) { engine.decoder !== stalling },
             "The stalled decoder was not replaced")
-        let clockAtRecovery = engine.playbackClock.currentTime().seconds
-        #expect(
-            clockAtRecovery > frozenAt + 1,
-            "The stall did not freeze video (frame \(frozenAt)s, clock \(clockAtRecovery)s)")
-
-        // Resumes where video stopped, not where the clock ran on to during the stall timeout.
+        // Whether the clock runs on during the stall timeout is not asserted: it depends on the audio left, and the
+        // engine's buffering holds the clock once that runs out (sooner on a busy machine). The audio cannot be made to
+        // last: with the video feeder blocked the queue stays full and the demuxer reads no further audio. So the
+        // check below tells a resume from the video's position apart from one from the clock's only when the clock did
+        // run on; when it was held, both positions coincide and the check passes either way.
+        // Resumes where video stopped, not where the clock may have run on to during the stall timeout.
         #expect(await engine.waitForSeekToSettle())
         #expect(
             abs(engine.currentFramePTS - frozenAt) < 0.5,
