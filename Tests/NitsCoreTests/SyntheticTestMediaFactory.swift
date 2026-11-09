@@ -428,7 +428,10 @@ public enum SyntheticTestMediaFactory {
 
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: targetPath) {
-            return targetPath
+            guard let published = publishedDirectory(of: preset, target: targetPath) else { return targetPath }
+            if manifestIsComplete(in: published) { return targetPath }
+            print("[SyntheticTestMediaFactory] Replacing an incomplete copy of \(preset.rawValue)")
+            try? FileManager.default.removeItem(atPath: published)
         }
 
         guard let ffmpeg = ffmpegBinaryPath() else {
@@ -964,6 +967,52 @@ public enum SyntheticTestMediaFactory {
         return true
     }
 
+    private static let manifestName = ".manifest"
+
+    /// The directory a multi-file preset (HLS, DASH) is published as; nil for a single file.
+    private static func publishedDirectory(of preset: Preset, target: String) -> String? {
+        let url = URL(fileURLWithPath: target)
+        if preset.isHLS { return url.deletingLastPathComponent().path }
+        switch preset {
+        case .dashSegments, .dashLadder, .dashLadderCaptions:
+            return url.deletingLastPathComponent().deletingLastPathComponent().path
+        default: return nil
+        }
+    }
+
+    /// Lists every file of the media made in `directory`, so a later run can tell whole media from what macOS left
+    /// of it: it empties `$TMPDIR`'s files not used for three days, and the entry point (the master playlist) is
+    /// read by every run while the segments are not, so it outlives them.
+    private static func writeManifest(of directory: URL) {
+        guard
+            let walker = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey])
+        else { return }
+        let prefix = directory.resolvingSymlinksInPath().path + "/"
+        var names: [String] = []
+        for case let url as URL in walker
+        where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            let path = url.resolvingSymlinksInPath().path
+            if path.hasPrefix(prefix) { names.append(String(path.dropFirst(prefix.count))) }
+        }
+        try? Data(names.sorted().joined(separator: "\n").utf8).write(to: directory.appendingPathComponent(manifestName))
+    }
+
+    /// Whether every file in the manifest is still there. A hit also reads each, so they age together.
+    private static func manifestIsComplete(in published: String) -> Bool {
+        let root = URL(fileURLWithPath: published)
+        guard let text = try? String(contentsOf: root.appendingPathComponent(manifestName), encoding: .utf8)
+        else { return false }
+        for name in text.split(separator: "\n") {
+            // Reading a byte is what moves the access time the cleanup goes by.
+            guard let handle = try? FileHandle(forReadingFrom: root.appendingPathComponent(String(name))) else {
+                return false
+            }
+            _ = try? handle.read(upToCount: 1)
+            try? handle.close()
+        }
+        return true
+    }
+
     /// Renames the media made in `directory` into place at `published`, which `target` is in. A directory can't be
     /// replaced atomically: another process (or test) may have published its copy meanwhile, which is kept. A copy
     /// without `target` is a broken one (macOS empties `$TMPDIR`'s files not used for three days, leaving the
@@ -971,6 +1020,7 @@ public enum SyntheticTestMediaFactory {
     private static func publish(
         _ directory: URL, at published: String, holding target: String, preset: Preset
     ) -> Bool {
+        writeManifest(of: directory)
         for attempt in 0..<2 {
             if rename(directory.path, published) == 0 { return true }
             let error = errno
