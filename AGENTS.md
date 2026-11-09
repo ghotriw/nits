@@ -38,7 +38,7 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
   test against `.build/dependencies` when present, otherwise SwiftPM falls back to Homebrew FFmpeg.
   SwiftPM links with the deployment target (15.4) as the SDK version, so `swift run` binaries show
   the legacy (pre-Liquid Glass) look on macOS 26+; `bundle_app.sh` stamps the real SDK via `vtool`.
-  Judge UI only from the bundle.
+  Judge UI only from the bundle. SwiftUI previews: open `Package.swift` in Xcode with the `NitsUIPreviews` scheme.
 - Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The app version comes
   only from tags (`bundle_app.sh`: `git describe` or `--version=`), so never hardcode it in
   Info.plist or sources. `scripts/release.sh` works the next version out from the commits since the last tag and

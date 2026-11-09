@@ -14,6 +14,9 @@ let package = Package(
         .library(name: "NitsCore", targets: ["NitsCore"]),
         .library(name: "NitsUI", targets: ["NitsUI"]),
         .library(name: "NitsKit", targets: ["NitsKit"]),
+        // Xcode previews only, not for hosts (it holds NitsCore again, next to NitsKit's copy). The preview host loads a
+        // dynamic framework with its FFmpeg and libass; with the static products or an app linking them it finds none.
+        .library(name: "NitsUIPreviews", type: .dynamic, targets: ["NitsUI"]),
     ],
     targets: [
         .systemLibrary(

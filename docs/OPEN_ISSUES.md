@@ -110,6 +110,14 @@ on our side (`max tick`, `max clock read`) and an empty frame queue apart.
 
 Accepted for now, noted for later.
 
+- **Xcode previews need the `NitsUIPreviews` product.** The preview host does not find the symbols of a
+  `systemLibrary` + `pkgConfig` target (`CFFmpeg`, `CLibass`): with the `NitsUI` scheme, or an app target linking the
+  package (tried as a separate `Showcase` app, with explicit `-l` flags too), it fails with "Runtime linking failure,
+  symbols not found". Only a dynamic library product (`type: .dynamic`) loads, with its FFmpeg and libass. It holds
+  `NitsCore` a second time, so it is for previews, never for a host that also uses `NitsKit`; `bundle_app.sh` builds
+  `--product Nits` and skips it. The way out is FFmpeg and libass as `binaryTarget` XCFrameworks, which the bundle's
+  `scripts/setup_dependencies.sh` build could produce (not tried: previews may stop on something else). Splitting the
+  views that take no engine into a target without `NitsCore` covers few (23 of 62 files of `NitsUI` don't import it).
 - **A launch flag over a setting shows the saved value in Settings.** With `--no-osd`, the OSD switch reads "on"; the
   flag holds until that setting is changed (`LaunchArguments.dropOverrides`), so turning it on takes off-then-on.
 - **Subtitles dropped with a playlist file are not attached.** `MediaOpenRequest.open` attaches them only to the path

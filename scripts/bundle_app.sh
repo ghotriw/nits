@@ -88,7 +88,7 @@ fi
 
 echo "==> Building Nits with swift build ($CONFIG)..."
 CONFIG_DIR="$(echo "${CONFIG:0:1}" | tr "[:lower:]" "[:upper:]")${CONFIG:1}"
-swift build -c "$CONFIG" --disable-sandbox
+swift build -c "$CONFIG" --disable-sandbox --product Nits
 
 APP_DIR="$DIR/build/Nits.app"
 CONTENTS_DIR="$APP_DIR/Contents"

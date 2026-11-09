@@ -11,8 +11,7 @@ Package.resolved
 !default.xcworkspace
 xcuserdata/
 DerivedData/
-.swiftpm/xcode/xcuserdata/
-.swiftpm/configuration/
+/.swiftpm/
 
 # macOS system files
 .DS_Store
