@@ -28,6 +28,15 @@ public protocol PlayerActions: AnyObject {
 
     var seekStepSeconds: Double { get }
 
+    /// What the main menu shows, which it reads alone (`PlayerCommands`). Changes only when something the menu shows
+    /// does: a change that leaves it equal must not wake the menu, whose rebuild closes an open submenu. The default
+    /// reads it anew each time, with no such filter.
+    ///
+    /// `PlayerSession`'s trails a change by one turn of the main actor (it is read again on the next one), which is
+    /// fine for the menu, as a key press or a click comes on a later turn; but a host that reads it right after an
+    /// action sees the value from before it.
+    var menuState: PlayerMenuState { get }
+
     func togglePlayPause()
     func play()
     func pause()
@@ -115,6 +124,7 @@ extension PlayerActions {
         get { 1.0 }
         set {}
     }
+    public var menuState: PlayerMenuState { PlayerMenuState(self) }
     public var canJumpToTime: Bool { true }
     public var isJumpToPresented: Bool { false }
     public var isQuickSettingsPresented: Bool { false }

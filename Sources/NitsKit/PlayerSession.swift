@@ -45,6 +45,9 @@ public final class PlayerSession {
     public var onOpenStream: ((_ presentsHost: Bool) -> Void)?
 
     private var lastLoggedTimeSeconds: Double = -1.0
+    /// `menuState`, published only when it changes. Started by `init`, not when the menu first asks: its first read
+    /// would run inside the menu's own tracking, which takes in everything a nested one reads.
+    private let menuStateMirror = PlayerMenuStateMirror()
     let pictureInPicture: PictureInPictureWindowCoordinator
     private var rememberRecentMedia = true
     private let recentMediaStore: RecentMediaStore?
@@ -161,6 +164,9 @@ public final class PlayerSession {
         uiState.supportsFullscreen = false  // until a presentation says it has one
         uiState.toggleFullscreen = { [weak self] in self?.toggleFullscreen() }
         applySettings(settings)
+        menuStateMirror.start { [weak self] in
+            self.map(PlayerMenuState.init) ?? PlayerMenuState()
+        }
 
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -308,6 +314,7 @@ public final class PlayerSession {
         )
         onClose?(finalTime, finalDuration)
         isEnded = true
+        menuStateMirror.stop()
         pictureInPicture.sessionEnded(windowClosing: windowClosing)
         nowPlayingController.clear()
         engine.stop()
@@ -372,6 +379,10 @@ public final class PlayerSession {
 }
 
 extension PlayerSession: PlayerActions {
+    public var menuState: PlayerMenuState {
+        menuStateMirror.state
+    }
+
     public var renderMode: RenderMode {
         get { engine.renderMode }
         set {
@@ -705,9 +716,10 @@ extension PlayerSession: PlayerActions {
     }
 
     /// Whether the presentation has a fullscreen to offer; a host without one gets nothing from the control bar's
-    /// button, the double click and `F`.
+    /// button, the double click and `F`. Read from `uiState`, where `presentation` puts it, so that the menu
+    /// (`menuState`) follows it: the presentation is not observable.
     public var supportsFullscreen: Bool {
-        presentation?.supportsFullscreen ?? false
+        uiState.supportsFullscreen && presentation != nil
     }
 
     public func toggleFullscreen() {

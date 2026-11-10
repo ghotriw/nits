@@ -168,7 +168,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
 
     public init(
         enableToneMapping: Bool = PlayerConfiguration.defaultEnableToneMapping,
-        defaultRenderMode: RenderMode = .auto,
+        defaultRenderMode: RenderMode = .default,
         targetNits: Float = ToneMapController.referenceWhiteNits,
         targetNitsScale: Float? = nil,
         sharpness: Float = PlayerConfiguration.defaultSharpness,

@@ -6,6 +6,9 @@ public enum RenderMode: String, CaseIterable, Identifiable, Sendable {
     case system = "Hardware Passthrough (Apple DisplayLayer)"
     case metalToneMap = "Metal Tone Mapping (BT.2390)"
 
+    /// The mode a player starts in unless its configuration asks for another (`PlayerConfiguration.defaultRenderMode`).
+    public static let `default` = RenderMode.auto
+
     public var id: String { rawValue }
 }
 

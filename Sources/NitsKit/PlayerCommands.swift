@@ -14,6 +14,12 @@ public struct PlayerCommands: Commands {
         focusedPlayer ?? fallbackPlayer?()
     }
 
+    /// Everything the menus show of the player. Read nothing else of it in `body`: the menus depend on whatever
+    /// `body` reads, and each change rebuilds the main menu, closing a submenu the pointer is in (`PlayerMenuState`).
+    private var menuState: PlayerMenuState {
+        playerActions?.menuState ?? PlayerMenuState()
+    }
+
     /// The encoding of a subtitle file: the default (automatic detection, or the one in Settings) or a choice.
     private func encodingPicker(
         get: @escaping @MainActor @Sendable () -> String.Encoding?,
@@ -31,35 +37,36 @@ public struct PlayerCommands: Commands {
 
     public var body: some Commands {
         CommandMenu("Playback") {
+            let menu = menuState
             Button("Play / Pause") {
                 playerActions?.togglePlayPause()
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Button("Next Track") {
                 playerActions?.playNextTrack()
             }
             .keyboardShortcut(.rightArrow, modifiers: .command)
-            .disabled(playerActions == nil || !(playerActions?.hasNextTrack ?? false))
+            .disabled(!menu.hasPlayer || !menu.hasNextTrack)
 
             Button("Previous Track") {
                 playerActions?.playPreviousTrack()
             }
             .keyboardShortcut(.leftArrow, modifiers: .command)
-            .disabled(playerActions == nil || !(playerActions?.hasPreviousTrack ?? false))
+            .disabled(!menu.hasPlayer || !menu.hasPreviousTrack)
 
             // Also PageDown / PageUp, handled by `PlayerWindow`.
             Button("Next Chapter") {
                 playerActions?.nextChapter()
             }
             .keyboardShortcut(.rightArrow, modifiers: [.option, .command])
-            .disabled(!(playerActions?.hasChapters ?? false))
+            .disabled(!menu.hasChapters)
 
             Button("Previous Chapter") {
                 playerActions?.previousChapter()
             }
             .keyboardShortcut(.leftArrow, modifiers: [.option, .command])
-            .disabled(!(playerActions?.hasChapters ?? false))
+            .disabled(!menu.hasChapters)
 
             Divider()
 
@@ -67,26 +74,26 @@ public struct PlayerCommands: Commands {
                 playerActions?.stepFrameForward()
             }
             .keyboardShortcut(.rightArrow, modifiers: .option)
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Button("Step Backward (1 Frame)") {
                 playerActions?.stepFrameBackward()
             }
             .keyboardShortcut(.leftArrow, modifiers: .option)
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Divider()
 
-            let stepText = "\(Int(playerActions?.seekStepSeconds ?? 5))s"
+            let stepText = "\(Int(menu.seekStepSeconds))s"
             Button("Jump Forward (\(stepText))") {
                 playerActions?.seekForward()
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Button("Jump Backward (\(stepText))") {
                 playerActions?.seekBackward()
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Divider()
 
@@ -94,7 +101,7 @@ public struct PlayerCommands: Commands {
                 playerActions?.promptJumpToTime()
             }
             .keyboardShortcut("j", modifiers: .command)
-            .disabled(playerActions == nil || !(playerActions?.canJumpToTime ?? false))
+            .disabled(!menu.hasPlayer || !menu.canJumpToTime)
 
             Divider()
 
@@ -113,40 +120,42 @@ public struct PlayerCommands: Commands {
                 Button("Reset to Normal (1.0×)") { playerActions?.resetPlaybackRate() }
                     .keyboardShortcut("\\", modifiers: [.option])
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
         }
 
         CommandMenu("Audio") {
+            let menu = menuState
             Button("Increase Volume") {
                 playerActions?.stepVolume(by: 0.05)
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Button("Decrease Volume") {
                 playerActions?.stepVolume(by: -0.05)
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Divider()
 
             Toggle(
                 "Mute",
                 isOn: Binding(
-                    get: { playerActions?.isMuted ?? false },
+                    get: { menu.isMuted },
                     set: { _ in playerActions?.toggleMute() }
                 )
             )
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
         }
 
         CommandMenu("Subtitles") {
-            let tracks = playerActions?.subtitleTracks ?? []
+            let menu = menuState
+            let tracks = menu.subtitleTracks
             // The tracks are the media loaded's.
-            let loaded = playerActions?.isMediaLoaded ?? false
+            let loaded = menu.isMediaLoaded
             Picker(
                 "Subtitle Track",
                 selection: Binding(
-                    get: { playerActions?.selectedSubtitleTrackId },
+                    get: { menu.selectedSubtitleTrackId },
                     set: { playerActions?.selectSubtitleTrack($0) }
                 )
             ) {
@@ -169,13 +178,13 @@ public struct PlayerCommands: Commands {
 
             // Of this track's file: files differ in encoding as tracks do in language.
             encodingPicker(
-                get: { playerActions?.subtitleEncoding }, set: { playerActions?.setSubtitleEncoding($0) },
-                isEnabled: playerActions?.canSetSubtitleEncoding ?? false)
+                get: { menu.subtitleEncoding }, set: { playerActions?.setSubtitleEncoding($0) },
+                isEnabled: menu.canSetSubtitleEncoding)
 
             Divider()
 
-            let delay = playerActions?.subtitleDelay ?? 0
-            let hasMain = playerActions?.selectedSubtitleTrackId != nil
+            let delay = menu.subtitleDelay
+            let hasMain = menu.selectedSubtitleTrackId != nil
             Button("Delay Later (+0.1 s)") { playerActions?.stepSubtitleDelay(by: 0.1) }
                 .disabled(!hasMain)
             Button("Delay Earlier (−0.1 s)") { playerActions?.stepSubtitleDelay(by: -0.1) }
@@ -187,11 +196,11 @@ public struct PlayerCommands: Commands {
 
             // The same for the second track, shown above the main one.
             Menu("Second Subtitle Track") {
-                let candidates = playerActions?.secondarySubtitleCandidates ?? []
+                let candidates = menu.secondarySubtitleCandidates
                 Picker(
                     "Second Subtitle Track",
                     selection: Binding(
-                        get: { playerActions?.selectedSecondarySubtitleTrackId },
+                        get: { menu.selectedSecondarySubtitleTrackId },
                         set: { playerActions?.selectSecondarySubtitleTrack($0) }
                     )
                 ) {
@@ -211,14 +220,14 @@ public struct PlayerCommands: Commands {
                 }
 
                 encodingPicker(
-                    get: { playerActions?.secondarySubtitleEncoding },
+                    get: { menu.secondarySubtitleEncoding },
                     set: { playerActions?.setSecondarySubtitleEncoding($0) },
-                    isEnabled: playerActions?.canSetSecondarySubtitleEncoding ?? false)
+                    isEnabled: menu.canSetSecondarySubtitleEncoding)
 
                 Divider()
 
-                let secondDelay = playerActions?.secondarySubtitleDelay ?? 0
-                let hasSecond = playerActions?.selectedSecondarySubtitleTrackId != nil
+                let secondDelay = menu.secondarySubtitleDelay
+                let hasSecond = menu.selectedSecondarySubtitleTrackId != nil
                 Button("Delay Later (+0.1 s)") { playerActions?.stepSecondarySubtitleDelay(by: 0.1) }
                     .disabled(!hasSecond)
                 Button("Delay Earlier (−0.1 s)") { playerActions?.stepSecondarySubtitleDelay(by: -0.1) }
@@ -232,10 +241,11 @@ public struct PlayerCommands: Commands {
         }
 
         CommandMenu("Video") {
+            let menu = menuState
             Picker(
                 "Render Mode",
                 selection: Binding(
-                    get: { playerActions?.renderMode ?? .auto },
+                    get: { menu.renderMode },
                     set: { mode in
                         if let playerActions {
                             playerActions.renderMode = mode
@@ -247,7 +257,7 @@ public struct PlayerCommands: Commands {
                     Text(mode.rawValue).tag(mode)
                 }
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Menu("Tone Mapping Sharpness") {
                 Button("0.0 (Off)") { playerActions?.metalSharpness = 0.0 }
@@ -256,15 +266,15 @@ public struct PlayerCommands: Commands {
                 Button("0.7 (Crisp)") { playerActions?.metalSharpness = 0.7 }
                 Button("1.0 (Maximum)") { playerActions?.metalSharpness = 1.0 }
             }
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Divider()
 
-            let hasVideo = playerActions?.hasVideo ?? false
+            let hasVideo = menu.hasVideo
             Picker(
                 "Aspect Ratio",
                 selection: Binding(
-                    get: { playerActions?.videoGeometry.aspectRatio },
+                    get: { menu.aspectRatio },
                     set: { playerActions?.setVideoAspectRatio($0) }
                 )
             ) {
@@ -278,7 +288,7 @@ public struct PlayerCommands: Commands {
             Picker(
                 "Crop",
                 selection: Binding(
-                    get: { playerActions?.videoGeometry.crop },
+                    get: { menu.crop },
                     set: { playerActions?.setVideoCrop($0) }
                 )
             ) {
@@ -292,7 +302,7 @@ public struct PlayerCommands: Commands {
             Picker(
                 "Scaling",
                 selection: Binding(
-                    get: { playerActions?.videoGeometry.scaling ?? .fit },
+                    get: { menu.scaling },
                     set: { playerActions?.setVideoScaling($0) }
                 )
             ) {
@@ -310,9 +320,7 @@ public struct PlayerCommands: Commands {
                 .disabled(!hasVideo)
             Button("Actual Zoom") { playerActions?.resetVideoZoom() }
                 .keyboardShortcut("0", modifiers: [.option, .command])
-                .disabled(
-                    !hasVideo
-                        || (playerActions?.videoGeometry.zoom == 1.0 && playerActions?.videoGeometry.pan == .zero))
+                .disabled(!hasVideo || menu.isZoomReset)
 
             Divider()
 
@@ -322,45 +330,46 @@ public struct PlayerCommands: Commands {
         }
 
         CommandMenu("View") {
+            let menu = menuState
             Toggle(
                 "Playlist",
                 isOn: Binding(
-                    get: { playerActions?.isPlaylistPresented ?? false },
+                    get: { menu.isPlaylistPresented },
                     set: { _ in playerActions?.togglePlaylist() }
                 )
             )
             .keyboardShortcut("p", modifiers: [.option, .command])
-            .disabled(!(playerActions?.isPlaylistAvailable ?? false))
+            .disabled(!menu.isPlaylistAvailable)
 
             Toggle(
                 "Chapters",
                 isOn: Binding(
-                    get: { playerActions?.isChaptersPresented ?? false },
+                    get: { menu.isChaptersPresented },
                     set: { _ in playerActions?.toggleChapters() }
                 )
             )
             .keyboardShortcut("c", modifiers: [.option, .command])
-            .disabled(!(playerActions?.hasChapters ?? false))
+            .disabled(!menu.hasChapters)
 
             Toggle(
                 "Quick Settings",
                 isOn: Binding(
-                    get: { playerActions?.isQuickSettingsPresented ?? false },
+                    get: { menu.isQuickSettingsPresented },
                     set: { _ in playerActions?.toggleQuickSettings() }
                 )
             )
             .keyboardShortcut("s", modifiers: [.option, .command])
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Toggle(
                 "Performance HUD",
                 isOn: Binding(
-                    get: { playerActions?.showDebugHUD ?? false },
+                    get: { menu.showDebugHUD },
                     set: { _ in playerActions?.toggleDebugHUD() }
                 )
             )
             .keyboardShortcut("i", modifiers: [.command])
-            .disabled(playerActions == nil)
+            .disabled(!menu.hasPlayer)
 
             Divider()
 
@@ -368,17 +377,17 @@ public struct PlayerCommands: Commands {
                 playerActions?.toggleFullscreen()
             }
             .keyboardShortcut("f", modifiers: [.control, .command])
-            .disabled(playerActions?.supportsFullscreen != true)
+            .disabled(!menu.supportsFullscreen)
 
             Toggle(
                 "Picture in Picture",
                 isOn: Binding(
-                    get: { playerActions?.isPictureInPictureActive ?? false },
+                    get: { menu.isPictureInPictureActive },
                     set: { _ in playerActions?.togglePictureInPicture() }
                 )
             )
             .keyboardShortcut("p", modifiers: [.control, .command])
-            .disabled(!(playerActions?.canTogglePictureInPicture ?? false))
+            .disabled(!menu.canTogglePictureInPicture)
         }
 
         CommandGroup(after: .windowArrangement) {

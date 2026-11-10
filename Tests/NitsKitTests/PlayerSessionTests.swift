@@ -4,6 +4,7 @@ import NitsCore
 import NitsTestSupport
 import SwiftUI
 import Testing
+import os
 
 @testable import NitsKit
 @testable import NitsUI
@@ -162,5 +163,50 @@ struct FullscreenControlItemTests {
         #expect(session.uiState.supportsFullscreen)
         session.uiState.toggleFullscreen?()
         #expect(presentation.toggles == 1)
+    }
+}
+
+@Suite("Player session: menu state")
+@MainActor
+struct PlayerMenuStateTests {
+    /// Whether `change` wakes observers of `mirror.state`, waited for until the mirror has read the state again (on a
+    /// later turn of the main actor).
+    private func wakes(
+        _ mirror: PlayerMenuStateMirror, reads: OSAllocatedUnfairLock<Int>, _ change: () -> Void
+    ) async -> Bool {
+        let woken = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = mirror.state
+        } onChange: {
+            woken.withLock { $0 = true }
+        }
+        let readsBefore = reads.withLock { $0 }
+        change()
+        for _ in 0..<1000 where reads.withLock({ $0 }) == readsBefore {
+            await Task.yield()
+        }
+        #expect(reads.withLock { $0 } > readsBefore, "the mirror never read the state again")
+        return woken.withLock { $0 }
+    }
+
+    @Test("The menu is woken by what it shows, not by the rest of what that is read from: a playlist's durations")
+    func testMenuStateChangesOnlyWithWhatItShows() async {
+        let session = PlayerSession(engine: .makeForTesting())
+        defer { session.end() }
+        let items = (0..<3).map { PlaylistItem(url: URL(string: "https://example.com/\($0).mp4")!, duration: 60) }
+        session.engine.playlist.replaceAll(items: items)
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        let mirror = PlayerMenuStateMirror()
+        mirror.start {
+            reads.withLock { $0 += 1 }
+            return PlayerMenuState(session)
+        }
+        #expect(mirror.state.hasNextTrack)
+
+        // Probing a long playlist publishes durations a few times a second; each rebuilt the menu, closing a submenu.
+        let playlist = session.engine.playlist
+        #expect(!(await wakes(mirror, reads: reads) { playlist.updateDuration(for: items[2].id, duration: 90) }))
+        #expect(await wakes(mirror, reads: reads) { session.toggleDebugHUD() })
+        #expect(mirror.state.showDebugHUD)
     }
 }

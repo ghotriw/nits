@@ -121,7 +121,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             sampleAspectRatio: media.video.sampleAspectRatio,
             settings: videoGeometry)
     }
-    public var renderMode: RenderMode = .auto {
+    public var renderMode: RenderMode = .default {
         didSet {
             updateEffectiveRenderMode()
         }
@@ -197,7 +197,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
         }
     }
 
-    public var seekStepSeconds: Double = 5.0
+    public var seekStepSeconds: Double = PlayerConfiguration.defaultSeekStepSeconds
     public var exactSeekOnSinglePress: Bool = true
 
     // Audio properties
