@@ -307,70 +307,70 @@ struct VideoFormatDescriptionBuilder {
         return nil
     }
 
-    /// HDR messages (mastering display, content light level) in an HEVC prefix SEI NAL unit.
+    /// HDR messages (mastering display, content light level) in an HEVC prefix SEI NAL unit. The messages are read
+    /// from the unit's RBSP: emulation prevention bytes (00 00 03) go first, as H.265 counts `payloadSize` without them
+    /// (a mastering display's minimum luminance of 0.005 nits is 00 00 00 32, escaped in the stream).
     static func hdrSEIMessages(inPrefixSEI naluData: Data) -> [HDRSEIMessage] {
+        let rbsp = rbsp(of: [UInt8](naluData))
         var messages: [HDRSEIMessage] = []
         var p = 2
-        while p < naluData.count {
+        while p < rbsp.count {
             var payloadType = 0
-            while p < naluData.count && naluData[p] == 0xFF {
+            while p < rbsp.count && rbsp[p] == 0xFF {
                 payloadType += 255
                 p += 1
             }
-            if p < naluData.count {
-                payloadType += Int(naluData[p])
+            if p < rbsp.count {
+                payloadType += Int(rbsp[p])
                 p += 1
             }
 
             var payloadSize = 0
-            while p < naluData.count && naluData[p] == 0xFF {
+            while p < rbsp.count && rbsp[p] == 0xFF {
                 payloadSize += 255
                 p += 1
             }
-            if p < naluData.count {
-                payloadSize += Int(naluData[p])
+            if p < rbsp.count {
+                payloadSize += Int(rbsp[p])
                 p += 1
             }
 
-            guard p + payloadSize <= naluData.count else { break }
-            let rawPayload = naluData.subdata(in: p..<(p + payloadSize))
-
-            // Remove emulation prevention bytes (0x00 0x00 0x03 -> 0x00 0x00)
-            var unescaped: [UInt8] = []
-            unescaped.reserveCapacity(rawPayload.count)
-            var u = 0
-            let rawBytes = [UInt8](rawPayload)
-            while u < rawBytes.count {
-                if u + 2 < rawBytes.count && rawBytes[u] == 0 && rawBytes[u + 1] == 0 && rawBytes[u + 2] == 3 {
-                    unescaped.append(0)
-                    unescaped.append(0)
-                    u += 3
-                } else {
-                    unescaped.append(rawBytes[u])
-                    u += 1
-                }
-            }
+            guard p + payloadSize <= rbsp.count else { break }
+            let payload = rbsp[p..<(p + payloadSize)]
 
             // SEI 137: Mastering display colour volume (24 bytes)
-            if payloadType == 137 && unescaped.count >= 24 {
-                let maxLumRaw =
-                    (UInt32(unescaped[16]) << 24) | (UInt32(unescaped[17]) << 16) | (UInt32(unescaped[18]) << 8)
-                    | UInt32(unescaped[19])
-                messages.append(
-                    .masteringDisplay(Data(unescaped[0..<24]), maxLuminanceNits: Float(maxLumRaw) / 10000.0))
+            if payloadType == 137 && payload.count >= 24 {
+                let b = Array(payload.prefix(24))
+                let maxLumRaw = (UInt32(b[16]) << 24) | (UInt32(b[17]) << 16) | (UInt32(b[18]) << 8) | UInt32(b[19])
+                messages.append(.masteringDisplay(Data(b), maxLuminanceNits: Float(maxLumRaw) / 10000.0))
             }
             // SEI 144: Content light level info (4 bytes: maxCLL 2 bytes, maxFALL 2 bytes)
-            else if payloadType == 144 && unescaped.count >= 4 {
+            else if payloadType == 144 && payload.count >= 4 {
+                let b = Array(payload.prefix(4))
                 messages.append(
                     .contentLightLevel(
-                        Data(unescaped[0..<4]),
-                        maxCLL: (Int(unescaped[0]) << 8) | Int(unescaped[1]),
-                        maxFALL: (Int(unescaped[2]) << 8) | Int(unescaped[3])))
+                        Data(b), maxCLL: (Int(b[0]) << 8) | Int(b[1]), maxFALL: (Int(b[2]) << 8) | Int(b[3])))
             }
 
             p += payloadSize
         }
         return messages
+    }
+
+    /// `nalu` without its emulation prevention bytes: each 03 after 00 00 is dropped.
+    static func rbsp(of nalu: [UInt8]) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(nalu.count)
+        var zeros = 0
+        for byte in nalu {
+            if zeros >= 2 && byte == 0x03 {
+                zeros = 0
+                continue
+            }
+            out.append(byte)
+            zeros = byte == 0 ? zeros + 1 : 0
+        }
+        return out
     }
 
     /// Synthesizes a standard 12-byte VP Codec Configuration Box (`vpcC` per ISO/IEC 14496-15)

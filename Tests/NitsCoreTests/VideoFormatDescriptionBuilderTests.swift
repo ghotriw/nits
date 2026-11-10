@@ -116,4 +116,22 @@ struct UnitLengthSizeTests {
         demuxer.isAnnexBStream = true
         #expect(demuxer.unitLengthSize(of: parameters) == 4, "Annex B packets are rewritten with 4-byte lengths")
     }
+
+    /// H.265 counts an SEI message's size in its RBSP, without emulation prevention bytes. A mastering display with a
+    /// minimum of 0.005 nits (00 00 00 32) is escaped in the stream: counted with the 03, it lost a byte, and the CLL
+    /// after it was read a byte off.
+    @Test("SEI messages are sized without their emulation prevention bytes")
+    func seiSizedWithoutEmulationPrevention() {
+        let mastering: [UInt8] =
+            [0x21, 0x34, 0x9B, 0xAA, 0x19, 0x96, 0x08, 0xFC, 0x8A, 0x48, 0x39, 0x08, 0x3D, 0x13, 0x40, 0x42]
+            + [0x02, 0x62, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x32]
+        let escapedMastering = Array(mastering[0..<21]) + [0x03] + Array(mastering[21...])
+        let sei: [UInt8] = [0x4E, 0x01] + [137, 24] + escapedMastering + [144, 4, 0x03, 0xE8, 0x01, 0x90] + [0x80]
+        let messages = VideoFormatDescriptionBuilder.hdrSEIMessages(inPrefixSEI: Data(sei))
+        #expect(
+            messages == [
+                .masteringDisplay(Data(mastering), maxLuminanceNits: 4000),
+                .contentLightLevel(Data([0x03, 0xE8, 0x01, 0x90]), maxCLL: 1000, maxFALL: 400),
+            ])
+    }
 }
