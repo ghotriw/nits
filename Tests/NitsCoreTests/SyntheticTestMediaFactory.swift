@@ -152,6 +152,10 @@ public enum SyntheticTestMediaFactory {
         /// advertisement segments `ad0`, `ad1` of 4 s (smptebars) whose timestamps start at 0. A test lists them as it likes
         /// (`HLSLiveDiscontinuityTests`); `filename` is a playlist of the content alone
         case hlsLiveAds
+        /// A media playlist (3 s, fragmented MP4, one init section) of six half-second segments of five pictures each
+        /// (H.264, 160x90, 10 fps, a keyframe each): too short for a demuxer to settle its stream parameters in one.
+        /// Made as a directory; `filename` is the playlist
+        case hlsShortFragments
         /// Two 4 s fragmented-MP4 segments (320x180, then 640x360) with an init section each: `EXT-X-MAP` renewed after the
         /// `EXT-X-DISCONTINUITY`, the timestamps of each starting again, picture and sound muxed. `filename` is the playlist
         case hlsDiscontinuityFMP4
@@ -196,7 +200,7 @@ public enum SyntheticTestMediaFactory {
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-                .hlsDiscontinuityFlashClick, .hlsLiveAds,
+                .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments,
             ]
             .contains(self)
         }
@@ -327,6 +331,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_discontinuity_resize/media.m3u8"
             case .hlsDiscontinuityTiming:
                 return "synth_hls_discontinuity_timing/media.m3u8"
+            case .hlsShortFragments:
+                return "synth_hls_short_fragments/media.m3u8"
             case .hlsLiveAds:
                 return "synth_hls_live_ads/media.m3u8"
             case .hlsDiscontinuityFMP4:
@@ -509,7 +515,17 @@ public enum SyntheticTestMediaFactory {
                     return nil
                 }
             }
-            if preset == .hlsLiveAds {
+            if preset == .hlsShortFragments {
+                let arguments = [
+                    "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=3", "-c:v", "libx264", "-pix_fmt",
+                    "yuv420p",
+                    "-g", "5", "-sc_threshold", "0", "-f", "hls", "-hls_time", "0.5", "-hls_segment_type", "fmp4",
+                    "-hls_playlist_type", "vod", "-hls_fmp4_init_filename", "init.mp4",
+                    "-hls_segment_filename", directory.appendingPathComponent("s_%03d.m4s").path,
+                    directory.appendingPathComponent("media.m3u8").path,
+                ]
+                guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return nil }
+            } else if preset == .hlsLiveAds {
                 guard makeHLSLiveAds(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
@@ -1081,7 +1097,7 @@ public enum SyntheticTestMediaFactory {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-            .hlsDiscontinuityFlashClick, .hlsLiveAds,
+            .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments,
             .dashSegments, .dashLadder,
             .dashLadderCaptions:
             return []  // Made by `generateMedia`.
