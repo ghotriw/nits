@@ -88,9 +88,9 @@ struct SubtitlePacketStash {
     private var bitmapStreams: Set<Int>?
 
     /// Keeps a subtitle packet playback read (timestamps already on the zero-based timeline).
-    mutating func add(_ pkt: UnsafePointer<AVPacket>, in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    mutating func add(_ pkt: UnsafePointer<AVPacket>, in streams: any StreamDescriptions) {
         let index = Int(pkt.pointee.stream_index)
-        guard index >= 0, index < Int(ctx.pointee.nb_streams), let stream = ctx.pointee.streams[index],
+        guard let stream = streams.stream(index),
             stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE, stream.pointee.time_base.den > 0
         else { return }
         let ticks = pkt.pointee.pts != Int64.min ? pkt.pointee.pts : pkt.pointee.dts
@@ -108,17 +108,17 @@ struct SubtitlePacketStash {
         segments[last].streams[index, default: StreamPackets()].packets.append(packet)
         if position >= 0 { segments[last].streams[index]?.positions.insert(position) }
 
-        let bitmaps = bitmapStreams ?? Self.bitmapStreams(of: ctx)
+        let bitmaps = bitmapStreams ?? Self.bitmapStreams(of: streams)
         bitmapStreams = bitmaps
         guard bitmaps.contains(index) else { return }
         bitmapBytes[index, default: 0] += Int(pkt.pointee.size)
         dropOldest(of: index, keeping: Self.bitmapByteLimit / bitmaps.count)
     }
 
-    private static func bitmapStreams(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Set<Int> {
+    private static func bitmapStreams(of streams: any StreamDescriptions) -> Set<Int> {
         Set(
-            (0..<Int(ctx.pointee.nb_streams)).filter { index in
-                guard let parameters = ctx.pointee.streams[index]?.pointee.codecpar else { return false }
+            (0..<streams.streamCount).filter { index in
+                guard let parameters = streams.stream(index)?.pointee.codecpar else { return false }
                 return parameters.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
                     && BitmapSubtitleDecoder.isBitmapCodec(parameters.pointee.codec_id)
             })
@@ -173,8 +173,8 @@ struct SubtitlePacketStash {
 
     /// The packets of stream `index` read so far, by stretch, and the stream's parameters to decode them; `readAhead`
     /// ends the current stretch. `nil` when no stretch covers anything.
-    func snapshot(of index: Int, in ctx: UnsafeMutablePointer<AVFormatContext>, readAhead: Double) -> Snapshot? {
-        guard index >= 0, index < Int(ctx.pointee.nb_streams), let stream = ctx.pointee.streams[index],
+    func snapshot(of index: Int, in streams: any StreamDescriptions, readAhead: Double) -> Snapshot? {
+        guard let stream = streams.stream(index),
             let parameters = StreamParameters(of: stream)
         else { return nil }
         let stretches = segments.compactMap { segment -> Stretch? in

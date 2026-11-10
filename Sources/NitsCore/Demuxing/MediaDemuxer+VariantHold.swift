@@ -33,9 +33,10 @@ extension MediaDemuxer {
     /// reordering and of the interleave, a second or so of pictures. The oldest is queued as another comes.
     static let heldOldVideoLimit = 48
 
-    /// Whether the switch is on FFmpeg's DASH demuxer (see the extension's description).
-    func holdsNewVariantForOld(in ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
-        ctx.pointee.iformat.map { String(cString: $0.pointee.name) == "dash" } == true
+    /// Whether the input interleaves the variants by presentation time, as FFmpeg's DASH demuxer does (see the
+    /// extension's description).
+    func holdsNewVariantForOld() -> Bool {
+        input.traits.interleavesVariantsByPresentation
     }
 
     /// Whether a video packet of either variant is for `admitVideoWaitingForOld`.
@@ -45,12 +46,12 @@ extension MediaDemuxer {
 
     /// A video packet of the old or the new variant while the switch has not made its splice (DASH). True when it is
     /// queued by the caller as it is; false when it is dropped, or held to be queued here.
-    func admitVideoWaitingForOld(_ pkt: inout AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+    func admitVideoWaitingForOld(_ pkt: inout AVPacket) -> Bool {
         guard let pending = variantSwitch else { return true }
         let index = Int(pkt.stream_index)
         let time = pkt.pts != Int64.min ? pkt.pts : pkt.dts
         let decodeTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
-        guard decodeTime != Int64.min, let stream = ctx.pointee.streams[index] else {
+        guard decodeTime != Int64.min, let stream = input.stream(index) else {
             return index == pending.previous.video
         }
         let base = stream.pointee.time_base
@@ -59,11 +60,11 @@ extension MediaDemuxer {
             // The keyframe has been found and waits for the old variant: the pictures after it wait too.
             if pending.candidate != nil {
                 guard let held = HeldVideoPacket(&pkt) else {
-                    cancelVariantSwitch(in: ctx)
+                    cancelVariantSwitch()
                     return false
                 }
                 variantSwitch?.heldVideo.append(held)
-                if (variantSwitch?.heldVideo.count ?? 0) >= Self.heldVideoLimit { spliceHeldVideo(in: ctx) }
+                if (variantSwitch?.heldVideo.count ?? 0) >= Self.heldVideoLimit { spliceHeldVideo() }
                 return false
             }
             // A variant read before hands out the packet it held when it was discarded first, from back then
@@ -71,7 +72,7 @@ extension MediaDemuxer {
             guard pkt.flags & AV_PKT_FLAG_KEY != 0, time != Int64.min else { return false }
             // After every picture the old variant has handed over (the delayed ones are not yet): else the keyframe
             // would repeat one. The next keyframe is the one.
-            let oldBase = pending.previous.video.flatMap { ctx.pointee.streams[$0]?.pointee.time_base } ?? base
+            let oldBase = pending.previous.video.flatMap { input.stream($0)?.pointee.time_base } ?? base
             guard av_compare_ts(decodeTime, base, pending.previousVideoTime, oldBase) > 0,
                 let held = HeldVideoPacket(&pkt)
             else { return false }
@@ -79,7 +80,7 @@ extension MediaDemuxer {
             var oldReachedIt = false
             for old in pending.heldOld {
                 if av_compare_ts(old.decodeTime, oldBase, decodeTime, base) < 0 {
-                    releaseOldVideo(old, in: ctx)
+                    releaseOldVideo(old)
                 } else {
                     oldReachedIt = true
                 }
@@ -88,7 +89,7 @@ extension MediaDemuxer {
             variantSwitch?.candidate = SpliceCandidate(
                 data: held.payload, time: time, decodeTime: decodeTime, timebase: base)
             variantSwitch?.heldVideo = [held]
-            if oldReachedIt { spliceHeldVideo(in: ctx) }
+            if oldReachedIt { spliceHeldVideo() }
             return false
         }
 
@@ -97,7 +98,7 @@ extension MediaDemuxer {
             // Its pictures that decode before the keyframe are still its to hand over; the first that decodes with or
             // after it ends them, and is dropped. Past the end of its way (the splice failed), it plays on.
             if av_compare_ts(decodeTime, base, candidate.decodeTime, candidate.timebase) >= 0 {
-                return !spliceHeldVideo(in: ctx)
+                return !spliceHeldVideo()
             }
             variantSwitch?.previousVideoTime = max(pending.previousVideoTime, decodeTime)
             return true
@@ -107,14 +108,14 @@ extension MediaDemuxer {
         if (variantSwitch?.heldOld.count ?? 0) > Self.heldOldVideoLimit,
             let oldest = variantSwitch?.heldOld.removeFirst()
         {
-            releaseOldVideo(oldest, in: ctx)
+            releaseOldVideo(oldest)
         }
         return false
     }
 
     /// Queues a picture of the old variant that was delayed: it counts as handed over.
-    func releaseOldVideo(_ held: HeldVideoPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
-        queueHeldVideo(held, in: ctx)
+    func releaseOldVideo(_ held: HeldVideoPacket) {
+        queueHeldVideo(held)
         if let handedOver = variantSwitch?.previousVideoTime {
             variantSwitch?.previousVideoTime = max(handedOver, held.decodeTime)
         }
@@ -122,23 +123,23 @@ extension MediaDemuxer {
 
     /// Queues a held picture as every picture is: its captions, then the queue with the format it plays with, and the
     /// account of what has been read.
-    private func queueHeldVideo(_ held: HeldVideoPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    private func queueHeldVideo(_ held: HeldVideoPacket) {
         subtitleTracker.processVideoPacket(held.packet)
         videoQueue.append(DemuxedVideoPacket(held, format: videoFormat))
         lastVideoReadTime = held.decodeTime
-        recordReadAhead(held.packet.pointee, in: ctx)
+        recordReadAhead(held.packet.pointee)
     }
 
     /// Makes the splice that waited for the old variant (`VariantSwitch.candidate`), and queues the pictures held, with
     /// the format they play with. Without the old variant's coming (it ended, a seek, too many held) the pictures it
     /// had left are lost. False when the splice could not be made: the switch is given up, the old variant plays on.
     @discardableResult
-    func spliceHeldVideo(in ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+    func spliceHeldVideo() -> Bool {
         guard let pending = variantSwitch, let candidate = pending.candidate else { return false }
         variantSwitch?.candidate = nil
         variantSwitch?.heldVideo = []
-        guard spliceVariantVideo(at: candidate.time, keyframe: candidate.data, in: ctx) else { return false }
-        for held in pending.heldVideo { queueHeldVideo(held, in: ctx) }
+        guard spliceVariantVideo(at: candidate.time, keyframe: candidate.data) else { return false }
+        for held in pending.heldVideo { queueHeldVideo(held) }
         return true
     }
 }

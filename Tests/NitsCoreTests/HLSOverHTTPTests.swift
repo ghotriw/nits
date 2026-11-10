@@ -256,9 +256,8 @@ struct HLSRenditionTests {
             if pictures == 30 { demuxer.selectVariant(id: low.id) }
         }
         #expect(demuxer.selectedVariantId == low.id)
-        let ctx = try #require(demuxer.formatCtx)
         let ukrainian = try #require(demuxer.audioTracks.first { $0.language == "ukr" })
-        let isRead = { (index: Int) in ctx.pointee.streams[index]?.pointee.discard != AVDISCARD_ALL }
+        let isRead = { (index: Int) in (demuxer.input as? FFmpegInput)?.isReading(stream: index) == true }
         #expect(!isRead(ukrainian.streamIndex))
         #expect(demuxer.subtitleTracks.allSatisfy { !isRead($0.streamIndex) })
         #expect(isRead(demuxer.audioStreamIndex) && isRead(demuxer.videoStreamIndex))

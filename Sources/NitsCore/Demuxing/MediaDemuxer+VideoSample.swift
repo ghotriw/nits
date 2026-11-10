@@ -7,7 +7,7 @@ extension MediaDemuxer {
     /// The format packets are read as now (`DemuxedVideoPacket.format`).
     var videoFormat: VideoPacketFormat {
         var codecParameters: UnsafePointer<AVCodecParameters>?
-        if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+        if videoStreamIndex >= 0, let stream = input.stream(videoStreamIndex) {
             codecParameters = UnsafePointer(stream.pointee.codecpar)
         }
         return VideoPacketFormat(
@@ -255,7 +255,7 @@ extension MediaDemuxer {
             lastSeenParameterSets = sets
             if let seen, Self.parameterSetsDiffer(seen, sets) {
                 var codecParameters: UnsafePointer<AVCodecParameters>?
-                if let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] {
+                if videoStreamIndex >= 0, let stream = input.stream(videoStreamIndex) {
                     codecParameters = UnsafePointer(stream.pointee.codecpar)
                 }
                 if let description = makeVideoFormatDescription(parameterSets: sets, codecParameters: codecParameters) {

@@ -1,4 +1,3 @@
-import CFFmpeg
 import Foundation
 
 /// The part of a live HLS stream that can be played: from the first segment its playlist lists to the end of the last,
@@ -31,20 +30,11 @@ public struct LiveReport: Equatable, Sendable {
 }
 
 extension MediaDemuxer {
-    /// The key our patch of FFmpeg's HLS demuxer (`scripts/patches/ffmpeg-hls-live-seek.patch`) tags a live playlist's
-    /// format context with: the media sequence number of its first segment. Removed once the playlist ends.
-    static let liveMetadataKey = "hls_live"
-
-    /// Whether `ctx` is an HLS stream with a playlist that slides and has no end yet.
-    static func isLivePlaylist(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
-        av_dict_get(ctx.pointee.metadata, liveMetadataKey, nil, 0) != nil
-    }
-
-    /// Reads the window the HLS demuxer tells of its playlist (the format context's `start_time` and `duration`, which
-    /// it keeps up to date at every reload) and publishes it. On the thread that reads: FFmpeg writes them there.
-    /// Once the playlist ended the last window stays, marked so; for a stream that was never live there is none.
-    func publishLiveWindow(from ctx: UnsafeMutablePointer<AVFormatContext>) {
-        guard let window = Self.liveWindow(of: ctx, origin: timelineOrigin) else { return }
+    /// Publishes the window the input tells of its live playlist (`DemuxerInput.liveWindow()`). On the thread that reads:
+    /// the input reloads the playlist inside its reads. Once the playlist ended the last window stays, marked so; for a
+    /// stream that was never live there is none.
+    func publishLiveWindow() {
+        guard let window = input.liveWindow() else { return }
         // Called after every packet: the time stays that of the first read that saw the window, which is the load's
         // (the playlist is reloaded inside the read), not that of the last packet.
         liveWindowState.withLock { state in
@@ -70,16 +60,5 @@ extension MediaDemuxer {
         }
         window.start = min(window.start, window.end)
         return LiveReport(window: window, loadedAt: now)
-    }
-
-    static func liveWindow(of ctx: UnsafeMutablePointer<AVFormatContext>, origin: Int64) -> LiveWindow? {
-        guard ctx.pointee.start_time != Int64.min, ctx.pointee.duration > 0 else { return nil }
-        let start = Double(ctx.pointee.start_time - origin) / Double(AV_TIME_BASE)
-        let tag = av_dict_get(ctx.pointee.metadata, liveMetadataKey, nil, 0)
-        // Read for every packet: no `String` made of the tag.
-        let sequence = tag?.pointee.value.map { strtoll($0, nil, 10) } ?? 0
-        return LiveWindow(
-            start: start, end: start + Double(ctx.pointee.duration) / Double(AV_TIME_BASE), hasSlid: sequence > 0,
-            hasEnded: tag == nil)
     }
 }

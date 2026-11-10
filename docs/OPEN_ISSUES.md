@@ -311,7 +311,7 @@ Accepted for now, noted for later.
     failure's message was not kept: it may have been the same. One thing was wrong and is fixed: the window of a stream opened after it
     had slid started before 0 (the segments listed before the one reading begins at are placed earlier than its first
     timestamp, which is small when timestamps restart), and a seek into that part stood the clock (`currentFramePTS >= 0`
-    means "a picture is there" throughout the engine). `MediaDemuxer.timelineOrigin(of:)` now takes the start of an
+    means "a picture is there" throughout the engine). `FFmpegInput.timelineOrigin(of:)` now takes the start of an
     HLS stream for the origin, negative or not (other formats flagged `AVFMT_TS_DISCONT` keep a positive one or none), so it starts at 0 as it opens and everything after is positive.
     An EVENT playlist (no `hls_live` tag, so `isLive` is false and it has a duration) had the same fault, its first
     picture at -2.5 s; it starts at 0 now (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks (single

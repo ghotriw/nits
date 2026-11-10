@@ -383,7 +383,7 @@ flowchart TD
     seekable, `dashdec.c:1989`) and to switch to it, and a seek before the first read goes through all of the
     ladder's files (19.6 s for 7 pictures at 335 s on a fast link; 7.3 s once the discarded ones are closed). Such a
     manifest plays its best picture, the others in the format menu, as before the ladders; and the first seek reads
-    a packet first (`closeUnusedDASHRepresentations`), so that the demuxer closes the representations it discards.
+    a packet first (`DemuxerInput.closeUnusedRepresentations`), so that the demuxer closes the representations it discards.
     Shaka's: 19.9 s → 7.4 s to resume at 335 s.
   - [x] Seek in a single file (2026-11-02): the `sidx` of each picture and sound (its `indexRange`, asked for when the
     manifest is read) says its segments, as a `SegmentList` of byte ranges (`SegmentIndex`, `DASHManifest.indexRequests`);

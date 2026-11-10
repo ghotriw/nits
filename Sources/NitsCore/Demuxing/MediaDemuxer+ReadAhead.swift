@@ -143,17 +143,17 @@ extension MediaDemuxer {
     /// Behind `lock` and `queueLock`.
     private func readOnePacketAhead() -> Bool {
         adaptBitrateIfDue()
-        guard let ctx = formatCtx, !readAheadEnded, !isReadAheadFull else { return true }
+        guard !readAheadEnded, !isReadAheadFull else { return true }
         var pkt = AVPacket()
         let mark = readMark
-        let ret = readPacket(ctx, &pkt, releasingQueueLock: true)
+        let ret = readPacket(&pkt, releasingQueueLock: true)
         // A seek waiting for the input interrupted the read (`lockIO(yielding:)`). It is not the input's end, nor an
         // error: the thread steps aside for the seek, which repositions what the read left (`lock` is still held here,
         // so the seek has not yet resumed the input). Nor is it a measure of the network, whatever it returned (a
         // packet, for MPEG-TS: the rest of the segment): its requests are cut short, and the wait it was in is no cost
         // of reading (`noteRead`), so their transfers are dropped.
         if interruptContext.isYieldingIO, !interruptContext.shouldAbort {
-            _ = ioBytes.transport?.meter.take()
+            _ = network?.transferMeter?.take()
             if ret < 0 { return true }
         } else {
             noteRead(from: mark)

@@ -44,7 +44,7 @@ extension MediaDemuxer {
         seconds >= liveEdgeWait.seconds && Double(bytes) * 8 / seconds < liveEdgeWait.bitsPerSecond
     }
 
-    /// Where a read of the read-ahead thread starts: `ioBytes`' totals, and how far reading had got.
+    /// Where a read of the read-ahead thread starts: the input's network totals, and how far reading had got.
     struct ReadMark {
         let time = ContinuousClock.now
         let bytes: Int64
@@ -58,9 +58,10 @@ extension MediaDemuxer {
     /// Behind `lock` and `queueLock`.
     var readMark: ReadMark {
         ReadMark(
-            bytes: ioBytes.total, openSeconds: ioBytes.openSeconds, readAhead: readAheadState.withLock { $0 },
+            bytes: network?.total ?? 0, openSeconds: network?.openSeconds ?? 0,
+            readAhead: readAheadState.withLock { $0 },
             isSwitchingVariant: variantSwitch != nil,
-            oneTimeWaits: ioBytes.transport?.meter.oneTimeWaitSeconds ?? 0)
+            oneTimeWaits: network?.transferMeter?.oneTimeWaitSeconds ?? 0)
     }
 
     /// A read of the read-ahead thread from `mark` on. Behind `lock` and `queueLock`.
@@ -84,10 +85,10 @@ extension MediaDemuxer {
     /// cost of reading: only the segment's request, after them in the same read, counts. Of a stream with a duration,
     /// a long read without data is the network failing.
     func noteRead(from mark: ReadMark) {
-        guard let meter = ioBytes.transport?.meter else { return }
+        guard let network, let meter = network.transferMeter else { return }
         let media = max(readAheadState.withLock { $0 } - mark.readAhead, 0)
         let countsLatency = !mark.isSwitchingVariant && variantSwitch == nil
-        let edgeOpen = ioBytes.lastOpen.flatMap { opened in
+        let edgeOpen = network.lastOpen.flatMap { opened in
             durationSeconds <= 0 && opened.asked > mark.time
                 && Self.isLiveEdgeWait(
                     bytes: Int(opened.total - mark.bytes),
@@ -96,7 +97,7 @@ extension MediaDemuxer {
         }
         if edgeOpen != nil { adaptiveBitrate.liveEdgeReachedAt = adaptiveTime }
         let oneTime = meter.oneTimeWaitSeconds - mark.oneTimeWaits
-        let opened = ioBytes.openSeconds - (edgeOpen?.openSeconds ?? mark.openSeconds)
+        let opened = network.openSeconds - (edgeOpen?.openSeconds ?? mark.openSeconds)
         let latency = edgeOpen != nil ? opened : max(opened - oneTime, 0)
         adaptiveBitrate.logic.addLatency(countsLatency ? latency : 0, media: media.isFinite ? media : 0)
         let transfers = meter.take()

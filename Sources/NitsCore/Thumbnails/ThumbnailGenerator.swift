@@ -196,8 +196,8 @@ public final class ThumbnailGenerator: @unchecked Sendable {
 
         var seenKeyPackets = Set<Int64>()
         // Same zero-based timeline as MediaDemuxer (MPEG-TS / MPEG-PS start wherever the source clock was).
-        let timelineOrigin = MediaDemuxer.timelineOrigin(of: activeFormatCtx)
-        let timelineOffset = MediaDemuxer.timelineOffset(timelineOrigin, in: timebase)
+        let timelineOrigin = FFmpegInput.timelineOrigin(of: activeFormatCtx)
+        let timelineOffset = FFmpegInput.timelineOffset(timelineOrigin, in: timebase)
         var seenFramePts = Set<Int64>()
         let dolbyVisionProfile = Self.dolbyVisionProfile(codecpar)
         let staticLuminance = Self.staticLuminance(codecpar)

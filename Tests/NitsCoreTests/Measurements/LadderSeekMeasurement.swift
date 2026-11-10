@@ -48,8 +48,8 @@ struct LadderSeekMeasurement {
         func timed(_ label: String, _ iteration: Int, to target: Double, exact: Bool, forward: Bool) {
             decoder.flush()
             frameQueue.clear(resetDroppedFrames: true)
-            let bytes0 = demuxer.ioBytes.total
-            let open0 = demuxer.ioBytes.openSeconds
+            let bytes0 = demuxer.network?.total ?? 0
+            let open0 = demuxer.network?.openSeconds ?? 0
             let t0 = ContinuousClock.now
             demuxer.seek(to: target, exact: exact, forward: forward)
             let t1 = ContinuousClock.now
@@ -60,7 +60,7 @@ struct LadderSeekMeasurement {
             print(
                 "MEASURE \(label) i=\(iteration) seek=\(String(format: "%.0f", ms(t1 - t0))) ms "
                     + "decode=\(String(format: "%.0f", ms(t2 - t1))) ms total=\(String(format: "%.0f", ms(t2 - t0))) ms "
-                    + "bytes=\(demuxer.ioBytes.total - bytes0) latency=\(String(format: "%.0f", (demuxer.ioBytes.openSeconds - open0) * 1000)) ms "
+                    + "bytes=\((demuxer.network?.total ?? 0) - bytes0) latency=\(String(format: "%.0f", ((demuxer.network?.openSeconds ?? 0) - open0) * 1000)) ms "
                     + "frame=\(frame.map { String(format: "%.2f", $0.pts) } ?? "none") variant=\(demuxer.selectedVariantId.map(String.init) ?? "-")"
             )
         }
@@ -152,7 +152,7 @@ struct LadderABRSeekMeasurement {
                 let spliceBetween = changes.withLock {
                     $0.filter { $0.seconds > target - 0.5 && $0.seconds <= cursor + 0.5 }.count
                 }
-                let bytes0 = demuxer.ioBytes.total
+                let bytes0 = demuxer.network?.total ?? 0
                 let t0 = ContinuousClock.now
                 let outcome = demuxer.seekReportingCache(to: target, exact: exact, forward: false)
                 let took = ms(ContinuousClock.now - t0)
@@ -160,7 +160,7 @@ struct LadderABRSeekMeasurement {
                 print(
                     "MEASURE-ABR seek#\(seekIndex) wall=\((ContinuousClock.now - wallStart).components.seconds) playhead=\(String(format: "%.1f", playhead)) back=\(back) exact=\(exact) "
                         + "fromCache=\(outcome.fromCache) ms=\(String(format: "%.0f", took)) "
-                        + "bytes=\(demuxer.ioBytes.total - bytes0) splicesBetween=\(spliceBetween) "
+                        + "bytes=\((demuxer.network?.total ?? 0) - bytes0) splicesBetween=\(spliceBetween) "
                         + "variant=\(demuxer.selectedVariantId.map(String.init) ?? "-") "
                         + "readAhead=\(String(format: "%.1f", demuxer.readAheadSeconds - demuxer.consumedSeconds))")
                 pendingVideo = nil

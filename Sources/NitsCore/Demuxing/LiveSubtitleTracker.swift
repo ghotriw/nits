@@ -116,16 +116,14 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     func selectTrack(
         id trackId: Int?,
         tracks: [SubtitleTrack],
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>?,
+        in input: any DemuxerInput,
         readAhead: Double
     ) {
         let track = trackId.flatMap { id in tracks.first { $0.id == id } }
         let streamIndex = track?.streamIndex ?? -1
         liveBitmapDecoder = nil
         liveCaptionDecoder = nil
-        if let field = track?.closedCaptionField, let formatCtx, streamIndex >= 0,
-            streamIndex < Int(formatCtx.pointee.nb_streams), let stream = formatCtx.pointee.streams[streamIndex]
-        {
+        if let field = track?.closedCaptionField, let stream = input.stream(streamIndex) {
             liveCaptionDecoder = ClosedCaptionDecoder(field: field, stream: stream)
         }
         // Captions in the video's pictures come through `processVideoPacket`: the video's packets must not go to the
@@ -136,9 +134,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         // Closed captions in the video's pictures aren't kept: a window read gets them.
         let stashed =
             track?.captionsInVideo == false
-            ? formatCtx.flatMap { ctx in
-                stash.withLockUnchecked { $0.snapshot(of: streamIndex, in: ctx, readAhead: readAhead) }
-            } : nil
+            ? stash.withLockUnchecked { $0.snapshot(of: streamIndex, in: input, readAhead: readAhead) } : nil
         liveSubtitleState.withLock { state in
             state.stashed = stashed
             state.streamIndex = streamIndex
@@ -159,19 +155,13 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         }
 
         if let trackId, let track = tracks.first(where: { $0.id == trackId }) {
-            if track.format == .ass, let formatCtx,
-                track.streamIndex < Int(formatCtx.pointee.nb_streams),
-                let stream = formatCtx.pointee.streams[track.streamIndex]
-            {
+            if track.format == .ass, let stream = input.stream(track.streamIndex) {
                 let script = AssScript(
                     header: EmbeddedSubtitleReader.assHeader(of: stream),
-                    fonts: EmbeddedSubtitleReader.attachedFonts(in: formatCtx))
+                    fonts: input.attachedFonts)
                 liveSubtitleState.withLock { $0.assScript = script }
             }
-            if track.format == .bitmap, let formatCtx,
-                track.streamIndex < Int(formatCtx.pointee.nb_streams),
-                let stream = formatCtx.pointee.streams[track.streamIndex]
-            {
+            if track.format == .bitmap, let stream = input.stream(track.streamIndex) {
                 liveBitmapDecoder = BitmapSubtitleDecoder(stream: stream)
             }
             AppLog.info(
@@ -331,27 +321,24 @@ final class LiveSubtitleTracker: @unchecked Sendable {
 
     /// A packet playback read: kept for a track chosen later, and taken by the selected one. Under
     /// `MediaDemuxer.lock`.
-    func readPacket(_ pkt: UnsafeMutablePointer<AVPacket>, in formatCtx: UnsafeMutablePointer<AVFormatContext>) {
+    func readPacket(_ pkt: UnsafeMutablePointer<AVPacket>, in input: any DemuxerInput) {
         let index = Int(pkt.pointee.stream_index)
         // Picture and sound packets, nearly all of them, skip the stash's lock. MPEG-TS can add streams as it reads.
-        if subtitleStreams.count != Int(formatCtx.pointee.nb_streams) {
-            subtitleStreams = (0..<Int(formatCtx.pointee.nb_streams)).map { position in
-                formatCtx.pointee.streams[position]?.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
+        if subtitleStreams.count != input.streamCount {
+            subtitleStreams = (0..<input.streamCount).map { position in
+                input.stream(position)?.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE
             }
         }
         if ownsStash, subtitleStreams.indices.contains(index), subtitleStreams[index] {
-            stash.withLockUnchecked { $0.add(pkt, in: formatCtx) }
+            stash.withLockUnchecked { $0.add(pkt, in: input) }
         }
-        if index == selectedStreamIndex { processPacket(pkt, in: formatCtx) }
+        if index == selectedStreamIndex { processPacket(pkt, in: input) }
     }
 
     private func processPacket(
-        _ pkt: UnsafeMutablePointer<AVPacket>, in formatCtx: UnsafeMutablePointer<AVFormatContext>?
+        _ pkt: UnsafeMutablePointer<AVPacket>, in input: any DemuxerInput
     ) {
-        guard let formatCtx, selectedStreamIndex >= 0,
-            selectedStreamIndex < Int(formatCtx.pointee.nb_streams),
-            let stream = formatCtx.pointee.streams[selectedStreamIndex]
-        else { return }
+        guard selectedStreamIndex >= 0, let stream = input.stream(selectedStreamIndex) else { return }
 
         if let liveCaptionDecoder {
             addCaptions(liveCaptionDecoder.decode(pkt))

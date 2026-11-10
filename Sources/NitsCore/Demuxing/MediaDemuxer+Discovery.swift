@@ -7,8 +7,7 @@ extension MediaDemuxer {
 
     /// Adopts `stream` as the video stream: geometry, timing, colorimetry, Dolby Vision and HDR metadata.
     func configureVideoStream(
-        _ stream: UnsafeMutablePointer<AVStream>, index: Int, codec detectedCodec: VideoCodec,
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>
+        _ stream: UnsafeMutablePointer<AVStream>, index: Int, codec detectedCodec: VideoCodec
     ) {
         let codecpar = stream.pointee.codecpar!
         self.videoStreamIndex = index
@@ -18,7 +17,7 @@ extension MediaDemuxer {
         self.height = Int(codecpar.pointee.height)
 
         // Guess or extract Sample Aspect Ratio (SAR / PAR)
-        let guessedSAR = av_guess_sample_aspect_ratio(formatCtx, stream, nil)
+        let guessedSAR = av_guess_sample_aspect_ratio(nil, stream, nil)
         if guessedSAR.num > 0 && guessedSAR.den > 0 {
             self.sampleAspectRatio = RationalAspectRatio(
                 numerator: Int(guessedSAR.num), denominator: Int(guessedSAR.den))
@@ -40,8 +39,8 @@ extension MediaDemuxer {
             // No duration: the window moves (`liveWindow`). Also at a variant switch, which configures the stream again.
         } else if stream.pointee.duration > 0 {
             self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
-        } else if formatCtx.pointee.duration > 0 {
-            self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
+        } else if input.durationSeconds > 0 {
+            self.durationSeconds = input.durationSeconds
         }
 
         // Nominal frame duration from the average frame rate, else the base rate (DV can report an average of
@@ -154,22 +153,11 @@ extension MediaDemuxer {
         }
     }
 
-    /// A stream's title; for an HLS rendition its `NAME`, which FFmpeg puts in the comment.
-    private func streamTitle(_ stream: UnsafeMutablePointer<AVStream>) -> String {
-        if let title = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            return String(cString: title.pointee.value)
-        }
-        guard let iformat = formatCtx?.pointee.iformat, String(cString: iformat.pointee.name) == "hls",
-            let name = av_dict_get(stream.pointee.metadata, "comment", nil, 0)
-        else { return "" }
-        return String(cString: name.pointee.value)
-    }
-
     /// Lists an audio stream as a track; the first one becomes the active track.
     func registerAudioTrack(_ stream: UnsafeMutablePointer<AVStream>, index: Int) {
         let codecId = stream.pointee.codecpar.pointee.codec_id
         // Read track metadata (title, language)
-        let title = streamTitle(stream)
+        let title = input.title(ofStream: index)
         var lang = ""
         if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
             lang = String(cString: langTag.pointee.value)
@@ -229,7 +217,7 @@ extension MediaDemuxer {
                 || codecId == AV_CODEC_ID_TEXT || codecId == AV_CODEC_ID_ASS || codecId == AV_CODEC_ID_SSA)
         let isBitmapSub = BitmapSubtitleDecoder.isBitmapCodec(codecId)
         guard isTextSub || isBitmapSub || isCaptions else { return }
-        let title = streamTitle(stream)
+        let title = input.title(ofStream: index)
         var lang = ""
         if let langTag = av_dict_get(stream.pointee.metadata, "language", nil, 0) {
             lang = String(cString: langTag.pointee.value)
@@ -265,32 +253,9 @@ extension MediaDemuxer {
         }
     }
 
-    /// Container chapters as FFmpeg exports them (MKV default edition, flattened; MP4 chapter track or
-    /// Nero `chpl`). Chapters without a start are skipped; an unset end stays `nil`.
-    static func readChapters(from formatCtx: UnsafeMutablePointer<AVFormatContext>) -> [MediaChapter.Raw] {
-        let count = Int(formatCtx.pointee.nb_chapters)
-        guard count > 0, let list = formatCtx.pointee.chapters else { return [] }
-        let noPTS = Int64.min  // AV_NOPTS_VALUE
-        return (0..<count).compactMap { index in
-            guard let chapter = list[index]?.pointee, chapter.start != noPTS,
-                chapter.time_base.num > 0, chapter.time_base.den > 0
-            else { return nil }
-            let num = Double(chapter.time_base.num)
-            let den = Double(chapter.time_base.den)
-            let title = av_dict_get(chapter.metadata, "title", nil, 0).map { String(cString: $0.pointee.value) }
-            return MediaChapter.Raw(
-                title: title,
-                start: Double(chapter.start) * num / den,
-                end: chapter.end != noPTS && chapter.end > chapter.start ? Double(chapter.end) * num / den : nil
-            )
-        }
-    }
-
     func extractVideoFormatDescription() -> CMVideoFormatDescription? {
-        guard let ctx = formatCtx else { return nil }
         let codecParameters: UnsafePointer<AVCodecParameters>? =
-            videoStreamIndex >= 0
-            ? ctx.pointee.streams[videoStreamIndex].map { UnsafePointer($0.pointee.codecpar) } : nil
+            videoStreamIndex >= 0 ? input.stream(videoStreamIndex).map { UnsafePointer($0.pointee.codecpar) } : nil
 
         // Step 1: Try parsing from container extradata (avcC / hvcC / Annex B header)
         var parameterSets = VideoFormatDescriptionBuilder.ParameterSets()
@@ -335,7 +300,7 @@ extension MediaDemuxer {
         var pkt = AVPacket()
         let nalLengthSize = unitLengthSize(of: codecParameters)
 
-        while videoPacketsScanned < maxVideoPacketsToScan && readPacket(ctx, &pkt) >= 0 {
+        while videoPacketsScanned < maxVideoPacketsToScan && readPacket(&pkt) >= 0 {
             if pkt.stream_index == videoStreamIndex {
                 videoPacketsScanned += 1
                 if firstKeyframePTS == nil, pkt.flags & AV_PKT_FLAG_KEY != 0, pkt.pts != Int64.min {
@@ -411,7 +376,7 @@ extension MediaDemuxer {
             } else {
                 skippedBytes += Int(pkt.size)
                 let timestamp = pkt.pts != Int64.min ? pkt.pts : pkt.dts
-                let timebase = ctx.pointee.streams[Int(pkt.stream_index)]!.pointee.time_base
+                let timebase = input.stream(Int(pkt.stream_index))?.pointee.time_base ?? AVRational(num: 0, den: 0)
                 av_packet_unref(&pkt)
                 if timestamp != Int64.min, timebase.den > 0 {
                     let seconds = Double(timestamp) * Double(timebase.num) / Double(timebase.den)
@@ -424,12 +389,10 @@ extension MediaDemuxer {
         }
 
         // Rewind to the beginning.
-        if Self.isUnindexedStream(ctx) {
-            rewindUnindexedStream(ctx)
+        if input.traits.landsBetweenKeyframes {
+            input.rewind()
         } else {
-            seekTimeline(
-                ctx, to: Self.timelineOffset(timelineOrigin, in: timebase), flags: AVSEEK_FLAG_BACKWARD,
-                streams: (videoStreamIndex, audioStreamIndex))
+            _ = input.seek(to: 0, flags: AVSEEK_FLAG_BACKWARD, streams: (videoStreamIndex, audioStreamIndex))
         }
         readAheadState.withLock { $0 = -.infinity }
         subtitleTracker.resetStash()

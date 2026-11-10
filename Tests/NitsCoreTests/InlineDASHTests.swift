@@ -55,7 +55,7 @@ struct InlineDASHTests {
         let segments = requests.filter { $0.path.hasPrefix("video/") || $0.path.hasPrefix("audio/") }
         // They came through the transport (which measures each transfer apart from its answer): it alone asks for the
         // body as it is.
-        #expect(demuxer.ioBytes.transport != nil)
+        #expect(demuxer.network?.transferMeter != nil)
         #expect(segments.allSatisfy { $0.acceptEncoding == "identity" }, "\(segments.map(\.acceptEncoding))")
         let asked = Set(requests.map(\.path).filter { $0.contains("/") })
         let wanted = Set((0..<Self.count).flatMap { ["audio/\($0)", "video/\($0)"] })

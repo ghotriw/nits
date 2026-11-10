@@ -192,10 +192,9 @@ struct SubtitlePacketStashTests {
     }
     @Test("Picture streams keep the newest packets within the limit, and cover the timeline past the latest dropped")
     func bitmapLimit() throws {
-        let ctx = avformat_alloc_context()!
-        defer { avformat_free_context(ctx) }
+        let table = try #require(AVStreamTable())
         for codec in [AV_CODEC_ID_HDMV_PGS_SUBTITLE, AV_CODEC_ID_SUBRIP] {
-            let stream = try #require(avformat_new_stream(ctx, nil))
+            let stream = try #require(table.addStream())
             stream.pointee.codecpar.pointee.codec_type = AVMEDIA_TYPE_SUBTITLE
             stream.pointee.codecpar.pointee.codec_id = codec
             stream.pointee.time_base = AVRational(num: 1, den: 1000)
@@ -213,12 +212,12 @@ struct SubtitlePacketStashTests {
                 pkt.pointee.stream_index = Int32(streamIndex)
                 pkt.pointee.pts = Int64(second) * 1000
                 pkt.pointee.pos = Int64(second * 2 + streamIndex) * Int64(size)
-                stash.add(pkt, in: ctx)
+                stash.add(pkt, in: table)
             }
         }
 
         let readAhead = Double(count)
-        let pictures = try #require(stash.snapshot(of: 0, in: ctx, readAhead: readAhead))
+        let pictures = try #require(stash.snapshot(of: 0, in: table, readAhead: readAhead))
         #expect(pictures.stretches.map(\.range) == [(9.0).nextUp...readAhead], "Past the latest dropped")
         #expect(pictures.stretches.first?.packets.count == count - 10)
 
@@ -232,11 +231,11 @@ struct SubtitlePacketStashTests {
         pkt.pointee.pts = 0
         // No position (FFmpeg doesn't know it), so not taken for a packet already kept.
         pkt.pointee.pos = -1
-        stash.add(pkt, in: ctx)
-        let again = try #require(stash.snapshot(of: 0, in: ctx, readAhead: readAhead).flatMap(\.stretches.first))
+        stash.add(pkt, in: table)
+        let again = try #require(stash.snapshot(of: 0, in: table, readAhead: readAhead).flatMap(\.stretches.first))
         #expect(again.packets.count == count - 10)
         #expect(again.range == (9.0).nextUp...readAhead)
-        let text = try #require(stash.snapshot(of: 1, in: ctx, readAhead: readAhead))
+        let text = try #require(stash.snapshot(of: 1, in: table, readAhead: readAhead))
         #expect(text.stretches.map(\.range) == [0...readAhead], "Text is kept whole")
         #expect(text.stretches.first?.packets.count == count)
     }

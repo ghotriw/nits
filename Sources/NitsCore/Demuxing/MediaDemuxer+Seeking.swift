@@ -37,11 +37,10 @@ extension MediaDemuxer {
         defer { lock.unlock() }
         queueLock.lock()
         defer { queueLock.unlock() }
-        guard let ctx = formatCtx else { return exact }
-        completeVariantSwitchBeforeSeek(in: ctx, at: seconds)
+        completeVariantSwitchBeforeSeek(at: seconds)
         // A track selected before the seek is read from its target (an audio track switch seeks for this).
-        applyChangedStreamSelection(in: ctx)
-        reenableEndedDASHStreams(in: ctx)
+        applyChangedStreamSelection()
+        input.prepareSeek(reading: [videoStreamIndex, audioStreamIndex] + selectedSubtitleStreamIndices)
         // Splices read ahead past the target are gone: the variant read now plays from it.
         reportVariant(at: seconds)
         audioQueue.removeAll()
@@ -88,24 +87,23 @@ extension MediaDemuxer {
         }
         let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
         let useForward = forward && !exact
-        let rawTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
         let streams = (video: videoStreamIndex, audio: audioStreamIndex)
         var ret: Int32 = -1
         if useForward {
-            ret = withoutQueueLock { seekTimeline(ctx, to: rawTarget, flags: 0, streams: streams) }
+            ret = withoutQueueLock { input.seek(to: target, flags: 0, streams: streams) }
             if ret < 0 { goExactly() }
         }
         if ret < 0 {
             // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
-            ret = withoutQueueLock { seekTimeline(ctx, to: rawTarget, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }
+            ret = withoutQueueLock { input.seek(to: target, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }
         }
-        if ret >= 0, videoStreamIndex >= 0, Self.isUnindexedStream(ctx) {
+        if ret >= 0, videoStreamIndex >= 0, input.traits.landsBetweenKeyframes {
             // The bisection lands near the target, its keyframe search reads on from there: backing off means it found
             // none to the end.
-            let backedOff = !syncToVideoKeyframe(ctx, target: target, requireAtOrBeforeTarget: isExact)
+            let backedOff = !syncToVideoKeyframe(target: target, requireAtOrBeforeTarget: isExact)
             if useForward && backedOff && !isExact { goExactly() }
         } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
-            readAudioAhead(ctx, audioStartSeconds: isExact ? seconds - audioDelay : nil, audioDelay: audioDelay)
+            readAudioAhead(audioStartSeconds: isExact ? seconds - audioDelay : nil, audioDelay: audioDelay)
         }
         AppLog.debug(
             .demuxer,
@@ -156,7 +154,6 @@ extension MediaDemuxer {
         if hasVideo, videoStreamIndex >= 0, audioStreamIndex >= 0, videoQueue.breakCount != audioQueue.breakCount {
             return nil
         }
-        guard formatCtx != nil else { return nil }
         guard timebase.num > 0, timebase.den > 0 else { return nil }
         guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return nil }
 
@@ -301,72 +298,18 @@ extension MediaDemuxer {
     }
 
     /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are
-    /// closed first, so that the seek does not move them (`closeUnusedDASHRepresentations`).
+    /// closed first, so that the seek does not move them (`DemuxerInput.closeUnusedRepresentations`).
+    ///
+    /// For the seek to a start position a load makes only: once playback has read, they are closed, and a packet read
+    /// before a seek in the middle of it would be a request for nothing.
     public func prepareFirstSeek() {
         lockIO()
         defer { lock.unlock() }
         queueLock.lock()
         defer { queueLock.unlock() }
-        guard let ctx = formatCtx else { return }
-        closeUnusedDASHRepresentations(in: ctx)
-    }
-
-    /// FFmpeg's DASH demuxer opens every representation of a ladder, and closes those discarded only when it reads a
-    /// packet (`recheck_discard_flags`): a seek before the first read goes through all of them, each one reading its
-    /// file up to the target when it has no index it can use (a single file: 19 s for a ladder of 7, 7 s once the
-    /// others are closed). One packet read first, dropped by the seek, closes them. Behind `lock` and `queueLock`.
-    ///
-    /// For the seek to a start position a load makes (`prepareFirstSeek`) only: once playback has read, they are closed,
-    /// and a packet read before a seek in the middle of it would be a request for nothing.
-    func closeUnusedDASHRepresentations(in ctx: UnsafeMutablePointer<AVFormatContext>) {
-        guard !dashDiscardsApplied, variants.count > 1, streamingName == "DASH" else { return }
-        dashDiscardsApplied = true
-        var pkt = AVPacket()
-        // A packet the probing of the streams left is handed out first, with no word to the DASH demuxer: dropped,
-        // as the seek does.
-        avformat_flush(ctx)
-        if withoutQueueLock({ av_read_frame(ctx, &pkt) }) >= 0 { av_packet_unref(&pkt) }
-    }
-
-    /// FFmpeg's DASH demuxer, once a stream was read to its end, closes its input and sets the stream to
-    /// `AVDISCARD_ALL`, so that it stays closed: a seek back moves its segment number, but nothing opens the input
-    /// again, and the stream reads nothing. The streams playing are enabled again before the seek. Behind `lock` and
-    /// `queueLock`.
-    func reenableEndedDASHStreams(in ctx: UnsafeMutablePointer<AVFormatContext>) {
-        guard let format = ctx.pointee.iformat, String(cString: format.pointee.name) == "dash" else { return }
-        for index in [videoStreamIndex, audioStreamIndex] + selectedSubtitleStreamIndices where index >= 0 {
-            ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_DEFAULT
-        }
-    }
-
-    /// Seeks to the keyframe at or before (`AVSEEK_FLAG_BACKWARD`) or after `rawTarget`, in the seek stream's time
-    /// base with the timeline offset applied.
-    ///
-    /// The Matroska and MP4 seeks clamp a target to the first entry of the searched stream's index. A video cut
-    /// between keyframes starts up to a GOP after its audio and subtitles, so a target before its first keyframe
-    /// would land there and skip what plays before it. Such a target is searched in the audio stream instead:
-    /// Matroska indexes every audio block it reads (the opening scan reads the start of the file), MP4 every sample,
-    /// and the MP4 seek then moves the video to its first sample.
-    /// `streams` are the video and audio streams read: a seek takes them before it releases `queueLock` for this,
-    /// as an audio track switch changes them behind it.
-    @discardableResult
-    func seekTimeline(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, to rawTarget: Int64, flags: Int32,
-        streams: (video: Int, audio: Int)
-    ) -> Int32 {
-        let streamIdx = streams.video >= 0 ? streams.video : streams.audio
-        guard streams.video >= 0, streams.audio >= 0, Self.describesStreams(ctx),
-            let videoStream = ctx.pointee.streams[streams.video],
-            let audioStream = ctx.pointee.streams[streams.audio],
-            let firstVideo = avformat_index_get_entry(videoStream, 0)?.pointee.timestamp,
-            let firstAudio = avformat_index_get_entry(audioStream, 0)?.pointee.timestamp,
-            rawTarget < firstVideo,
-            av_rescale_q(firstAudio, audioStream.pointee.time_base, videoStream.pointee.time_base) < firstVideo
-        else {
-            return av_seek_frame(ctx, Int32(streamIdx), rawTarget, flags)
-        }
-        let audioTarget = av_rescale_q(rawTarget, videoStream.pointee.time_base, audioStream.pointee.time_base)
-        return av_seek_frame(ctx, Int32(streams.audio), audioTarget, flags)
+        guard !firstSeekPrepared, variants.count > 1 else { return }
+        firstSeekPrepared = true
+        withoutQueueLock { input.closeUnusedRepresentations() }
     }
 
     /// Reads the audio that plays with the landed keyframe when audio is delayed against the picture.
@@ -379,13 +322,11 @@ extension MediaDemuxer {
     ///
     /// - Parameter audioStartSeconds: Where audio must start (exact seeks), or `nil` for the keyframe minus
     ///   `audioDelay` (keyframe seeks).
-    func readAudioAhead(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, audioStartSeconds: Double?, audioDelay: Double
-    ) {
+    func readAudioAhead(audioStartSeconds: Double?, audioDelay: Double) {
         // The landed keyframe, with the audio stored before it, as plain reading would queue them.
         var pkt = AVPacket()
         var keyframe: DemuxedVideoPacket?
-        while keyframe == nil, readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+        while keyframe == nil, readPacket(&pkt, releasingQueueLock: true) >= 0 {
             defer { av_packet_unref(&pkt) }
             if pkt.stream_index == audioStreamIndex {
                 audioQueue.append(DemuxedAudioPacket(pkt))
@@ -402,18 +343,15 @@ extension MediaDemuxer {
         let audioStart = max(audioStartSeconds ?? keySeconds - audioDelay, 0)
         guard audioStart < keySeconds else { return }
 
-        let rawStart =
-            Int64(audioStart * Double(timebase.den) / Double(timebase.num))
-            + Self.timelineOffset(timelineOrigin, in: timebase)
+        let start = Int64(audioStart * Double(timebase.den) / Double(timebase.num))
         let streams = (video: videoStreamIndex, audio: audioStreamIndex)
-        guard withoutQueueLock({ seekTimeline(ctx, to: rawStart, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }) >= 0
-        else {
-            restoreAfterAudioAhead(ctx, keyTime: keyTime)
+        guard withoutQueueLock({ input.seek(to: start, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }) >= 0 else {
+            restoreAfterAudioAhead(keyTime: keyTime)
             return
         }
         var audio: [DemuxedAudioPacket] = []
         var budget = 50_000
-        while budget > 0, readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+        while budget > 0, readPacket(&pkt, releasingQueueLock: true) >= 0 {
             budget -= 1
             defer { av_packet_unref(&pkt) }
             if pkt.stream_index == audioStreamIndex {
@@ -428,19 +366,18 @@ extension MediaDemuxer {
             }
         }
         AppLog.warning(.demuxer, "Keyframe at \(keySeconds)s not reached again while reading audio ahead of it")
-        restoreAfterAudioAhead(ctx, keyTime: keyTime)
+        restoreAfterAudioAhead(keyTime: keyTime)
     }
 
     /// Returns to just after the landed keyframe (already queued, with the audio stored before it) when reading audio
     /// ahead of it failed.
-    func restoreAfterAudioAhead(_ ctx: UnsafeMutablePointer<AVFormatContext>, keyTime: Int64) {
-        let rawKey = keyTime + Self.timelineOffset(timelineOrigin, in: timebase)
-        let video = Int32(videoStreamIndex)
-        guard withoutQueueLock({ av_seek_frame(ctx, video, rawKey, AVSEEK_FLAG_BACKWARD) }) >= 0 else {
+    func restoreAfterAudioAhead(keyTime: Int64) {
+        let video = videoStreamIndex
+        guard withoutQueueLock({ input.seek(stream: video, to: keyTime, flags: AVSEEK_FLAG_BACKWARD) }) >= 0 else {
             return
         }
         var pkt = AVPacket()
-        while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+        while readPacket(&pkt, releasingQueueLock: true) >= 0 {
             defer { av_packet_unref(&pkt) }
             if pkt.stream_index == videoStreamIndex, (pkt.pts != Int64.min ? pkt.pts : pkt.dts) >= keyTime {
                 return
@@ -448,9 +385,9 @@ extension MediaDemuxer {
         }
     }
 
-    /// MPEG-TS / MPEG-PS have no index: `av_seek_frame` bisects on timestamps and lands on whatever
-    /// packet is nearest, usually mid-GOP, which the decoder can't start from. Skips ahead to the next
-    /// video keyframe and queues it; for exact seeks, backs off further each time that keyframe is past
+    /// An input without an index (MPEG-TS / MPEG-PS, `DemuxerInputTraits.landsBetweenKeyframes`): its seek bisects on
+    /// timestamps and lands on whatever packet is nearest, usually mid-GOP, which the decoder can't start from. Skips
+    /// ahead to the next video keyframe and queues it; for exact seeks, backs off further each time that keyframe is past
     /// the target.
     ///
     /// The muxer interleaves audio up to ~0.7 s away from the video of the same time, so audio read
@@ -461,18 +398,16 @@ extension MediaDemuxer {
     /// - Returns: Whether it found the keyframe without backing off. A search that backs off found none from where the
     ///   bisection landed to the end (or, with `requireAtOrBeforeTarget`, only ones past the target).
     @discardableResult
-    func syncToVideoKeyframe(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, target: Int64, requireAtOrBeforeTarget: Bool
-    ) -> Bool {
+    func syncToVideoKeyframe(target: Int64, requireAtOrBeforeTarget: Bool) -> Bool {
         let oneSecond = Int64(Double(timebase.den) / Double(timebase.num))
         let maxAttempts = 5
-        var seekTarget = target + Self.timelineOffset(timelineOrigin, in: timebase)
+        var seekTarget = target
         for attempt in 0..<maxAttempts {
             var pkt = AVPacket()
             var landed = false
             var budget = 20_000
             var audioBeforeKeyframe: [DemuxedAudioPacket] = []
-            while budget > 0, readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+            while budget > 0, readPacket(&pkt, releasingQueueLock: true) >= 0 {
                 budget -= 1
                 defer { av_packet_unref(&pkt) }
                 if pkt.stream_index == audioStreamIndex {
@@ -498,25 +433,14 @@ extension MediaDemuxer {
             }
             seekTarget -= oneSecond << attempt
             // Before the first timestamp the bisection fails: restart from the beginning instead.
-            let video = Int32(videoStreamIndex)
-            if withoutQueueLock({ av_seek_frame(ctx, video, seekTarget, AVSEEK_FLAG_BACKWARD) }) < 0 {
-                withoutQueueLock { rewindUnindexedStream(ctx) }
+            let video = videoStreamIndex
+            let target = seekTarget
+            if withoutQueueLock({ input.seek(stream: video, to: target, flags: AVSEEK_FLAG_BACKWARD) }) < 0 {
+                withoutQueueLock { input.rewind() }
             }
         }
         AppLog.warning(.demuxer, "No video keyframe found while syncing seek to \(target)")
         return false
-    }
-
-    /// Rewinds MPEG-TS / MPEG-PS to their first packet. A timestamp seek bisects and can land past it, dropping the
-    /// keyframe that starts the file, so they rewind to their first byte. HLS can't seek by byte
-    /// (`AVFMT_NO_BYTE_SEEK`, the rewind would do nothing); a target before its first segment starts from that
-    /// segment's first keyframe.
-    func rewindUnindexedStream(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
-        if let iformat = ctx.pointee.iformat, (iformat.pointee.flags & AVFMT_NO_BYTE_SEEK) != 0 {
-            _ = av_seek_frame(ctx, -1, timelineOrigin - Int64(AV_TIME_BASE), AVSEEK_FLAG_BACKWARD)
-        } else {
-            _ = avformat_seek_file(ctx, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE)
-        }
     }
 
     /// Adjusts the target audio presentation timestamp (e.g. to align with the actual decoded keyframe PTS).

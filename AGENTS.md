@@ -66,7 +66,7 @@ reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go through cached
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
-(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: the demuxer holds it. An
+(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: `FFmpegInput` holds it and closes the context first. An
 `AVIOContext` served by Nits (`PrefetchedInput`, an HLS opening's prefetched playlists and segment starts;
 `HTTPSessionInput`, an HLS demuxer's HTTP requests) takes a retained one, released when FFmpeg closes the input through
 `io_close2`.
@@ -242,9 +242,14 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
   (`--extra-version=nits-hls-timeline`, and `nits-hls-skip` for a skip of expired live segments) and are skipped on a
   Homebrew FFmpeg. Background: "Discontinuities in HLS" in
   `docs/ARCHITECTURE.md`.
+- **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
+  selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
+  selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only
+  FFmpeg's formats do (a format's name, `AVFMT_*` flags, DASH's quirks, `hls_live`) goes in `FFmpegInput` or a trait
+  of `DemuxerInputTraits`, never a check of `iformat` in the demuxer. Background: "Inputs" in `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
-  `readPacket` (or `MediaDemuxer.rebase` on another `AVFormatContext`) and add
-  `timelineOffset` back to `av_seek_frame` targets. A bare `av_read_frame` breaks timing for these
+  `readPacket` (or `FFmpegInput.rebase` on another `AVFormatContext`); `DemuxerInput`'s seeks take targets on the
+  timeline and add `timelineOffset` back themselves. A bare `av_read_frame` breaks timing for these
   files. Background in "Seeking" in `docs/ARCHITECTURE.md`.
 
 ## Keyboard shortcuts

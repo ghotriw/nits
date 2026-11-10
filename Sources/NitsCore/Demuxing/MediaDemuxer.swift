@@ -16,7 +16,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// should compare it against this instead.
     public static let exactSeekTargetAttachmentKey: String = "Nits.ExactSeekTarget"
 
-    var formatCtx: UnsafeMutablePointer<AVFormatContext>?
+    /// What packets are read from (`DemuxerInput`). Behind `lock`, but for its description.
+    let input: any DemuxerInput
     var videoStreamIndex: Int = -1
     var audioStreamIndex: Int = -1
     public internal(set) var timebase: AVRational = AVRational(num: 1, den: 1000)
@@ -107,9 +108,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     var variantStreams: [Int: VariantStreams] = [:]
     /// The switch being spliced. Written with `lock` and `queueLock` held, so either one reads it.
     var variantSwitch: VariantSwitch?
-    /// The representations of a ladder that are discarded were closed by a packet read for the purpose, before the first
-    /// seek (`closeUnusedDASHRepresentations`). Behind `lock` and `queueLock`.
-    var dashDiscardsApplied = false
+    /// The input was asked to close the variants not read before the first seek (`prepareFirstSeek`), once. Behind
+    /// `lock` and `queueLock`.
+    var firstSeekPrepared = false
     /// The pictures read from a timeline second on: of which variant, and as they are.
     public struct VariantChange: Sendable {
         public let variant: StreamVariant
@@ -154,8 +155,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     var adaptiveBitrate = AdaptiveBitrateState()
     /// Replaces the configuration `startReadAhead` scales to its limit (tests). Set before it.
     var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
-    /// Bytes read from the inputs, as they came over the network (behind `lock`).
-    let ioBytes = FFmpegIOByteCounter()
+    /// What the input's reads transferred over the network (behind `lock`); nil for local media.
+    var network: (any NetworkReadAccount)? { input.network }
     /// Decode timestamp of the latest picture `readPacket` handed on (video time base), behind `lock`.
     var lastVideoReadTime = Int64.min
 
@@ -197,7 +198,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// The window of a live HLS playlist, as the playlist last loaded tells (`publishLiveWindow`); `nil` for other
     /// media. Once the playlist ends the last window stays, with `hasEnded` set. Its own lock, as `readAheadState`:
     /// read from the main actor.
-    let liveWindowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
+    let liveWindowState: OSAllocatedUnfairLock<LiveReport?>
     /// A live HLS stream: opened as a playlist that slides and has no end yet (it stays set once the playlist ends,
     /// `LiveWindow.hasEnded`). It has no duration (`durationSeconds` is 0); what can be seeked in is `liveWindow`.
     public internal(set) var isLive = false
@@ -244,9 +245,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// The selected audio stream's parameters with its time base, read together (`readingDescription`).
     public func audioDecoderInput() -> (parameters: UnsafePointer<AVCodecParameters>, timebase: AVRational)? {
         readingDescription { demuxer in
-            guard let ctx = demuxer.formatCtx, demuxer.audioStreamIndex >= 0,
-                let stream = ctx.pointee.streams[demuxer.audioStreamIndex]
-            else { return nil }
+            guard demuxer.audioStreamIndex >= 0, let stream = demuxer.input.stream(demuxer.audioStreamIndex) else {
+                return nil
+            }
             return (UnsafePointer(stream.pointee.codecpar), demuxer.audioTimebase)
         }
     }
@@ -257,9 +258,7 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// Behind `queueLock` (`readingDescription`).
     var videoCodecParameters: UnsafePointer<AVCodecParameters>? {
-        guard let ctx = formatCtx, videoStreamIndex >= 0, let stream = ctx.pointee.streams[videoStreamIndex] else {
-            return nil
-        }
+        guard videoStreamIndex >= 0, let stream = input.stream(videoStreamIndex) else { return nil }
         return UnsafePointer(stream.pointee.codecpar)
     }
 
@@ -277,10 +276,10 @@ public final class MediaDemuxer: @unchecked Sendable {
             streamSelectionChanged = true
             return
         }
-        guard let ctx = formatCtx, let track = audioTracks.first(where: { $0.id == trackId }) else { return }
+        guard let track = audioTracks.first(where: { $0.id == trackId }), let stream = input.stream(track.streamIndex)
+        else { return }
         self.audioStreamIndex = track.streamIndex
         self.selectedAudioTrackIndex = track.id
-        let stream = ctx.pointee.streams[track.streamIndex]!
         self.audioTimebase = stream.pointee.time_base
         self.audioCodecId = stream.pointee.codecpar.pointee.codec_id
         self.audioChannels = Int(stream.pointee.codecpar.pointee.ch_layout.nb_channels)
@@ -306,7 +305,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
         // Packets from where the reads are now on belong to the new track; what came before is for a window read.
         let readAhead = readAheadState.withLock { $0 }
-        subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
+        subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: input, readAhead: readAhead)
     }
 
     /// The streams of the subtitle tracks selected (the second one too) that are read as packets, not closed captions.
@@ -325,7 +324,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         streamSelectionChanged = true
         if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
         let readAhead = readAheadState.withLock { $0 }
-        secondarySubtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: formatCtx, readAhead: readAhead)
+        secondarySubtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: input, readAhead: readAhead)
     }
 
     /// Returns a SubtitleDocument with all cues collected in-band so far for the active subtitle track.
@@ -541,7 +540,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// A thread reads packets ahead into the queues; consumers only take them.
     public internal(set) var readsAhead = false
     /// Read over the network (`MediaURL.isNetworkSource`): a URL, or a saved HLS manifest of network media.
-    public private(set) var isNetworkSource = false
+    public var isNetworkSource: Bool { input.isNetworkSource }
     /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
     var streamSelectionChanged = false
     /// A subtitle rendition of an HLS stream was selected after the packets in the queues were read: it is a playlist of
@@ -592,11 +591,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
+    /// Opens `url` with FFmpeg (`FFmpegInput`).
+    ///
     /// - Parameters:
     ///   - httpRequestSize: What a network input's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`).
     ///   - audioOnly: Reads the input's audio streams only, every other one discarded (pictures, cover art,
     ///     subtitles, closed captions): an audio track of other media, whose own picture nobody would take.
-    public init?(
+    public convenience init?(
         url: String,
         headers: [String: String] = [:],
         httpRequestSize: Int? = nil,
@@ -604,138 +605,64 @@ public final class MediaDemuxer: @unchecked Sendable {
         audioOnly: Bool = false,
         liveHistory: LiveHistory? = nil
     ) {
+        let interrupt = interruptContext ?? InterruptContext()
+        let windowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
+        let origin = liveHistory?.origin ?? 0
+        guard
+            let input = FFmpegInput(
+                url: url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt,
+                liveHistory: liveHistory,
+                onLiveHistoryChange: { change in
+                    windowState.withLock { state in
+                        guard let report = state else { return }
+                        state = Self.applying(change, to: report, origin: origin, now: .now)
+                    }
+                })
+        else {
+            // What the attempt started (a transport's requests, the prefetch) gives way, as the demuxer's would at its end.
+            if interruptContext == nil { interrupt.cancel() }
+            return nil
+        }
+        self.init(
+            input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+            audioOnly: audioOnly, liveHistory: liveHistory, liveWindowState: windowState)
+    }
+
+    /// Reads `input`, opened with `interruptContext`. Nil when it has neither a picture nor a sound to play.
+    init?(
+        input: any DemuxerInput, interruptContext: InterruptContext, ownsInterruptContext: Bool, audioOnly: Bool,
+        liveHistory: LiveHistory?, liveWindowState: OSAllocatedUnfairLock<LiveReport?>
+    ) {
+        self.input = input
+        self.interruptContext = interruptContext
+        self.ownsInterruptContext = ownsInterruptContext
         self.liveHistory = liveHistory
-        let ctxContext = interruptContext ?? InterruptContext()
-        self.interruptContext = ctxContext
-        self.ownsInterruptContext = (interruptContext == nil)
+        self.liveWindowState = liveWindowState
+        // The opening scan of the first packets (`extractVideoFormatDescription`) is part of the opening.
+        defer { input.finishOpening() }
 
-        var ctx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
-        guard let allocatedCtx = ctx else { return nil }
-
-        // Setup interrupt callback to abort hung network requests cleanly.
-        // `self.interruptContext` keeps a strong reference to `ctxContext` across the lifetime of MediaDemuxer.
-        ctxContext.install(on: allocatedCtx)
-        ioBytes.install(on: allocatedCtx)
-        // The segments of a live stream's history are asked for through the source, and those to come are waited for.
-        // What the gate finds (a head further on, the end of the stream) moves the window the engine is told of.
-        if let history = liveHistory, let source = history.source {
-            let windowState = liveWindowState
-            let origin = history.origin
-            ioBytes.liveSegments = LiveSegmentGate(
-                source: source,
-                head: LiveHead(
-                    number: history.headNumber, startTime: history.end - LiveSegmentGate.nominalSegmentDuration)
-            ) { change in
-                windowState.withLock { state in
-                    guard let report = state else { return }
-                    state = Self.applying(change, to: report, origin: origin, now: .now)
-                }
-            }
-        }
-        // Until the opening is done (whichever way it ends), the inputs a DASH demuxer opens for the start of each
-        // rung of a ladder are not downloaded whole.
-        let openingBytes = ioBytes
-        openingBytes.isOpening = true
-        defer { openingBytes.endOpening() }
-
-        var avOptions: OpaquePointer? = nil
-        defer {
-            if avOptions != nil {
-                av_dict_free(&avOptions)
-            }
-        }
-
-        isNetworkSource = MediaURL.applySourceOptions(
-            &avOptions, path: url, headers: headers, httpRequestSize: httpRequestSize)
-        if MediaURL.isInlineDASHManifest(url) {
-            ioBytes.segmentRequestOptions = MediaURL.requestOptions(headers: headers)
-        }
-        // An HLS demuxer's requests go through `URLSession`, which tells their answers from their transfers and
-        // keeps the connections open (`HTTPSessionTransport`, made for the first). FFmpeg's own keep-alive
-        // (`http_persistent`, an option of the HLS demuxer, which other formats leave unused) would send the
-        // playlists' reloads over the connection it read the master on, past `io_open`.
-        if isNetworkSource {
-            ioBytes.makeTransport = { [ctxContext] in
-                // The requests too give way to a seek that waits for the input (`yieldIO`), not just FFmpeg's own waits.
-                HTTPSessionTransport(source: url, headers: headers) { ctxContext.shouldInterruptFFmpeg }
-            }
-            _ = av_dict_set(&avOptions, "http_persistent", "0", 0)
-            // The HLS demuxer refuses a segment whose URL has no extension it knows (`extension_picky`): Google's ad
-            // segments are `redirector.googlevideo.com/videoplayback/...`, and the stream does not open at all. mpv turns
-            // the check off for HLS (`no_ext_picky`). A network source only: its protocols are the whitelist's, and a
-            // local playlist keeps the check against naming files that are not media.
-            _ = av_dict_set(&avOptions, "extension_picky", "0", 0)
-        }
-
-        // What an HLS master's opening reads, playlists and the starts of their segments, is downloaded side by side
-        // and read from memory (`HLSPlaylistPrefetcher`), through `io_open`.
-        var prefetcher: HLSPlaylistPrefetcher?
-        if HLSPlaylistPrefetcher.applies(to: url), let masterURL = URL(string: url) {
-            let started = HLSPlaylistPrefetcher(masterURL: masterURL, headers: headers)
-            started.start()
-            prefetcher = started
-            ioBytes.prefetched = { [ctxContext] in started.take($0, offset: $1) { !ctxContext.shouldAbort } }
-        }
-        defer {
-            prefetcher?.cancel()
-            ioBytes.prefetched = nil
-        }
-
-        let ret = avformat_open_input(&ctx, url, nil, &avOptions)
-        guard ret >= 0, let formatCtx = ctx else {
-            let errorMsg = Self.ffmpegErrorDescription(ret)
-            ctxContext.recordError(code: ret, message: errorMsg)
-            AppLog.error(
-                .demuxer, "avformat_open_input failed with code \(ret) (\(errorMsg)) for '\(MediaURL.loggable(url))'")
-            // Per FFmpeg avformat_open_input contract: user-allocated AVFormatContext is automatically freed on failure.
-            return nil
-        }
-        self.formatCtx = formatCtx
-
-        let streamInfoRet = avformat_find_stream_info(formatCtx, nil)
-        guard streamInfoRet >= 0 else {
-            let errorMsg = Self.ffmpegErrorDescription(streamInfoRet)
-            ctxContext.recordError(code: streamInfoRet, message: errorMsg)
-            AppLog.error(
-                .demuxer,
-                "avformat_find_stream_info failed with code \(streamInfoRet) (\(errorMsg)) for '\(MediaURL.loggable(url))'"
-            )
-            avformat_close_input(&self.formatCtx)
-            return nil
-        }
-
-        self.timelineOrigin = Self.timelineOrigin(of: formatCtx)
-        // The segments of a live stream's past carry the stream's time (hours in): the timeline starts at the first.
-        if let liveHistory { timelineOrigin = Int64((liveHistory.origin * Double(AV_TIME_BASE)).rounded()) }
         // FFmpeg indexes what its seeks read past `readPacket` elsewhere (the MPEG-TS timestamp search, the generic
         // seek): only the index of Matroska and MP4 comes from the file.
-        if !Self.describesStreams(formatCtx) { storeSubtitleIndex([:]) }
-        if timelineOrigin != 0 {
-            AppLog.info(
-                .demuxer,
-                "Rebasing timestamps to a zero timeline (start_time \(Double(timelineOrigin) / Double(AV_TIME_BASE))s)")
-        }
+        if !input.traits.hasIndex { storeSubtitleIndex([:]) }
 
         // An audio-only input plays no variants: their selection would enable a picture again.
-        let streamsToRead =
-            audioOnly
-            ? nil : discoverVariants(in: formatCtx, slowLinkRate: prefetcher?.measuredThroughput?.provenSlowRate)
-        for i in 0..<Int(formatCtx.pointee.nb_streams) {
-            let stream = formatCtx.pointee.streams[i]!
+        let streamsToRead = audioOnly ? nil : discoverVariants()
+        for i in 0..<input.streamCount {
+            guard let stream = input.stream(i) else { continue }
             let codecType = stream.pointee.codecpar.pointee.codec_type
             if let streamsToRead, !streamsToRead.contains(i) {
-                stream.pointee.discard = AVDISCARD_ALL
+                input.setReading(false, stream: i)
                 continue
             }
             if audioOnly, codecType != AVMEDIA_TYPE_AUDIO {
-                stream.pointee.discard = AVDISCARD_ALL
+                input.setReading(false, stream: i)
                 continue
             }
             let isAttachedPic = (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
             if codecType == AVMEDIA_TYPE_VIDEO && !isAttachedPic && self.videoStreamIndex < 0,
                 let detectedCodec = VideoCodec.from(parameters: stream.pointee.codecpar)
             {
-                configureVideoStream(stream, index: i, codec: detectedCodec, in: formatCtx)
+                configureVideoStream(stream, index: i, codec: detectedCodec)
             } else if codecType == AVMEDIA_TYPE_AUDIO {
                 registerAudioTrack(stream, index: i)
             } else if codecType == AVMEDIA_TYPE_SUBTITLE {
@@ -752,29 +679,27 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         // HLS: the renditions of the tracks selected only (`applyStreamSelection`).
-        applyStreamSelection(in: formatCtx)
+        applyStreamSelection()
         if videoStreamIndex >= 0 {
             self.hasVideo = true
             self.formatDescription = extractVideoFormatDescription()
             registerClosedCaptionTracks()
-        } else if audioStreamIndex >= 0 {
+        } else if audioStreamIndex >= 0, let stream = input.stream(audioStreamIndex) {
             self.hasVideo = false
             self.timebase = self.audioTimebase
-            let stream = formatCtx.pointee.streams[audioStreamIndex]!
             if stream.pointee.duration > 0 {
                 self.durationSeconds = Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
-            } else if formatCtx.pointee.duration > 0 {
-                self.durationSeconds = Double(formatCtx.pointee.duration) / Double(AV_TIME_BASE)
+            } else if input.durationSeconds > 0 {
+                self.durationSeconds = input.durationSeconds
             }
         } else {
-            avformat_close_input(&self.formatCtx)
             return nil
         }
 
-        if Self.isLivePlaylist(formatCtx) {
+        if input.isLivePlaylist {
             isLive = true
             durationSeconds = 0
-            publishLiveWindow(from: formatCtx)
+            publishLiveWindow()
         } else if let liveHistory {
             isLive = true
             durationSeconds = 0
@@ -782,99 +707,44 @@ public final class MediaDemuxer: @unchecked Sendable {
             let window = LiveWindow(start: 0, end: liveHistory.end - liveHistory.origin, hasSlid: true)
             liveWindowState.withLock { $0 = LiveReport(window: window, loadedAt: .now) }
         }
-        self.chapters = MediaChapter.normalized(Self.readChapters(from: formatCtx), duration: durationSeconds)
-    }
-
-    /// MPEG-TS / MPEG-PS: no index, and timestamps that continue the source clock. Seeking there bisects on
-    /// timestamps and lands on whichever packet is nearest, not on a keyframe.
-    /// Matroska and MP4: their header describes every stream (codec, parameters, time base) and their index comes from
-    /// the file (Cues, the sample table), with a timeline that starts at zero.
-    static func describesStreams(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
-        guard let iformat = ctx.pointee.iformat else { return false }
-        let name = String(cString: iformat.pointee.name)
-        return name.hasPrefix("matroska") || name.hasPrefix("mov")
-    }
-
-    package static func isUnindexedStream(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
-        guard let iformat = ctx.pointee.iformat else { return false }
-        return (iformat.pointee.flags & AVFMT_TS_DISCONT) != 0
-    }
-
-    /// Start of the playback timeline in `AV_TIME_BASE` units. MPEG-TS / MPEG-PS timestamps continue the
-    /// source's clock (a DVD starts around 0.5 s, a broadcast capture hours in), so their first timestamp
-    /// becomes zero. Other containers already start near zero (or slightly before, via edit lists) and
-    /// are left as they are. An HLS stream of a live or EVENT playlist can start before 0 (segments listed before the one
-    /// reading began at, placed by the timeline patch on a stream whose timestamps restart at a break): the engine counts
-    /// on times from 0 (`currentFramePTS >= 0` means a picture is there), so it starts at 0 too. Only HLS gets a negative
-    /// origin: the other formats flagged above (MPEG-PS, FLV, Ogg, ...) keep theirs as they were.
-    package static func timelineOrigin(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Int64 {
-        guard isUnindexedStream(ctx), ctx.pointee.start_time != Int64.min else { return 0 }
-        if ctx.pointee.start_time > 0 || isHLS(ctx) { return ctx.pointee.start_time }
-        return 0
-    }
-
-    /// Whether `ctx` was opened by FFmpeg's HLS demuxer (`name` is a comma-separated list of the format's names).
-    static func isHLS(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
-        guard let name = ctx.pointee.iformat?.pointee.name else { return false }
-        return String(cString: name).split(separator: ",").contains("hls")
-    }
-
-    /// `origin` (`AV_TIME_BASE` units) in the time base of `stream`.
-    package static func timelineOffset(_ origin: Int64, in timebase: AVRational) -> Int64 {
-        guard origin != 0, timebase.num > 0, timebase.den > 0 else { return 0 }
-        return av_rescale_q(origin, AVRational(num: 1, den: AV_TIME_BASE), timebase)
-    }
-
-    /// Moves a packet's timestamps onto the zero-based timeline (see `timelineOrigin(of:)`).
-    package static func rebase(
-        _ pkt: inout AVPacket, origin: Int64, in ctx: UnsafeMutablePointer<AVFormatContext>
-    ) {
-        guard origin != 0, pkt.stream_index >= 0, pkt.stream_index < Int32(ctx.pointee.nb_streams),
-            let stream = ctx.pointee.streams[Int(pkt.stream_index)]
-        else { return }
-        let offset = timelineOffset(origin, in: stream.pointee.time_base)
-        if pkt.pts != Int64.min { pkt.pts -= offset }
-        if pkt.dts != Int64.min { pkt.dts -= offset }
+        self.chapters = MediaChapter.normalized(input.chapters, duration: durationSeconds)
     }
 
     /// `AVERROR_EOF` (`-MKTAG('E', 'O', 'F', ' ')`); the macro does not import into Swift.
     static let averrorEOF: Int32 = -0x2046_4F45
 
-    /// `av_read_frame` with timestamps on the zero-based timeline. Records how far audio and video have been read
-    /// (`readAheadSeconds`), and hands subtitle packets to `subtitleTracker`, as playback takes embedded subtitles in
-    /// band: the main way for every source. A network source is opened again only to read its index and the windows
-    /// that index tells of; a server with a single connection fails the index read, and no window is read.
+    /// The next packet of the input, with timestamps on the zero-based timeline. Records how far audio and video have
+    /// been read (`readAheadSeconds`), and hands subtitle packets to `subtitleTracker`, as playback takes embedded
+    /// subtitles in band: the main way for every source. A network source is opened again only to read its index and
+    /// the windows that index tells of; a server with a single connection fails the index read, and no window is read.
     ///
     /// Called with `lock` and, but at opening, `queueLock` held. `releasingQueueLock` (the read-ahead thread) lets
-    /// consumers take packets while FFmpeg reads.
-    func readPacket(
-        _ ctx: UnsafeMutablePointer<AVFormatContext>, _ pkt: inout AVPacket, releasingQueueLock: Bool = false
-    ) -> Int32 {
-        beginRequestedVariantSwitch(in: ctx)
-        applyChangedStreamSelection(in: ctx)
+    /// consumers take packets while the input reads.
+    func readPacket(_ pkt: inout AVPacket, releasingQueueLock: Bool = false) -> Int32 {
+        beginRequestedVariantSwitch()
+        applyChangedStreamSelection()
         while true {
             if releasingQueueLock { queueLock.unlock() }
-            let ret = av_read_frame(ctx, &pkt)
+            let ret = input.read(&pkt)
             if releasingQueueLock { queueLock.lock() }
             // A seek waiting for the input interrupted the read (`lockIO(yielding:)`): FFmpeg may report it as the end of the
             // input, which is none, so nothing below (the end of the input's bookkeeping) is done for it.
             if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
             // The playlist is reloaded inside the read: the window it tells moved.
-            if isLive, liveHistory == nil { publishLiveWindow(from: ctx) }
+            if isLive, liveHistory == nil { publishLiveWindow() }
             if ret >= 0 {
-                Self.rebase(&pkt, origin: timelineOrigin, in: ctx)
-                if variantSwitch != nil, !admitDuringVariantSwitch(&pkt, in: ctx) {
+                if variantSwitch != nil, !admitDuringVariantSwitch(&pkt) {
                     av_packet_unref(&pkt)
                     continue
                 }
                 if pkt.stream_index == videoStreamIndex {
                     lastVideoReadTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
                 }
-                recordReadAhead(pkt, in: ctx)
-                subtitleTracker.readPacket(&pkt, in: ctx)
-                secondarySubtitleTracker.readPacket(&pkt, in: ctx)
+                recordReadAhead(pkt)
+                subtitleTracker.readPacket(&pkt, in: input)
+                secondarySubtitleTracker.readPacket(&pkt, in: input)
             } else if ret == Self.averrorEOF {
-                endVariantSwitchAtEOF(in: ctx)
+                endVariantSwitchAtEOF()
                 readAheadState.withLock { $0 = .infinity }
                 subtitleTracker.finishCaptions()
             }
@@ -889,9 +759,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         return overflow ? .max : end
     }
 
-    func recordReadAhead(_ pkt: AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func recordReadAhead(_ pkt: AVPacket) {
         guard pkt.stream_index == videoStreamIndex || pkt.stream_index == audioStreamIndex,
-            let stream = ctx.pointee.streams[Int(pkt.stream_index)]
+            let stream = input.stream(Int(pkt.stream_index))
         else { return }
         let timebase = stream.pointee.time_base
         let start = pkt.pts != Int64.min ? pkt.pts : pkt.dts
@@ -902,8 +772,6 @@ public final class MediaDemuxer: @unchecked Sendable {
     }
 
     var targetPts: Int64 = -1
-    /// `timelineOrigin(of:)` of this file; subtracted from every packet read, added back when seeking.
-    var timelineOrigin: Int64 = 0
     var targetAudioPts: Int64 = -1
 
     /// The next video sample. While reading ahead it comes from the queue: with `waitingForReadAhead` (synchronous
@@ -923,10 +791,10 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
         }
 
-        guard let ctx = formatCtx, formatDescription != nil else { return nil }
+        guard formatDescription != nil else { return nil }
 
         var pkt = AVPacket()
-        while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+        while readPacket(&pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == videoStreamIndex {
                 subtitleTracker.processVideoPacket(&pkt)
                 // Through the queue, behind what the read itself queued (the pictures a variant switch held back).
@@ -973,7 +841,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if let packet = popQueuedAudio() { return packet }
 
         // If audio queue is empty, pump demuxer to find the next audio packet
-        guard let ctx = formatCtx, audioStreamIndex >= 0 else { return nil }
+        guard audioStreamIndex >= 0 else { return nil }
 
         // Backpressure check: if videoQueue is already large, don't read endlessly ahead
         if videoQueue.count >= maxVideoQueueCount {
@@ -981,7 +849,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
 
         var pkt = AVPacket()
-        while readPacket(ctx, &pkt, releasingQueueLock: true) >= 0 {
+        while readPacket(&pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == audioStreamIndex {
                 let pktPts = pkt.pts
                 let pktDuration = pkt.duration
@@ -1041,8 +909,6 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         lockIO()
         defer { lock.unlock() }
-        if formatCtx != nil {
-            avformat_close_input(&formatCtx)
-        }
+        input.close()
     }
 }

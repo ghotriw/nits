@@ -275,7 +275,7 @@ struct DASHAdaptiveBitrateTests {
 
         // Opening reads the start of every rung (FFmpeg's DASH demuxer opens them all), unthrottled here: those
         // transfers say nothing of the network playback meets.
-        _ = demuxer.ioBytes.transport?.meter.take()
+        _ = demuxer.network?.transferMeter?.take()
         // 0.5 Mbit/s carries the 0.35 Mbit/s rung (80 % of it is 0.4), not the 0.8 one it starts on.
         server.setLinkRate(500_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 3))

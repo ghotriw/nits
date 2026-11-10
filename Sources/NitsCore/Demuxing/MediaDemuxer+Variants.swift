@@ -21,7 +21,7 @@ extension MediaDemuxer {
 
     /// What the variants are of, for the log: "DASH", or "HLS".
     var streamingName: String {
-        formatCtx?.pointee.iformat.map { String(cString: $0.pointee.name) == "dash" } == true ? "DASH" : "HLS"
+        input.streamingName
     }
 
     struct VariantSelection: Sendable {
@@ -81,7 +81,7 @@ extension MediaDemuxer {
     /// a stream not discarded: without this every audio rendition (languages, codecs) would be downloaded beside the
     /// one heard, and FFmpeg discards every subtitle rendition itself on opening, so none could be selected.
     /// Behind `lock` and `queueLock`; selection on the main thread only asks for it (`streamSelectionChanged`).
-    func applyStreamSelection(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func applyStreamSelection() {
         guard let selected = selectedVariantId, let current = variantStreams[selected] else { return }
         let subtitles = selectedSubtitleStreamIndices
         var involved = [current]
@@ -93,15 +93,15 @@ extension MediaDemuxer {
             if pending.audioStream >= 0 { enabled.insert(pending.audioStream) }
         }
         for index in Set(involved.flatMap(\.all)) {
-            ctx.pointee.streams[index]?.pointee.discard = enabled.contains(index) ? AVDISCARD_DEFAULT : AVDISCARD_ALL
+            input.setReading(enabled.contains(index), stream: index)
         }
     }
 
     /// Applies a track selection made since the last read. Behind `lock` and `queueLock`.
-    func applyChangedStreamSelection(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func applyChangedStreamSelection() {
         guard streamSelectionChanged else { return }
         streamSelectionChanged = false
-        applyStreamSelection(in: ctx)
+        applyStreamSelection()
     }
 
     /// Reports the variant read now as playing from `seconds` on (after a seek). Behind `lock`.
@@ -123,105 +123,31 @@ extension MediaDemuxer {
 
     // MARK: - Discovery
 
-    /// Lists the variants of an HLS master playlist and selects the top of its ladder (`adoptVariants`). Returns the
-    /// indexes of the streams to read (the selected program's, and any stream outside every program), or nil when
-    /// the input has no variants. FFmpeg puts the `EXT-X-MEDIA` renditions a variant refers to in its program.
-    /// `slowLinkRate` is what an HLS master's prefetch measured, when that proves the link slow
-    /// (`HLSPlaylistPrefetcher.Throughput.provenSlowRate`): playback starts on the variant it carries, not the best, whose
-    /// first segment would take a minute (2 Mbit/s against 39: 62 to 70 s stalled of 120).
-    func discoverVariants(
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>, slowLinkRate: Double? = nil
-    ) -> Set<Int>? {
-        if let dash = Self.dashVariants(in: formatCtx) {
-            return adoptVariants(dash, in: formatCtx, linkRate: ioBytes.transport?.openingThroughput)
-        }
-        guard formatCtx.pointee.nb_programs > 1, let programs = formatCtx.pointee.programs else { return nil }
-        var found: [(id: Int, bandwidth: Int, streams: VariantStreams)] = []
-        for position in 0..<Int(formatCtx.pointee.nb_programs) {
-            guard let program = programs[position],
-                let entry = av_dict_get(program.pointee.metadata, "variant_bitrate", nil, 0),
-                let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
-            else { return nil }
-            let all = (0..<Int(program.pointee.nb_stream_indexes)).map { Int(program.pointee.stream_index[$0]) }
-            // A variant outside the ladder played, refused (`HLSPlaylistPrefetcher.playlistsOutsideLadder`).
-            guard !all.isEmpty else { continue }
-            let ofType = { (type: AVMediaType) in
-                all.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
-            }
-            let video = ofType(AVMEDIA_TYPE_VIDEO).first
-            found.append(
-                (
-                    Int(program.pointee.id), bandwidth,
-                    VariantStreams(
-                        video: video, audio: ofType(AVMEDIA_TYPE_AUDIO), subtitles: ofType(AVMEDIA_TYPE_SUBTITLE),
-                        all: all)
-                ))
-        }
-        // Subtitle renditions are the subtitle streams of variants with different videos (a group they refer to). The
-        // others are in a video's own playlist and go with it: Apple's examples have one in each, in as many variants
-        // as there are audio groups.
-        var videosWith: [Int: Set<Int>] = [:]
-        for variant in found {
-            for index in variant.streams.subtitles {
-                videosWith[index, default: []].insert(variant.streams.video ?? -1)
-            }
-        }
-        found = found.map { variant in
-            let streams = variant.streams
-            return (
-                variant.id, variant.bandwidth,
-                VariantStreams(
-                    video: streams.video, audio: streams.audio,
-                    subtitles: streams.subtitles.filter { (videosWith[$0]?.count ?? 0) > 1 }, all: streams.all)
-            )
-        }
-        return adoptVariants(found, in: formatCtx, linkRate: slowLinkRate)
-    }
-
-    /// The variants of a DASH manifest, when it lists a ladder of pictures: FFmpeg's DASH demuxer has one program and
-    /// a stream for each representation, the picture ones with their `bandwidth` as `variant_bitrate`. Every picture is
-    /// a variant; the sounds are the manifest's own, the same for all. Nil for other input, or a single picture.
-    static func dashVariants(
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>
-    ) -> [(id: Int, bandwidth: Int, streams: VariantStreams)]? {
-        guard let format = formatCtx.pointee.iformat, String(cString: format.pointee.name) == "dash" else { return nil }
-        let indexes = 0..<Int(formatCtx.pointee.nb_streams)
-        let ofType = { (type: AVMediaType) in
-            indexes.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
-        }
-        let pictures = ofType(AVMEDIA_TYPE_VIDEO)
-        let sounds = ofType(AVMEDIA_TYPE_AUDIO)
-        guard pictures.count > 1 else { return nil }
-        var found: [(id: Int, bandwidth: Int, streams: VariantStreams)] = []
-        for index in pictures {
-            guard
-                let entry = av_dict_get(formatCtx.pointee.streams[index]?.pointee.metadata, "variant_bitrate", nil, 0),
-                let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
-            else { return nil }
-            found.append(
-                (index, bandwidth, VariantStreams(video: index, audio: sounds, subtitles: [], all: [index] + sounds)))
-        }
-        return found
+    /// Lists the variants the input groups its streams in (`DemuxerInput.variantCandidates()`) and selects the top of
+    /// its ladder (`adoptVariants`). Returns the indexes of the streams to read (the selected variant's, and any stream
+    /// outside every variant), or nil when the input has no variants. Behind `lock` (opening).
+    func discoverVariants() -> Set<Int>? {
+        guard let found = input.variantCandidates() else { return nil }
+        return adoptVariants(found, linkRate: input.openingLinkRate)
     }
 
     /// Takes `found` as the variants of the input, the top of the ladder selected (or the rung a known link carries); see
-    /// `discoverVariants`.
-    private func adoptVariants(
-        _ found: [(id: Int, bandwidth: Int, streams: VariantStreams)],
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>, linkRate: Double? = nil
-    ) -> Set<Int>? {
+    /// `discoverVariants`. `linkRate` is what the input measured of the link while it opened, when it tells
+    /// (`DemuxerInput.openingLinkRate`): playback starts on the variant it carries, not the best, whose first segment
+    /// would take a minute (2 Mbit/s against 39: 62 to 70 s stalled of 120).
+    private func adoptVariants(_ found: [VariantCandidate], linkRate: Double? = nil) -> Set<Int>? {
         guard let best = found.max(by: { $0.bandwidth < $1.bandwidth }) else { return nil }
         // Playback starts on a rung of the ladder: a variant without pictures (sound only) or one the adaptive bitrate
         // cannot switch from (another codec, kept outside the ladder) would be played to the end. The ladder is a group
         // of variants that play through one set of decoders (`canSwitch`, false without pictures): the best's when it
         // has another rung (an HDR ladder above a longer SDR one), else the largest. The best alone is the odd one (one
         // HEVC rendition above a ladder of H.264). Without pictures in any, every variant is a rung (sound only).
-        let group = { (variant: (id: Int, bandwidth: Int, streams: VariantStreams)) in
-            found.filter { Self.canSwitch(from: variant.streams, to: $0.streams, in: formatCtx) }
+        let group = { (variant: VariantCandidate) in
+            found.filter { self.canSwitch(from: variant.streams, to: $0.streams) }
         }
         let bestGroup = group(best)
         // Of groups as large, the one whose top is better, not the one listed first.
-        let rank = { (group: [(id: Int, bandwidth: Int, streams: VariantStreams)]) in
+        let rank = { (group: [VariantCandidate]) in
             (group.count, group.map(\.bandwidth).max() ?? 0)
         }
         let largest = found.map(group).max { rank($0) < rank($1) } ?? []
@@ -240,8 +166,8 @@ extension MediaDemuxer {
                 found
             }
         // Its top, unless the link's rate is known: a DASH ladder is read side by side while it opens, and an HLS
-        // master's prefetch may prove the link slow (`slowLinkRate`). Then the rung it carries, not the top (its first
-        // segment, megabytes, downloaded before a switch could splice).
+        // master's prefetch may prove the link slow. Then the rung it carries, not the top (its first segment,
+        // megabytes, downloaded before a switch could splice).
         var start = ladder.max { $0.bandwidth < $1.bandwidth } ?? best
         if let linkRate {
             let share = AdaptiveBitrateLogic.Config().safety
@@ -251,11 +177,11 @@ extension MediaDemuxer {
 
         let selected = start
         variants = found.map { variant in
-            let video = variant.streams.video.flatMap { formatCtx.pointee.streams[$0]?.pointee.codecpar }
+            let video = variant.streams.video.flatMap { input.stream($0)?.pointee.codecpar }
             return StreamVariant(
                 id: variant.id, bandwidth: variant.bandwidth,
                 width: Int(video?.pointee.width ?? 0), height: Int(video?.pointee.height ?? 0),
-                isSwitchable: Self.canSwitch(from: selected.streams, to: variant.streams, in: formatCtx))
+                isSwitchable: canSwitch(from: selected.streams, to: variant.streams))
         }.sorted { $0.bandwidth > $1.bandwidth }
         variantStreams = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0.streams) })
         variantSelection.withLock { $0.selected = selected.id }
@@ -264,22 +190,20 @@ extension MediaDemuxer {
             "\(streamingName): \(found.count) variants (\(variants.filter(\.isSwitchable).count) switchable), playing "
                 + "\(selected.bandwidth / 1000) kbit/s" + (linkRate.map { ", link \(Int($0 / 1000)) kbit/s" } ?? ""))
 
-        let inPrograms = Set(found.flatMap(\.streams.all))
-        let outsidePrograms = (0..<Int(formatCtx.pointee.nb_streams)).filter { !inPrograms.contains($0) }
-        return Set(selected.streams.all).union(outsidePrograms)
+        let inVariants = Set(found.flatMap(\.streams.all))
+        let outsideVariants = (0..<input.streamCount).filter { !inVariants.contains($0) }
+        return Set(selected.streams.all).union(outsideVariants)
     }
 
     /// Whether `b` plays through the decoders made for `a`: the same video codec, time base, scan (progressive or
     /// interlaced), pixel format, colour and Dolby Vision signalling, and audio streams that are the same renditions or
     /// decode alike.
     /// Parameter sets may differ: VideoToolbox gets a session per format description, FFmpeg takes them mid-stream.
-    static func canSwitch(
-        from a: VariantStreams, to b: VariantStreams, in formatCtx: UnsafeMutablePointer<AVFormatContext>
-    ) -> Bool {
-        let parameters = { (index: Int) in formatCtx.pointee.streams[index]?.pointee.codecpar }
+    func canSwitch(from a: VariantStreams, to b: VariantStreams) -> Bool {
+        let parameters = { (index: Int) in self.input.stream(index)?.pointee.codecpar }
         guard let aVideo = a.video.flatMap(parameters), let bVideo = b.video.flatMap(parameters) else { return false }
         // The decoders convert timestamps with the time base they were made with.
-        let timebase = { (index: Int?) in index.flatMap { formatCtx.pointee.streams[$0]?.pointee.time_base } }
+        let timebase = { (index: Int?) in index.flatMap { self.input.stream($0)?.pointee.time_base } }
         guard let aBase = timebase(a.video), let bBase = timebase(b.video), av_cmp_q(aBase, bBase) == 0 else {
             return false
         }
@@ -322,7 +246,7 @@ extension MediaDemuxer {
 
     /// Starts the switch `selectVariant(id:)` asked for. One under way is given up before its splice; past it, its
     /// audio takes over at once.
-    func beginRequestedVariantSwitch(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func beginRequestedVariantSwitch() {
         followSelectedAudioTrack()
         guard
             let requested = variantSelection.withLock({ selection -> Int? in
@@ -332,9 +256,9 @@ extension MediaDemuxer {
         else { return }
         if let pending = variantSwitch {
             if pending.spliceTime == nil {
-                cancelVariantSwitch(in: ctx, reporting: false)
+                cancelVariantSwitch(reporting: false)
             } else {
-                spliceVariantAudio(in: ctx, releasingHeld: true)
+                spliceVariantAudio(releasingHeld: true)
             }
         }
         guard let selected = selectedVariantId, requested != selected,
@@ -348,7 +272,7 @@ extension MediaDemuxer {
         newSwitch.audioStream = newSwitch.audioStream(replacing: audioStreamIndex)
         variantSwitch = newSwitch
         // Its video and the rendition of the audio track selected; the other renditions stay off.
-        applyStreamSelection(in: ctx)
+        applyStreamSelection()
         AppLog.info(
             .demuxer,
             "\(streamingName): switching to \(target.width)x\(target.height) at \(target.bandwidth / 1000) kbit/s")
@@ -365,7 +289,7 @@ extension MediaDemuxer {
     }
 
     /// Whether a packet read during a switch is handed on; see the type's description.
-    func admitDuringVariantSwitch(_ pkt: inout AVPacket, in ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+    func admitDuringVariantSwitch(_ pkt: inout AVPacket) -> Bool {
         // A track may have been selected during the read, which runs with `queueLock` released.
         followSelectedAudioTrack()
         guard let pending = variantSwitch else { return true }
@@ -375,8 +299,8 @@ extension MediaDemuxer {
 
         guard let spliceTime = pending.spliceTime else {
             // FFmpeg's DASH demuxer reads the variants by presentation time: see `MediaDemuxer+VariantHold.swift`.
-            if holdsNewVariantForOld(in: ctx), isVideoOfSwitch(index, pending) {
-                return admitVideoWaitingForOld(&pkt, in: ctx)
+            if holdsNewVariantForOld(), isVideoOfSwitch(index, pending) {
+                return admitVideoWaitingForOld(&pkt)
             }
             if index == pending.streams.video {
                 // A variant read before hands out the packet it held when it was discarded first, from back then
@@ -385,7 +309,7 @@ extension MediaDemuxer {
                     return false
                 }
                 return spliceVariantVideo(
-                    at: time, keyframe: pkt.data.map { Data(bytes: $0, count: Int(pkt.size)) }, in: ctx)
+                    at: time, keyframe: pkt.data.map { Data(bytes: $0, count: Int(pkt.size)) })
             }
             let decodeTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
             if index == pending.previous.video, decodeTime != Int64.min {
@@ -394,7 +318,7 @@ extension MediaDemuxer {
             if audioSplices, index == pending.audioStream {
                 variantSwitch?.heldAudio.append(DemuxedAudioPacket(pkt))
                 // No keyframe in this much: the new playlist isn't coming.
-                if pending.heldAudio.count > 5000 { cancelVariantSwitch(in: ctx) }
+                if pending.heldAudio.count > 5000 { cancelVariantSwitch() }
                 return false
             }
             // The new variant's other streams start with it.
@@ -403,7 +327,7 @@ extension MediaDemuxer {
 
         if index == pending.previous.video { return false }
         guard audioSplices, index == audioStreamIndex || index == pending.audioStream, time != Int64.min,
-            let stream = ctx.pointee.streams[index]
+            let stream = input.stream(index)
         else {
             return true
         }
@@ -411,14 +335,14 @@ extension MediaDemuxer {
         let audioSpliceTime = av_rescale_q(spliceTime, timebase, audioTimebase)
         if index == audioStreamIndex {
             guard time >= audioSpliceTime else { return true }
-            spliceVariantAudio(in: ctx, releasingHeld: true)
+            spliceVariantAudio(releasingHeld: true)
             return false
         }
         if time >= audioSpliceTime {
             variantSwitch?.heldAudio.append(DemuxedAudioPacket(pkt))
             // The old audio ended before the splice (its playlist was stopped): the new one takes over a second on.
             if time - audioSpliceTime > av_rescale_q(1, AVRational(num: 1, den: 1), audioTimebase) {
-                spliceVariantAudio(in: ctx, releasingHeld: true)
+                spliceVariantAudio(releasingHeld: true)
             }
         }
         return false
@@ -427,9 +351,9 @@ extension MediaDemuxer {
     /// Pictures come from the new variant from `time` on. `keyframe` gives the parameter sets when the stream's
     /// extradata has none (MPEG-TS repeats them in band); without either the switch is given up.
     @discardableResult
-    func spliceVariantVideo(at time: Int64, keyframe: Data?, in ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+    func spliceVariantVideo(at time: Int64, keyframe: Data?) -> Bool {
         guard let pending = variantSwitch, let videoIndex = pending.streams.video,
-            let stream = ctx.pointee.streams[videoIndex], let codecpar = stream.pointee.codecpar
+            let stream = input.stream(videoIndex), let codecpar = stream.pointee.codecpar
         else { return false }
         // H.264 and HEVC descriptions are built from parameter sets, in the stream's extradata or (MPEG-TS) in band;
         // the others' (AV1, VP9) from the stream's configuration record (`av1C`, `vpcC`) alone.
@@ -450,22 +374,22 @@ extension MediaDemuxer {
             parsed = (VideoFormatDescriptionBuilder.ParameterSets(), isAnnexBStream)
         }
         guard let parsed, let previousVideo = pending.previous.video,
-            let previousStream = ctx.pointee.streams[previousVideo]
+            let previousStream = input.stream(previousVideo)
         else {
             AppLog.warning(.demuxer, "\(streamingName): no parameter sets for the new variant; staying")
-            cancelVariantSwitch(in: ctx)
+            cancelVariantSwitch()
             return false
         }
 
-        configureVideoStream(stream, index: videoIndex, codec: codec, in: ctx)
+        configureVideoStream(stream, index: videoIndex, codec: codec)
         let wasAnnexB = isAnnexBStream
         isAnnexBStream = parsed.isAnnexB
         guard let description = makeVideoFormatDescription(parameterSets: parsed.sets, codecParameters: codecpar)
         else {
             AppLog.warning(.demuxer, "\(streamingName): no format description for the new variant; staying")
-            configureVideoStream(previousStream, index: previousVideo, codec: codec, in: ctx)
+            configureVideoStream(previousStream, index: previousVideo, codec: codec)
             isAnnexBStream = wasAnnexB
-            cancelVariantSwitch(in: ctx)
+            cancelVariantSwitch()
             return false
         }
         formatDescription = description
@@ -476,16 +400,16 @@ extension MediaDemuxer {
             .demuxer, "\(streamingName): pictures from \(pending.target.width)x\(pending.target.height) at pts \(time)")
         onVariantChanged?(variantChange(pending.target, at: Double(time) * Double(timebase.num) / Double(timebase.den)))
         if pending.audioStream < 0 || pending.audioStream == audioStreamIndex {
-            finishVariantSwitch(in: ctx)
+            finishVariantSwitch()
         }
         return true
     }
 
     /// Audio comes from the new variant: the tracks point at its streams, and the held packets are queued (when
     /// `releasingHeld`; a seek drops them).
-    func spliceVariantAudio(in ctx: UnsafeMutablePointer<AVFormatContext>, releasingHeld: Bool) {
+    func spliceVariantAudio(releasingHeld: Bool) {
         guard let pending = variantSwitch else { return }
-        if pending.audioStream >= 0, let stream = ctx.pointee.streams[pending.audioStream] {
+        if pending.audioStream >= 0, let stream = input.stream(pending.audioStream) {
             audioStreamIndex = pending.audioStream
             audioTimebase = stream.pointee.time_base
             if !hasVideo { timebase = audioTimebase }
@@ -496,12 +420,12 @@ extension MediaDemuxer {
                 }
             }
         }
-        finishVariantSwitch(in: ctx)
+        finishVariantSwitch()
     }
 
     /// Completes a switch before a seek to `seconds`, which reads from the new variant at once.
-    func completeVariantSwitchBeforeSeek(in ctx: UnsafeMutablePointer<AVFormatContext>, at seconds: Double) {
-        beginRequestedVariantSwitch(in: ctx)
+    func completeVariantSwitchBeforeSeek(at seconds: Double) {
+        beginRequestedVariantSwitch()
         guard let pending = variantSwitch else { return }
         if pending.spliceTime == nil {
             // The keyframe waited for the old variant; the seek reads from the new one at its target instead (the parameter
@@ -511,28 +435,28 @@ extension MediaDemuxer {
             variantSwitch?.heldVideo = []
             variantSwitch?.heldOld = []
             let time = timebase.num > 0 ? Int64(seconds * Double(timebase.den) / Double(timebase.num)) : 0
-            guard spliceVariantVideo(at: time, keyframe: keyframe, in: ctx) else { return }
+            guard spliceVariantVideo(at: time, keyframe: keyframe) else { return }
         }
-        spliceVariantAudio(in: ctx, releasingHeld: false)
+        spliceVariantAudio(releasingHeld: false)
     }
 
     /// At the end of the input a switch either never reached its keyframe, or its audio takes over now.
-    func endVariantSwitchAtEOF(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func endVariantSwitchAtEOF() {
         guard let pending = variantSwitch else { return }
         if pending.spliceTime == nil {
             // The old variant ended: what it had left to hand over is all it had.
             if pending.candidate != nil {
-                spliceHeldVideo(in: ctx)
-                if variantSwitch != nil { spliceVariantAudio(in: ctx, releasingHeld: true) }
+                spliceHeldVideo()
+                if variantSwitch != nil { spliceVariantAudio(releasingHeld: true) }
             } else {
-                cancelVariantSwitch(in: ctx)
+                cancelVariantSwitch()
             }
         } else {
-            spliceVariantAudio(in: ctx, releasingHeld: true)
+            spliceVariantAudio(releasingHeld: true)
         }
     }
 
-    private func finishVariantSwitch(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+    private func finishVariantSwitch() {
         guard let pending = variantSwitch else { return }
         // Every track now points at the new variant's stream, the one heard or not: with no audio track of this
         // input selected (an external file plays) the switch splices no audio, and selecting a track later must
@@ -544,18 +468,18 @@ extension MediaDemuxer {
             return track.with(streamIndex: pending.streams.audio[position])
         }
         for index in pending.previous.all where !pending.streams.all.contains(index) {
-            ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_ALL
+            input.setReading(false, stream: index)
         }
         variantSwitch = nil
     }
 
     /// - Parameter reporting: Report the variant still playing (`onVariantChanged`), unless another was asked for.
-    func cancelVariantSwitch(in ctx: UnsafeMutablePointer<AVFormatContext>, reporting: Bool = true) {
+    func cancelVariantSwitch(reporting: Bool = true) {
         guard let pending = variantSwitch else { return }
         // The old variant plays on: what was delayed of it is queued, before anything it reads next.
-        for old in pending.heldOld { releaseOldVideo(old, in: ctx) }
+        for old in pending.heldOld { releaseOldVideo(old) }
         for index in pending.streams.all where !pending.previous.all.contains(index) {
-            ctx.pointee.streams[index]?.pointee.discard = AVDISCARD_ALL
+            input.setReading(false, stream: index)
         }
         variantSwitch = nil
         // The variant asked for never played: report the one still read, from where reading is.

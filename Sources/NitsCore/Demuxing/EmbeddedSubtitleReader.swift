@@ -107,7 +107,7 @@ enum EmbeddedSubtitleReader {
         guard let allocated = ctx else { return nil }
         interrupt?.install(on: allocated)
         guard avformat_open_input(&ctx, url, nil, &options) == 0, let opened = ctx else { return nil }
-        guard MediaDemuxer.describesStreams(opened) || avformat_find_stream_info(opened, nil) >= 0 else {
+        guard FFmpegInput.describesStreams(opened) || avformat_find_stream_info(opened, nil) >= 0 else {
             avformat_close_input(&ctx)
             return nil
         }
@@ -143,9 +143,9 @@ enum EmbeddedSubtitleReader {
         discardStreams(of: ctx, except: [streamIndex])
 
         var pkt = AVPacket()
-        let origin = MediaDemuxer.timelineOrigin(of: ctx)
+        let origin = FFmpegInput.timelineOrigin(of: ctx)
         while !isCancelled(interrupt) && av_read_frame(ctx, &pkt) >= 0 {
-            MediaDemuxer.rebase(&pkt, origin: origin, in: ctx)
+            FFmpegInput.rebase(&pkt, origin: origin, in: ctx)
             collector.add(&pkt)
             av_packet_unref(&pkt)
         }
@@ -199,7 +199,7 @@ enum EmbeddedSubtitleReader {
         let reference = referenceStream(of: ctx)
         discardStreams(of: ctx, except: reference.map { [streamIndex, $0] } ?? [streamIndex])
 
-        let origin = MediaDemuxer.timelineOrigin(of: ctx)
+        let origin = FFmpegInput.timelineOrigin(of: ctx)
         // A context just opened is at the start already. A timestamp seek to it could skip the first packets of an
         // MPEG-TS / MPEG-PS stream, or fail before its first timestamp.
         if range.lowerBound > 0 {
@@ -224,7 +224,7 @@ enum EmbeddedSubtitleReader {
                     "Window read of stream \(streamIndex) from \(range.lowerBound) s stopped after \(byteLimit) bytes")
                 return nil
             }
-            MediaDemuxer.rebase(&pkt, origin: origin, in: ctx)
+            FFmpegInput.rebase(&pkt, origin: origin, in: ctx)
             defer { av_packet_unref(&pkt) }
             if let reference, Int(pkt.stream_index) == reference {
                 // Captions ride in the pictures followed.
@@ -259,7 +259,7 @@ enum EmbeddedSubtitleReader {
         guard let ctx = openInput(url: url, headers: headers, interrupt: interrupt) else { return nil }
         var closable: UnsafeMutablePointer<AVFormatContext>? = ctx
         defer { avformat_close_input(&closable) }
-        guard MediaDemuxer.describesStreams(ctx) else { return nil }
+        guard FFmpegInput.describesStreams(ctx) else { return nil }
         discardStreams(of: ctx, except: [])
         let isMatroska = String(cString: ctx.pointee.iformat.pointee.name).hasPrefix("matroska")
         // The Cues may follow the clusters; a seek parses them. Its result doesn't matter: a file whose pictures the

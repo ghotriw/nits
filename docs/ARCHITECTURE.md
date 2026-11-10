@@ -142,7 +142,7 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   each request (`segmentRequestOptions`). The manifest has a `SegmentTimeline`: from the duration alone FFmpeg counts
   one segment too many and asks for it. And once a stream was read to its end the DASH demuxer closes its input and
   sets the stream to `AVDISCARD_ALL`, which a seek back doesn't undo: `seek` enables the streams playing again
-  (`reenableEndedDASHStreams`). The manifest is the resolver's own format (`package` access, not for hosts to open),
+  (`FFmpegInput.prepareSeek`). The manifest is the resolver's own format (`package` access, not for hosts to open),
   so the thumbnails, the history and the logs treat it apart (`MediaURL.loggable`). Needs the bundled FFmpeg
   (`--enable-libxml2`). Progressive files are read in HTTP requests of
   the size yt-dlp downloads them in (`http_chunk_size` → `httpRequestSize`, FFmpeg's `request_size`): YouTube throttles
@@ -213,6 +213,22 @@ presentation of its own for the mini player (the window for PiP, no fullscreen, 
 `HostWindowPresentation` stops doing on `detach()`.
 
 ## Video pipeline
+
+### Inputs
+
+`MediaDemuxer` reads packets from a `DemuxerInput` (`Sources/NitsCore/Demuxing/Input/`). The demuxer keeps what is the
+same whatever the media comes from: the packet queues and the read-ahead, the packet cache, track selection, the splice
+of a variant switch, the subtitle trackers, the opening scan of the first pictures. The input knows its container and
+its network: how to open, read (timestamps already on the zero-based timeline, `timelineOrigin`), seek (targets on the
+timeline), read a stream or not (`setReading`), how its streams group into variants (`variantCandidates`, of which the
+demuxer chooses), what its live playlist's window is, and what its reads cost on the network (`NetworkReadAccount`, for
+adaptive bitrate). What the demuxer has to read around is told as traits (`DemuxerInputTraits`: an index, seeks that land
+between keyframes, variants interleaved by presentation time), not by the format's name.
+
+Streams are described as `AVStream`s, which every decoder is made from. `FFmpegInput` is FFmpeg's `avformat_open_input`
+on a file, a network file, a DASH manifest or an HLS playlist, with the network around it (`FFmpegIOByteCounter`,
+`HTTPSessionTransport`, `HLSPlaylistPrefetcher`, `LiveSegmentGate`). An input that demuxes by other means keeps its
+streams in an `AVStreamTable`.
 
 ### Decode → queue → present
 
@@ -290,8 +306,8 @@ discontinuity can't hide every following frame. Container quirks:
   1, 2, 4… s until that keyframe precedes the target. Audio read on the way is queued, since the
   muxer may interleave it ahead of the video of the same time.
 - **MPEG-TS / MPEG-PS** timestamps continue the source clock (a DVD starts near 0.5 s, a broadcast
-  capture hours in). `MediaDemuxer.timelineOrigin(of:)` makes the first one zero: every packet is
-  read through `readPacket` / `MediaDemuxer.rebase`, and seek targets get the offset added back.
+  capture hours in). `FFmpegInput.timelineOrigin(of:)` makes the first one zero: every packet is
+  read through `DemuxerInput.read` / `FFmpegInput.rebase`, and the input adds the offset back to seek targets.
   Thumbnails and embedded subtitle extraction apply the same origin.
   After probing parameter sets at open, these formats rewind to byte 0: a timestamp rewind can land past
   the first packet and lose the keyframe that starts the file.
