@@ -142,9 +142,13 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
 - **`FFmpegVideoDecoder`** uses slice threading only: frame threading delays output by a frame per
   thread, past the few packets seek previews and frame steps decode. libdav1d and libvpx thread on their own
   (`thread_count`); dav1d keeps one frame in flight (`max_frame_delay = 1`). Frames that aren't planar 4:2:0
-  go through `FrameFormatNormalizer` (libswscale); RGB sources are tagged with the matrix used.
+  go through `FrameFormatNormalizer` (libswscale); RGB sources are tagged with the matrix used, which
+  `StreamColorimetry` gives RGB streams too (`isRGB(format:)`, one rule for both).
 - `CV*GetStringForIntegerCodePoint` returns placeholders (e.g. "YCbCrMatrix#5") for code points
   without a CoreVideo constant; `StreamColorimetry` accepts only real constants.
+- **Metal decodes colour by the stream's matrix and primaries** (`ShaderColorimetry` → `ToneMapUniforms`), in both the
+  HDR and the SDR branch; never hardcode BT.2020 or BT.709 in the shader. HDR or SDR there is the transfer alone (PQ /
+  HLG), not the primaries, and `MetalVideoRenderer` uses the same test.
 - **Interlaced video** is deinterlaced inside the decoder (`FFmpegVideoDecoder` → `MetalDeinterlacer`), so
   every consumer of decoded frames gets progressive ones: a frame per field for streams declared interlaced,
   which the engine then paces at the field rate (`outputsFieldRate` halves `nominalFrameDuration`). The

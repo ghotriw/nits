@@ -24,15 +24,11 @@ struct VideoColorClassTests {
         #expect(TransferFunctionClass(kCVImageBufferTransferFunction_ITU_R_2100_HLG).label == "HLG")
     }
 
-    @Test("The shader gets the indices it always did")
+    @Test("The shader decodes PQ and HLG as HDR and every other transfer as SDR")
     func shaderIndices() {
-        #expect(ColorPrimariesClass(kCVImageBufferColorPrimaries_ITU_R_2020).shaderIndex == 0)
-        #expect(ColorPrimariesClass(kCVImageBufferColorPrimaries_ITU_R_709_2).shaderIndex == 1)
-        #expect(ColorPrimariesClass(kCVImageBufferColorPrimaries_DCI_P3).shaderIndex == 2)
-        #expect(ColorPrimariesClass(kCVImageBufferColorPrimaries_SMPTE_C).shaderIndex == 0)
         #expect(TransferFunctionClass(kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ).shaderIndex == 0)
         #expect(TransferFunctionClass(kCVImageBufferTransferFunction_ITU_R_2100_HLG).shaderIndex == 1)
         #expect(TransferFunctionClass(kCVImageBufferTransferFunction_ITU_R_709_2).shaderIndex == 2)
-        #expect(TransferFunctionClass(kCVImageBufferTransferFunction_sRGB).shaderIndex == 0)
+        #expect(TransferFunctionClass(kCVImageBufferTransferFunction_sRGB).shaderIndex == 2)
     }
 }

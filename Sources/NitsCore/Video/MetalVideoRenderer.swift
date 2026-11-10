@@ -16,11 +16,10 @@ public struct ToneMapUniforms: Sendable {
     public var outputShadowDetail: Float = 0.0
     public var outputShadowLift: Float = 0.0
     public var outputSharpness: Float = 0.5  // Default 0.5 for CAS sharpening on 5K display
-    public var colorPrimaries: UInt32 = 0  // 0: BT.2020, 1: BT.709, 2: DCI-P3
-    public var transferFunction: UInt32 = 0  // 0: PQ, 1: HLG, 2: BT.709 / SDR
+    public var transferFunction: UInt32 = 0  // 0: PQ, 1: HLG, 2: SDR (BT.709 and any other)
     public var bitDepth: UInt32 = 10  // 8 or 10
     public var isFullRange: UInt32 = 0  // 0: Video Range, 1: Full Range
-    public var colorSpaceMode: UInt32 = 0  // 0: Standard YCbCr BT.2020, 1: BT.709, 2: Dolby Vision IPT / ICtCp
+    public var colorSpaceMode: UInt32 = 0  // 0: Y'CbCr by `yCbCrToRGB`, 2: Dolby Vision IPT / ICtCp
     public var hasDoviL2Trim: UInt32 = 0  // 0: none, 1: authored L2 SDR trim active
     public var doviTrimSlope: Float = 1.0
     public var doviTrimOffset: Float = 0.0
@@ -34,6 +33,15 @@ public struct ToneMapUniforms: Sendable {
     /// bypasses the curve. The user's (`ToneMapController.localContrast`); the renderer turns it off for each frame it
     /// can't compute it for.
     public var contrastRecovery: Float = 0
+    /// 1: the stream's primaries lie inside Display P3, so SDR converts with `sourceToDisplayP3` alone; 0: SDR goes
+    /// through the gamut fit from BT.2020 as HDR does.
+    public var sourceFitsDisplayP3: UInt32 = 0
+    /// Y'CbCr → R'G'B' by the stream's matrix coefficients (`ShaderColorimetry.yCbCrToRGB`).
+    public var yCbCrToRGB = ShaderColorimetry.yCbCrToRGB(kCVImageBufferYCbCrMatrix_ITU_R_2020)
+    /// The stream's linear RGB → linear BT.2020, the space the tone curve and the gamut fit work in.
+    public var sourceToBT2020 = ShaderColorimetry.toBT2020(kCVImageBufferColorPrimaries_ITU_R_2020)
+    /// The stream's linear RGB → linear Display P3, for SDR whose primaries fit it.
+    public var sourceToDisplayP3 = ShaderColorimetry.toDisplayP3(kCVImageBufferColorPrimaries_ITU_R_2020)
 
     public init(
         targetNits: Float = ToneMapController.referenceWhiteNits,
@@ -45,7 +53,6 @@ public struct ToneMapUniforms: Sendable {
         outputShadowDetail: Float = 0.0,
         outputShadowLift: Float = 0.0,
         outputSharpness: Float = 0.5,
-        colorPrimaries: UInt32 = 0,
         transferFunction: UInt32 = 0,
         bitDepth: UInt32 = 10,
         isFullRange: UInt32 = 0,
@@ -66,7 +73,6 @@ public struct ToneMapUniforms: Sendable {
         self.outputShadowDetail = outputShadowDetail
         self.outputShadowLift = outputShadowLift
         self.outputSharpness = outputSharpness
-        self.colorPrimaries = colorPrimaries
         self.transferFunction = transferFunction
         self.bitDepth = bitDepth
         self.isFullRange = isFullRange
@@ -203,7 +209,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     ) -> (any MTLTexture)? {
         let strength = min(uniforms.contrastRecovery, 1)
         uniforms.contrastRecovery = 0
-        let isSDR = uniforms.transferFunction == 2 || uniforms.colorPrimaries == 1
+        let isSDR = uniforms.transferFunction == 2
         guard strength > 0, !isSDR, let contrastRecovery else { return placeholderCoefficients }
         if workspace?.fits(frameWidth: luma.width, frameHeight: luma.height) != true {
             workspace = ContrastRecovery.Workspace(device: device, frameWidth: luma.width, frameHeight: luma.height)

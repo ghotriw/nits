@@ -220,31 +220,35 @@ public final class ToneMapController {
         let target = targetNits
 
         let isDolbyVisionProfile5 = demuxer.isDolbyVisionProfile5
-        let (primaries, transferFunction) = Self.shaderColor(
+        let (_, transferFunction) = Self.shaderColor(
             primaries: demuxer.colorPrimaries, transferFunction: demuxer.transferFunction,
             isDolbyVisionProfile5: isDolbyVisionProfile5)
         let bitDepth = UInt32(demuxer.bitDepth)
         let isFullRange = demuxer.isFullRange
+        // Profile 5's matrix is the RPU's, not `yCbCrToRGB`.
+        let sourcePrimaries = Self.shaderPrimaries(
+            demuxer.colorPrimaries, isDolbyVisionProfile5: isDolbyVisionProfile5)
+        let yCbCrToRGB = ShaderColorimetry.yCbCrToRGB(demuxer.yCbCrMatrix)
+        let toBT2020 = ShaderColorimetry.toBT2020(sourcePrimaries)
+        let toDisplayP3 = ShaderColorimetry.toDisplayP3(sourcePrimaries)
+        let fitsDisplayP3 = ShaderColorimetry.fitsDisplayP3(sourcePrimaries)
         let signal: FrameLuminanceMeter.Signal? =
             isDolbyVisionProfile5
             ? .dolbyVisionIPT : transferFunction == .pq ? .pq : transferFunction == .hlg ? .hlg : nil
-        let meter = signal.map { FrameLuminanceMeter(signal: $0, isBT709: primaries == .bt709) }
+        let meter = signal.map { FrameLuminanceMeter(signal: $0, yCbCrToRGB: yCbCrToRGB) }
         frameState.withLock {
             $0.reshaper.reset(isProfile5: isDolbyVisionProfile5)
             $0.luminanceMeter = meter
         }
         renderer?.updateUniforms { uniforms in
-            uniforms.colorPrimaries = primaries.shaderIndex
             uniforms.transferFunction = transferFunction.shaderIndex
             uniforms.bitDepth = bitDepth
             uniforms.isFullRange = isFullRange ? 1 : 0
-            if isDolbyVisionProfile5 {
-                uniforms.colorSpaceMode = 2  // Dolby Vision IPT / ICtCp
-            } else if primaries == .bt709 {
-                uniforms.colorSpaceMode = 1  // BT.709
-            } else {
-                uniforms.colorSpaceMode = 0  // Standard BT.2020 YCbCr
-            }
+            uniforms.colorSpaceMode = isDolbyVisionProfile5 ? 2 : 0  // Dolby Vision IPT / ICtCp, else Y'CbCr
+            uniforms.yCbCrToRGB = yCbCrToRGB
+            uniforms.sourceToBT2020 = toBT2020
+            uniforms.sourceToDisplayP3 = toDisplayP3
+            uniforms.sourceFitsDisplayP3 = fitsDisplayP3 ? 1 : 0
             uniforms.doviReshaping = ToneMapUniforms.DolbyVisionReshaping()
         }
 
@@ -267,8 +271,15 @@ public final class ToneMapController {
     nonisolated static func shaderColor(
         primaries: CFString, transferFunction: CFString, isDolbyVisionProfile5: Bool
     ) -> (ColorPrimariesClass, TransferFunctionClass) {
-        isDolbyVisionProfile5
-            ? (.bt2020, .pq) : (ColorPrimariesClass(primaries), TransferFunctionClass(transferFunction))
+        (
+            ColorPrimariesClass(shaderPrimaries(primaries, isDolbyVisionProfile5: isDolbyVisionProfile5)),
+            isDolbyVisionProfile5 ? .pq : TransferFunctionClass(transferFunction)
+        )
+    }
+
+    /// The primaries the shader converts from (`shaderColor`): the stream's, BT.2020 for Dolby Vision Profile 5.
+    nonisolated static func shaderPrimaries(_ primaries: CFString, isDolbyVisionProfile5: Bool) -> CFString {
+        isDolbyVisionProfile5 ? kCVImageBufferColorPrimaries_ITU_R_2020 : primaries
     }
 
     /// Adapts the reference white to the media's static luminance (MaxCLL or the mastering peak, MaxFALL; 0 for

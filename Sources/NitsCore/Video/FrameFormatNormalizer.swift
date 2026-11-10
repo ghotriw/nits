@@ -53,11 +53,10 @@ final class FrameFormatNormalizer: @unchecked Sendable {
             let descriptor = av_pix_fmt_desc_get(AVPixelFormat(rawValue: source.pointee.format))
         else { return nil }
 
-        let flags = descriptor.pointee.flags
-        let isRGB = (flags & UInt64(AV_PIX_FMT_FLAG_RGB)) != 0 || (flags & UInt64(AV_PIX_FMT_FLAG_PAL)) != 0
+        let isRGB = StreamColorimetry.isRGB(format: source.pointee.format)
         let targetFormat = descriptor.pointee.comp.0.depth > 8 ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P
 
-        // RGB becomes limited-range YCbCr in the matrix the demuxer tags untagged streams with (BT.601 at SD,
+        // RGB becomes limited-range YCbCr in the matrix the demuxer tags RGB streams with (BT.601 at SD,
         // BT.709 above). YCbCr sources keep their matrix and range; only the chroma is resampled.
         let isStandardDefinition =
             StreamColorimetry.standardDefinitionPrimaries(width: Int(width), height: Int(height)) != nil

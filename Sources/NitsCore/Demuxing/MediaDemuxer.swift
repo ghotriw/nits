@@ -481,9 +481,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         {
             return true
         }
-        if colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_2020 && bitDepth >= 10 {
-            return true
-        }
+        // BT.2020 with an SDR transfer is wide-gamut SDR: the system shows it as it is.
         return false
     }
     var masteringDisplay: Data?

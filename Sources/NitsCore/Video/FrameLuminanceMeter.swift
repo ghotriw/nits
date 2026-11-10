@@ -30,8 +30,16 @@ struct FrameLuminanceMeter: Sendable {
     }
 
     let signal: Signal
-    /// The Y'CbCr matrix is BT.709 rather than BT.2020's.
-    let isBT709: Bool
+    /// Y'CbCr → R'G'B' of the stream, the shader's (`ToneMapUniforms.yCbCrToRGB`); unused for Profile 5.
+    let yCbCrToRGB: simd_float3x3
+
+    init(
+        signal: Signal,
+        yCbCrToRGB: simd_float3x3 = ShaderColorimetry.yCbCrToRGB(kCVImageBufferYCbCrMatrix_ITU_R_2020)
+    ) {
+        self.signal = signal
+        self.yCbCrToRGB = yCbCrToRGB
+    }
 
     /// A frame's max(R, G, B) over the grid, in PQ.
     struct Measurement: Sendable, Equatable {
@@ -91,8 +99,10 @@ struct FrameLuminanceMeter: Sendable {
         let chromaScale: Float = isFullRange ? 1 : (isTenBit ? 65535 / 57344 : 255 / 224)
 
         if signal == .pq {
-            let (crToR, cbToG, crToG, cbToB): (Float, Float, Float, Float) =
-                isBT709 ? (1.5748, 0.187324, 0.468124, 1.8556) : (1.4746, 0.164553, 0.571353, 1.8814)
+            // The matrix's columns: Cb (column 1) and Cr (column 2) into R', G', B'.
+            let (crToR, cbToG, crToG, cbToB) = (
+                yCbCrToRGB[2][0], -yCbCrToRGB[1][1], -yCbCrToRGB[2][1], yCbCrToRGB[1][2]
+            )
             let (mean, peak) = FrameSampling.maxNonLinearRGBMeanAndPeak(
                 samples, count: count, lumaOffset: lumaOffset, lumaScale: lumaScale, chromaOffset: chromaOffset,
                 chromaScale: chromaScale, crToR: crToR, cbToG: cbToG, crToG: crToG, cbToB: cbToB)
@@ -140,10 +150,8 @@ struct FrameLuminanceMeter: Sendable {
         }
     }
 
-    /// R'G'B' of normalized Y'CbCr by the stream's matrix (BT.2020 non-constant luminance, or BT.709).
+    /// R'G'B' of normalized Y'CbCr by the stream's matrix.
     private func nonLinearRGB(_ yuv: SIMD3<Float>) -> SIMD3<Float> {
-        isBT709
-            ? SIMD3(yuv.x + 1.5748 * yuv.z, yuv.x - 0.187324 * yuv.y - 0.468124 * yuv.z, yuv.x + 1.8556 * yuv.y)
-            : SIMD3(yuv.x + 1.4746 * yuv.z, yuv.x - 0.164553 * yuv.y - 0.571353 * yuv.z, yuv.x + 1.8814 * yuv.y)
+        yCbCrToRGB * yuv
     }
 }

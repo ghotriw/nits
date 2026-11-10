@@ -97,7 +97,8 @@ extension MediaDemuxer {
     }
 
     /// Dolby Vision configuration (when extradata had none), content light level and mastering display from
-    /// the stream's coded side data. Mastering luminance only fills in a peak still at its 1000-nit default.
+    /// the stream's coded side data. Mastering luminance only fills in a peak the stream has not given
+    /// (`hasStaticPeak`): a MaxCLL of 1000 stays.
     func readHDRSideData(of codecpar: UnsafeMutablePointer<AVCodecParameters>) {
         let sideDataCount = Int(codecpar.pointee.nb_coded_side_data)
         guard sideDataCount > 0, let sideDataList = codecpar.pointee.coded_side_data else { return }
@@ -142,7 +143,7 @@ extension MediaDemuxer {
                 let mdm = UnsafeMutableRawPointer(sdData).assumingMemoryBound(to: AVMasteringDisplayMetadata.self)
                 if mdm.pointee.has_luminance != 0 && mdm.pointee.max_luminance.den > 0 {
                     let maxLum = Float(mdm.pointee.max_luminance.num) / Float(mdm.pointee.max_luminance.den)
-                    if self.maxPeakNits == 1000.0 && maxLum > 0 {
+                    if !self.hasStaticPeak && maxLum > 0 {
                         self.maxPeakNits = maxLum
                     }
                 }
@@ -472,13 +473,13 @@ extension MediaDemuxer {
     }
 
     /// Collects HDR metadata from an HEVC prefix SEI NAL unit. Mastering display luminance only fills in
-    /// a peak still at its 1000-nit default; MaxCLL overrides it.
+    /// a peak the stream has not given yet (`hasStaticPeak`); MaxCLL overrides it.
     func applyHDRSEI(naluData: Data, masteringDisplay: inout Data?, contentLightLevel: inout Data?) {
         for message in VideoFormatDescriptionBuilder.hdrSEIMessages(inPrefixSEI: naluData) {
             switch message {
             case .masteringDisplay(let data, let maxLuminanceNits):
                 masteringDisplay = data
-                if self.maxPeakNits == 1000.0 && maxLuminanceNits > 0 {
+                if !self.hasStaticPeak && maxLuminanceNits > 0 {
                     self.maxPeakNits = maxLuminanceNits
                 }
             case .contentLightLevel(let data, let maxCLL, let maxFALL):

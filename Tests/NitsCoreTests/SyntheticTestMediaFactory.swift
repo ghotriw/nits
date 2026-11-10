@@ -25,6 +25,8 @@ public enum SyntheticTestMediaFactory {
         case audioOnlyFLAC
         /// HEVC 10-bit HDR video with BT.2020 color primaries and PQ transfer function (10 seconds)
         case hevc10BitHDR
+        /// HEVC 10-bit wide-gamut SDR: BT.2020 primaries and matrix, BT.709 transfer (1 second, no audio)
+        case hevc10BitWideGamutSDR
         /// 4K HEVC 10-bit HDR10 MKV with 5 SRT subtitle tracks, first forced (3 seconds)
         case uhdHDRSubtitles
         /// H.264 video with AC3 5.1 (fltp), DTS 5.1 and 16-bit FLAC 5.1 (s16) audio tracks (10 seconds)
@@ -217,6 +219,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_audio_flac_51.flac"
             case .hevc10BitHDR:
                 return "synth_hevc_10bit_hdr.mp4"
+            case .hevc10BitWideGamutSDR:
+                return "synth_hevc_10bit_wide_gamut_sdr.mp4"
             case .audioCodecMatrix:
                 return "synth_audio_codec_matrix.mkv"
             case .exoticAudioTracks:
@@ -1284,6 +1288,16 @@ public enum SyntheticTestMediaFactory {
                 "-colorspace", "bt2020nc",
                 "-x265-params", "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
                 "-c:a", "aac", "-b:a", "192k",
+                outputPath,
+            ]
+
+        case .hevc10BitWideGamutSDR:
+            return [
+                "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=1",
+                "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
+                "-color_primaries", "bt2020", "-color_trc", "bt709", "-colorspace", "bt2020nc",
+                "-x265-params", "colorprim=bt2020:transfer=bt709:colormatrix=bt2020nc",
                 outputPath,
             ]
 

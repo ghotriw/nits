@@ -58,7 +58,7 @@ flowchart TD
   - Parameter set extraction for SPS (NAL 7) and PPS (NAL 8).
   - Decompression session configuration via `CMVideoFormatDescriptionCreateFromH264ParameterSets`.
   - Dynamic pixel format binding (`.r8Unorm` vs. `.r16Unorm`, Video Range vs. Full Range).
-  - Direct SDR Metal render pass: BT.709 OETF $\to$ Linear BT.709 $\to$ Display P3 (sRGB-encoded) with FidelityFX CAS bypassing EETF tone-mapping overhead.
+  - Direct SDR Metal render pass (any transfer but PQ / HLG): the stream's Y'CbCr matrix $\to$ inverse BT.709 OETF $\to$ Display P3 by its primaries (BT.2020 through the Oklab gamut fit), sRGB-encoded, with FidelityFX CAS bypassing EETF tone-mapping overhead.
 - [x] **1.4. Extended HDR Standards (HLG & Dolby Vision Profile 5):**
   - HLG (Hybrid Log-Gamma, BT.2100 / ARIB STD-B67): Inverse OETF and display-adapted OOTF gamma scaling.
   - Dolby Vision Profile 5: Extradata inspection for `dvvC`/`dvcC` boxes, IPTc2 / ICtCp matrix unpacking $\to$ LMS' $\to$ ST 2084 PQ EOTF $\to$ Linear BT.2020 in nits, eliminating green/purple tinting.
@@ -140,7 +140,7 @@ flowchart TD
   - `FFmpegVideoDecoder` support for MPEG-1 and MPEG-2 video (4:2:0); anamorphic DVD aspect ratios from the sequence header.
   - Index-less containers (MPEG-TS / MPEG-PS): seeks sync to the next video keyframe, backing off until it precedes an exact-seek target.
   - MPEG-TS / MPEG-PS timestamps are rebased onto a zero-based timeline (`start_time`), including subtitles and thumbnails.
-  - Untagged streams get BT.601 colorimetry at SD resolutions (SMPTE C / EBU primaries by line count) and BT.709 at HD.
+  - Untagged streams get BT.601 colorimetry at SD resolutions (SMPTE C / EBU primaries by line count) and BT.709 at HD; an untagged matrix follows tagged primaries first (BT.2020 $\to$ BT.2020, as HDR10 encodes tagged without one), RGB keeps the matrix `FrameFormatNormalizer` converts it with.
   - Interlaced content is deinterlaced by 1.8.3.
 - [x] **2.5.6. Flash & Early Web Video (Sorenson Spark, VP6, VP8, Theora):**
   - `FFmpegVideoDecoder` support for Sorenson Spark (FLV1) and On2 VP6 / VP6F / VP6A (alpha dropped) in FLV, VP8 in WebM / Matroska, and Theora in Ogg.

@@ -70,7 +70,7 @@ private enum SyntheticFrame {
 
 @Suite("Frame Luminance Meter")
 struct FrameLuminanceMeterTests {
-    private let pqMeter = FrameLuminanceMeter(signal: .pq, isBT709: false)
+    private let pqMeter = FrameLuminanceMeter(signal: .pq)
 
     @Test("A flat PQ grey measures its own luminance, in 10-bit video range and 8-bit full range")
     func flatGrey() throws {
@@ -121,7 +121,7 @@ struct FrameLuminanceMeterTests {
 
     @Test("HLG at reference white (75 %) measures 203 nits through the 1000-nit OOTF")
     func hlgReferenceWhite() throws {
-        let meter = FrameLuminanceMeter(signal: .hlg, isBT709: false)
+        let meter = FrameLuminanceMeter(signal: .hlg)
         let buffer = try #require(
             SyntheticFrame.make(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) { _, _ in SIMD3(repeating: 0.75) })
         let average = try #require(meter.measure(buffer, reshaping: nil)?.averageNits)
@@ -130,7 +130,7 @@ struct FrameLuminanceMeterTests {
 
     @Test("A neutral Dolby Vision Profile 5 frame without reshaping measures its intensity")
     func profile5Neutral() throws {
-        let meter = FrameLuminanceMeter(signal: .dolbyVisionIPT, isBT709: false)
+        let meter = FrameLuminanceMeter(signal: .dolbyVisionIPT)
         // IPT codes: I carries PQ, P and T sit at neutral; written as R'G'B' greys, so Cb / Cr come out neutral.
         let buffer = try #require(
             SyntheticFrame.make(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) { _, _ in
@@ -186,7 +186,7 @@ struct MeasuredWhiteApplyFrameTests {
     private static func controller() -> ToneMapController {
         let controller = ToneMapController(renderer: nil, monitor: PlayerPerformanceMonitor())
         controller.adapt(toPeakNits: 1000, fallNits: 0, hasStaticPeak: true)
-        controller.frameState.withLock { $0.luminanceMeter = FrameLuminanceMeter(signal: .pq, isBT709: false) }
+        controller.frameState.withLock { $0.luminanceMeter = FrameLuminanceMeter(signal: .pq) }
         return controller
     }
 

@@ -1,9 +1,8 @@
 import CoreVideo
 
-/// The colour primaries the player tells apart, from the CoreVideo value `StreamColorimetry` reads: the one source of
-/// the media info's label and of the gamut the Metal shader converts from. The shader knows only BT.2020, BT.709 and
-/// P3, so BT.601 and the rest are labelled as what they are but converted as BT.2020 (and with the BT.2020 matrix,
-/// see `colorSpaceMode`). That shows only with Metal forced on SDR content: `.auto` uses it for HDR alone.
+/// The colour primaries the player tells apart, from the CoreVideo value `StreamColorimetry` reads: the media info's
+/// label. The shader converts from the primaries' own chromaticities (`ShaderColorimetry`), which tell BT.601's EBU
+/// 3213 and SMPTE C apart.
 enum ColorPrimariesClass: Equatable {
     case bt709
     /// EBU 3213 (PAL) and SMPTE C (NTSC): standard-definition video, tagged or untagged.
@@ -31,22 +30,11 @@ enum ColorPrimariesClass: Equatable {
         case .other: "Unknown"
         }
     }
-
-    /// `ToneMapUniforms.colorPrimaries`: the shader converts from BT.2020 (0), BT.709 (1) or P3 (2), and takes
-    /// anything else as BT.2020.
-    var shaderIndex: UInt32 {
-        switch self {
-        case .bt709: 1
-        case .p3: 2
-        case .bt601, .bt2020, .other: 0
-        }
-    }
 }
 
 /// The transfer functions the player tells apart, from the CoreVideo value `StreamColorimetry` reads: the one source of
 /// the media info's label and of what the Metal shader decodes. The shader knows only PQ, HLG and BT.709, so sRGB,
-/// SMPTE 240M, linear and the rest are labelled as what they are but decoded as PQ; as with `ColorPrimariesClass`,
-/// that shows only with Metal forced on SDR content.
+/// SMPTE 240M, linear and the rest are labelled as what they are but decoded as BT.709 (SDR, without tone mapping).
 enum TransferFunctionClass: Equatable {
     /// BT.709, or a plain gamma.
     case bt709
@@ -82,12 +70,12 @@ enum TransferFunctionClass: Equatable {
     }
 
     /// `ToneMapUniforms.transferFunction`: the shader decodes PQ (0), HLG (1) or BT.709 (2), and takes anything else
-    /// as PQ.
+    /// as BT.709: only PQ and HLG are HDR.
     var shaderIndex: UInt32 {
         switch self {
-        case .bt709: 2
+        case .pq: 0
         case .hlg: 1
-        case .pq, .sRGB, .smpte240M, .linear, .other: 0
+        case .bt709, .sRGB, .smpte240M, .linear, .other: 2
         }
     }
 }

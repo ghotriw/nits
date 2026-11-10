@@ -95,7 +95,6 @@ struct DolbyVisionTrimShaderTests {
 
         var profile5 = Self.baseUniforms()
         profile5.colorSpaceMode = 2
-        profile5.colorPrimaries = primaries.shaderIndex
         profile5.transferFunction = transferFunction.shaderIndex
 
         guard let outProfile5 = try Self.renderPixel(nits: 100, chroma: [32768, 32768], uniforms: profile5),
@@ -164,7 +163,11 @@ struct DolbyVisionTrimShaderTests {
         #expect(reshaping.offset(of: \.mmrCoeffs) == 672)
         #expect(reshaping.stride == 864)
         #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.contrastRecovery) == 944)
-        #expect(MemoryLayout<ToneMapUniforms>.stride == 960)
+        #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.sourceFitsDisplayP3) == 948)
+        #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.yCbCrToRGB) == 960)
+        #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.sourceToBT2020) == 1008)
+        #expect(MemoryLayout<ToneMapUniforms>.offset(of: \.sourceToDisplayP3) == 1056)
+        #expect(MemoryLayout<ToneMapUniforms>.stride == 1104)
     }
 
     @Test("Dolby Vision Profile 5 RPU MMR reshaping evaluates higher-order chroma regression")

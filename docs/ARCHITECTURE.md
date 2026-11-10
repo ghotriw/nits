@@ -227,9 +227,10 @@ frame matching `synchronizer.currentTime()` and presents it in one of two modes:
   `kCMSampleAttachmentKey_DisplayImmediately = true` and enqueued to `AVSampleBufferDisplayLayer`.
 
 Default mode is `.auto`, re-evaluated on display changes via
-`screen.maximumExtendedDynamicRangeColorComponentValue > 1.01`. Because frames are decoded
-continuously regardless of mode, switching modes only toggles `isMetalLayerVisible` and flushes the
-display layer — no stall.
+`screen.maximumExtendedDynamicRangeColorComponentValue > 1.01`. On an SDR screen it takes Metal for HDR only (PQ,
+HLG, Dolby Vision; `MediaDemuxer.isHDR`): wide-gamut SDR (BT.2020 with an SDR transfer) is shown by the system as it
+is. Because frames are decoded continuously regardless of mode, switching modes only toggles `isMetalLayerVisible` and
+flushes the display layer — no stall.
 
 ### Why the display layer is isolated from the synchronizer
 
@@ -1232,7 +1233,13 @@ player does; `assFonts` are the media's attached fonts.
 - **Input** — biplanar YCbCr: `r16Unorm` luma + `rg16Unorm` chroma for 10-bit (VideoToolbox
   MSB-aligns P010, so range limits are expressed on the 16-bit scale, e.g. `4096/65535`,
   `56064/65535`), and an 8-bit path. Full/video range comes from the format description.
-- **Pipeline** — PQ (ST 2084) inverse EOTF → linear nits → BT.2390 black level lift
+- **Colour** — Y'CbCr is decoded by the stream's matrix and its linear RGB converted by its primaries, both as uniforms
+  `ShaderColorimetry` computes on the CPU (`yCbCrToRGB` from Kr / Kb; `sourceToBT2020`, `sourceToDisplayP3` from the
+  primaries' chromaticities at D65). The transfer alone decides HDR or SDR: PQ and HLG go through the curve, anything
+  else is drawn as SDR without it. SDR's primaries inside P3 (BT.709, BT.601, P3) convert by one matrix; BT.2020 SDR
+  goes through the same gamut fit as HDR. Dolby Vision Profile 5 decodes by the RPU (IPT → LMS → BT.2020) instead.
+- **Pipeline** — PQ (ST 2084) inverse EOTF → linear nits → BT.2020 (`sourceToBT2020`; HLG converts before its OOTF,
+  whose luminance takes BT.2020's coefficients) → BT.2390 black level lift
   (`liftBlackLevel`) → BT.2390 EETF compressed to `targetNits` → BT.2020 → Display P3 (D65), fit at constant Oklab
   lightness and hue (`fitToDisplayP3`, `DisplayGamutFit.metal`, ToneLab's `oklab_gamut_fit`: clipping each channel
   turned a sunset's orange outside P3 towards yellow, up to ~17° with mpv's curve) → sRGB encoding, the layer's
@@ -1308,7 +1315,9 @@ player does; `assFonts` are the media's attached fonts.
   which stays finite at `strength = 1`.
 - **Output** — `.bgr10a2Unorm` in Display P3; 8-bit output bands visibly in skies and shadows.
 - Source peak (MaxCLL / mastering luminance from side data or SEI) feeds
-  `uniforms.sourcePeakNits`.
+  `uniforms.sourcePeakNits`. MaxCLL wins in whichever order the two come; the mastering display only fills in a peak
+  the stream has not given (`hasStaticPeak`). SEI messages are read from the NAL unit's RBSP: H.265 counts their size
+  without emulation prevention bytes, which a mastering display's minimum luminance (00 00 00 xx) needs.
 
 ## Audio
 

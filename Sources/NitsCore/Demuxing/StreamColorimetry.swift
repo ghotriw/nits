@@ -3,7 +3,8 @@ import CoreVideo
 import Foundation
 
 /// A video stream's colour description as CoreVideo values, read from its codec parameters.
-/// Unsignalled values fall back by resolution: BT.601 at SD, BT.709 otherwise.
+/// Unsignalled values fall back by resolution: BT.601 at SD, BT.709 otherwise; an unsignalled matrix follows the
+/// primaries first.
 struct StreamColorimetry {
     var colorPrimaries: CFString
     var transferFunction: CFString
@@ -63,7 +64,11 @@ struct StreamColorimetry {
         }
 
         // Dynamically map YCbCr color matrix / colorspace
-        if let matrix = Self.known(
+        if Self.isRGB(format: codecpar.pointee.format) || codecpar.pointee.color_space == AVCOL_SPC_RGB {
+            // `FrameFormatNormalizer` turns RGB into Y'CbCr by resolution alone, whatever the primaries or tags.
+            self.yCbCrMatrix =
+                sdPrimaries != nil ? kCVImageBufferYCbCrMatrix_ITU_R_601_4 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
+        } else if let matrix = Self.known(
             CVYCbCrMatrixGetStringForIntegerCodePoint(Int32(codecpar.pointee.color_space.rawValue)),
             in: Self.knownMatrices)
         {
@@ -79,9 +84,19 @@ struct StreamColorimetry {
             case AVCOL_SPC_SMPTE240M:
                 self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_SMPTE_240M_1995
             default:
-                self.yCbCrMatrix =
-                    sdPrimaries != nil
-                    ? kCVImageBufferYCbCrMatrix_ITU_R_601_4 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
+                // Unsignalled: the matrix that goes with the primaries (an HDR10 encode may tag only primaries and
+                // transfer), else by resolution.
+                if self.colorPrimaries == kCVImageBufferColorPrimaries_ITU_R_2020 {
+                    self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
+                } else if self.colorPrimaries == kCVImageBufferColorPrimaries_EBU_3213
+                    || self.colorPrimaries == kCVImageBufferColorPrimaries_SMPTE_C
+                {
+                    self.yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4
+                } else {
+                    self.yCbCrMatrix =
+                        sdPrimaries != nil
+                        ? kCVImageBufferYCbCrMatrix_ITU_R_601_4 : kCVImageBufferYCbCrMatrix_ITU_R_709_2
+                }
             }
         }
 
@@ -118,16 +133,27 @@ struct StreamColorimetry {
         kCVImageBufferTransferFunction_SMPTE_ST_428_1 as String,
         kCVImageBufferTransferFunction_ITU_R_2100_HLG as String,
     ]
-    /// ICtCp and IPT (Dolby Vision profile 5) have no public constant; these are the strings CoreVideo returns.
+    /// ICtCp and IPT (Dolby Vision profile 5) have no public constant: the strings CoreVideo returns for them.
+    static var ictcpMatrix: CFString { "ITU_R_2100_ICtCp" as CFString }
+    static var iptC2Matrix: CFString { "IPT_C2" as CFString }
+
     private static let knownMatrices: Set<String> = [
         kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String, kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String,
         kCVImageBufferYCbCrMatrix_SMPTE_240M_1995 as String, kCVImageBufferYCbCrMatrix_ITU_R_2020 as String,
-        "ITU_R_2100_ICtCp", "IPT_C2",
+        ictcpMatrix as String, iptC2Matrix as String,
     ]
 
     private static func known(_ value: Unmanaged<CFString>?, in constants: Set<String>) -> CFString? {
         guard let value = value?.takeUnretainedValue(), constants.contains(value as String) else { return nil }
         return value
+    }
+
+    /// Whether frames of pixel format `format` are RGB (or palette) rather than Y'CbCr: `FrameFormatNormalizer` converts
+    /// them, and the matrix they get is the one it converts with.
+    static func isRGB(format: Int32) -> Bool {
+        guard let descriptor = av_pix_fmt_desc_get(AVPixelFormat(rawValue: format)) else { return false }
+        let flags = descriptor.pointee.flags
+        return (flags & UInt64(AV_PIX_FMT_FLAG_RGB)) != 0 || (flags & UInt64(AV_PIX_FMT_FLAG_PAL)) != 0
     }
 
     static func chromaLocation(_ location: AVChromaLocation) -> CFString {

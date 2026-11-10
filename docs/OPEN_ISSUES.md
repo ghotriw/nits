@@ -338,6 +338,16 @@ Accepted for now, noted for later.
   with `ffprobe`), so the picture stands at 36.2 s whatever the timeline. Not looked into: probably the streams the
   subdemuxer adds after the header, which `hls.c` does not map (`n_main_streams`). With a change of the picture's
   size as well (above), the next to take after the timeline.
+- **The Metal shader's colour is set once per load.** `ToneMapController.mediaDidLoad` sets the matrix, primaries,
+  transfer, bit depth and range (`ShaderColorimetry`) and the static peak; an HLS variant switch rereads the stream's
+  colour (`configureVideoStream`) but not into the uniforms, so a ladder mixing `VIDEO-RANGE` SDR and PQ, or
+  primaries, is drawn with the first variant's. The static peak has the same lifetime: `hasStaticPeak` is never reset,
+  so a later variant's mastering display does not replace an earlier one's peak.
+- **Metal colour approximations.** DCI-P3 (SMPTE 431) is converted with P3-D65's white, without adapting from the DCI
+  white. ICtCp and IPT outside Dolby Vision Profile 5 are decoded as BT.2020 Y'CbCr. `FrameLuminanceMeter` measures
+  max(R, G, B) in the stream's primaries, while the shader maps it in BT.2020: for PQ / HLG with BT.709 primaries the
+  measured peak is at or above the shader's (converting into BT.2020 does not raise max(RGB)), so the curve is at
+  most a little more cautious, never clipped.
 
 ## Revisit only if
 
