@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// Durations of media seen before (probed or played), persisted under
-/// `~/Library/Caches/Nits/MediaDurations.json` so a reopened playlist shows its lengths at once.
+/// `~/Library/Caches/<bundle id>/MediaDurations.json` so a reopened playlist shows its lengths at once.
 ///
 /// Local files are keyed by path, size and modification date, so a replaced file is probed again;
 /// network URLs by the URL without query or fragment (as in `PlaybackHistoryStore`).
@@ -35,10 +35,8 @@ public final class MediaDurationCache: Sendable {
         self.saveDelay = saveDelay
     }
 
-    public static var defaultFileURL: URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Nits", isDirectory: true)
-            .appendingPathComponent("MediaDurations.json")
+    public static var defaultFileURL: URL {
+        AppDirectories.caches.appendingPathComponent("MediaDurations.json")
     }
 
     /// The whole-file duration recorded for `url`, if any.

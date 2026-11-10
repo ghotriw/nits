@@ -5,7 +5,7 @@ All player logs go through `AppLog` (`NitsCore`). Each message is sent to:
 - `os.Logger`, subsystem `com.nits.app`, category = the `LogCategory` name (`Video`, `Engine`, … — capitalized;
   `log` predicates are case-sensitive)
 - an in-memory buffer of the last 2000 entries, used by the log viewer
-- `~/Library/Application Support/Nits/player.log`, written asynchronously
+- `~/Library/Logs/<bundle id>/player.log` (`com.ghotriw.nits` in the app, `Nits` under `swift run`; Console lists it), written asynchronously
 
 Messages below `AppLog.minimumLogLevel` are not formatted (the message is an `@autoclosure`).
 
@@ -47,7 +47,7 @@ LogViewerWindowController.shared.showLogs()
 ## Reading logs from the terminal
 
 ```bash
-tail -f ~/Library/Application\ Support/Nits/player.log
+tail -f ~/Library/Logs/com.ghotriw.nits/player.log
 
 log stream --predicate 'subsystem == "com.nits.app"' --level debug
 log show --predicate 'subsystem == "com.nits.app"' --last 10m --info --debug

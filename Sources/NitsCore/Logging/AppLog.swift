@@ -140,14 +140,7 @@ public final class LogStore: @unchecked Sendable {
             self.ioQueue = queue
 
             let fileManager = FileManager.default
-            let logsDir: URL
-            if let appSupport = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
-                logsDir = appSupport.appendingPathComponent("Nits/Logs", isDirectory: true)
-            } else {
-                logsDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(
-                    "Nits/Logs", isDirectory: true)
-            }
-
+            let logsDir = AppDirectories.logs
             try? fileManager.createDirectory(at: logsDir, withIntermediateDirectories: true)
             let fileURL = logsDir.appendingPathComponent("player.log")
             self.logFileURL = fileURL

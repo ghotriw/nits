@@ -90,12 +90,18 @@ struct ThumbnailTests {
         // The oldest is watched again.
         #expect(unlimited.loadThumbnails(for: keys[0]) != nil)
 
+        // A host's folder beside the items, older than all of them: not the cache's to remove.
+        let hostFolder = tempCacheDir.appendingPathComponent("HostFolder", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostFolder, withIntermediateDirectories: false)
+        try Data(count: 4096).write(to: hostFolder.appendingPathComponent("data"))
+        try FileManager.default.setAttributes([.modificationDate: Date.distantPast], ofItemAtPath: hostFolder.path)
+
         // A fifth item takes five sizes past a limit of 4.5: pruning down to 2.25 removes the three used longest ago.
         let limited = ThumbnailDiskCache(customCacheDirectory: tempCacheDir, maxSizeBytes: itemSize * 9 / 2)
         limited.saveThumbnails([item], for: keys[4])
 
         let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: tempCacheDir.path))
-        #expect(remaining == [keys[0], keys[4]])
+        #expect(remaining == [keys[0], keys[4], "HostFolder"])
     }
 
     private static func directorySize(_ url: URL) throws -> Int64 {

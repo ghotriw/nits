@@ -260,7 +260,7 @@ Details: "Session and presentation" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.
 
 ### Logging
 
-Player logs go through `AppLog`, which writes to `os.Logger` and to `~/Library/Application Support/Nits/player.log`. A host app can use it too:
+Player logs go through `AppLog`, which writes to `os.Logger` and to `~/Library/Logs/<bundle id>/player.log` (a host's own folder in a host app). A host app can use it too:
 
 ```swift
 AppLog.info(.host, "Session started")

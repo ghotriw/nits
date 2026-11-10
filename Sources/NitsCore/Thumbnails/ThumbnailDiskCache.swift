@@ -5,7 +5,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import os
 
-/// Manages on-disk caching of generated video thumbnails under `~/Library/Caches/Nits/Thumbnails/`.
+/// Manages on-disk caching of generated video thumbnails under `~/Library/Caches/<bundle id>/Thumbnails/`.
 /// Keyed by file path, file size, and modification timestamp to ensure freshness.
 public final class ThumbnailDiskCache: Sendable {
     private static let cacheVersion: UInt32 = 4
@@ -23,17 +23,8 @@ public final class ThumbnailDiskCache: Sendable {
 
     init(customCacheDirectory: URL?, maxSizeBytes: Int64) {
         self.maxSizeBytes = maxSizeBytes
-        let baseCacheURL: URL = {
-            if let custom = customCacheDirectory {
-                return custom
-            } else if let userCache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-                return userCache.appendingPathComponent("Nits", isDirectory: true).appendingPathComponent(
-                    "Thumbnails", isDirectory: true)
-            } else {
-                return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent(
-                    "NitsThumbnails", isDirectory: true)
-            }
-        }()
+        let baseCacheURL =
+            customCacheDirectory ?? AppDirectories.caches.appendingPathComponent("Thumbnails", isDirectory: true)
         self.cacheDirectory = baseCacheURL
 
         try? FileManager.default.createDirectory(at: baseCacheURL, withIntermediateDirectories: true)
@@ -153,7 +144,8 @@ public final class ThumbnailDiskCache: Sendable {
     ///
     /// "Used" is the directory's modification date, which a save and a load (`loadThumbnails`) set. Not the access
     /// date: listing a directory, as measuring its size here does, may move it for every item alike. The item just
-    /// saved (`keeping`) stays even when it alone is over half of the size.
+    /// saved (`keeping`) stays even when it alone is over half of the size. Only folders named as a cache key count:
+    /// in a host app the folder is in the host's caches, where it may keep folders of its own.
     private func pruneOldCachesIfNeeded(keeping keptKey: String) {
         guard
             let enumerator = FileManager.default.enumerator(
@@ -169,7 +161,7 @@ public final class ThumbnailDiskCache: Sendable {
         for case let url as URL in enumerator {
             guard
                 let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
-                values.isDirectory == true
+                values.isDirectory == true, Self.isCacheKey(url.lastPathComponent)
             else { continue }
 
             let date = values.contentModificationDate ?? Date.distantPast
@@ -188,6 +180,11 @@ public final class ThumbnailDiskCache: Sendable {
                 }
             }
         }
+    }
+
+    /// Whether `name` is a key `cacheKey(for:)` makes: a SHA-256 in lowercase hex.
+    static func isCacheKey(_ name: String) -> Bool {
+        name.utf8.count == 64 && name.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
     }
 
     private func directorySize(url: URL) -> Int64 {
