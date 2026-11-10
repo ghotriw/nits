@@ -5,6 +5,14 @@ enum HLSSegmentReaderError: Error, Equatable {
     case load(HLSSegmentLoadError)
     /// FFmpeg couldn't open or probe the segments' container (its error code).
     case open(Int32)
+
+    /// FFmpeg's error code for it.
+    var code: Int32 {
+        switch self {
+        case .load(let load): HLSSegmentReader.code(for: load)
+        case .open(let code): code
+        }
+    }
 }
 
 /// Demuxes a rendition's segments with FFmpeg's container demuxers (`mpegts`, `mov`, `aac`, `ac3`, `eac3`, `mp3`,
@@ -93,6 +101,11 @@ final class HLSSegmentReader {
     var streams: [UnsafeMutablePointer<AVStream>] {
         guard let context else { return [] }
         return (0..<Int(context.pointee.nb_streams)).compactMap { context.pointee.streams[$0] }
+    }
+
+    /// Stream `index` of the open context (what a packet's `stream_index` names), without making the list `streams` does.
+    func stream(at index: Int) -> UnsafeMutablePointer<AVStream>? {
+        context?.stream(at: index)
     }
 
     /// The next packet, its timestamps on the timeline; FFmpeg's `av_read_frame` result: `AVERROR_EOF` at the end of

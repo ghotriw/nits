@@ -607,6 +607,17 @@ public final class MediaDemuxer: @unchecked Sendable {
     ) {
         let interrupt = interruptContext ?? InterruptContext()
         let windowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
+        // Nits' own HLS client, while it and FFmpeg's demuxer both exist (`HLSInput.isEnabled`).
+        if liveHistory == nil, HLSInput.isEnabled, HLSInput.applies(to: url) {
+            guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
+                if interruptContext == nil { interrupt.cancel() }
+                return nil
+            }
+            self.init(
+                input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+                audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
+            return
+        }
         let origin = liveHistory?.origin ?? 0
         guard
             let input = FFmpegInput(

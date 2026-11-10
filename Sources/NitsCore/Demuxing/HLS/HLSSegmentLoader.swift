@@ -64,6 +64,21 @@ final class HLSSegmentLoader: Sendable {
         return data
     }
 
+    /// A playlist's text and where it was served from, after redirects (its relative URIs are read against that).
+    func playlist(_ url: URL) throws(HLSSegmentLoadError) -> (data: Data, servedFrom: URL) {
+        switch transport.open(
+            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+        {
+        case .input(let input):
+            let servedFrom = input.servedFrom ?? url
+            return (try read(input), servedFrom)
+        case .failed(let code):
+            throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
+        case .notServed:
+            throw .notServed(url)
+        }
+    }
+
     // MARK: Decryption
 
     private func decrypt(_ data: Data, key: HLSKey, iv: [UInt8]?) throws(HLSSegmentLoadError) -> Data {

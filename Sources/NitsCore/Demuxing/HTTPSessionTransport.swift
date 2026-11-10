@@ -235,6 +235,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var isClosed = false
         /// Body bytes received, by every task.
         var received = 0
+        /// Where the first answer came from, after the redirects a request that follows them went through.
+        var servedFrom: URL?
         /// Of them, those that came while the transfer didn't run (still under way when suspended): in no time.
         var untimed = 0
         var retries = 0
@@ -433,6 +435,12 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         state.withLock { $0.answeredLength }
     }
 
+    /// The address that answered, after the redirects a request that followed them went through: what a playlist's
+    /// relative URIs are read against.
+    var servedFrom: URL? {
+        state.withLock { $0.servedFrom }
+    }
+
     /// Body bytes the task has delivered so far, read or not.
     var receivedBytes: Int {
         state.withLock { $0.received }
@@ -587,6 +595,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 }
             }
             state.answer = answered.answer
+            state.servedFrom = response.url
             state.answeredLength = answered.remaining
             state.fileSize = answered.fileSize
             state.remaining = answered.remaining

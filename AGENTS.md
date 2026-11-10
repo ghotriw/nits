@@ -73,7 +73,8 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
 
 So does blocking a thread, which FFmpeg's reads do by nature: `LiveSegmentGate` waits for a live stream's next segment
 inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` waits for yt-dlp and the network on a
-`DispatchSemaphore` (`blocking`, up to 90 s). Both run on the thread of the demuxer's read (or of its opening, a pool
+`DispatchSemaphore` (`blocking`, up to 90 s). `HLSLane` waits for a live playlist's next segment the same way, on a
+`DispatchSemaphore` in steps of 50 ms (`HLSInput`, Nits' own HLS client). All three run on the thread of the demuxer's read (or of its opening, a pool
 thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). Not a pattern for other code.
 
 ## Layer boundaries
