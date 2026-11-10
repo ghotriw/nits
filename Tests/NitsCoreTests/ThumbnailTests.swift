@@ -60,6 +60,49 @@ struct ThumbnailTests {
         #expect(loaded?.first?.height == 16)
     }
 
+    @Test("ThumbnailDiskCache evicts the least recently loaded items, not the oldest")
+    func testThumbnailDiskCacheEvictsLeastRecentlyUsed() throws {
+        let tempCacheDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(
+            UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempCacheDir) }
+        let unlimited = ThumbnailDiskCache(customCacheDirectory: tempCacheDir)
+
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        var rawBytes = [UInt8](repeating: 90, count: 16 * 16 * 4)
+        let context = CGContext(
+            data: &rawBytes, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64,
+            space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        let item = ThumbnailItem(time: 1, image: context.makeImage()!, width: 16, height: 16)
+
+        // Four items saved 400, 300, 200 and 100 s ago (the same thumbnails, so the same size each).
+        let keys = try (0..<5).map { index in
+            try #require(unlimited.cacheKey(for: "https://example.com/video\(index).mp4"))
+        }
+        for (index, key) in keys.prefix(4).enumerated() {
+            unlimited.saveThumbnails([item], for: key)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSinceNow: -400 + Double(index) * 100)],
+                ofItemAtPath: tempCacheDir.appendingPathComponent(key).path)
+        }
+        let itemSize = try Self.directorySize(tempCacheDir.appendingPathComponent(keys[0]))
+        #expect(itemSize > 0)
+
+        // The oldest is watched again.
+        #expect(unlimited.loadThumbnails(for: keys[0]) != nil)
+
+        // A fifth item takes five sizes past a limit of 4.5: pruning down to 2.25 removes the three used longest ago.
+        let limited = ThumbnailDiskCache(customCacheDirectory: tempCacheDir, maxSizeBytes: itemSize * 9 / 2)
+        limited.saveThumbnails([item], for: keys[4])
+
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: tempCacheDir.path))
+        #expect(remaining == [keys[0], keys[4]])
+    }
+
+    private static func directorySize(_ url: URL) throws -> Int64 {
+        try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey])
+            .reduce(0) { $0 + Int64(try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+    }
+
     @Test("ThumbnailManager binary search finds closest timestamp")
     @MainActor
     func testThumbnailManagerBinarySearch() async throws {

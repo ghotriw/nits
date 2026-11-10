@@ -9,12 +9,20 @@ import os
 /// Keyed by file path, file size, and modification timestamp to ensure freshness.
 public final class ThumbnailDiskCache: Sendable {
     private static let cacheVersion: UInt32 = 4
-    private static let maxDiskCacheSizeBytes: Int64 = 250 * 1024 * 1024  // 250 MB
+    private static let defaultMaxSizeBytes: Int64 = 250 * 1024 * 1024  // 250 MB
 
     private let cacheDirectory: URL
-    private let lock = OSAllocatedUnfairLock()
+    private let maxSizeBytes: Int64
+    /// One lock for every instance: each engine's `ThumbnailManager` has a cache of its own over the same directory,
+    /// and one's pruning must not remove an item another is reading or writing.
+    private static let lock = OSAllocatedUnfairLock()
 
-    public init(customCacheDirectory: URL? = nil) {
+    public convenience init(customCacheDirectory: URL? = nil) {
+        self.init(customCacheDirectory: customCacheDirectory, maxSizeBytes: Self.defaultMaxSizeBytes)
+    }
+
+    init(customCacheDirectory: URL?, maxSizeBytes: Int64) {
+        self.maxSizeBytes = maxSizeBytes
         let baseCacheURL: URL = {
             if let custom = customCacheDirectory {
                 return custom
@@ -59,8 +67,8 @@ public final class ThumbnailDiskCache: Sendable {
 
     /// Loads all cached thumbnails for a given cache key, if available.
     public func loadThumbnails(for key: String) -> [ThumbnailItem]? {
-        lock.lock()
-        defer { lock.unlock() }
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
 
         let dir = itemDirectory(for: key)
         guard FileManager.default.fileExists(atPath: dir.path) else { return nil }
@@ -84,14 +92,18 @@ public final class ThumbnailDiskCache: Sendable {
             }
             results.append(ThumbnailItem(time: entry.time, image: cgImage, width: entry.width, height: entry.height))
         }
+        guard !results.isEmpty else { return nil }
 
-        return results.isEmpty ? nil : results
+        // Reading files by path leaves the directory's dates alone: mark the hit, so pruning evicts the least
+        // recently used item, not the oldest one.
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: dir.path)
+        return results
     }
 
     /// Saves generated thumbnails to disk asynchronously or synchronously.
     public func saveThumbnails(_ thumbnails: [ThumbnailItem], for key: String) {
-        lock.lock()
-        defer { lock.unlock() }
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
 
         let dir = itemDirectory(for: key)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -127,7 +139,7 @@ public final class ThumbnailDiskCache: Sendable {
             try? indexData.write(to: indexURL, options: .atomic)
         }
 
-        pruneOldCachesIfNeeded()
+        pruneOldCachesIfNeeded(keeping: key)
     }
 
     private struct IndexEntry: Codable {
@@ -137,14 +149,16 @@ public final class ThumbnailDiskCache: Sendable {
         let height: Int
     }
 
-    /// Cleans up older caches if total disk usage exceeds threshold.
-    private func pruneOldCachesIfNeeded() {
+    /// Removes the least recently used items once the cache exceeds its size, down to half of it.
+    ///
+    /// "Used" is the directory's modification date, which a save and a load (`loadThumbnails`) set. Not the access
+    /// date: listing a directory, as measuring its size here does, may move it for every item alike. The item just
+    /// saved (`keeping`) stays even when it alone is over half of the size.
+    private func pruneOldCachesIfNeeded(keeping keptKey: String) {
         guard
             let enumerator = FileManager.default.enumerator(
                 at: cacheDirectory,
-                includingPropertiesForKeys: [
-                    .contentAccessDateKey, .contentModificationDateKey, .fileSizeKey, .isDirectoryKey,
-                ],
+                includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
                 options: [.skipsSubdirectoryDescendants]
             )
         else { return }
@@ -154,24 +168,22 @@ public final class ThumbnailDiskCache: Sendable {
 
         for case let url as URL in enumerator {
             guard
-                let values = try? url.resourceValues(forKeys: [
-                    .isDirectoryKey, .contentAccessDateKey, .contentModificationDateKey,
-                ]),
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
                 values.isDirectory == true
             else { continue }
 
-            let date = values.contentAccessDate ?? values.contentModificationDate ?? Date.distantPast
+            let date = values.contentModificationDate ?? Date.distantPast
             let dirSize = directorySize(url: url)
             totalSize += dirSize
             dirs.append((url: url, date: date, size: dirSize))
         }
 
-        if totalSize > Self.maxDiskCacheSizeBytes {
+        if totalSize > maxSizeBytes {
             dirs.sort { $0.date < $1.date }
-            for item in dirs {
+            for item in dirs where item.url.lastPathComponent != keptKey {
                 try? FileManager.default.removeItem(at: item.url)
                 totalSize -= item.size
-                if totalSize <= Self.maxDiskCacheSizeBytes / 2 {
+                if totalSize <= maxSizeBytes / 2 {
                     break
                 }
             }
