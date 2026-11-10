@@ -48,6 +48,15 @@ public final class PlayerSession {
     let pictureInPicture: PictureInPictureWindowCoordinator
     private var rememberRecentMedia = true
     private let recentMediaStore: RecentMediaStore?
+    /// Saves the position and writes the history when the app quits: the history writes a moment after a change,
+    /// which the process would not live to see. Removed in `deinit`, which may run off the main actor.
+    nonisolated(unsafe) private var terminationObserver: (any NSObjectProtocol)?
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
+    }
     /// Set by `end()`; opens still resolving that follow must not start playing again.
     public private(set) var isEnded = false
 
@@ -152,6 +161,16 @@ public final class PlayerSession {
         uiState.supportsFullscreen = false  // until a presentation says it has one
         uiState.toggleFullscreen = { [weak self] in self?.toggleFullscreen() }
         applySettings(settings)
+
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let engine = self?.engine else { return }
+                engine.saveCurrentPlaybackProgress()
+                engine.historyStore.flush()
+            }
+        }
 
         engine.onMediaLoaded = { [weak self] request, historyKey, title, duration in
             guard let self, self.rememberRecentMedia, let recentMediaStore = self.recentMediaStore else {

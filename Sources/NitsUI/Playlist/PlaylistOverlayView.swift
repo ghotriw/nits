@@ -694,7 +694,7 @@ private struct PlaylistPreview: View {
         defaults.removePersistentDomain(forName: Self.defaultsSuite)
         let engine = PlayerEngine(
             configuration: PlayerConfiguration(), userDefaults: defaults,
-            durationCache: MediaDurationCache(fileURL: nil))
+            historyStore: PlaybackHistoryStore(fileURL: nil), durationCache: MediaDurationCache(fileURL: nil))
         engine.playlist.replaceAll(items: items, startIndex: min(1, max(items.count - 1, 0)))
         engine.playlist.searchQuery = searchQuery
         _engine = State(initialValue: engine)

@@ -250,18 +250,18 @@ struct PlayerEngineTests {
     func testAudioLanguageOnLoad() throws {
         // English 5.1 flagged default, then Ukrainian stereo.
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
-        let defaults = InMemoryUserDefaults()
+        let history = PlaybackHistoryStore(fileURL: nil)
         var ukrainian = PlayerConfiguration()
         ukrainian.trackLanguages.audioLanguages = ["uk"]
 
-        let engine = PlayerEngine.makeForTesting(configuration: ukrainian, userDefaults: defaults)
+        let engine = PlayerEngine.makeForTesting(configuration: ukrainian, historyStore: history)
         engine.load(path: path)
         try #require(engine.isLoaded)
         #expect(engine.audioTracks.first { $0.id == engine.selectedAudioTrackId }?.language == "ukr")
         engine.stop()
 
         // The automatic choice wasn't saved: without the setting the default-flagged track plays.
-        let plain = PlayerEngine.makeForTesting(userDefaults: defaults)
+        let plain = PlayerEngine.makeForTesting(historyStore: history)
         plain.load(path: path)
         try #require(plain.isLoaded)
         #expect(plain.audioTracks.first { $0.id == plain.selectedAudioTrackId }?.language == "eng")
@@ -269,20 +269,20 @@ struct PlayerEngineTests {
         plain.selectAudioTrack(id: ukrainianTrack.id)
         plain.stop()
 
-        let restored = PlayerEngine.makeForTesting(userDefaults: defaults)
+        let restored = PlayerEngine.makeForTesting(historyStore: history)
         restored.load(path: path)
         try #require(restored.isLoaded)
         #expect(restored.selectedAudioTrackId == ukrainianTrack.id)
         restored.stop()
 
         // Choosing the track picked on load keeps it, though nothing switches.
-        let pinnedDefaults = InMemoryUserDefaults()
-        let pinned = PlayerEngine.makeForTesting(configuration: ukrainian, userDefaults: pinnedDefaults)
+        let pinnedHistory = PlaybackHistoryStore(fileURL: nil)
+        let pinned = PlayerEngine.makeForTesting(configuration: ukrainian, historyStore: pinnedHistory)
         pinned.load(path: path)
         try #require(pinned.isLoaded)
         pinned.selectAudioTrack(id: pinned.selectedAudioTrackId)
         pinned.stop()
-        let reopened = PlayerEngine.makeForTesting(userDefaults: pinnedDefaults)
+        let reopened = PlayerEngine.makeForTesting(historyStore: pinnedHistory)
         reopened.load(path: path)
         try #require(reopened.isLoaded)
         #expect(reopened.selectedAudioTrackId == ukrainianTrack.id)

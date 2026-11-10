@@ -48,7 +48,7 @@ extension PlayerEngine {
     ///
     /// Only the renderer is silenced, so the engine's `volume` / `isMuted` stay as configured and tests can assert
     /// on them. The audio device still runs, so the synchronizer clock behaves as in real playback. With the shared
-    /// defaults, a test would resume wherever another test (or an earlier run) left the same synthetic file, and the
+    /// history, a test would resume wherever another test (or an earlier run) left the same synthetic file, and the
     /// shared duration cache is the app's own. A folder playlist would make every load probe the durations of all
     /// synthetic media next to it, and reaching the end would load the next one. Local files load synchronously, so a
     /// test reads the loaded media right after `load`; `synchronousLocalLoads` decides it, over the configuration's.
@@ -56,13 +56,14 @@ extension PlayerEngine {
     public static func makeForTesting(
         configuration: PlayerConfiguration = PlayerConfiguration(),
         userDefaults: UserDefaults = InMemoryUserDefaults(),
+        historyStore: PlaybackHistoryStore = PlaybackHistoryStore(fileURL: nil),
         synchronousLocalLoads: Bool = true
     ) -> PlayerEngine {
         var configuration = configuration
         configuration.autoLoadFolderMedia = false
         configuration.synchronousLocalLoads = synchronousLocalLoads
         let engine = PlayerEngine(
-            configuration: configuration, userDefaults: userDefaults,
+            configuration: configuration, userDefaults: userDefaults, historyStore: historyStore,
             durationCache: MediaDurationCache(fileURL: nil))
         engine.audioRenderer.volume = 0
         return engine

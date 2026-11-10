@@ -246,7 +246,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        playerWindowController?.engine.saveCurrentPlaybackProgress()
+        // Each open session saves its position and writes its history (`PlayerSession`); this writes what was left
+        // to write by sessions already gone (a window closed a moment before quitting) and by Settings (Clear).
+        PlaybackHistoryStore.shared.flush()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

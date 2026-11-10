@@ -301,6 +301,12 @@ engine.onTimeUpdate = { currentTime, duration in
 }
 ```
 
+Positions and per-media preferences go to `PlaybackHistoryStore.shared`, a file in
+`~/Library/Application Support/<bundle id>/` written a moment after each change. `PlayerSession` saves the last
+position and writes the file when the app quits; a host with the engine alone does it itself:
+`engine.saveCurrentPlaybackProgress()`, then `engine.historyStore.flush()`. A host keeps its own history apart with
+`PlayerEngine(configuration:historyStore:)` (`fileURL: nil` keeps it in memory).
+
 ## Command-Line Options
 
 Arguments work with `swift run`, the bundle script, and `open --args`. A flag stands over the saved setting for the

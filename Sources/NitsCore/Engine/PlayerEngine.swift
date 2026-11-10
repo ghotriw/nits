@@ -641,25 +641,23 @@ public final class PlayerEngine: PlayerEngineProtocol {
     }
 
     /// - Parameters:
-    ///   - userDefaults: Where the engine persists playback history and the playlist's repeat / shuffle state.
+    ///   - userDefaults: Where the engine persists the playlist's repeat / shuffle state.
+    ///   - historyStore: Where it persists playback positions and per-media preferences, which takes `configuration`'s
+    ///     exclusion policy; `nil` is the app's (`PlaybackHistoryStore.shared`), whose policy only `applyConfiguration`
+    ///     changes. Not made unless used: it reads the app's history file.
     ///   - durationCache: Where playlist durations are cached (`.shared` persists them under Caches).
     ///
     /// A host embedding the engine, or a test, passes its own stores to keep these out of the app's.
-    /// With `.standard`, `historyStore` is `PlaybackHistoryStore.shared`, whose exclusion policy only
-    /// `applyConfiguration` changes; other `userDefaults` get a store of their own with `configuration`'s
-    /// policy.
     public init(
         configuration: PlayerConfiguration, userDefaults: UserDefaults = .standard,
-        durationCache: MediaDurationCache = .shared
+        historyStore: PlaybackHistoryStore? = nil, durationCache: MediaDurationCache = .shared
     ) {
         self.configuration = configuration
-        if userDefaults === UserDefaults.standard {
-            self.historyStore = .shared
+        if let historyStore {
+            historyStore.exclusionPolicy = configuration.historyExclusionPolicy
+            self.historyStore = historyStore
         } else {
-            self.historyStore = PlaybackHistoryStore(
-                userDefaults: userDefaults,
-                exclusionPolicy: configuration.historyExclusionPolicy
-            )
+            self.historyStore = .shared
         }
         self.renderMode = configuration.defaultRenderMode
         self.isToneMappingPermitted = configuration.enableToneMapping

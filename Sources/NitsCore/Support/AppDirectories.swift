@@ -9,6 +9,11 @@ enum AppDirectories {
         library("Caches")
     }
 
+    /// `~/Library/Application Support/<bundle id>`: what must last (playback history).
+    static var applicationSupport: URL {
+        library("Application Support")
+    }
+
     /// `~/Library/Logs/<bundle id>`, where Console lists the log.
     static var logs: URL {
         library("Logs")

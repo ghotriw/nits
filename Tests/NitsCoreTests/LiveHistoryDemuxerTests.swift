@@ -260,9 +260,9 @@ struct LiveHistoryEngineTests {
 
     /// An engine that loads the window (segments 1 to 3 of the preset, the stream's time 1 to 4) as the stream whose
     /// history is `youtube:live`, told to end at `end` in the stream's time: a window longer than its segments, for a start
-    /// to be told apart from the edge. The history is `defaults`'.
+    /// to be told apart from the edge. The history is `history`.
     private func engine(
-        server: TestHTTPServer, defaults: UserDefaults, end: Double, startThreshold: Double = 0
+        server: TestHTTPServer, history: PlaybackHistoryStore, end: Double, startThreshold: Double = 0
     ) -> PlayerEngine {
         var manifest = SegmentedDASHManifest(
             streams: [
@@ -273,7 +273,7 @@ struct LiveHistoryEngineTests {
         manifest.startTime = 1
         let engine = PlayerEngine.makeForTesting(
             configuration: PlayerConfiguration(resumePlayback: true, resumeStartThreshold: startThreshold),
-            userDefaults: defaults)
+            historyStore: history)
         engine.mediaResolver = Resolver(
             ResolvedMedia(
                 path: MediaURL.inlineDASHManifest(manifest.text()), historyKey: "youtube:live",
@@ -288,8 +288,8 @@ struct LiveHistoryEngineTests {
     func savesInTheStreamsTime() async throws {
         guard let server = try InlineDASHTests.server() else { return }
         defer { server.stop() }
-        let defaults = InMemoryUserDefaults()
-        let engine = engine(server: server, defaults: defaults, end: 4)
+        let history = PlaybackHistoryStore(fileURL: nil)
+        let engine = engine(server: server, history: history, end: 4)
         defer { engine.stop() }
         #expect(engine.playbackProgress == nil)  // nothing loaded
         engine.load(MediaLoadRequest(path: Self.page))
@@ -319,8 +319,8 @@ struct LiveHistoryEngineTests {
     func resumesWhereLeft() async throws {
         guard let server = try InlineDASHTests.server() else { return }
         defer { server.stop() }
-        let defaults = InMemoryUserDefaults()
-        let engine = engine(server: server, defaults: defaults, end: 301)
+        let history = PlaybackHistoryStore(fileURL: nil)
+        let engine = engine(server: server, history: history, end: 301)
         defer { engine.stop() }
         // Left 40 s into a window of 300, in the stream's time: where the window starts, 1, plus 40.
         engine.historyStore.savePosition(
@@ -335,7 +335,7 @@ struct LiveHistoryEngineTests {
     func anExplicitStartKeepsTheEdge() async throws {
         guard let server = try InlineDASHTests.server() else { return }
         defer { server.stop() }
-        let engine = engine(server: server, defaults: InMemoryUserDefaults(), end: 301)
+        let engine = engine(server: server, history: PlaybackHistoryStore(fileURL: nil), end: 301)
         defer { engine.stop() }
         engine.historyStore.savePosition(
             for: Self.identity, position: 41, duration: 301, startThreshold: 0, isLive: true, wasAtLiveEdge: false)
@@ -350,7 +350,7 @@ struct LiveHistoryEngineTests {
         guard let server = try InlineDASHTests.server() else { return }
         defer { server.stop() }
         for (saved, atEdge) in [(299.0, true), (41.0, true), (-30.0, false)] {
-            let engine = engine(server: server, defaults: InMemoryUserDefaults(), end: 301)
+            let engine = engine(server: server, history: PlaybackHistoryStore(fileURL: nil), end: 301)
             defer { engine.stop() }
             engine.historyStore.savePosition(
                 for: Self.identity, position: saved, duration: 301, startThreshold: 0, isLive: true,

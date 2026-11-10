@@ -12,7 +12,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testRecordAndOrder() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore, maxItemsLimit: 5)
 
         let tempDir = FileManager.default.temporaryDirectory
@@ -44,7 +44,7 @@ struct RecentMediaStoreTests {
     func testMaxItemsLimit() {
         let defaults = InMemoryUserDefaults()
         let store = RecentMediaStore(
-            userDefaults: defaults, historyStore: PlaybackHistoryStore(userDefaults: defaults), maxItemsLimit: 3)
+            userDefaults: defaults, historyStore: PlaybackHistoryStore(fileURL: nil), maxItemsLimit: 3)
 
         let tempDir = FileManager.default.temporaryDirectory
         for i in 1...5 {
@@ -63,7 +63,7 @@ struct RecentMediaStoreTests {
         store.maxItemsLimit = 10
         #expect(store.items.count == 2)
         let reloaded = RecentMediaStore(
-            userDefaults: defaults, historyStore: PlaybackHistoryStore(userDefaults: defaults))
+            userDefaults: defaults, historyStore: PlaybackHistoryStore(fileURL: nil))
         #expect(reloaded.items.map(\.title) == ["Video 5", "Video 4"])
     }
 
@@ -71,7 +71,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testRemoveAndClearAll() {
         let defaults = InMemoryUserDefaults()
-        let store = RecentMediaStore(userDefaults: defaults, historyStore: PlaybackHistoryStore(userDefaults: defaults))
+        let store = RecentMediaStore(userDefaults: defaults, historyStore: PlaybackHistoryStore(fileURL: nil))
 
         let tempDir = FileManager.default.temporaryDirectory
         let url1 = tempDir.appendingPathComponent("a.mkv")
@@ -93,7 +93,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testPersistence() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
 
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("persistent.mkv")
         do {
@@ -111,7 +111,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testResumeInfoIntegration() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let streamURL = URL(string: "https://example.com/video.mp4")!
@@ -138,7 +138,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testHeadersAndDurationUpdate() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let streamURL = URL(string: "https://example.com/auth-stream.m3u8")!
@@ -181,7 +181,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testHistoryStoreNotificationUpdatesProgressRevision() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let initialRev = store.progressRevision
@@ -202,7 +202,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testResumeInfoMatchesRawPathAndResolverKey() throws {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         // 1. Local file scenario: simulate player recording raw normalized path
@@ -269,7 +269,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testExclusionPolicy() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let tempDir = FileManager.default.temporaryDirectory
@@ -311,7 +311,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testPurgeExclusions() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let tempDir = FileManager.default.temporaryDirectory
@@ -353,8 +353,7 @@ struct RecentMediaStoreTests {
 
     @Test("Purge cleans up resolver keys not present in Recents using mediaPath")
     func testPurgeResolverKeyWithoutRecents() {
-        let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
 
         let resolverKey = "youtube:testVideo123"
         let webURL = "https://www.youtube.com/watch?v=testVideo123"
@@ -382,7 +381,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testRecordReturnValues() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         let store = RecentMediaStore(userDefaults: defaults, historyStore: historyStore)
 
         let policy = HistoryExclusionPolicy(
@@ -410,7 +409,7 @@ struct RecentMediaStoreTests {
             """.data(using: .utf8)!
         defaults.set(json, forKey: RecentMediaStore.userDefaultsKey)
 
-        let store = RecentMediaStore(userDefaults: defaults, historyStore: PlaybackHistoryStore(userDefaults: defaults))
+        let store = RecentMediaStore(userDefaults: defaults, historyStore: PlaybackHistoryStore(fileURL: nil))
         #expect(store.items.count == 2)
         #expect(store.items[0].title == "Valid 1")
         #expect(store.items[1].title == "Valid 2")
@@ -420,7 +419,7 @@ struct RecentMediaStoreTests {
     @MainActor
     func testRecentDocumentsSyncHandler() {
         let defaults = InMemoryUserDefaults()
-        let historyStore = PlaybackHistoryStore(userDefaults: defaults)
+        let historyStore = PlaybackHistoryStore(fileURL: nil)
         var receivedURLs: [[URL]] = []
 
         let store = RecentMediaStore(

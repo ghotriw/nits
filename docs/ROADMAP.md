@@ -626,7 +626,7 @@ flowchart TD
   - Borderless fullscreen mode with double-click toggles and `F` / `⌃⌘F` shortcuts.
   - Low-level layout-independent ANSI keycode handling in `PlayerWindow`.
 - [x] **5.7. Playback History, Resume & Recent Media:**
-  - Thread-safe storage manager (`PlaybackHistoryStore`) using SHA-256 normalized storage keys.
+  - Thread-safe storage manager (`PlaybackHistoryStore`) using SHA-256 normalized storage keys, kept in one JSON file in Application Support.
   - Automatic recording and restoring of media timestamps, audio track selections, and subtitle preferences.
   - Persistent recent media list (`RecentMediaStore`) tracking explicitly opened local files and network streams.
   - Start screen integration (`WelcomeView`): scrollable recent media list with saved progress/timestamps, progress bars, keyboard navigation, and context menus.
