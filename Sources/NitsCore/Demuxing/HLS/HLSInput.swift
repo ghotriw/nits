@@ -117,8 +117,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     private let transport: HTTPSessionTransport
     private let interrupt: FFmpegInterrupt
     private var lanes: [HLSLane] = []
-    /// The lanes as `read` visits them: the variants' first, so a subtitle rendition's cues find the picture's run open
-    /// (`OffsetSource`) when they are placed.
+    /// The lanes as `read` visits them: the variants' first, so that the picture's run anchors its sequence's timestamps
+    /// (`HLSTimestampAnchors`) after a seek, and the subtitle renditions' last, read only as far as the others are.
     private var readOrder: [HLSLane] = []
     private var infos: [StreamInfo] = []
     /// The variants of a master playlist (none for a media playlist), in the order it lists them.
@@ -290,9 +290,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         isLivePlaylist = isLive
         durationSeconds = isLive ? 0 : reference.end - reference.start
 
-        // What the subtitle renditions' cues are moved by: the picture's timestamps, which a segment's own map places.
-        let offsets = OffsetSource()
-        let shift: () -> Double? = { offsets.offset() }
+        // The offsets of the timestamps, shared by every lane: a sequence's first run anchors it, the others take it.
+        let anchors = HLSTimestampAnchors()
         var built: [HLSLane?] = wanted.indices.map { index in
             guard let playlist = slots[index].value, !playlist.segments.isEmpty else { return nil }
             let timeline: HLSTimeline
@@ -308,8 +307,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             }
             return HLSLane(
                 kind: wanted[index].kind, url: wanted[index].url, timeline: timeline, variables: variables,
-                loader: loader, timelineShift: wanted[index].kind == .subtitle ? shift : nil,
-                shouldAbort: shouldAbort)
+                loader: loader, anchors: anchors, shouldAbort: shouldAbort)
         }
 
         // Each lane opened at the segment that holds the start, side by side, to learn its streams. One playlist alone
@@ -386,8 +384,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             fail("the stream has nothing to play")
             return nil
         }
-        offsets.primaries = lanes.filter { $0.kind == .primary }
-        readOrder = offsets.primaries + lanes.filter { $0.kind != .primary }
+        readOrder = [HLSLane.Kind.primary, .audio, .subtitle].flatMap { kind in lanes.filter { $0.kind == kind } }
 
         // The variants whose playlist opened, with the renditions that did.
         for (position, entry) in plan.enumerated() {
@@ -509,12 +506,24 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     // MARK: Reading
 
+    /// Hands out the packet that decodes first of the lanes'. Each lane read holds its next packet, but a subtitle
+    /// rendition's lane loads no segment that starts after the picture's and sound's next packet
+    /// (`HLSLane.fill(before:picture:)`): a stretch without cues would hold the read until its next cue. A rendition's run
+    /// at a break waits for the picture to anchor it (`HLSLane.waitsForAnchor`): the variants' lanes come first.
     func read(_ pkt: inout AVPacket) -> Int32 {
         var best: HLSLane?
+        /// The decode time of the next packet of a picture or sound, and of a picture.
+        var media: Double?
+        var picture: Double?
         for lane in readOrder where lane.isRead {
             if !lane.hasPending {
-                let code = lane.fill()
-                if code == MediaDemuxer.averrorEOF { continue }
+                let code: Int32
+                switch lane.kind {
+                case .primary: code = lane.fill()
+                case .audio: code = lane.fill(picture: picture)
+                case .subtitle: code = lane.fill(before: media, picture: picture)
+                }
+                if code == MediaDemuxer.averrorEOF || (lane.kind != .primary && code == HLSLane.held) { continue }
                 if code < 0 {
                     guard code != HTTPSessionInput.averrorExit, canDrop(lane) else { return code }
                     AppLog.warning(.demuxer, "HLS: a rendition failed (\(code)) and is left out")
@@ -522,6 +531,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     continue
                 }
             }
+            if lane.kind != .subtitle { media = min(media ?? .infinity, lane.pendingTime) }
+            if lane.kind == .primary { picture = min(picture ?? .infinity, lane.pendingTime) }
             if best.map({ lane.pendingTime < $0.pendingTime }) ?? true { best = lane }
         }
         guard let best else { return MediaDemuxer.averrorEOF }
@@ -623,16 +634,6 @@ private final class Slot<Value: Sendable>: @unchecked Sendable {
     }
 
     var value: Value? { stored.withLock { $0 } }
-}
-
-/// The seconds the picture's timestamps are moved by, which a subtitle rendition's cues are moved by too: its WebVTT
-/// segments carry no timestamps of their own that a run's picture and sound share (`HLSSegmentReader.timelineShift`).
-private final class OffsetSource: @unchecked Sendable {
-    var primaries: [HLSLane] = []
-
-    func offset() -> Double? {
-        primaries.lazy.filter(\.isRead).compactMap(\.timelineOffset).first
-    }
 }
 
 /// What the transport measured, for adaptive bitrate: the transfers of the segments read (`NetworkTransferMeter`), each

@@ -33,9 +33,9 @@ final class HLSLane: @unchecked Sendable {
     private let variables: [String: String]
     private let loader: HLSSegmentLoader
     private let shouldAbort: () -> Bool
-    /// The seconds the media a subtitle rendition goes with is moved by onto the timeline (`HLSSegmentReader`'s
-    /// `timelineShift`); nil for a lane that has timestamps of its own.
-    private let timelineShift: (() -> Double?)?
+    /// The offsets of the stream's timestamps, which its lanes share (`HLSTimestampAnchors`): a run of the lane's takes or
+    /// sets its sequence's, a subtitle rendition's cues are placed by them.
+    private let anchors: HLSTimestampAnchors
     private(set) var timeline: HLSTimeline
     /// The streams the lane hands out, in the order its readers find them (`slotIndex` matches a run's by kind).
     private(set) var streams: [StreamSlot] = []
@@ -99,7 +99,7 @@ final class HLSLane: @unchecked Sendable {
 
     init(
         kind: Kind, url: URL, timeline: HLSTimeline, variables: [String: String], loader: HLSSegmentLoader,
-        timelineShift: (() -> Double?)? = nil, shouldAbort: @escaping () -> Bool
+        anchors: HLSTimestampAnchors, shouldAbort: @escaping () -> Bool
     ) {
         self.kind = kind
         self.url = url
@@ -107,8 +107,23 @@ final class HLSLane: @unchecked Sendable {
         self.variables = variables
         self.loader = loader
         self.shouldAbort = shouldAbort
-        self.timelineShift = timelineShift
+        self.anchors = anchors
         packet = av_packet_alloc()
+    }
+
+    /// How the lane's runs take the shared offsets: cues in a container (IMSC in fMP4, subtitles in MPEG-TS) are sparse,
+    /// the first may be far into its segment, so they never anchor.
+    private var anchorRole: HLSTimestampAnchors.Role {
+        switch kind {
+        case .primary: .picture
+        case .audio: .sound
+        case .subtitle: .cues
+        }
+    }
+
+    /// What a WebVTT run of the lane places its cues by: the offset of each segment's sequence.
+    private var timelineShift: (Int) -> Double? {
+        { [anchors] in anchors.subtitleShift(for: $0) }
     }
 
     deinit {
@@ -127,7 +142,8 @@ final class HLSLane: @unchecked Sendable {
 
     /// Reads the start of the segment that holds `time` as far as FFmpeg's analysis goes, to describe the lane's streams, as
     /// `open(at:)` does with all of it. The run is not read on: `endProbe` drops it, and the lane is started with
-    /// `reposition` or `catchUp`, or left unread.
+    /// `reposition` or `catchUp`, or left unread. A probe anchors nothing (`HLSTimestampAnchors`): the lanes probed side by
+    /// side would race for it, and the run read first anchors its sequence.
     func probe(at time: Double) throws(HLSSegmentReaderError) {
         guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
         reader = try HLSSegmentReader(
@@ -153,10 +169,6 @@ final class HLSLane: @unchecked Sendable {
     var readerStreams: [UnsafeMutablePointer<AVStream>] {
         reader?.streams ?? []
     }
-
-    /// The run being read, on the timeline: seconds its media's timestamps are moved by. Nil without a run, or before it
-    /// knows (`HLSSegmentReader.timelineOffset`).
-    var timelineOffset: Double? { reader?.timelineOffset }
 
     /// Takes the slots of the table's streams, in the order of the streams the reader found that the input keeps
     /// (`HLSInput.keeps`): readers of later runs map by the same order.
@@ -278,12 +290,34 @@ final class HLSLane: @unchecked Sendable {
 
     // MARK: Reading
 
+    /// What `fill(before:picture:)` returns for a lane held back: its next segment starts after the time given, or waits
+    /// for the picture to anchor its sequence. No FFmpeg error (`FFERRTAG`'s form, `'HLSH'`): a reader's own never reads
+    /// as it.
+    static let held: Int32 = -0x4853_4C48
+
+    /// Segments that start after this many seconds are not loaded yet (`fill(before:picture:)`); nil while nothing holds
+    /// the lane back.
+    private var readLimit: Double?
+    /// The decode time of the picture's next packet (`fill(before:picture:)`): how far the picture is, which a rendition
+    /// at a break waits for (`waitsForAnchor`); nil when the picture is read through, or for the picture's own lane.
+    private var pictureTime: Double?
+
     /// Reads the packet that `read` hands out next into the lane: 0, or an FFmpeg error (`AVERROR_EOF` once the
-    /// playlist is read to its end).
-    func fill() -> Int32 {
+    /// playlist is read to its end). With `limit`, no segment that starts after it is loaded: `held` until a later call
+    /// allows it. A subtitle rendition is read so, as far as the picture is: its cues are sparse, and a lane with no
+    /// packet pending holds the whole read (`HLSInput.read`), which would otherwise load every segment of a stretch
+    /// without cues to find the next, and wait at a live edge in a silence while the picture's packets are ready. With
+    /// `picture`, a rendition's run of a sequence the picture has not anchored yet waits for it (`waitsForAnchor`).
+    func fill(before limit: Double? = nil, picture: Double? = nil) -> Int32 {
         guard isRead else { return MediaDemuxer.averrorEOF }
         if hasPending { return 0 }
         if let code = resolveStart() { return code }
+        readLimit = limit
+        pictureTime = picture
+        defer {
+            readLimit = nil
+            pictureTime = nil
+        }
         while true {
             if reader == nil {
                 switch nextRunStart() {
@@ -292,6 +326,8 @@ final class HLSLane: @unchecked Sendable {
                         resume = entry
                         if let stop = recover(from: error.code) { return stop }
                     }
+                case .held:
+                    return Self.held
                 case .ended:
                     isFinished = true
                     return MediaDemuxer.averrorEOF
@@ -451,19 +487,47 @@ final class HLSLane: @unchecked Sendable {
 
     private enum RunStart {
         case start(HLSTimeline.Entry)
+        /// The next segment starts after `readLimit`.
+        case held
         case ended
         case stopped(Int32)
     }
 
+    /// Whether a segment that starts at `time` waits for a later `fill(before:)`.
+    private func isHeld(at time: Double) -> Bool {
+        readLimit.map { time > $0 } ?? false
+    }
+
+    /// Whether a rendition's run at `entry` waits for the picture to anchor its discontinuity sequence
+    /// (`HLSTimestampAnchors`), so that at a break the picture anchors it whichever lane gets there first. A subtitle run
+    /// takes the offset as it finds it, and before the picture anchors would find the one cues fall back on, the
+    /// picture's old run's (which an old run whose timestamps go past the break, durations listed too short, keeps); a
+    /// sound run would anchor it by its own first sample. Waited for until the picture is a target duration past the run's
+    /// start at most: a sequence the picture never anchors (numbers of discontinuities that don't match across the
+    /// playlists) is then anchored by the sound, and cues take the picture's offset.
+    private func waitsForAnchor(_ entry: HLSTimeline.Entry) -> Bool {
+        guard kind != .primary, let picture = pictureTime, !anchors.isAnchored(entry.segment.discontinuitySequence)
+        else { return false }
+        return picture < entry.start + max(timeline.targetDuration, 1)
+    }
+
     private func nextRunStart() -> RunStart {
         if let entry = resume {
+            if isHeld(at: entry.start) || waitsForAnchor(entry) { return .held }
             resume = nil
             return .start(entry)
         }
         if isFinished { return .ended }
         guard let last = current else { return .ended }
+        // Before `following`, which waits at a live edge for the segment.
+        if isHeld(at: last.end) { return .held }
         switch following(last) {
-        case .entry(let entry, _): return .start(entry)
+        case .entry(let entry, _):
+            if waitsForAnchor(entry) {
+                resume = entry
+                return .held
+            }
+            return .start(entry)
         case .ended: return .ended
         case .stopped(let code): return .stopped(code)
         }
@@ -486,7 +550,12 @@ final class HLSLane: @unchecked Sendable {
         runDescription = RunDescription(
             initSection: first.segment.initSection, discontinuity: first.segment.discontinuitySequence)
         let opened = try HLSSegmentReader(
-            loader: loader, first: first.segment, start: first.start, timelineShift: timelineShift, firstBody: replay
+            loader: loader, first: first.segment, start: first.start,
+            timelineShift: kind == .subtitle ? timelineShift : nil,
+            anchoring: .init(
+                anchors: anchors, sequence: first.segment.discontinuitySequence,
+                tolerance: max(timeline.targetDuration, 1), role: anchorRole),
+            firstBody: replay
         ) {
             [weak self] in
             self?.nextSegment()
@@ -510,6 +579,8 @@ final class HLSLane: @unchecked Sendable {
         // The run is past its first segment: it is not replayed any more.
         releaseStart()
         guard let last = current, let run = runDescription else { return nil }
+        // Held back: the run ends here, and the next `fill` that allows it starts another at the next segment.
+        if isHeld(at: last.end) { return nil }
         switch following(last) {
         case .entry(let entry, let breaksRun):
             if breaksRun || entry.segment.initSection != run.initSection
@@ -546,7 +617,11 @@ final class HLSLane: @unchecked Sendable {
             if let code = reloadIfStale(), code == HTTPSessionInput.averrorExit { return .stopped(code) }
             switch timeline.next(after: entry) {
             case .entry(let next):
-                return .entry(next, breaksRun: next.segment.isGap || entry.segment.isGap)
+                // Numbers that don't follow: segments missed (a late reload, `HLSTimeline.startRun`) between bytes that
+                // are not one stream, whatever the discontinuity sequence says.
+                return .entry(
+                    next,
+                    breaksRun: next.segment.isGap || entry.segment.isGap || next.sequence != entry.sequence + 1)
             case .expired(let next):
                 return .entry(next, breaksRun: true)
             case .ended:

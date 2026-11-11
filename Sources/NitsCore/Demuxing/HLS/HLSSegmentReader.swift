@@ -24,11 +24,13 @@ enum HLSSegmentReaderError: Error, Equatable {
 /// ends the run (`next` returns nil) at a discontinuity or a change of init section, and opens another reader there;
 /// a seek is a new reader too: no `av_seek_frame`.
 ///
-/// **Timeline.** `timelineOffset` moves the media's own timestamps onto the playlist's: the run's first segment starts
-/// at `start`, where the first picture's presentation time (else the first stream's) was, so one offset covers the run
-/// and the timestamps drift only as much as the encoder's clock does. It is a rendition's own offset for audio and
-/// video, which a segment's timestamps place; a WebVTT rendition has none of its own, and takes the shift of the media
-/// it goes with (`timelineShift`). Timestamps that wrap (MPEG-TS) are unwrapped.
+/// **Timeline.** `timelineOffset` moves the media's own timestamps onto the playlist's. A reader with `anchoring` takes
+/// the offset its stream's lanes share for the run's discontinuity sequence (`HLSTimestampAnchors`), or anchors it; one
+/// without (a probe, a thumbnail, a test) anchors itself. Anchoring puts the run's first segment at `start`, where the
+/// first picture's presentation time (else the first stream's) was. One offset covers the run, so the timestamps drift
+/// only as much as the encoder's clock does. A WebVTT rendition has no timestamps of its own, and takes the offset of
+/// the media it goes with in the segment's sequence (`timelineShift`). Timestamps that wrap (MPEG-TS) are unwrapped,
+/// nearest where the playlist puts them.
 ///
 /// **WebVTT** segments are files with a header of their own (`X-TIMESTAMP-MAP`): each is opened as a context of its
 /// own, and its cues put on the media's clock by the map, then on the timeline by `timelineShift`. The `streams`
@@ -39,9 +41,26 @@ final class HLSSegmentReader {
     private let loader: HLSSegmentLoader
     private let next: () -> HLSSegment?
     private let start: Double
-    private let timelineShift: (() -> Double?)?
+    private let timelineShift: ((Int) -> Double?)?
+    private let anchoring: Anchoring?
     /// The segments of a WebVTT run are read one context each.
     let isSegmentwise: Bool
+
+    /// The offsets a reader shares with the stream's other runs: `anchors`' for the run's discontinuity `sequence`,
+    /// taken when they put its first packet within `tolerance` seconds of where the playlist does, as the reader's
+    /// `role` may (`HLSTimestampAnchors.Role`).
+    struct Anchoring {
+        let anchors: HLSTimestampAnchors
+        let sequence: Int
+        let tolerance: Double
+        let role: HLSTimestampAnchors.Role
+    }
+
+    /// Container formats of elementary audio (packed audio), whose timestamps are counted from the run's first sample:
+    /// their time is the first segment's ID3 `PRIV` (`packedTimestamp`).
+    private static let packedFormats: Set<String> = ["aac", "ac3", "eac3", "mp3"]
+    /// The `PRIV` timestamp of the run's first segment (90 kHz), when it starts with an ID3 tag that has one.
+    private var packedTimestamp: Int64?
 
     private var context: UnsafeMutablePointer<AVFormatContext>?
     private var io: SegmentIO?
@@ -63,18 +82,22 @@ final class HLSSegmentReader {
     private(set) var failure: HLSSegmentLoadError?
     /// `next` returned nil: it isn't asked again, as it would hand the next run's first segment to this one.
     private var isEnded = false
+    /// The segment being read (`body`) has handed out bytes: a failure of it ends the run inside a packet.
+    private var bodyHasBytes = false
 
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
     /// section): the caller's thread. A probe (`isProbe`) reads `first` only as far as FFmpeg's analysis goes, to
-    /// describe the streams (`HLSLane.probe`): the run is not meant to be read on.
+    /// describe the streams (`HLSLane.probe`): the run is not meant to be read on. `timelineShift` gives a WebVTT
+    /// segment's offset by its discontinuity sequence.
     init(
-        loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: (() -> Double?)? = nil,
-        isProbe: Bool = false, firstBody: HLSSegmentBody? = nil,
+        loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
+        anchoring: Anchoring? = nil, isProbe: Bool = false, firstBody: HLSSegmentBody? = nil,
         next: @escaping () -> HLSSegment?
     ) throws(HLSSegmentReaderError) {
         self.loader = loader
         self.start = start
         self.timelineShift = timelineShift
+        self.anchoring = anchoring
         self.next = next
         var head = Data()
         var data = Data()
@@ -91,6 +114,11 @@ final class HLSSegmentReader {
             opened = body
             retainedFirst = body
             while data.count < 16, let chunk = try body.next() { data.append(chunk) }
+            // Packed audio starts with an ID3 tag that tells its time: read whole (a few dozen bytes; bounded).
+            if let tag = HLSPackedAudioTag.length(data) {
+                while data.count < min(tag, 1 << 20), let chunk = try body.next() { data.append(chunk) }
+                packedTimestamp = HLSPackedAudioTag.transportStreamTimestamp(data)
+            }
         } catch {
             opened?.close()
             throw .load(error)
@@ -106,13 +134,14 @@ final class HLSSegmentReader {
                     throw .load(error)
                 }
             }
-            do { try openSegmentContext(data) } catch {
+            do { try openSegmentContext(data, sequence: first.discontinuitySequence) } catch {
                 close()
                 throw error
             }
         } else {
             head.append(data)
             body = opened
+            bodyHasBytes = !data.isEmpty
             do { try openContinuousContext(head) } catch {
                 close()
                 throw error
@@ -163,7 +192,7 @@ final class HLSSegmentReader {
             return MediaDemuxer.averrorEOF
         }
         do {
-            try openSegmentContext(try loader.segment(segment))
+            try openSegmentContext(try loader.segment(segment), sequence: segment.discontinuitySequence)
             return nil
         } catch let error as HLSSegmentLoadError {
             failure = error
@@ -234,28 +263,39 @@ final class HLSSegmentReader {
         while true {
             if let current = body {
                 do throws(HLSSegmentLoadError) {
-                    if let chunk = try current.next() { return .data(chunk) }
+                    if let chunk = try current.next() {
+                        bodyHasBytes = true
+                        return .data(chunk)
+                    }
                 } catch {
-                    failure = error
                     current.close()
                     body = nil
-                    return .failed(Self.code(for: error))
+                    return fail(error)
                 }
                 body = nil
                 retainedFirst = nil
             }
             guard let segment = next() else { return .end }
+            bodyHasBytes = false
             do throws(HLSSegmentLoadError) {
                 body = try loader.segmentBody(segment)
             } catch {
-                failure = error
-                return .failed(Self.code(for: error))
+                return fail(error)
             }
         }
     }
 
-    /// A context over one WebVTT segment.
-    private func openSegmentContext(_ data: Data) throws(HLSSegmentReaderError) {
+    /// Ends the run's bytes for a segment that failed (`failure`, which `read` returns once the context is read through).
+    /// One that failed before any of its bytes came ends them as the end of the stream does, so the container demuxer
+    /// hands out what it still holds of the segment before (MPEG-TS's last packets, which only an end flushes); one
+    /// that failed inside its bytes, or an abort, with the error (a packet cut short is not passed on).
+    private func fail(_ error: HLSSegmentLoadError) -> SegmentFeed.Chunk {
+        failure = error
+        return bodyHasBytes || error == .interrupted ? .failed(Self.code(for: error)) : .end
+    }
+
+    /// A context over one WebVTT segment, of discontinuity `sequence`.
+    private func openSegmentContext(_ data: Data, sequence: Int) throws(HLSSegmentReaderError) {
         closeContext()
         io?.free()
         io = nil
@@ -263,12 +303,11 @@ final class HLSSegmentReader {
         guard !data.trimmedIsEmpty else { return }
         let map = HLSTimestampMap.parse(webVTT: data) ?? HLSTimestampMap()
         // The map's MPEG-TS time wraps as the media's does: read it as the value nearest where the run is.
-        // Asked at each segment: the picture's run it goes with may not have been open when this one started.
-        let shift = timelineShift?() ?? 0
+        // Asked at each segment: the sequence may not have been anchored when this run started.
+        let shift = timelineShift?(sequence) ?? 0
         let expected = Int64((start - shift) * 90_000)
         let wrap = Int64(1) << 33
-        var mpegts = map.mpegts
-        mpegts += wrap * Int64((Double(expected - mpegts) / Double(wrap)).rounded())
+        let mpegts = map.mpegts + wrap * TimestampUnwrapper.wraps(from: map.mpegts, to: expected, wrap: wrap)
         let mapShift = Double(mpegts) / 90_000 - map.local
         segmentShift = mapShift + shift
         timelineOffset = shift
@@ -319,7 +358,57 @@ final class HLSSegmentReader {
                 && $0.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC == 0
         }
         guard let stream = candidates.first(where: isPicture) ?? candidates.first else { return nil }
-        return start - Self.seconds(stream.pointee.start_time, stream.pointee.time_base)
+        return settleOffset(first: stream.pointee.start_time, of: stream)
+    }
+
+    /// The run's offset, its first timestamp being `ticks` of `stream`: the sequence's shared one (`anchoring`), or its
+    /// own. Starts the unwrapping of every stream where the offset puts the run.
+    ///
+    /// Packed audio counts its timestamps from the run's first sample: the media's clock is the first segment's `PRIV`
+    /// time ahead of them, by which it takes the shared offset (33 bits wrap). Without a `PRIV` nothing tells its time on
+    /// the media's clock: the run is anchored by the playlist alone, and the shared offsets are neither taken nor set.
+    private func settleOffset(first ticks: Int64, of stream: UnsafeMutablePointer<AVStream>) -> Double {
+        let base = stream.pointee.time_base
+        var first = Self.seconds(ticks, base)
+        /// Seconds the media's clock is ahead of the stream's timestamps.
+        var ahead = 0.0
+        var isPacked = false
+        var wrap = TimestampUnwrapper(bits: stream.pointee.pts_wrap_bits).map { Self.seconds($0.wrap, base) }
+        var anchoring = anchoring
+        if let name = context?.pointee.iformat?.pointee.name, Self.packedFormats.contains(String(cString: name)) {
+            if let packedTimestamp {
+                ahead = Double(packedTimestamp) / 90_000
+                isPacked = true
+                first += ahead
+                wrap = Double(Int64(1) << 33) / 90_000
+            } else {
+                anchoring = nil
+            }
+        }
+        var offset = start - first
+        if let anchoring {
+            offset = anchoring.anchors.offset(
+                of: anchoring.sequence, start: start, first: first, tolerance: anchoring.tolerance,
+                role: anchoring.role
+            ) { [first, wrap] media in
+                wrap.map { TimestampUnwrapper.nearest(first, to: media, wrap: $0) } ?? first
+            }
+            // A packed run's PRIV has no unwrapper after it (its stream doesn't wrap): the whole wraps that bring it where
+            // the offset puts the run are taken here (a sequence anchored before the 33-bit wrap, a run read after it).
+            if isPacked, let wrap {
+                ahead += TimestampUnwrapper.nearest(first, to: start - offset, wrap: wrap) - first
+            }
+        }
+        // Where the run starts on the media's clock, for each stream's own wrap.
+        let media = start - offset - ahead
+        for stream in streams {
+            let index = Int(stream.pointee.index)
+            let base = stream.pointee.time_base
+            let ticks = (media * Double(base.den) / Double(base.num)).rounded()
+            guard unwrappers[index] != nil, base.num > 0, ticks.isFinite, abs(ticks) < 1e15 else { continue }
+            unwrappers[index]?.expect(near: Int64(ticks))
+        }
+        return offset + ahead
     }
 
     private static func seconds(_ ticks: Int64, _ base: AVRational) -> Double {
@@ -332,18 +421,18 @@ final class HLSSegmentReader {
             let stream = context.pointee.streams[Int(packet.stream_index)]
         else { return }
         let index = Int(packet.stream_index)
+        if timelineOffset == nil, !isSegmentwise {
+            // Nothing told a start time: the first packet's (before the unwrapping, which the offset starts).
+            if let ticks = packet.pts != Int64.min ? packet.pts : (packet.dts != Int64.min ? packet.dts : nil) {
+                timelineOffset = settleOffset(first: ticks, of: stream)
+            }
+        }
         if var unwrapper = unwrappers[index] {
             let placed = unwrapper.unwrap(
                 pts: packet.pts == Int64.min ? nil : packet.pts, dts: packet.dts == Int64.min ? nil : packet.dts)
             unwrappers[index] = unwrapper
             packet.pts = placed.pts ?? Int64.min
             packet.dts = placed.dts ?? Int64.min
-        }
-        if timelineOffset == nil {
-            // Nothing told a start time: the first packet's.
-            if let ticks = packet.pts != Int64.min ? packet.pts : (packet.dts != Int64.min ? packet.dts : nil) {
-                timelineOffset = start - Self.seconds(ticks, stream.pointee.time_base)
-            }
         }
         let seconds = isSegmentwise ? segmentShift : (timelineOffset ?? 0)
         let shift: Int64

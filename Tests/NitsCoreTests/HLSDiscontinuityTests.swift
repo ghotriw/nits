@@ -381,18 +381,21 @@ struct HLSDiscontinuityFMP4Tests {
         let worstGap = zip(audio, audio.dropFirst()).map { abs($1.start - $0.end) }.max() ?? 0
         #expect(worstGap < 0.1, "A gap or overlap of \(worstGap) s in the audio")
         #expect((audio.last?.end ?? 0) > 7.8, "The audio ends at \(audio.last?.end ?? 0) s of 8")
-        // The first picture of the second stretch is the first of the larger size; its sound is the packet after the
-        // last of the first stretch (the one that reaches 4 s). Both start where the playlists put the break (4 s).
+        // The first picture of the second stretch is the first of the larger size; its sound is the first packet that
+        // does not follow on from the one before (the packets of a stretch are contiguous, the break is not). The
+        // picture starts where the playlists put the break (4 s): the timestamps' offset of each stretch is anchored by
+        // the picture, and the sound takes it (`HLSTimestampAnchors`).
         let firstPicture = try #require(video.filter { $0.width == 640 }.map(\.seconds).min())
-        let lastOfFirst = try #require(audio.firstIndex { $0.end >= 3.99 })
-        #expect(lastOfFirst + 1 < audio.count)
-        let firstAudio = audio[lastOfFirst + 1].start
-        // Each stretch of this synthetic stream starts with the picture a reordering delay (67 ms) after its sound (the
-        // tracks are encoded apart, only the video is shifted). The second must keep the first's lead: that proves the
-        // break keeps the positions to each other, not an absolute sync.
+        let firstOfSecond = try #require(
+            audio.indices.dropFirst().first {
+                audio[$0].start > 3.5 && abs(audio[$0].start - audio[$0 - 1].end) > 0.001
+            })
+        let firstAudio = audio[firstOfSecond].start
+        // Each stretch starts with the sound before the picture by what its timestamps say (the AAC encoder's priming:
+        // 1024 samples, 21 ms). The second must keep the first's lead: the break keeps the positions to each other.
         let lead = try #require(pictures.first) - (audio.first?.start ?? 0)
-        #expect(abs(firstPicture - 4.0 - lead) < 0.03, "The picture of the second stretch starts at \(firstPicture) s")
-        #expect(abs(firstAudio - 4.0) < 0.03, "The sound of the second stretch starts at \(firstAudio) s")
+        #expect(abs(firstPicture - 4.0) < 0.03, "The picture of the second stretch starts at \(firstPicture) s")
+        #expect(abs(firstAudio - (4.0 - lead)) < 0.03, "The sound of the second stretch starts at \(firstAudio) s")
         #expect(abs((firstPicture - firstAudio) - lead) < 0.02, "Lead \(firstPicture - firstAudio) s against \(lead) s")
     }
 

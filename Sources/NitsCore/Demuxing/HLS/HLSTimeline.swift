@@ -178,7 +178,8 @@ struct HLSTimeline: Sendable, Equatable {
     @discardableResult
     mutating func restart(_ playlist: HLSMediaPlaylist) -> ReloadChange {
         guard let last = entries.last else { return reload(playlist) }
-        return startRun(of: playlist, after: last, gap: 0)
+        // A server that restarted numbers from the start again: its numbers no longer say where the stream is.
+        return startRun(of: playlist, after: last, gap: 0, keepsNumbers: false)
     }
 
     /// The most a late reload is taken to have missed, by count or by date: a longer span is a server that renumbered
@@ -269,12 +270,22 @@ struct HLSTimeline: Sendable, Equatable {
 
     /// Places `playlist`'s segments as a run of their own, `gap` after `last`.
     ///
-    /// A new run whatever the server numbers it: missed segments may have held a discontinuity, which a server that
-    /// doesn't keep `EXT-X-DISCONTINUITY-SEQUENCE` wouldn't tell. One too many only has the timestamps re-anchored.
-    private mutating func startRun(of playlist: HLSMediaPlaylist, after last: Entry, gap: Double) -> ReloadChange {
+    /// A new run (a reader reads it apart from what was before). Numbered as the server numbers it when it says its
+    /// discontinuity sequence (`declaresDiscontinuitySequence`, `keepsNumbers`), as the numbers are what the stream's
+    /// playlists share, and the timestamps' offsets with them (`HLSTimestampAnchors`): a lane not read for a while that
+    /// numbered on its own would take another lane's offset at the next real break. Else as a discontinuity after the old
+    /// last: missed segments may have held one, which a server that doesn't keep the tag wouldn't tell (the numbers of
+    /// such a server are the lane's own anyway).
+    private mutating func startRun(
+        of playlist: HLSMediaPlaylist, after last: Entry, gap: Double, keepsNumbers: Bool = true
+    ) -> ReloadChange {
         accept(playlist)
         guard let first = playlist.segments.first else { return .unchanged }
-        discontinuityCorrection = last.segment.discontinuitySequence + 1 - first.discontinuitySequence
+        if !(keepsNumbers && playlist.declaresDiscontinuitySequence
+            && first.discontinuitySequence + discontinuityCorrection >= last.segment.discontinuitySequence)
+        {
+            discontinuityCorrection = last.segment.discontinuitySequence + 1 - first.discontinuitySequence
+        }
         entries = Self.place(corrected(playlist.segments), from: last.end + gap)
         entries[0].segment.isDiscontinuity = true
         hasSlid = true

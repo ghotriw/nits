@@ -112,9 +112,9 @@ struct SyncPatternTests {
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         defer { engine.stop() }
         // Two 6 s stretches, each with its own timestamps from 0, the break at 6 s: the stretches, picture and sound
-        // from playlists of their own, must put flash and click on the seconds of the whole timeline. Each run is placed
-        // by its first picture's presentation time, so the 2 frames the synthetic video lies after the sound by its
-        // reordering (the tracks being encoded apart) do not come back at the break as a shift between picture and sound.
+        // from playlists of their own, must put flash and click on the seconds of the whole timeline. The picture anchors
+        // each stretch's timestamps and the sound takes the same offset (`HLSTimestampAnchors`), so what the timestamps
+        // put together (both moved by the picture's 2 frames of reordering) plays together on both sides of the break.
         engine.load(MediaLoadRequest(path: server.url(url.lastPathComponent), startTime: 4.2))
         #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
         engine.play()

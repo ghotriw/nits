@@ -123,12 +123,27 @@ struct HLSTimelineTests {
         #expect(timeline.entries.map(\.segment.discontinuitySequence) == [2, 2])
     }
 
-    @Test("After segments were missed the new ones start a run of their own, whatever the server numbers them")
+    @Test(
+        "After segments were missed the new ones start a run of their own, numbered as a server that says its sequence numbers them"
+    )
     func lateReloadStartsRun() throws {
-        var timeline = HLSTimeline(try Self.playlist([6, 6], sequence: 10, discontinuitySequence: 2))
-        timeline.reload(try Self.playlist([6, 6], sequence: 20, discontinuitySequence: 2))
-        #expect(timeline.entries.map(\.segment.discontinuitySequence) == [3, 3])
-        #expect(timeline.entries.map(\.segment.isDiscontinuity) == [true, false])
+        // The numbers the server says are the stream's, which the other playlists share: kept.
+        var declared = HLSTimeline(try Self.playlist([6, 6], sequence: 10, discontinuitySequence: 2))
+        declared.reload(try Self.playlist([6, 6], sequence: 20, discontinuitySequence: 3))
+        #expect(declared.entries.map(\.segment.discontinuitySequence) == [3, 3])
+        #expect(declared.entries.map(\.segment.isDiscontinuity) == [true, false])
+        var same = HLSTimeline(try Self.playlist([6, 6], sequence: 10, discontinuitySequence: 2))
+        same.reload(try Self.playlist([6, 6], sequence: 20, discontinuitySequence: 2))
+        #expect(same.entries.map(\.segment.discontinuitySequence) == [2, 2])
+        #expect(same.entries.map(\.segment.isDiscontinuity) == [true, false])
+        // Going back is no number of the stream's: one after the old run.
+        var back = HLSTimeline(try Self.playlist([6, 6], sequence: 10, discontinuitySequence: 2))
+        back.reload(try Self.playlist([6, 6], sequence: 20, discontinuitySequence: 1))
+        #expect(back.entries.map(\.segment.discontinuitySequence) == [3, 3])
+        // A server that doesn't say it: a discontinuity after the old run, as missed segments may have held one.
+        var counted = HLSTimeline(try Self.playlist([6, 6], sequence: 10, discontinuities: [1]))
+        counted.reload(try Self.playlist([6, 6], sequence: 20))
+        #expect(counted.entries.map(\.segment.discontinuitySequence) == [2, 2])
     }
 
     @Test("Missed segments are counted at the target they were served under, and not past an hour (a renumbering)")

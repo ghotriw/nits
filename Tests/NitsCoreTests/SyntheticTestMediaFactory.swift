@@ -156,6 +156,10 @@ public enum SyntheticTestMediaFactory {
         /// (H.264, 160x90, 10 fps, a keyframe each): too short for a demuxer to settle its stream parameters in one.
         /// Made as a directory; `filename` is the playlist
         case hlsShortFragments
+        /// Packed audio (RFC 8216 3.4): `p.m3u8` lists three 2 s segments of raw ADTS AAC, `p_0.aac`…, each with
+        /// timestamps from zero and no ID3 tag (a test puts the tag with its `PRIV` time in front, as it serves them);
+        /// `v.m3u8` (the `filename`) 6 s of H.264 in MPEG-TS, the picture alone, to play them with
+        case hlsPackedAudio
         /// Two 4 s fragmented-MP4 segments (320x180, then 640x360) with an init section each: `EXT-X-MAP` renewed after the
         /// `EXT-X-DISCONTINUITY`, the timestamps of each starting again, picture and sound muxed. `filename` is the playlist
         case hlsDiscontinuityFMP4
@@ -165,7 +169,8 @@ public enum SyntheticTestMediaFactory {
         /// `hlsDiscontinuityFMP4AudioRendition` with the `flashClick` pattern: two 6 s stretches (320x180, then 640x360) of a
         /// white frame and a click at every whole second of the stretch, so on the playlist's timeline too if the break keeps
         /// the picture and the sound together. The sound is FLAC (no encoder delay) and starts at 0; the picture, reordered by
-        /// the encoder, at 2 frames (67 ms): a property of this stream (tracks encoded apart, only the video shifted). `filename` is the master playlist
+        /// the encoder, at 2 frames (67 ms), and the sound, encoded apart, is moved as far: the timestamps of both say what
+        /// plays together. `filename` is the master playlist
         case hlsDiscontinuityFlashClick
         /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
         case hlsVariantsFMP4
@@ -200,7 +205,7 @@ public enum SyntheticTestMediaFactory {
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-                .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments,
+                .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
             ]
             .contains(self)
         }
@@ -333,6 +338,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_discontinuity_timing/media.m3u8"
             case .hlsShortFragments:
                 return "synth_hls_short_fragments/media.m3u8"
+            case .hlsPackedAudio:
+                return "synth_hls_packed_audio/v.m3u8"
             case .hlsLiveAds:
                 return "synth_hls_live_ads/media.m3u8"
             case .hlsDiscontinuityFMP4:
@@ -525,6 +532,24 @@ public enum SyntheticTestMediaFactory {
                     directory.appendingPathComponent("media.m3u8").path,
                 ]
                 guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return nil }
+            } else if preset == .hlsPackedAudio {
+                let picture = [
+                    "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=6", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0", "-f", "hls", "-hls_time", "2",
+                    "-hls_playlist_type", "vod",
+                    "-hls_segment_filename", directory.appendingPathComponent("v_%d.ts").path,
+                    directory.appendingPathComponent("v.m3u8").path,
+                ]
+                // FFmpeg's HLS muxer writes MPEG-TS whatever the segments' names: the segment muxer writes raw ADTS.
+                let sound = [
+                    "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=6", "-c:a", "aac",
+                    "-b:a", "64k", "-f", "segment", "-segment_time", "2", "-segment_format", "adts",
+                    "-segment_list", directory.appendingPathComponent("p.m3u8").path, "-segment_list_type", "m3u8",
+                    directory.appendingPathComponent("p_%d.aac").path,
+                ]
+                guard runFFmpeg(ffmpeg, arguments: picture, preset: preset),
+                    runFFmpeg(ffmpeg, arguments: sound, preset: preset)
+                else { return nil }
             } else if preset == .hlsLiveAds {
                 guard makeHLSLiveAds(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityLadder {
@@ -690,9 +715,17 @@ public enum SyntheticTestMediaFactory {
                 ? ["-af", "aformat=channel_layouts=stereo", "-c:a", "flac", "-frame_size", "4800"]
                 : ["-c:a", "aac", "-b:a", "64k"]
             // (kind, mapped streams, codec arguments)
+            // The encoder's reordering starts the picture at 2 frames (no edit list in these segments): the sound, encoded
+            // apart, is moved as far, so that the timestamps of both say what plays together, as a packager's do (muxed,
+            // the picture alone is moved, and its first picture plays 66 ms after the first sound). As far is 1014/15360 s
+            // (0.066015625), not 2/30: the mp4 muxer leaves the first DTS 10 ticks below zero (-10, the first PTS 1014 at
+            // 1/15360, by ffprobe), so it moves the picture by 1024 - 10 ticks; 2/30 put the clicks 0.65 ms off.
             let parts: [(String, [String], [String])] =
                 separate
-                ? [("v", ["-map", "0:v"], x264), ("a", ["-map", "1:a"], audioCodec)]
+                ? [
+                    ("v", ["-map", "0:v"], x264),
+                    ("a", ["-map", "1:a"], audioCodec + ["-output_ts_offset", "0.066015625"]),
+                ]
                 : [("m", ["-map", "0:v", "-map", "1:a"], x264 + ["-c:a", "aac", "-b:a", "64k"])]
             for (kind, maps, codecs) in parts {
                 let arguments =
@@ -1097,7 +1130,7 @@ public enum SyntheticTestMediaFactory {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
-            .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments,
+            .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
             .dashSegments, .dashLadder,
             .dashLadderCaptions:
             return []  // Made by `generateMedia`.

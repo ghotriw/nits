@@ -139,9 +139,15 @@ struct HLSOverHTTPTests {
         #expect(pictures == 180)
         #expect(Set(Self.segments(of: 1, in: server.requests)) == ["v1_000.ts", "v1_001.ts", "v1_002.ts"])
 
-        // Subtitle windows and the index are read by a demuxer of their own, opened the same way.
+        // Subtitle windows and the index are read by a demuxer of their own, opened the same way. It opens FFmpeg on the
+        // address, which has no HLS demuxer since deps 1.7.0 (Homebrew's has one): until it reads HLS through the client
+        // (phase 7, "Not done" in `.agents/hls-client/PLAN.md`) this fails there, and reports when it no longer does.
         var window = EmbeddedSubtitleReader.openInput(url: path, headers: [:], interrupt: nil)
-        #expect(window != nil, "The subtitle reader couldn't open the saved playlist")
+        withKnownIssue("EmbeddedSubtitleReader opens HLS through FFmpeg, which no longer reads it") {
+            #expect(window != nil, "The subtitle reader couldn't open the saved playlist")
+        } when: {
+            av_find_input_format("hls") == nil
+        }
         avformat_close_input(&window)
     }
 }

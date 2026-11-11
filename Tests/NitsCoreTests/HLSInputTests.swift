@@ -303,6 +303,223 @@ struct HLSInputTests {
         #expect(cues.contains { abs($0.pts - 3.0) < 0.15 }, "\(cues.map(\.pts))")
     }
 
+    @Test("A subtitle rendition without cues for a stretch is read no further ahead than the picture")
+    func sparseSubtitlesDoNotHoldTheRead() throws {
+        guard let stand = try Self.stand(.hlsRenditions) else { return }
+        defer { stand.server.stop() }
+        // No cues in the first two segments (0…4 s), one in the last.
+        for name in ["v00", "v01", "v10", "v11"] {
+            stand.server.setResponder(forPath: "\(name).vtt") { Data("WEBVTT\n".utf8) }
+        }
+        for name in ["v02", "v12"] {
+            stand.server.setResponder(forPath: "\(name).vtt") {
+                Data("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:132000,LOCAL:00:00.000\n\n00:04.500 --> 00:05.000\nlate\n".utf8)
+            }
+        }
+        let input = try #require(
+            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+        let top = try #require(input.variantCandidates()?.max { $0.bandwidth < $1.bandwidth })
+        let subtitle = try #require(top.streams.subtitles.first)
+        let kept = Set(top.streams.all).subtracting(top.streams.subtitles).union([subtitle])
+        for index in 0..<input.streamCount where !kept.contains(index) { input.setReading(false, stream: index) }
+        let cueFiles = { stand.server.requests.map(\.path).filter { $0.hasSuffix(".vtt") } }
+
+        // The first packet comes with the first cue file at most, not the ones that the picture has not reached.
+        let (first, _) = Self.drain(input, limit: 1)
+        #expect(first.count == 1)
+        #expect(cueFiles().allSatisfy { $0.hasSuffix("0.vtt") }, "\(cueFiles())")
+        // Read on to 3 s of the picture: the last segment (4…6 s) is not asked for yet.
+        while let packet = Self.drain(input, limit: 1).packets.first, !(packet.isVideo && packet.dts > 3) {}
+        #expect(!cueFiles().contains { $0.hasSuffix("2.vtt") }, "\(cueFiles())")
+
+        let (packets, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        let cues = packets.filter { $0.stream == subtitle }
+        #expect(cues.count == 1 && abs((cues.first?.pts ?? 0) - 4.5) < 0.15, "\(cues.map(\.pts))")
+    }
+
+    @Test("Cues after a break wait for the picture to anchor it, even when its old run goes past the break")
+    func cuesAfterABreakWaitForTheAnchor() throws {
+        guard let stand = try Self.stand(.hlsDiscontinuityFMP4AudioRendition) else { return }
+        defer { stand.server.stop() }
+        // The picture alone, with a subtitle rendition; its first stretch (4 s) listed as 3 s: the break is at 3 s on the
+        // timeline, and the old run's packets go on to 4 s past it.
+        stand.server.setResponder(forPath: "master.m3u8") {
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-VERSION:7
+                #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Text",LANGUAGE="uk",URI="s.m3u8"
+                #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=320x180,CODECS="avc1.640015",SUBTITLES="subs"
+                short.m3u8
+
+                """.utf8)
+        }
+        let listed = try String(contentsOf: stand.directory.appendingPathComponent("v.m3u8"), encoding: .utf8)
+        let short = listed.replacingOccurrences(of: "#EXTINF:4.0,\nvseg0_0", with: "#EXTINF:3.0,\nvseg0_0")
+        #expect(short != listed)
+        stand.server.setResponder(forPath: "short.m3u8") { Data(short.utf8) }
+        stand.server.setResponder(forPath: "s.m3u8") {
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:4
+                #EXT-X-PLAYLIST-TYPE:VOD
+                #EXTINF:3.0,
+                s0.vtt
+                #EXT-X-DISCONTINUITY
+                #EXTINF:4.0,
+                s1.vtt
+                #EXT-X-ENDLIST
+
+                """.utf8)
+        }
+        stand.server.setResponder(forPath: "s0.vtt") { Data("WEBVTT\n".utf8) }
+        // Half a second into the second stretch's media.
+        stand.server.setResponder(forPath: "s1.vtt") {
+            Data("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00.000\n\n00:00.500 --> 00:01.000\nafter\n".utf8)
+        }
+        let input = try #require(
+            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+        let subtitle = try #require(
+            (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_SUBTITLE })
+        let (packets, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        // The second stretch's first picture (at 0.066 s of its media) anchors it at the break, 3 s: the cue, at 0.5 s of
+        // that media, is at 3.434 s. Placed by the first stretch's offset it would be at 0.434 s.
+        let cues = packets.filter { $0.stream == subtitle }.map(\.pts)
+        #expect(cues.count == 1)
+        #expect(abs((cues.first ?? 0) - 3.434) < 0.01, "cue at \(cues)")
+    }
+
+    /// An ID3v2.4 tag with Apple's `PRIV` transport stream timestamp (`ticks` at 90 kHz), as packed audio starts with.
+    private static func id3(transportStreamTimestamp ticks: Int64) -> Data {
+        func syncsafe(_ value: Int) -> [UInt8] { (0..<4).reversed().map { UInt8((value >> (7 * $0)) & 0x7F) } }
+        let owner = Array("com.apple.streaming.transportStreamTimestamp".utf8) + [0]
+        let body = owner + (0..<8).reversed().map { UInt8((UInt64(ticks) >> (8 * UInt64($0))) & 0xFF) }
+        let frame = Array("PRIV".utf8) + syncsafe(body.count) + [0, 0] + body
+        return Data(Array("ID3".utf8) + [4, 0, 0] + syncsafe(frame.count) + frame)
+    }
+
+    /// `hlsPackedAudio`'s picture with its packed sound as an audio rendition (`alone`: the sound as the only variant),
+    /// each segment served with an ID3 tag whose `PRIV` time is `firstTicks` and on by the playlist's durations, wrapping
+    /// at 33 bits as MPEG-TS time does (nil: no tag).
+    private static func packedAudioInput(_ stand: Stand, firstTicks: Int64?, alone: Bool = false) throws -> HLSInput {
+        let master =
+            alone
+            ? "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"\np.m3u8\n"
+            : """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Sound",DEFAULT=YES,URI="p.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=320x180,CODECS="avc1.640015,mp4a.40.2",AUDIO="aud"
+            v.m3u8
+
+            """
+        stand.server.setResponder(forPath: "master.m3u8") { Data(master.utf8) }
+        let listed = try String(contentsOf: stand.directory.appendingPathComponent("p.m3u8"), encoding: .utf8)
+        let durations = listed.split(separator: "\n").filter { $0.hasPrefix("#EXTINF:") }.compactMap {
+            Double($0.dropFirst("#EXTINF:".count).prefix { $0 != "," })
+        }
+        var start = 0.0
+        for (index, duration) in durations.enumerated() {
+            let bytes = try Data(contentsOf: stand.directory.appendingPathComponent("p_\(index).aac"))
+            let tag = firstTicks.map {
+                Self.id3(transportStreamTimestamp: ($0 + Int64((start * 90_000).rounded())) & (Int64(1) << 33 - 1))
+            }
+            stand.server.setResponder(forPath: "p_\(index).aac") { (tag ?? Data()) + bytes }
+            start += duration
+        }
+        return try #require(
+            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+    }
+
+    @Test("Packed audio is placed by its ID3 PRIV time against the picture, after a seek too")
+    func packedAudioTakesItsPRIVTime() throws {
+        guard let stand = try Self.stand(.hlsPackedAudio) else { return }
+        defer { stand.server.stop() }
+        // The picture's first presentation time in its MPEG-TS is 1.4667 s (132000 ticks): the sound 0.5 s after it.
+        let input = try Self.packedAudioInput(stand, firstTicks: 132_000 + 45_000)
+        let firstAudio = { (packets: [Packet]) in packets.first { !$0.isVideo }?.pts }
+        let (start, _) = Self.drain(input, limit: 80)
+        #expect(start.first { $0.isVideo }.map { abs($0.pts) < 0.01 } == true)
+        let audio = try #require(firstAudio(start))
+        #expect(abs(audio - 0.5) < 0.01, "the sound starts at \(audio) s")
+
+        // Its second segment, 2.0053 s later by the PRIV of its own run.
+        let videoIndex = try #require(
+            (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_VIDEO })
+        let base = input.stream(videoIndex)!.pointee.time_base
+        #expect(
+            input.seek(
+                stream: videoIndex, to: Int64(3.0 * Double(base.den) / Double(base.num)), flags: AVSEEK_FLAG_BACKWARD)
+                >= 0)
+        let (after, _) = Self.drain(input, limit: 80)
+        let seeked = try #require(firstAudio(after))
+        #expect(abs(seeked - 2.5053) < 0.01, "after the seek the sound starts at \(seeked) s")
+    }
+
+    @Test("A packed run whose PRIV wrapped after its sequence was anchored is placed where the playlist puts it")
+    func packedAudioAcrossTheWrap() throws {
+        guard let stand = try Self.stand(.hlsPackedAudio) else { return }
+        defer { stand.server.stop() }
+        // The sound alone anchors its sequence a second before MPEG-TS time wraps; its second segment is past the wrap.
+        let input = try Self.packedAudioInput(stand, firstTicks: (Int64(1) << 33) - 90_000, alone: true)
+        let (start, _) = Self.drain(input, limit: 5)
+        #expect(abs((start.first?.pts ?? 99) - 0) < 0.01)
+        let audioIndex = try #require(
+            (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_AUDIO })
+        let base = input.stream(audioIndex)!.pointee.time_base
+        #expect(
+            input.seek(
+                stream: audioIndex, to: Int64(3.0 * Double(base.den) / Double(base.num)), flags: AVSEEK_FLAG_BACKWARD)
+                >= 0)
+        let (after, _) = Self.drain(input, limit: 5)
+        let seeked = try #require(after.first?.pts)
+        #expect(abs(seeked - 2.0053) < 0.01, "after the seek the sound starts at \(seeked) s")
+    }
+
+    @Test("Packed audio without a PRIV time is placed by its playlist and leaves the shared offsets alone")
+    func packedAudioWithoutPRIV() throws {
+        guard let stand = try Self.stand(.hlsPackedAudio) else { return }
+        defer { stand.server.stop() }
+        let input = try Self.packedAudioInput(stand, firstTicks: nil)
+        let (packets, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        let audio = packets.filter { !$0.isVideo }
+        let video = packets.filter(\.isVideo)
+        #expect(abs((audio.first?.pts ?? 99) - 0) < 0.01, "the sound starts at \(audio.first?.pts ?? 99) s")
+        // The picture keeps its own anchor: from 0, to its end at 6 s.
+        #expect(abs((video.first?.pts ?? 99) - 0) < 0.01)
+        #expect(abs((video.map(\.pts).max() ?? 0) - 6) < 0.1)
+    }
+
+    @Test("An audio rendition whose durations disagree with its media keeps its place against the picture after a seek")
+    func audioRenditionSharesThePicturesOffset() throws {
+        guard let stand = try Self.stand(.hlsRenditions) else { return }
+        defer { stand.server.stop() }
+        // Each segment listed 0.31 s longer than it is (half an AAC frame off its grid): the third starts 0.62 s late.
+        let listed = try String(contentsOf: stand.directory.appendingPathComponent("vEnglish.m3u8"), encoding: .utf8)
+        stand.server.setResponder(forPath: "vEnglish.m3u8") {
+            Data(listed.replacingOccurrences(of: "#EXTINF:2.005333,", with: "#EXTINF:2.315333,").utf8)
+        }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let audioTimes = { (packets: [Packet]) in packets.filter { !$0.isVideo }.map(\.dts) }
+        let (whole, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        let read = audioTimes(whole)
+        #expect(!read.isEmpty)
+
+        let videoIndex = try #require(
+            (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_VIDEO })
+        let base = input.stream(videoIndex)!.pointee.time_base
+        let target = Int64(4.5 * Double(base.den) / Double(base.num))
+        #expect(input.seek(stream: videoIndex, to: target, flags: AVSEEK_FLAG_BACKWARD) >= 0)
+        let (packets, _) = Self.drain(input, limit: 60)
+        // Where the sound was when read from the start, not where its playlist puts its segment.
+        let audio = try #require(audioTimes(packets).first)
+        #expect(read.contains { abs($0 - audio) < 0.002 }, "audio after the seek at \(audio) s")
+    }
+
     // MARK: Where the playlist is
 
     @Test("A saved playlist is read from its directory: the file is the master, its segments files")

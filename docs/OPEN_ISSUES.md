@@ -217,8 +217,36 @@ Accepted for now, noted for later.
   - A separate audio rendition with its own playlist and breaks (2026-11-06, synthetic: video-only variant plus an
     `EXT-X-MEDIA` playlist, fMP4, init sections renewed in both): the first packets of the second stretch, sound and
     picture, keep the lead the first stretch has (the picture 67 ms after its sound) within 20 ms, and the sound starts at the 4 s the playlists put it at (30 ms), and the sound has no gap over
-    100 ms (`audioRenditionMeetsThePicture`). The offsets are per playlist, so they meet because the `EXTINF`s of
-    both playlists agree; a rendition whose durations differ from the picture's would drift by the difference.
+    100 ms (`audioRenditionMeetsThePicture`). The offsets were per playlist then, so they met because the `EXTINF`s of
+    both playlists agreed. Since 2026-11-11 the client shares one offset per discontinuity sequence across its lanes
+    (`HLSTimestampAnchors`): the picture is at the 4 s of the break and the sound keeps the lead its timestamps give it
+    (the AAC priming, 21 ms; the preset's sound is now moved by the picture's reordering, as a packager's would be), and a
+    rendition whose durations differ from the picture's keeps its place (`audioRenditionSharesThePicturesOffset`).
+  - Limits of the shared offset (read from the code, 2026-11-11, not seen on a stream):
+    - A run anchored anew (its first packet further than a target duration from where the offset puts it: a variant
+      with timestamps of another base) changes the offset for the runs after it only. A variant switched to that is
+      anchored anew plays against an audio rendition still on the old offset, apart by the difference, until the next
+      seek opens both again; the log says "anchored anew". hls.c and the client before kept an offset per playlist,
+      with the same effect whenever the playlists' durations disagreed.
+    - A seek chooses the segment by the playlist's durations and lands by the timestamps. Where the `EXTINF`s summed
+      more than the media (durations listed too long), the segment chosen may start, by its timestamps, after the target:
+      picture or sound then start up to that error late (a backward seek finds no keyframe before the target). Bounded
+      by a target duration (past it the run is anchored anew). hls.js corrects a segment's start from the timestamps it
+      read (`updateFragPTSDTS`); the client could move its timeline's entries the same way.
+    - The same error makes the timeline's zero depend on where a sequence was first anchored. A stream whose `EXTINF`s
+      say 6 for segments of 6.006 s, opened (or resumed) at 50 minutes, anchors there; a seek to the start then hands out
+      packets at about -3 s, and past a target duration of error (100 minutes here) runs are anchored anew one after
+      another, each against the last. The correction above would settle this too; until then integer durations on long
+      streams are the case to watch.
+    - A subtitle playlist that lacks the picture's breaks (all its segments in sequence 0 while the picture has an
+      advertisement) places the cues after the break by sequence 0's offset, which the picture's first stretch anchored:
+      off by the break's change of timestamps. The picture's offset is the fallback only for a sequence nobody anchored.
+      Placing cues by the sequence the picture's timeline has at the cue segment's start, not by the subtitle
+      playlist's own number, would cover it (RFC 8216 wants the numbers to match, so only broken playlists need it).
+    - Packed audio is placed by the `PRIV` of its run's first segment and then by its own sample count: the `PRIV`s of
+      the segments after it in the same run are not read (a run drifts only as much as its samples do).
+    - A subtitle run in a container (IMSC, MPEG-TS) is now cut at each segment by `fill(before:)`, and each opens
+      FFmpeg's analysis anew (`avformat_find_stream_info`): small segments, but one context each.
   - Audio and frame rate across a break (2026-11-06): Google's `ima-vod-skippable-test` has no audio and 25 fps in the
     content and the advertisement, so it says nothing of either. On the 16 + 6 + 4 s synthetic (three timestamp
     domains, packets read with the patched `ffprobe`) the audio has no gap or overlap over 100 ms through both breaks and

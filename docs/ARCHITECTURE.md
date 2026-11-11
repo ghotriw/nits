@@ -554,6 +554,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded and probed at all. A media playlist given
   alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`HLSLane.startBody`), so the
   demuxer's rewind to the start after its opening scan replays what was read and goes on with the same download.
+  `HLSInput.read` hands out the packet of the lane read that decodes first, so every lane holds its next packet; a
+  subtitle rendition's lane loads no segment that starts after the picture's and sound's next packet
+  (`HLSLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
+  another to find the next cue before any packet came out, or wait at a live edge while the picture's packets were ready.
   A playlist URL (`.m3u8`, `.m3u`) opens this way, over HTTP(S) or as a saved manifest (a file whose text is an HLS
   manifest); an address with no extension is asked for its first bytes (`HLSInput.sniffsAsPlaylist`, one small range
   request) and opens this way when they say `#EXTM3U`. A playlist served over HTTP(S) never reads a local file, whatever
@@ -687,11 +691,29 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
 A stream with ad insertions or splices may restart its timestamps (from zero, or another base) or jump at a
 discontinuity. The client reads the tag: a **run** of segments (`HLSSegmentReader`) is one byte stream into one
 FFmpeg container demuxer (`mpegts`, `mov`, …), and a run ends at a discontinuity, an init-section change or a gap, where
-the lane starts the next with a demuxer of its own. Each run's packets are moved onto the playlist's timeline by one
-offset per rendition per run: where the playlist's durations put the run's first segment, minus the timestamp of its
-first picture (else its first stream's, else its first packet), so audio and video of a run stay together; MPEG-TS's
-33-bit timestamps are unwrapped (`TimestampUnwrapper`). A seek opens the run at the segment that holds the target, so
-the offset is taken afresh. The demuxer's timeline is therefore the playlist's: the engine, the read-ahead's measure
+the lane starts the next with a demuxer of its own. The packets are moved onto the playlist's timeline by one offset
+per discontinuity sequence, which all the lanes share (`HLSTimestampAnchors`, as hls.js's `initPTS[cc]` and ExoPlayer's
+`TimestampAdjusterProvider`): the picture's first run in a sequence anchors it, where the playlist's durations put its
+first segment minus the timestamp of its first picture (else its first stream's, else its first packet); every later
+run of that sequence, of any lane and from any segment (a seek, a variant switched to, an audio rendition), takes it.
+The variants' lanes are read first, and a rendition's run of a sequence not anchored yet waits until the picture is a
+target duration past its start (`HLSLane.waitsForAnchor`), so the picture anchors whichever lane reaches a break first;
+past the wait (numbers that don't match across playlists) a sound run anchors it. The sequence numbers are the server's
+when it says them (`EXT-X-DISCONTINUITY-SEQUENCE`, which RFC 8216 makes the same across a stream's playlists), also
+after a late reload that missed segments (`HLSTimeline.startRun`), so every lane keys the same sequence alike.
+Packed audio (raw AAC, AC-3, MP3 segments) has timestamps from the run's first sample: its time on the media's clock is
+the first segment's ID3 `PRIV` timestamp (`HLSPackedAudioTag`); without one it is placed by its playlist alone and
+neither takes nor sets the shared offsets. The media's timestamps then place every run against the
+others, whatever the `EXTINF`s summed to on the way (integer durations drift by a third of a second in five minutes),
+and the playlist only says which segment to load: an audio rendition keeps its place against the picture, a variant
+joins the old one where their timestamps meet, and a start where the sound leads the picture (an encoder's priming)
+keeps the lead. A run that the offset puts more than a target duration from where the playlist does (variants with
+timestamps of other bases, sequence numbers that don't match across playlists) is anchored anew and anchors the sequence
+from then on. MPEG-TS's 33-bit timestamps are unwrapped (`TimestampUnwrapper`), from where the playlist puts the run,
+so a run after the wrap takes an offset anchored before it. A WebVTT rendition has no timestamps of its own: its cues
+are placed by `X-TIMESTAMP-MAP` and the offset of their segment's sequence, else the one the picture is read with (a
+subtitle playlist without the picture's breaks). A subtitle run never anchors (cues are sparse: the first may be far into
+its segment). The demuxer's timeline is therefore the playlist's: the engine, the read-ahead's measure
 (`readAheadState` against `consumedSeconds`) and the packet cache see one, and the cache's `searchFloor` (a timestamp
 going back) is a safety for what the client does not cover (a file of segments cut and joined, an MPEG-TS with a
 reset). Segments of a live playlist that expired while the read was behind are skipped by the model
@@ -710,10 +732,11 @@ reading, ahead, has left.
 In fragmented MP4 the parameter sets are not in band but in the init section, and a playlist may renew `EXT-X-MAP` at the
 break. A run has its own demuxer, so it reads its own init section: a later run with other extradata hands the first
 keyframe of its video `AV_PKT_DATA_NEW_EXTRADATA`, which `refreshVideoFormat` takes like it takes in-band sets, and
-everything after is the same path. An audio rendition with a playlist of its own has its breaks and its offset of its
-own; picture and sound meet because the `EXTINF`s of both playlists put the segments at the same places
-(`HLSDiscontinuityFMP4Tests` checks the first packets of the second stretch to keep the first's lead of picture over
-sound within 20 ms on the synthetic stream, and no gap in either).
+everything after is the same path. An audio rendition with a playlist of its own has its breaks, and takes the offset
+of each stretch that the picture anchored, so picture and sound meet where their timestamps put them, whatever the
+`EXTINF`s of either playlist (`HLSDiscontinuityFMP4Tests` checks the first packets of the second stretch to keep the
+first's lead of sound over picture within 20 ms on the synthetic stream, and no gap in either;
+`audioRenditionSharesThePicturesOffset`, a rendition whose durations are listed 0.31 s too long).
 Not covered: the advertisement of some streams (Mux's Deltatre DAI) is MPEG-TS with a PMT of its own, whose packets
 FFmpeg's HLS demuxer drops as corrupt; subtitles, whose playlists are not moved. See `docs/OPEN_ISSUES.md`.
 

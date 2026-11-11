@@ -150,6 +150,9 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     var mediaSequence = 0
     /// The discontinuity sequence number of the first segment listed.
     var discontinuitySequence = 0
+    /// The playlist says its discontinuity sequence (`EXT-X-DISCONTINUITY-SEQUENCE`): its numbers are the stream's, which
+    /// every playlist of it shares (RFC 8216 6.2.4), not counted from what this playlist lists.
+    var declaresDiscontinuitySequence = false
     var type: Kind?
     /// `EXT-X-ENDLIST`: no segment will be added.
     var hasEnded = false
@@ -448,6 +451,7 @@ private struct HLSPlaylistReader {
                 throw .malformed(line: lineNumber, tag: name)
             }
             media.discontinuitySequence = number
+            media.declaresDiscontinuitySequence = true
         case "EXT-X-PLAYLIST-TYPE":
             sawMediaTag = true
             media.type = HLSMediaPlaylist.Kind(rawValue: value.trimmingCharacters(in: .whitespaces))
