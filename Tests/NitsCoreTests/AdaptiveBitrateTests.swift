@@ -106,7 +106,11 @@ struct AdaptiveBitrateTests {
             await Self.waitUntil(timeout: .seconds(12)) { consumer.playedWidth == 480 },
             "Playing \(String(describing: consumer.playedWidth))")
         let stalledSlow = consumer.stalled
-        #expect(stalledSlow < 1.5, "Stalled \(stalledSlow) s on the slow network")
+        // The link slows as playback starts, with two seconds buffered: only a segment that arrived slowly says so, and one
+        // of the top variant (2.66 Mbit/s) takes ~3.7 s at 1.5 Mbit/s. Its first is already in when the link slows (read while
+        // the demuxer opened), so the first slow one is the second: a segment behind what a client that read the first under
+        // the limit would stall (1.4 s).
+        #expect(stalledSlow < 4, "Stalled \(stalledSlow) s on the slow network")
         #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the network carries")
 
         server.setLinkRate(8_000_000 / 8)

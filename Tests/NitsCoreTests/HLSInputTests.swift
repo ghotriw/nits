@@ -20,10 +20,17 @@ struct HLSInputTests {
         return Stand(server: try TestHTTPServer(root: directory), directory: directory)
     }
 
+    /// Opens the stream and reads what `MediaDemuxer` would: the top variant, its renditions, no subtitles (the demuxer
+    /// disables the rest, `applyStreamSelection`).
     private static func open(
         _ stand: Stand, _ name: String, interrupt: FFmpegInterrupt = FFmpegInterrupt()
     ) -> HLSInput? {
-        HLSInput(url: stand.server.url(name), headers: [:], interrupt: interrupt)
+        guard let input = HLSInput(url: stand.server.url(name), headers: [:], interrupt: interrupt) else { return nil }
+        if let top = input.variantCandidates()?.max(by: { $0.bandwidth < $1.bandwidth }) {
+            let kept = Set(top.streams.all).subtracting(top.streams.subtitles)
+            for index in 0..<input.streamCount where !kept.contains(index) { input.setReading(false, stream: index) }
+        }
+        return input
     }
 
     private struct Packet {
@@ -135,7 +142,8 @@ struct HLSInputTests {
             let times = packets.filter { $0.isVideo == isVideo }.map(\.dts)
             #expect(zip(times, times.dropFirst()).allSatisfy { $1 >= $0 })
         }
-        let segments = stand.server.requests.map(\.path).filter { $0.hasSuffix(".ts") }
+        // The first segment of each variant is probed at the opening (its start only); every other is requested once.
+        let segments = stand.server.requests.map(\.path).filter { $0.hasSuffix(".ts") && !$0.hasSuffix("_000.ts") }
         #expect(segments.count == Set(segments).count)
         #expect(abs((packets.filter(\.isVideo).last?.pts ?? 0) - 40) < 1)
     }
@@ -171,6 +179,103 @@ struct HLSInputTests {
         let video = packets.filter(\.isVideo)
         #expect(video.contains { $0.pts < 2 } && video.contains { $0.pts > 4 })
         #expect(!video.contains { $0.pts > 2.2 && $0.pts < 3.8 })
+    }
+
+    // MARK: Variants
+
+    @Test("Every variant is a candidate, probed by the start of its first segment, and only those read download more")
+    func variantsAreProbedNotDownloaded() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let candidates = try #require(input.variantCandidates())
+        #expect(candidates.count == 3)
+        #expect(candidates.allSatisfy { $0.streams.video != nil })
+        // Each has a picture of its own, described from the probe.
+        let widths = candidates.sorted { $0.bandwidth > $1.bandwidth }.compactMap { candidate in
+            candidate.streams.video.flatMap { input.stream($0)?.pointee.codecpar.pointee.width }
+        }
+        #expect(widths == [640, 480, 320])
+        let (_, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        let paths = stand.server.requests.map(\.path)
+        // The variants not read were asked for the first segment only (probed), none of the rest.
+        let lowest = try #require(candidates.min { $0.bandwidth < $1.bandwidth })
+        #expect(lowest.streams.video != nil)
+        #expect(paths.filter { $0.hasPrefix("v0_") && $0.hasSuffix(".ts") }.count == 1, "\(paths)")
+        #expect(paths.filter { $0.hasPrefix("v1_") && $0.hasSuffix(".ts") }.count == 1, "\(paths)")
+        // The first segment of the one read: the probe's piece (held to the opening's buffer, in ranges), and the play's,
+        // once, whole.
+        let playing = stand.server.requests.filter { $0.path == "v2_000.ts" && $0.range == nil }
+        #expect(playing.count == 1, "\(stand.server.requests.filter { $0.path == "v2_000.ts" }.map(\.range))")
+    }
+
+    @Test(
+        "The demuxer's rewind to the start, after its first read, replays the first segment, which isn't asked for again"
+    )
+    func rewindReplaysTheFirstSegment() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let (before, _) = Self.drain(input, limit: 20)
+        input.rewind()
+        let (after, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(before.first?.dts == after.first?.dts, "the same packets again")
+        let whole = stand.server.requests.filter { $0.path == "v2_000.ts" && $0.range == nil }
+        #expect(whole.count == 1, "\(stand.server.requests.map(\.path))")
+    }
+
+    @Test("A variant read for a switch joins at a segment after the picture's, at a keyframe")
+    func switchedVariantJoinsAtTheNextSegment() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let candidates = try #require(input.variantCandidates())
+        let low = try #require(candidates.min { $0.bandwidth < $1.bandwidth })
+        let lowVideo = try #require(low.streams.video)
+        let (before, _) = Self.drain(input, limit: 60)
+        let reached = try #require(before.filter(\.isVideo).last).dts
+        for index in low.streams.all { input.setReading(true, stream: index) }
+        let (after, _) = Self.drain(input, limit: 400)
+        let joined = try #require(after.first { $0.stream == lowVideo })
+        #expect(joined.isKey)
+        #expect(joined.dts >= reached, "joined at \(joined.dts), the picture was at \(reached)")
+        #expect(joined.dts - reached < 2.1)
+        // The segment the picture was in, of the lowest variant, was not downloaded to be dropped.
+        let paths = stand.server.requests.map(\.path).filter { $0.hasPrefix("v0_") }
+        #expect(paths.filter { $0 == "v0_000.ts" }.count == 1, "\(paths)")
+    }
+
+    @Test("A subtitle rendition's cues are on the picture's timeline, whichever variant is read")
+    func subtitleCuesFollowThePicture() throws {
+        guard let stand = try Self.stand(.hlsRenditions) else { return }
+        defer { stand.server.stop() }
+        // The cue files carry no `X-TIMESTAMP-MAP`: the media's start (an MPEG-TS starts at 1.4667 s) is given.
+        for name in ["v00", "v01", "v02", "v10", "v11", "v12"] {
+            let text = try String(contentsOf: stand.directory.appendingPathComponent("\(name).vtt"), encoding: .utf8)
+            stand.server.setResponder(forPath: "\(name).vtt") {
+                Data(
+                    text.replacingOccurrences(
+                        of: "WEBVTT\n", with: "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:132000,LOCAL:00:00.000\n"
+                    ).utf8)
+            }
+        }
+        let input = try #require(
+            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+        let candidates = try #require(input.variantCandidates())
+        // The master lists the lower variant first: its subtitle lane comes before the top variant's in the master.
+        let top = try #require(candidates.max { $0.bandwidth < $1.bandwidth })
+        let subtitle = try #require(top.streams.subtitles.first)
+        let kept = Set(top.streams.all).subtracting(top.streams.subtitles).union([subtitle])
+        for index in 0..<input.streamCount where !kept.contains(index) { input.setReading(false, stream: index) }
+        let (packets, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        let cues = packets.filter { $0.stream == subtitle }
+        #expect(!cues.isEmpty)
+        // "Hello" is at 0.5 s and "World" at 3 s of the media, which an MPEG-TS starts a second and more in.
+        #expect(cues.contains { abs($0.pts - 0.5) < 0.15 }, "\(cues.map(\.pts))")
+        #expect(cues.contains { abs($0.pts - 3.0) < 0.15 }, "\(cues.map(\.pts))")
     }
 
     // MARK: Seeking

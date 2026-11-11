@@ -40,13 +40,18 @@ final class HLSSegmentReader {
     private let loader: HLSSegmentLoader
     private let next: () -> HLSSegment?
     private let start: Double
-    private let timelineShift: Double?
+    private let timelineShift: (() -> Double?)?
     /// The segments of a WebVTT run are read one context each.
     let isSegmentwise: Bool
 
     private var context: UnsafeMutablePointer<AVFormatContext>?
     private var io: SegmentIO?
     private var feed: SegmentFeed?
+    /// The segment being read of a continuous run, as it comes (`nextChunk`).
+    private var body: HLSSegmentBody?
+    /// The body of the run's first segment, which a lane may keep (`claimFirstBody`) to replay it.
+    private var retainedFirst: HLSSegmentBody?
+    private var isFirstClaimed = false
     /// Seconds to add to the media's timestamps for the timeline. Known once the run's first packet is read (or
     /// at the open, from the streams' start times).
     private(set) var timelineOffset: Double?
@@ -61,9 +66,11 @@ final class HLSSegmentReader {
     private var isEnded = false
 
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
-    /// section): the caller's thread.
+    /// section): the caller's thread. A probe (`isProbe`) reads `first` only as far as FFmpeg's analysis goes, to
+    /// describe the streams (`HLSLane.probe`): the run is not meant to be read on.
     init(
-        loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: Double? = nil,
+        loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: (() -> Double?)? = nil,
+        isProbe: Bool = false, firstBody: HLSSegmentBody? = nil,
         next: @escaping () -> HLSSegment?
     ) throws(HLSSegmentReaderError) {
         self.loader = loader
@@ -71,23 +78,42 @@ final class HLSSegmentReader {
         self.timelineShift = timelineShift
         self.next = next
         var head = Data()
-        let data: Data
+        var data = Data()
+        var opened: HLSSegmentBody?
         do throws(HLSSegmentLoadError) {
             if let section = first.initSection { head = try loader.initSection(section) }
-            data = try loader.segment(first)
+            // The segment's first bytes, as they come: enough to tell what it is.
+            let body: HLSSegmentBody
+            if let firstBody {
+                body = firstBody
+            } else {
+                body = try loader.segmentBody(first, whileOpening: isProbe, retains: !isProbe)
+            }
+            opened = body
+            retainedFirst = body
+            while data.count < 16, let chunk = try body.next() { data.append(chunk) }
         } catch {
+            opened?.close()
             throw .load(error)
         }
         isSegmentwise =
             Self.isWebVTT(data)
             || (data.trimmedIsEmpty && ["vtt", "webvtt"].contains(first.url.pathExtension.lowercased()))
         if isSegmentwise {
+            // A cue file is small, and read whole.
+            if let opened {
+                do throws(HLSSegmentLoadError) { data.append(try opened.rest()) } catch {
+                    opened.close()
+                    throw .load(error)
+                }
+            }
             do { try openSegmentContext(data) } catch {
                 close()
                 throw error
             }
         } else {
             head.append(data)
+            body = opened
             do { try openContinuousContext(head) } catch {
                 close()
                 throw error
@@ -159,7 +185,15 @@ final class HLSSegmentReader {
         context = nil
     }
 
+    /// The first segment's body, which this reader no longer closes: the lane keeps it (`HLSSegmentBody.replayedBody`).
+    func claimFirstBody() -> HLSSegmentBody? {
+        isFirstClaimed = true
+        return retainedFirst
+    }
+
     func close() {
+        if !(isFirstClaimed && body === retainedFirst) { body?.close() }
+        body = nil
         closeContext()
         io?.free()
         io = nil
@@ -189,18 +223,36 @@ final class HLSSegmentReader {
 
     /// One context over the init section and the segments, the first given; the others pulled from `next`.
     private func openContinuousContext(_ head: Data) throws(HLSSegmentReaderError) {
-        let feed = SegmentFeed(head: head) { [loader, next, weak self] in
-            guard let segment = next() else { return .end }
-            do throws(HLSSegmentLoadError) {
-                return .data(try loader.segment(segment))
-            } catch {
-                self?.failure = error
-                return .failed(Self.code(for: error))
-            }
-        }
+        let feed = SegmentFeed(head: head) { [weak self] in self?.nextChunk() ?? .end }
         self.feed = feed
         try openContext(over: feed)
         timelineOffset = openedOffset()
+    }
+
+    /// The next bytes of a continuous run: what is left of the segment being read, else the first of the next segment
+    /// (`next`, which may wait at a live edge), whose download starts as the previous one is read through.
+    private func nextChunk() -> SegmentFeed.Chunk {
+        while true {
+            if let current = body {
+                do throws(HLSSegmentLoadError) {
+                    if let chunk = try current.next() { return .data(chunk) }
+                } catch {
+                    failure = error
+                    current.close()
+                    body = nil
+                    return .failed(Self.code(for: error))
+                }
+                body = nil
+                retainedFirst = nil
+            }
+            guard let segment = next() else { return .end }
+            do throws(HLSSegmentLoadError) {
+                body = try loader.segmentBody(segment)
+            } catch {
+                failure = error
+                return .failed(Self.code(for: error))
+            }
+        }
     }
 
     /// A context over one WebVTT segment.
@@ -212,13 +264,15 @@ final class HLSSegmentReader {
         guard !data.trimmedIsEmpty else { return }
         let map = HLSTimestampMap.parse(webVTT: data) ?? HLSTimestampMap()
         // The map's MPEG-TS time wraps as the media's does: read it as the value nearest where the run is.
-        let expected = Int64((start - (timelineShift ?? 0)) * 90_000)
+        // Asked at each segment: the picture's run it goes with may not have been open when this one started.
+        let shift = timelineShift?() ?? 0
+        let expected = Int64((start - shift) * 90_000)
         let wrap = Int64(1) << 33
         var mpegts = map.mpegts
         mpegts += wrap * Int64((Double(expected - mpegts) / Double(wrap)).rounded())
-        let shift = Double(mpegts) / 90_000 - map.local
-        segmentShift = shift + (timelineShift ?? 0)
-        timelineOffset = timelineShift ?? 0
+        let mapShift = Double(mpegts) / 90_000 - map.local
+        segmentShift = mapShift + shift
+        timelineOffset = shift
         let feed = SegmentFeed(head: data) { .end }
         self.feed = feed
         try openContext(over: feed)

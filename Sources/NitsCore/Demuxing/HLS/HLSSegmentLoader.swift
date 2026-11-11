@@ -33,11 +33,14 @@ final class HLSSegmentLoader: Sendable {
         var keys: [URL: Data] = [:]
     }
 
-    private let transport: HTTPSessionTransport
+    fileprivate let transport: HTTPSessionTransport
     private let cache = OSAllocatedUnfairLock(initialState: Cache())
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
     static let cacheLimit = 32
+    /// A run's first segment is retained to be replayed (`HLSSegmentBody.replayedBody`), up to this
+    /// many bytes (a 4K segment of six seconds is some 30 MB).
+    static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
 
     init(transport: HTTPSessionTransport) {
@@ -46,9 +49,9 @@ final class HLSSegmentLoader: Sendable {
 
     /// The segment's bytes, decrypted.
     func segment(_ segment: HLSSegment) throws(HLSSegmentLoadError) -> Data {
-        let data = try download(segment.url, range: segment.byteRange)
-        guard let key = segment.key else { return data }
-        return try decrypt(data, key: key, iv: segment.initializationVector)
+        var data = try download(segment.url, range: segment.byteRange)
+        if let key = segment.key { data = try decrypt(data, key: key, iv: segment.initializationVector) }
+        return data
     }
 
     /// The init section's bytes, decrypted (one load per `EXT-X-MAP` in effect).
@@ -136,14 +139,26 @@ final class HLSSegmentLoader: Sendable {
         case .failed(let code):
             throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
         case .notServed:
-            guard let range,
-                case .input(let input) = transport.open(
-                    address, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
-            else { throw .notServed(url) }
-            let whole = try read(input, limit: Int(range.range.upperBound))
-            guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
-            return whole.subdata(in: Int(range.offset)..<Int(range.range.upperBound))
+            guard let range else { throw .notServed(url) }
+            return try wholeFile(url, range: range)
         }
+    }
+
+    /// A byte range the server answers whole: the file, cut to the range.
+    private func wholeFile(_ url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
+        guard
+            case .input(let input) = transport.open(
+                url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+        else { throw .notServed(url) }
+        let whole = try read(input, limit: Int(range.range.upperBound))
+        guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
+        return whole.subdata(in: Int(range.offset)..<Int(range.range.upperBound))
+    }
+
+    /// A segment with a byte range, as the file cut (no request for the range first: the server has answered it whole).
+    fileprivate func wholeFileSegment(_ segment: HLSSegment) throws(HLSSegmentLoadError) -> Data {
+        guard let range = segment.byteRange else { throw .notServed(segment.url) }
+        return try wholeFile(segment.url, range: range)
     }
 
     private func read(_ input: HTTPSessionInput, limit: Int = .max) throws(HLSSegmentLoadError) -> Data {
@@ -169,6 +184,170 @@ final class HLSSegmentLoader: Sendable {
             } else {
                 throw .failed(count)
             }
+        }
+    }
+}
+
+/// A segment's bytes as they come: the demuxer starts on a segment's first bytes while the rest is still on the way
+/// (`HLSSegmentLoader.segmentBody`), as FFmpeg's `hls.c` reads one, so the first picture of a segment does not wait for
+/// the whole of it (30 MB for a 4K segment of six seconds, on a link that may take seconds to carry them). Not for an
+/// encrypted segment, which is decrypted as one stream (`HLSSegmentLoader.segment`), nor one the transport leaves to
+/// the loader's other path: those arrive whole.
+///
+/// Blocking, interruptible as the loader's downloads are. A body that `retains` what it hands out (a run's first
+/// segment, which the opening reads to describe the picture and the demuxer then goes back to the start of) can be
+/// `replayed`: a new body gives the bytes read so far again and goes on with the same download, up to
+/// `HLSSegmentLoader.retainLimit` bytes.
+final class HLSSegmentBody {
+    private enum Source {
+        case data(Data)
+        case input(HTTPSessionInput, limit: Int64?)
+    }
+
+    private var source: Source
+    private var offset = 0
+    private var received = 0
+    private var buffer: [UInt8]
+    /// Bytes to give again before the download's (a replay).
+    private var replay = Data()
+    private var replayed = 0
+    /// What was handed out so far, when retaining; nil once it outgrew the limit.
+    private var retained: Data?
+    private var isFinished = false
+    /// The download was read through, and closed.
+    private var isComplete = false
+
+    init(data: Data) {
+        source = .data(data)
+        buffer = []
+    }
+
+    fileprivate init(input: HTTPSessionInput, limit: Int64?, retains: Bool) {
+        source = .input(input, limit: limit)
+        buffer = [UInt8](repeating: 0, count: 64 << 10)
+        retained = retains ? Data() : nil
+    }
+
+    /// The next bytes, at most `count`; nil at the end of the segment.
+    func next(_ count: Int = 64 << 10) throws(HLSSegmentLoadError) -> Data? {
+        if replayed < replay.count {
+            let end = min(replayed + count, replay.count)
+            defer { replayed = end }
+            return replay.subdata(in: (replay.startIndex + replayed)..<(replay.startIndex + end))
+        }
+        switch source {
+        case .data(let data):
+            guard offset < data.count else { return nil }
+            defer { offset += min(count, data.count - offset) }
+            return data.subdata(
+                in: (data.startIndex + offset)..<(data.startIndex + offset + min(count, data.count - offset)))
+        case .input(let input, let limit):
+            var wanted = min(count, buffer.count)
+            if let limit {
+                wanted = Int(min(Int64(wanted), limit - Int64(received)))
+                if wanted <= 0 { return end(input, isComplete: true) }
+            }
+            let result = buffer.withUnsafeMutableBufferPointer { input.read($0.baseAddress!, Int32(wanted)) }
+            if result > 0 {
+                received += Int(result)
+                let chunk = Data(buffer[0..<Int(result)])
+                if retained != nil {
+                    retained?.append(chunk)
+                    if received > HLSSegmentLoader.retainLimit { retained = nil }
+                }
+                return chunk
+            }
+            if result == MediaDemuxer.averrorEOF || result == 0 {
+                // A body shorter than the server announced (or than the range) is a connection that dropped.
+                let expected = limit ?? input.answeredLength.flatMap { $0 > 0 ? $0 : nil }
+                if let expected, Int64(received) < expected {
+                    throw .failed(-EIO)
+                }
+                return end(input, isComplete: true)
+            }
+            throw result == HTTPSessionInput.averrorExit ? .interrupted : .failed(result)
+        }
+    }
+
+    /// Everything that is left.
+    func rest() throws(HLSSegmentLoadError) -> Data {
+        var all = Data()
+        while let chunk = try next() { all.append(chunk) }
+        return all
+    }
+
+    private func end(_ input: HTTPSessionInput, isComplete: Bool) -> Data? {
+        if !isFinished {
+            isFinished = true
+            self.isComplete = isComplete
+            input.close()
+        }
+        return nil
+    }
+
+    /// A body that gives what this one handed out again, and goes on with its download, which it takes over: this one
+    /// is done with. Nil when it didn't retain (or outgrew the limit): the segment is to be asked for again.
+    func replayedBody() -> HLSSegmentBody? {
+        if case .data(let data) = source, !isFinished {
+            isFinished = true
+            return HLSSegmentBody(data: data)
+        }
+        guard let kept = retained, !isFinished || isComplete else { return nil }
+        let body: HLSSegmentBody
+        switch source {
+        case .data(let data):
+            body = HLSSegmentBody(data: data)
+        case .input(let input, let limit):
+            if isComplete {
+                body = HLSSegmentBody(data: kept)
+            } else {
+                body = HLSSegmentBody(input: input, limit: limit, retains: true)
+                body.received = received
+                body.replay = kept
+                body.retained = kept
+            }
+        }
+        // The download is the new body's now.
+        isFinished = true
+        isComplete = false
+        source = .data(Data())
+        return body
+    }
+
+    /// Gives the download up (the segment is not read to its end).
+    func close() {
+        guard case .input(let input, _) = source, !isFinished else { return }
+        isFinished = true
+        input.close()
+    }
+
+    deinit { close() }
+}
+
+extension HLSSegmentLoader {
+    /// The segment's bytes as they arrive (`HLSSegmentBody`): the download starts now and the caller reads as it comes.
+    /// `whileOpening`: a probe of the stream's description (`HLSLane.probe`), which FFmpeg's analysis reads as far as it
+    /// needs and the caller then closes: the request is the opening's (`HTTPSessionTransport.open(whileOpening:)`), held
+    /// to a small buffer so that the server sends little more than is read, and counted in no adaptive-bitrate sample, but
+    /// in `HTTPSessionTransport.openingThroughput`. `retains`: the body can be `replayed`.
+    func segmentBody(
+        _ segment: HLSSegment, whileOpening: Bool = false, retains: Bool = false
+    ) throws(HLSSegmentLoadError) -> HLSSegmentBody {
+        if segment.key != nil || segment.byteRange?.length == 0 {
+            return HLSSegmentBody(data: try self.segment(segment))
+        }
+        let range = segment.byteRange
+        let opened = transport.open(
+            segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
+            cookies: nil, cookieOrigin: nil, whileOpening: whileOpening, followsRedirects: true)
+        switch opened {
+        case .input(let input):
+            return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
+        case .failed(let code):
+            throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
+        case .notServed:
+            // A range the server answers whole (the request is already made once): the file, cut.
+            return HLSSegmentBody(data: try wholeFileSegment(segment))
         }
     }
 }

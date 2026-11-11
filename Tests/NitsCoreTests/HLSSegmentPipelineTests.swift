@@ -334,7 +334,8 @@ struct HLSSegmentPipelineTests {
         let segments = media.segments
         var cursor = 1
         var asked = 0
-        let reader = try HLSSegmentReader(loader: stand.loader, first: segments[0], start: 0, timelineShift: -5) {
+        let shift: () -> Double? = { -5 }
+        let reader = try HLSSegmentReader(loader: stand.loader, first: segments[0], start: 0, timelineShift: shift) {
             asked += 1
             guard cursor < segments.count else { return nil }
             defer { cursor += 1 }
@@ -407,8 +408,9 @@ struct HLSSegmentPipelineTests {
         let segment = try stand.playlist("s.m3u8").segments[0]
         let wrapSeconds = Double(Int64(1) << 33) / 90_000
         // timeline = media + shift, so the media's clock at `start` is `start - shift`.
+        let shift: () -> Double? = { 100 - (wrapSeconds - 1) }
         let reader = try HLSSegmentReader(
-            loader: stand.loader, first: segment, start: 100, timelineShift: 100 - (wrapSeconds - 1)
+            loader: stand.loader, first: segment, start: 100, timelineShift: shift
         ) { nil }
         let pointer = av_packet_alloc()!
         defer {

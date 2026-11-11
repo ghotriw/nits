@@ -6,17 +6,30 @@ import os
 /// (`HLSTimeline`), the segments downloaded (`HLSSegmentLoader`) and demuxed by FFmpeg's container demuxers
 /// (`HLSSegmentReader`), and the packets handed to `MediaDemuxer` through `DemuxerInput`, as a file's are.
 ///
-/// The stream is read as **lanes** (`HLSLane`): the variant chosen (its picture, and the sound muxed into it) and each
-/// audio rendition with a playlist of its own. A lane is read as far as its next packet; `read` hands out the one
-/// whose packet decodes first, so the renditions come out interleaved on the shared timeline. Streams are described
-/// once, at the opening, in a table (`AVStreamTable`) and keep their index for good: a lane's later runs map onto them.
+/// The stream is read as **lanes** (`HLSLane`): a lane for each variant's playlist (its video, and the sound muxed into
+/// it) and for each audio and subtitle rendition with a playlist of its own. A lane is read as far as its next packet;
+/// `read` hands out the one whose packet decodes first, so the renditions come out interleaved on the shared timeline.
+/// Streams are described once, at the opening, in a table (`AVStreamTable`) and keep their index for good: a lane's
+/// later runs map onto them.
+///
+/// **Variants.** Every variant is a lane with streams of its own, which `variantCandidates()` groups as `hls.c`'s
+/// programs: the demuxer chooses the start and switches (`MediaDemuxer+Variants.swift`), with the splice it has for any
+/// input. It reads the lanes of the variants selected only (`setReading`). Every variant is probed at the opening: its
+/// first segment is read as far as FFmpeg's analysis goes (up to `max_analyze_duration` of media: often the whole of
+/// a short segment), all variants side by side, as the opening's requests (`HTTPSessionTransport`'s opening limit: held
+/// to a small buffer, no adaptive-bitrate sample, but a measure of the link, `openingLinkRate`). The probe is dropped
+/// once the streams are described, the one of the variant played included: its download was held to the opening's
+/// buffer, and what it left is asked for again unheld (continuing it would hold the start of playback to a link as it
+/// is the moment the opening ends). A lane that is not read afterwards downloads nothing more. The first segment of a run
+/// the lane then reads is kept by it (`HLSLane.startBody`) for a seek or the demuxer's rewind to its start, which
+/// replay what was read and go on with the same download. A lane read again for a switch starts at the segment
+/// after the one the picture is at (`HLSLane.catchUp`); the demuxer drops its pictures up to the keyframe it splices at.
 ///
 /// The timeline starts at zero at the first segment of the playlist as first loaded; for a live stream the packets are
 /// moved to start at the segment reading began at (`timelineOrigin`), as the FFmpeg path does, and the window is told
 /// from the playlist's own model (`liveWindow`).
 ///
-/// This phase reads one variant and the audio renditions; a switch of variants, subtitle renditions and the ABR
-/// measurements come with phase 5 of `.agents/hls-client/PLAN.md`. Used behind `HLSInput.isEnabled`.
+/// Used behind `HLSInput.isEnabled`.
 final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// Whether `MediaDemuxer` opens HTTP(S) `.m3u8` URLs with this client (`NITS_HLS_CLIENT=1`), while both paths exist.
     static var isEnabled: Bool { ProcessInfo.processInfo.environment["NITS_HLS_CLIENT"] == "1" }
@@ -27,16 +40,27 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         return ["m3u8", "m3u"].contains(parsed.pathExtension.lowercased())
     }
 
-    /// The streams of a reader that the input describes and reads: pictures and sounds (not cover art, subtitles in
-    /// the segments, data).
-    static func keeps(_ stream: UnsafeMutablePointer<AVStream>) -> Bool {
+    /// The streams of a reader that a lane of `kind` describes and reads: pictures and sounds of a variant (not cover
+    /// art, subtitles in the segments, data), the sound of an audio rendition, the cues of a subtitle rendition.
+    static func keeps(_ stream: UnsafeMutablePointer<AVStream>, in kind: HLSLane.Kind) -> Bool {
         let type = stream.pointee.codecpar.pointee.codec_type
-        if type == AVMEDIA_TYPE_VIDEO { return stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC == 0 }
-        return type == AVMEDIA_TYPE_AUDIO
+        switch kind {
+        case .primary:
+            if type == AVMEDIA_TYPE_VIDEO { return stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC == 0 }
+            return type == AVMEDIA_TYPE_AUDIO
+        case .audio: return type == AVMEDIA_TYPE_AUDIO
+        case .subtitle: return type == AVMEDIA_TYPE_SUBTITLE
+        }
     }
 
     /// A live stream is joined this many target durations behind its edge (RFC 8216 6.3.3).
     static let edgeMargin = 3.0
+    /// Bits a second under which the opening's transfers prove the link slow, and the start is a lower rung than the top
+    /// (`HLSPlaylistPrefetcher.Throughput.slowLinkLimit`, measured there on 128 KB segment starts at TCP's slow start: 4.8 to
+    /// 62 Mbit/s on fast links). The probes here read more (a segment, often) from every variant side by side, which
+    /// shares the link: the rate is a lower bound of it, so it proves a link slow, never fast; not measured with these
+    /// probes on a real link yet.
+    static let slowLinkLimit = 3_000_000.0
 
     private struct StreamInfo {
         let lane: Int
@@ -45,30 +69,58 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let title: String
     }
 
+    /// A variant of a master playlist: the lane of its playlist, and the renditions it plays with.
+    private struct Variant {
+        let id: Int
+        let bandwidth: Int
+        let lane: Int
+        let audioLanes: [Int]
+        let subtitleLanes: [Int]
+    }
+
     private let table: AVStreamTable
     private let transport: HTTPSessionTransport
     private let interrupt: FFmpegInterrupt
     private var lanes: [HLSLane] = []
+    /// The lanes as `read` visits them: the variants' first, so a subtitle rendition's cues find the picture's run open
+    /// (`OffsetSource`) when they are placed.
+    private var readOrder: [HLSLane] = []
     private var infos: [StreamInfo] = []
+    /// The variants of a master playlist (none for a media playlist), in the order it lists them.
+    private var variants: [Variant] = []
     private let meter: TransferAccount
     /// Seconds on the timeline that the packets handed out are moved by.
     private let origin: Double
-    /// The timeline's seconds of the last packet handed out: where a lane read again starts.
+    /// The timeline's seconds of the last picture handed out: where a lane read again starts.
     private var lastTime = 0.0
+    /// The variant being caught up for a switch: its pictures are not where the picture is.
+    private var catchingUp: HLSLane?
     let isLivePlaylist: Bool
     let durationSeconds: Double
 
     let traits = DemuxerInputTraits(hasIndex: false, landsBetweenKeyframes: true)
     let isNetworkSource = true
     let streamingName = "HLS"
-    let openingLinkRate: Double? = nil
     let chapters: [MediaChapter.Raw] = []
     let attachedFonts: [AssScript.Font] = []
 
     var timelineOrigin: Int64 { Int64((origin * Double(AV_TIME_BASE)).rounded()) }
     var network: (any NetworkReadAccount)? { meter }
 
+    /// What the opening's probes carried, when it proves the link slow: playback then starts on a rung that fits it.
+    var openingLinkRate: Double? {
+        guard !variants.isEmpty, let rate = transport.openingThroughput, rate < Self.slowLinkLimit else { return nil }
+        return rate
+    }
+
     // MARK: Opening
+
+    /// What a playlist the opening loads is for.
+    private struct Wanted {
+        var url: URL
+        var kind: HLSLane.Kind
+        var rendition: HLSRendition?
+    }
 
     /// Opens the stream at `url`, a master or a media playlist. Nil when it can't (recorded on `interrupt`).
     init?(url: String, headers: [String: String], interrupt: FFmpegInterrupt) {
@@ -86,8 +138,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             AppLog.error(.demuxer, "HLS: \(message) for '\(MediaURL.loggable(url))'")
         }
 
-        // The playlists the stream is read from: the master's choice of variant and renditions, or the media
-        // playlist itself.
         let first: (data: Data, servedFrom: URL)
         let parsed: HLSPlaylist
         do {
@@ -102,28 +152,47 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             return nil
         }
 
-        struct Wanted {
-            var url: URL
-            var kind: HLSLane.Kind
-            var rendition: HLSRendition?
-        }
+        // The playlists the stream is read from: the media playlist itself, or the master's variants and the renditions
+        // they play with (each address once: variants differing in their audio group share a playlist).
         var wanted: [Wanted] = []
         var variables: [String: String] = [:]
+        /// Each variant of the master: its bandwidth and the positions in `wanted` of its playlist and renditions.
+        var plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])] = []
         switch parsed {
         case .media:
             wanted = [Wanted(url: masterURL, kind: .primary, rendition: nil)]
         case .master(let master):
             variables = master.variables
-            guard let variant = Self.startVariant(of: master) else {
+            let listed = Self.ladder(of: master)
+            guard !listed.isEmpty else {
                 fail("the master playlist lists no variant")
                 return nil
             }
-            wanted = [Wanted(url: variant.url, kind: .primary, rendition: nil)]
-            if let group = variant.audioGroup {
-                for rendition in master.renditions(.audio, group: group) {
-                    guard let renditionURL = rendition.url else { continue }
-                    wanted.append(Wanted(url: renditionURL, kind: .audio, rendition: rendition))
+            var positions: [String: Int] = [:]
+            func position(of url: URL, kind: HLSLane.Kind, rendition: HLSRendition?) -> Int {
+                let key = "\(kind):\(url.absoluteString)"
+                if let known = positions[key] { return known }
+                wanted.append(Wanted(url: url, kind: kind, rendition: rendition))
+                positions[key] = wanted.count - 1
+                return wanted.count - 1
+            }
+            for variant in listed {
+                let video = position(of: variant.url, kind: .primary, rendition: nil)
+                var audio: [Int] = []
+                if let group = variant.audioGroup {
+                    for rendition in master.renditions(.audio, group: group) {
+                        guard let renditionURL = rendition.url else { continue }
+                        audio.append(position(of: renditionURL, kind: .audio, rendition: rendition))
+                    }
                 }
+                var subtitles: [Int] = []
+                if let group = variant.subtitlesGroup {
+                    for rendition in master.renditions(.subtitles, group: group) {
+                        guard let renditionURL = rendition.url else { continue }
+                        subtitles.append(position(of: renditionURL, kind: .subtitle, rendition: rendition))
+                    }
+                }
+                plan.append((variant.bandwidth, video, audio, subtitles))
             }
         }
 
@@ -151,87 +220,158 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 problems[index].set("not a playlist (\(error))")
             }
         }
-        guard let primaryPlaylist = slots[0].value, !primaryPlaylist.segments.isEmpty else {
+
+        // The reference the others are aligned to, and where reading starts: the top of the ladder that loaded.
+        let referenceIndex: Int
+        if plan.isEmpty {
+            referenceIndex = 0
+        } else {
+            let loaded = plan.filter { slots[$0.video].value?.segments.isEmpty == false }
+            guard let best = loaded.max(by: { $0.bandwidth < $1.bandwidth }) else {
+                let firstVideo = plan[0].video
+                fail(
+                    problems[firstVideo].value ?? "the media playlists are missing or list no segments",
+                    code: failures[firstVideo].value ?? -EIO)
+                return nil
+            }
+            referenceIndex = best.video
+        }
+        guard let referencePlaylist = slots[referenceIndex].value, !referencePlaylist.segments.isEmpty else {
             fail(
-                problems[0].value ?? "the media playlist is missing or lists no segments",
-                code: failures[0].value ?? -EIO)
+                problems[referenceIndex].value ?? "the media playlist is missing or lists no segments",
+                code: failures[referenceIndex].value ?? -EIO)
             return nil
         }
-        let primary = HLSTimeline(primaryPlaylist)
-        var built: [(lane: HLSLane, rendition: HLSRendition?)] = [
-            (
-                HLSLane(
-                    kind: .primary, url: wanted[0].url, timeline: primary, variables: variables, loader: loader,
-                    shouldAbort: shouldAbort), nil
-            )
-        ]
-        for index in wanted.indices.dropFirst() {
-            // A rendition that failed to load or lists nothing is left out; the stream plays without it.
-            guard let playlist = slots[index].value,
-                let timeline = HLSTimeline(playlist, alignedTo: primary, sharesSequenceNumbers: false)
-            else { continue }
-            built.append(
-                (
-                    HLSLane(
-                        kind: .audio, url: wanted[index].url, timeline: timeline, variables: variables,
-                        loader: loader, shouldAbort: shouldAbort), wanted[index].rendition
-                ))
-        }
+        let reference = HLSTimeline(referencePlaylist)
 
         // Where reading starts: the beginning, or for a live stream a few target durations behind its edge.
-        let isLive = primaryPlaylist.isLive
+        let isLive = referencePlaylist.isLive
         let startTime =
-            isLive ? max(primary.start, primary.end - Self.edgeMargin * primary.targetDuration) : primary.start
-        let startEntry = primary.entry(at: startTime)
+            isLive ? max(reference.start, reference.end - Self.edgeMargin * reference.targetDuration) : reference.start
+        let startEntry = reference.entry(at: startTime)
         origin = isLive ? (startEntry?.start ?? 0) : 0
         isLivePlaylist = isLive
-        durationSeconds = isLive ? 0 : primary.end - primary.start
+        durationSeconds = isLive ? 0 : reference.end - reference.start
 
-        // Each lane opened at the segment that holds the start, side by side, to learn its streams.
-        let toOpen = built.map(\.lane)
+        // What the subtitle renditions' cues are moved by: the picture's timestamps, which a segment's own map places.
+        let offsets = OffsetSource()
+        let shift: () -> Double? = { offsets.offset() }
+        var built: [HLSLane?] = wanted.indices.map { index in
+            guard let playlist = slots[index].value, !playlist.segments.isEmpty else { return nil }
+            let timeline: HLSTimeline
+            if index == referenceIndex {
+                timeline = reference
+            } else {
+                // A variant of the ladder shares the reference's sequence numbers; a rendition's need not.
+                guard
+                    let aligned = HLSTimeline(
+                        playlist, alignedTo: reference, sharesSequenceNumbers: wanted[index].kind == .primary)
+                else { return nil }
+                timeline = aligned
+            }
+            return HLSLane(
+                kind: wanted[index].kind, url: wanted[index].url, timeline: timeline, variables: variables,
+                loader: loader, timelineShift: wanted[index].kind == .subtitle ? shift : nil,
+                shouldAbort: shouldAbort)
+        }
+
+        // Each lane opened at the segment that holds the start, side by side, to learn its streams. One playlist alone
+        // is read from its first segment at once; a master's lanes are probed (the start of the segment only) and the
+        // ones the demuxer chooses are started afterwards.
+        let isProbing = !plan.isEmpty
+        let toOpen = built
         let results = toOpen.map { _ in Slot<HLSSegmentReaderError>() }
         DispatchQueue.concurrentPerform(iterations: toOpen.count) { index in
-            do throws(HLSSegmentReaderError) { try toOpen[index].open(at: startTime) } catch {
+            // A subtitle rendition's streams are known without a read (its first segment may have no cues).
+            guard let lane = toOpen[index], lane.kind != .subtitle else { return }
+            do throws(HLSSegmentReaderError) {
+                if isProbing {
+                    try lane.probe(at: startTime)
+                } else {
+                    try lane.open(at: startTime)
+                }
+            } catch {
                 results[index].set(error)
             }
         }
-        for (index, entry) in built.enumerated() {
+        var laneOfWanted: [Int: Int] = [:]
+        for (index, lane) in built.enumerated() {
+            guard let lane else { continue }
             if let error = results[index].value {
-                if index == 0 {
+                if !isProbing {
                     fail("the first segment failed to open (\(error))", code: error.code)
                     return nil
                 }
+                // A rung or rendition that fails to open is left out; the stream plays without it.
+                AppLog.warning(.demuxer, "HLS: \(wanted[index].url.lastPathComponent) failed to open (\(error))")
+                lane.close()
+                built[index] = nil
                 continue
             }
             let laneIndex = lanes.count
             var slotsOfLane: [HLSLane.StreamSlot] = []
-            for stream in entry.lane.readerStreams where Self.keeps(stream) {
-                guard let added = table.addStream() else { continue }
-                Self.describe(stream, in: added, as: entry.rendition)
+            func register(_ added: UnsafeMutablePointer<AVStream>) {
                 infos.append(
-                    StreamInfo(lane: laneIndex, slot: slotsOfLane.count, title: entry.rendition?.name ?? ""))
+                    StreamInfo(lane: laneIndex, slot: slotsOfLane.count, title: wanted[index].rendition?.name ?? ""))
                 slotsOfLane.append(
                     HLSLane.StreamSlot(
                         table: Int(added.pointee.index), timebase: added.pointee.time_base,
                         type: added.pointee.codecpar.pointee.codec_type))
             }
-            guard !slotsOfLane.isEmpty else { continue }
-            entry.lane.setStreams(slotsOfLane)
-            lanes.append(entry.lane)
+            if lane.kind == .subtitle {
+                // What FFmpeg's `webvtt` demuxer makes of every segment: one stream of cues in milliseconds.
+                if let added = table.addStream() {
+                    added.pointee.codecpar.pointee.codec_type = AVMEDIA_TYPE_SUBTITLE
+                    added.pointee.codecpar.pointee.codec_id = AV_CODEC_ID_WEBVTT
+                    added.pointee.time_base = AVRational(num: 1, den: 1000)
+                    Self.describe(rendition: wanted[index].rendition, in: added)
+                    register(added)
+                }
+            }
+            for stream in lane.readerStreams where Self.keeps(stream, in: lane.kind) {
+                guard let added = table.addStream() else { continue }
+                Self.describe(stream, in: added)
+                Self.describe(rendition: wanted[index].rendition, in: added)
+                register(added)
+            }
+            if isProbing { lane.endProbe() }
+            guard !slotsOfLane.isEmpty else {
+                // Nothing the input plays: its table streams (none yet added) stay out, the lane is not read.
+                lane.close()
+                continue
+            }
+            lane.setStreams(slotsOfLane)
+            if isProbing { lane.reposition(at: startTime) }
+            laneOfWanted[index] = laneIndex
+            lanes.append(lane)
         }
-        guard !lanes.isEmpty, lanes[0].kind == .primary else {
+        guard lanes.contains(where: { $0.kind == .primary }) else {
             fail("the stream has nothing to play")
             return nil
         }
+        offsets.primaries = lanes.filter { $0.kind == .primary }
+        readOrder = offsets.primaries + lanes.filter { $0.kind != .primary }
+
+        // The variants whose playlist opened, with the renditions that did.
+        for (position, entry) in plan.enumerated() {
+            guard let video = laneOfWanted[entry.video] else { continue }
+            variants.append(
+                Variant(
+                    id: position + 1, bandwidth: entry.bandwidth, lane: video,
+                    audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
+                    subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
+        }
         AppLog.info(
             .demuxer,
-            "HLS client: \(lanes.count) rendition(s), \(infos.count) stream(s)\(isLive ? ", live" : "")")
+            "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"
+        )
     }
 
-    /// The variant playback starts on: the top of the ladder by bandwidth, among those with a picture when there are any.
-    private static func startVariant(of master: HLSMasterPlaylist) -> HLSVariant? {
+    /// The variants the stream is played from: those with a picture, when there are any (a sound-only variant is no rung
+    /// of a ladder of pictures), each playlist's address at its first listing.
+    private static func ladder(of master: HLSMasterPlaylist) -> [HLSVariant] {
         let withPicture = master.variants.filter { $0.resolution != nil || ($0.codecs.map(hasVideoCodec) ?? false) }
-        return (withPicture.isEmpty ? master.variants : withPicture).max { $0.bandwidth < $1.bandwidth }
+        return withPicture.isEmpty ? master.variants : withPicture
     }
 
     private static func hasVideoCodec(_ codecs: String) -> Bool {
@@ -242,9 +382,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Copies what the decoders and the track lists read of `stream` into the table's `added`.
-    private static func describe(
-        _ stream: UnsafeMutablePointer<AVStream>, in added: UnsafeMutablePointer<AVStream>, as rendition: HLSRendition?
-    ) {
+    private static func describe(_ stream: UnsafeMutablePointer<AVStream>, in added: UnsafeMutablePointer<AVStream>) {
         _ = avcodec_parameters_copy(added.pointee.codecpar, stream.pointee.codecpar)
         added.pointee.time_base = stream.pointee.time_base
         added.pointee.avg_frame_rate = stream.pointee.avg_frame_rate
@@ -252,6 +390,10 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         added.pointee.sample_aspect_ratio = stream.pointee.sample_aspect_ratio
         added.pointee.disposition = stream.pointee.disposition
         _ = av_dict_copy(&added.pointee.metadata, stream.pointee.metadata, 0)
+    }
+
+    /// What an `EXT-X-MEDIA` tells of the rendition's stream: language, name, default / forced.
+    private static func describe(rendition: HLSRendition?, in added: UnsafeMutablePointer<AVStream>) {
         guard let rendition else { return }
         if let language = rendition.language { _ = av_dict_set(&added.pointee.metadata, "language", language, 0) }
         _ = av_dict_set(&added.pointee.metadata, "title", rendition.name, 0)
@@ -274,28 +416,55 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         infos.indices.contains(index) ? infos[index].title : ""
     }
 
-    func variantCandidates() -> [MediaDemuxer.VariantCandidate]? { nil }
+    /// The streams of lane `index`, as the table numbers them.
+    private func tableStreams(ofLane index: Int, _ type: AVMediaType? = nil) -> [Int] {
+        lanes[index].streams.filter { type == nil || $0.type == type }.map(\.table)
+    }
 
+    /// The variants as `hls.c`'s programs group their streams: the variant's own (its picture, the sound muxed into it)
+    /// and those of the renditions it names. A variant of a media playlist alone is none.
+    func variantCandidates() -> [MediaDemuxer.VariantCandidate]? {
+        guard !variants.isEmpty else { return nil }
+        return variants.map { variant in
+            let own = tableStreams(ofLane: variant.lane)
+            let audio =
+                tableStreams(ofLane: variant.lane, AVMEDIA_TYPE_AUDIO)
+                + variant.audioLanes.flatMap { tableStreams(ofLane: $0) }
+            let subtitles = variant.subtitleLanes.flatMap { tableStreams(ofLane: $0) }
+            return MediaDemuxer.VariantCandidate(
+                id: variant.id, bandwidth: variant.bandwidth,
+                streams: MediaDemuxer.VariantStreams(
+                    video: tableStreams(ofLane: variant.lane, AVMEDIA_TYPE_VIDEO).first, audio: audio,
+                    subtitles: subtitles, all: own.filter { !audio.contains($0) } + audio + subtitles))
+        }
+    }
+
+    /// The window of the lane the picture is read from (the one read; the first before any is).
     func liveWindow() -> LiveWindow? {
-        guard var window = lanes.first?.window else { return nil }
+        let primaries = lanes.filter { $0.kind == .primary }
+        guard var window = (primaries.first { $0.isRead } ?? primaries.first)?.window else { return nil }
         window.start -= origin
         window.end -= origin
         return window
     }
 
-    func finishOpening() {}
+    /// The opening is done: what it downloaded (the probes, the first segment read to describe the picture, on a link
+    /// that may not be the one playback runs on) is no sample of the link for adaptive bitrate.
+    func finishOpening() {
+        transport.endOpening()
+        _ = transport.meter.take()
+    }
 
     // MARK: Reading
 
     func read(_ pkt: inout AVPacket) -> Int32 {
         var best: HLSLane?
-        for lane in lanes where lane.isRead {
+        for lane in readOrder where lane.isRead {
             if !lane.hasPending {
                 let code = lane.fill()
                 if code == MediaDemuxer.averrorEOF { continue }
                 if code < 0 {
-                    // A rendition besides the picture that fails is dropped: the stream plays without it, as at the opening.
-                    guard lane !== lanes[0], code != HTTPSessionInput.averrorExit else { return code }
+                    guard code != HTTPSessionInput.averrorExit, canDrop(lane) else { return code }
                     AppLog.warning(.demuxer, "HLS: a rendition failed (\(code)) and is left out")
                     lane.giveUp()
                     continue
@@ -304,11 +473,18 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             if best.map({ lane.pendingTime < $0.pendingTime }) ?? true { best = lane }
         }
         guard let best else { return MediaDemuxer.averrorEOF }
-        // Where reading is: the picture's, not an audio rendition read ahead of it.
-        if best === lanes[0], best.pendingTime.isFinite { lastTime = best.pendingTime }
+        // Where reading is: the picture's, not a rendition read ahead of it.
+        if lanes.lazy.filter({ $0.kind == .primary && $0.isRead }).count < 2 { catchingUp = nil }
+        if best.kind == .primary, best !== catchingUp, best.pendingTime.isFinite { lastTime = best.pendingTime }
         best.take(into: &pkt)
         rebase(&pkt)
         return 0
+    }
+
+    /// Whether the stream plays without `lane`: a rendition besides the picture, or a variant while another is read (the
+    /// one a switch is catching up; the demuxer's splice never comes and the old one plays on).
+    private func canDrop(_ lane: HLSLane) -> Bool {
+        lane.kind != .primary || lanes.contains { $0 !== lane && $0.kind == .primary && $0.isRead }
     }
 
     /// Moves a packet from the playlist's timeline to the zero-based one handed out.
@@ -365,8 +541,15 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let lane = lanes[info.lane]
         let wasRead = lane.isRead
         lane.setReading(isRead, slot: info.slot)
-        // A rendition read again starts where the picture is read, not where it was left.
-        if lane.isRead, !wasRead { lane.reposition(at: lastTime) }
+        guard lane.isRead, !wasRead else { return }
+        // A variant read while another is (a switch): it joins at a segment ahead of the picture. Else a rendition read
+        // again starts where the picture is read, not where it was left.
+        if lane.kind == .primary, lanes.contains(where: { $0 !== lane && $0.kind == .primary && $0.isRead }) {
+            catchingUp = lane
+            lane.catchUp(after: lastTime)
+        } else {
+            lane.reposition(at: lastTime)
+        }
     }
 
     func closeUnusedRepresentations() {}
@@ -393,7 +576,19 @@ private final class Slot<Value: Sendable>: @unchecked Sendable {
     var value: Value? { stored.withLock { $0 } }
 }
 
-/// What the transport measured, for adaptive bitrate (phase 5 reads it).
+/// The seconds the picture's timestamps are moved by, which a subtitle rendition's cues are moved by too: its WebVTT
+/// segments carry no timestamps of their own that a run's picture and sound share (`HLSSegmentReader.timelineShift`).
+private final class OffsetSource: @unchecked Sendable {
+    var primaries: [HLSLane] = []
+
+    func offset() -> Double? {
+        primaries.lazy.filter(\.isRead).compactMap(\.timelineOffset).first
+    }
+}
+
+/// What the transport measured, for adaptive bitrate: the transfers of the segments read (`NetworkTransferMeter`), each
+/// apart from its answer, and the time every request waited for its answer, which `MediaDemuxer.noteRead` reads as the
+/// time FFmpeg's `io_open` took (a wait at a live edge, a slow server).
 private final class TransferAccount: NetworkReadAccount {
     let transferMeter: NetworkTransferMeter?
 
@@ -402,9 +597,9 @@ private final class TransferAccount: NetworkReadAccount {
     }
 
     var total: Int64 { Int64(transferMeter?.receivedBytes ?? 0) }
-    var openSeconds: Double { 0 }
+    var openSeconds: Double { transferMeter?.answerSeconds ?? 0 }
     var lastOpen: (asked: ContinuousClock.Instant, opened: ContinuousClock.Instant, total: Int64, openSeconds: Double)?
     {
-        nil
+        transferMeter?.lastAnswer.map { ($0.asked, $0.answered, $0.total, $0.seconds) }
     }
 }

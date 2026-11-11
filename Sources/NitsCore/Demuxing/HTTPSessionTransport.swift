@@ -100,6 +100,7 @@ final class HTTPSessionTransport: Sendable {
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()
+        if case .input = opened { meter.addAnswer(asked: begin, answered: ContinuousClock.now) }
         if case .input = opened, let length = input.answeredLength, length < Self.oneTimeRequestBytes {
             meter.addOneTimeWait((ContinuousClock.now - begin) / .seconds(1))
         }
@@ -157,6 +158,11 @@ final class NetworkTransferMeter: Sendable {
     private struct State {
         var transfers: [Transfer] = []
         var oneTimeWaits = 0.0
+        /// Seconds every request waited for its answer, and the latest answered (`HLSInput` reads them as FFmpeg's
+        /// `io_open` times are read: `MediaDemuxer.noteRead`).
+        var answerSeconds = 0.0
+        var lastAnswer:
+            (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
         /// Body bytes received by every transfer so far.
         var receivedBytes = 0
     }
@@ -175,6 +181,24 @@ final class NetworkTransferMeter: Sendable {
 
     func add(_ transfer: Transfer) {
         state.withLock { $0.transfers.append(transfer) }
+    }
+
+    /// A request asked for at `asked` was answered at `answered`.
+    func addAnswer(asked: ContinuousClock.Instant, answered: ContinuousClock.Instant) {
+        state.withLock { state in
+            let before = state.answerSeconds
+            state.answerSeconds += (answered - asked) / .seconds(1)
+            state.lastAnswer = (asked, answered, Int64(state.receivedBytes), before)
+        }
+    }
+
+    /// Seconds spent waiting for answers so far.
+    var answerSeconds: Double { state.withLock { $0.answerSeconds } }
+
+    /// The latest request answered.
+    var lastAnswer: (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
+    {
+        state.withLock { $0.lastAnswer }
     }
 
     /// `seconds` waited for an answer paid once (`HTTPSessionTransport.oneTimeRequestBytes`).
