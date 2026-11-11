@@ -210,6 +210,31 @@ struct HLSInputTests {
         #expect(playing.count == 1, "\(stand.server.requests.filter { $0.path == "v2_000.ts" }.map(\.range))")
     }
 
+    @Test("Variants that can't switch with the best, and renditions only they refer to, are neither loaded nor probed")
+    func ladderOnly() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        // A HEVC variant and a variant with an audio group of its own, both below the AVC variants.
+        let master = try String(contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
+        stand.server.setResponder(forPath: "master.m3u8") {
+            Data(
+                (master + """
+                    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Other",URI="other_audio.m3u8"
+                    #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="hvc1.1.6.L93.B0,mp4a.40.2"
+                    hevc.m3u8
+                    #EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.64000d,mp4a.40.2",AUDIO="other"
+                    v0.m3u8
+
+                    """).utf8)
+        }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let candidates = try #require(input.variantCandidates())
+        #expect(candidates.map(\.bandwidth).sorted() == [393_296, 988_128])
+        let paths = stand.server.requests.map(\.path)
+        #expect(!paths.contains("hevc.m3u8") && !paths.contains("other_audio.m3u8"), "\(paths)")
+        #expect(Self.drain(input, limit: 30).packets.contains { $0.isVideo })
+    }
+
     @Test(
         "The demuxer's rewind to the start, after its first read, replays the first segment, which isn't asked for again"
     )

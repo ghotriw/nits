@@ -364,16 +364,32 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// The variants the stream is played from: those with a picture, when there are any (a sound-only variant is no rung
-    /// of a ladder of pictures), each playlist's address at its first listing.
+    /// of a ladder of pictures), and of those the ones that switch with the best (`BANDWIDTH`), the one played: the same
+    /// video codec (`CODECS`, Dolby Vision's `SUPPLEMENTAL-CODECS`), `VIDEO-RANGE` and rendition groups. The playlists of
+    /// the others, and the renditions only they refer to, are never loaded or probed: Apple's AV1 example, 13 tiers × 5
+    /// audio groups, probes 13 pictures and 2 sounds instead of 13 and 10; a ladder of two codecs, one.
+    /// `MediaDemuxer.canSwitch` decides more finely once probed. All are kept when a variant doesn't tell its codecs.
     private static func ladder(of master: HLSMasterPlaylist) -> [HLSVariant] {
-        let withPicture = master.variants.filter { $0.resolution != nil || ($0.codecs.map(hasVideoCodec) ?? false) }
-        return withPicture.isEmpty ? master.variants : withPicture
+        let withPicture = master.variants.filter { $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil }
+        let candidates = withPicture.isEmpty ? master.variants : withPicture
+        guard let best = candidates.max(by: { $0.bandwidth < $1.bandwidth }),
+            candidates.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil })
+        else { return candidates }
+        return candidates.filter { LadderKey($0) == LadderKey(best) }
     }
 
-    private static func hasVideoCodec(_ codecs: String) -> Bool {
-        let prefixes = ["avc1", "avc3", "hvc1", "hev1", "dvh1", "dvhe", "av01", "vp09", "vp08"]
-        return codecs.split(separator: ",").contains { codec in
-            prefixes.contains { codec.trimmingCharacters(in: .whitespaces).hasPrefix($0) }
+    /// What variants that switch with each other share (`ladder(of:)`).
+    private struct LadderKey: Equatable {
+        let codec: String?
+        let supplementalCodec: String?
+        let range: HLSVideoRange?
+        let groups: [String?]
+
+        init(_ variant: HLSVariant) {
+            codec = variant.codecs.flatMap(CodecFamily.video)
+            supplementalCodec = variant.supplementalCodecs.flatMap(CodecFamily.video)
+            range = variant.videoRange
+            groups = [variant.audioGroup, variant.videoGroup, variant.subtitlesGroup]
         }
     }
 

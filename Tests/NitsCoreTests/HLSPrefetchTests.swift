@@ -80,32 +80,6 @@ struct HLSPrefetchTests {
         #expect(read.count == 30)
     }
 
-    @Test("Variants that can't switch with the one played, and renditions only they refer to, aren't read")
-    func ladderOnly() async throws {
-        guard let server = try Self.serve(.hlsVariants) else { return }
-        defer { server.stop() }
-        // A HEVC variant and a variant with an audio group of its own, both below the AVC variant played.
-        let master = String(
-            decoding: try await URLSession.shared.data(from: try #require(URL(string: server.url("master.m3u8")))).0,
-            as: UTF8.self)
-        server.setResponder(forPath: "master.m3u8") {
-            Data(
-                (master + """
-                    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Other",URI="other_audio.m3u8"
-                    #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="hvc1.1.6.L93.B0,mp4a.40.2"
-                    hevc.m3u8
-                    #EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.64000d,mp4a.40.2",AUDIO="other"
-                    v0.m3u8
-
-                    """).utf8)
-        }
-        let demuxer = try #require(await Self.open(server))
-        #expect(demuxer.variants.count == 3, "\(demuxer.variants.map(\.bandwidth))")
-        let paths = server.requests.map(\.path)
-        #expect(!paths.contains("hevc.m3u8") && !paths.contains("other_audio.m3u8"), "\(paths)")
-        #expect(await Self.offPool { demuxer.nextVideoSample(waitingForReadAhead: false) != nil })
-    }
-
     @Test("A ladder is a video codec, a range and rendition groups; the first variant listed stays")
     func ladder() {
         let master = """
