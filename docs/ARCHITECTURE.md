@@ -546,9 +546,13 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
 - **HLS opening.** `HLSInput` loads the master and every media playlist it needs at once (one request each, on
   `HTTPSessionTransport`), and probes lanes to describe their streams: the start of a lane's first segment, streamed
   (`HLSSegmentBody`) through an `AVIOContext` of ours into FFmpeg's analysis, which reads what it needs of it
-  (`HLSLane.probe`). The probe's requests are the opening's (`whileOpening`: held to a 256 KB buffer, no
-  adaptive-bitrate sample, but counted in `openingThroughput`), and are dropped once the streams are described; a lane
-  that is not read afterwards downloads nothing more. FFmpeg's own HLS demuxer probed every variant one request after
+  (`HLSLane.probe`). The probe's requests are the opening's (`HTTPSessionTransport.open(opening:)`: no adaptive-bitrate
+  sample, but a measure of the link). A probe's segment is kept by its lane once the streams are described
+  (`HLSLane.startBody`): the run that starts there replays it and goes on with the same download, and a lane that is not
+  read drops it and downloads nothing more. The rung probed to start on is asked for whole and not held
+  (`HTTPSessionInput.Opening.start`): its download is the start of playback, and what it brings after the opening a
+  sample as any segment's; the others are held to a 256 KB buffer, asked for in pieces of it (`.held`), as they are
+  read only as far as FFmpeg's analysis goes. FFmpeg's own HLS demuxer probed every variant one request after
   another, and Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one.
   Here only the variants that switch with the best one (`HLSInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
   `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded at all, and of such a ladder only the
@@ -569,7 +573,16 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     requests are stopped (`HLSSegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
     left out, and the next rung down is probed. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
   - *A slow link* (`openingLinkRate`): the rung it starts on is probed too, before the demuxer chooses (the same rule,
-    `HLSInput.startRung`), and the next one down when that probe fails.
+    `HLSInput.startRung`), and the next one down when that probe fails; the download of the rung probed to start on
+    stops.
+  - *The link's rate* (`HTTPSessionTransport.waitForOpeningRate`, `OpeningLimit.linkRate`) is what the opening's
+    transfers bring past their slow start (`skipSlowStart`): max(128 KB, what a link at `slowLinkLimit` carries in two
+    round trips), the round trip TCP's handshake took on a new connection to the segments' host (QUIC's for HTTP/3;
+    `HTTPSessionInput.roundTrip(of:)`, from the playlists' requests). A single probe on a fresh connection brought its
+    first 256 KB at 2.6–5.2 Mbit/s on a fat link at 180 ms of round trip: TCP's window, not the link. Told over 256 KB
+    past the skip, or once a link at the limit would have brought them and the skip (a link proven slower); the start's
+    download goes on past its probe, and the opening waits for it (about a second at most at the limit); transfers that
+    end first give the rate of what came (`rateOfWhatCame`, over half a second of transfer at least).
   A ladder `ladder(of:)` keeps whole (a rung that tells no codecs) has every rung probed side by side. A media playlist
   given alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`HLSLane.startBody`), so
   the demuxer's rewind to the start after its opening scan replays what was read and goes on with the same download.
@@ -680,8 +693,8 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     costs 0.99 s of wall time at 22.4 Mbit/s, and leaving it is right.
   - *Start on a slow link*: an HLS opening's probes (`HLSInput.openingLinkRate`, bodies only) follow
     the CDN's answer as much as the link (4.8 to 62 Mbit/s on fast links, 17–24 on a true 25, 1.6–1.9 on 2), so it
-    proves a link slow and never fast. Under 3 Mbit/s (`slowLinkLimit`, below the lowest read on a fast link), from two
-    starts and 256 KB on, the start is the highest variant within `safety` of it (as DASH's `OpeningLimit.throughput`
+    proves a link slow and never fast. Under 3 Mbit/s (`slowLinkLimit`, below the lowest read on a fast link), past the slow
+    start (see "HLS opening"), the start is the highest variant within `safety` of it (as DASH's `OpeningLimit.throughput`
     does), else the lowest; otherwise the best, as before. On 2 Mbit/s (NLC "DSL") a start on the top variant (39
     Mbit/s) stalled 62–70 s of 120, the first estimate coming after a 10 MB segment; on the variant the rate carries,
     0 s in two runs. A link between 3 Mbit/s and the best variant's bandwidth still starts on the best.

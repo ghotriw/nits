@@ -130,15 +130,17 @@ final class HLSSegmentReader {
     private(set) var openTiming = OpenTiming()
 
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
-    /// section): the caller's thread. A probe (`isProbe`) reads `first` only as far as FFmpeg's analysis goes, to
-    /// describe the streams (`HLSLane.probe`): the run is not meant to be read on. `timelineShift` gives a WebVTT
-    /// segment's offset by its discontinuity sequence. `knownVideoDelay`: the caller has the streams described already
-    /// (a lane past its probe), and their picture's reorder depth (`video_delay`, 0 without a picture): the analysis
-    /// only finds where the run starts (`openContext`). `onAnswer` is told once the first segment's first bytes came (its init
-    /// section's before them): the server answers, whatever the analysis then takes.
+    /// section): the caller's thread. A probe (`probe`, how its request is read while the demuxer opens) reads `first`
+    /// only as far as FFmpeg's analysis goes, to describe the streams (`HLSLane.probe`): the run is not read on, but its
+    /// first segment's body, retained as any run's, may go on as the run read afterwards (`claimFirstBody`).
+    /// `timelineShift` gives a WebVTT segment's offset by its discontinuity sequence. `knownVideoDelay`: the caller has
+    /// the streams described already (a lane past its probe), and their picture's reorder depth (`video_delay`, 0
+    /// without a picture): the analysis only finds where the run starts (`openContext`). `onAnswer` is told once the
+    /// first segment's first bytes came (its init section's before them): the server answers, whatever the analysis
+    /// then takes.
     init(
         loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
-        anchoring: Anchoring? = nil, isProbe: Bool = false, knownVideoDelay: Int? = nil,
+        anchoring: Anchoring? = nil, probe: HTTPSessionInput.Opening? = nil, knownVideoDelay: Int? = nil,
         firstBody: HLSSegmentBody? = nil, onAnswer: (() -> Void)? = nil,
         next: @escaping () -> HLSSegment?
     ) throws(HLSSegmentReaderError) {
@@ -162,7 +164,7 @@ final class HLSSegmentReader {
             if let firstBody {
                 body = firstBody
             } else {
-                body = try loader.segmentBody(first, whileOpening: isProbe, retains: !isProbe)
+                body = try loader.segmentBody(first, opening: probe, retains: true)
             }
             opened = body
             retainedFirst = body
@@ -274,6 +276,16 @@ final class HLSSegmentReader {
     func claimFirstBody() -> HLSSegmentBody? {
         isFirstClaimed = true
         return retainedFirst
+    }
+
+    /// Gives up the download of the segment being read, but keeps the context and its streams: a probe whose run is
+    /// not read on (`HLSLane.endDownload`), which a start's download (`HTTPSessionInput.Opening.start`) would go on with.
+    func endDownload() {
+        body?.close()
+        retainedFirst?.close()
+        // Read on, the context finds the end of its bytes (the probe's run asks for no next segment).
+        body = nil
+        retainedFirst = nil
     }
 
     func close() {

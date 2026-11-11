@@ -156,19 +156,19 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
         let offset = Self.intOption("offset", in: options) ?? 0
         let cookieOrigin = cookies == nil ? nil : masterLocation
-        let whileOpening = isOpening
+        let opening: HTTPSessionInput.Opening? = isOpening ? .held : nil
         let opened: HTTPSessionTransport.Opened
         if let gate = liveSegments, let segment = gate.request(for: url) {
             opened = gate.open(segment, shouldAbort: transport.shouldAbort) { address in
                 // The CDN may redirect a segment (YouTube's 4K tier does, to another server), and its address is whole.
                 transport.open(
                     address.absoluteString, offset: offset, end: end, cookies: cookies, cookieOrigin: cookieOrigin,
-                    whileOpening: whileOpening, followsRedirects: true)
+                    opening: opening, followsRedirects: true)
             }
         } else {
             opened = transport.open(
                 url, offset: offset, end: end, cookies: cookies, cookieOrigin: cookieOrigin,
-                whileOpening: whileOpening)
+                opening: opening)
         }
         switch opened {
         case .input(let input):

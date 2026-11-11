@@ -16,20 +16,23 @@ import os
 /// programs: the demuxer chooses the start and switches (`MediaDemuxer+Variants.swift`), with the splice it has for any
 /// input. It reads the lanes of the variants selected only (`setReading`). At the opening a rung is probed: its first
 /// segment is read as far as FFmpeg's analysis goes (up to `max_analyze_duration` of media: often the whole of a short
-/// segment), as the opening's requests (`HTTPSessionTransport`'s opening limit: held to a small buffer, no
-/// adaptive-bitrate sample, but a measure of the link, `openingLinkRate`). Of a ladder of one codec, range and groups
-/// only the top is (with the audio renditions, side by side), as hls.js and ExoPlayer read the start variant alone; the
-/// next rung down is probed beside it when it has not answered in `answerLimit`, and the first to answer goes on. The
-/// other rungs are its clones: described as it, with their `RESOLUTION`, until their first read describes them
-/// (`variantDescription(id:)`, `redescribe`); one that turns out other is rejected, and the demuxer gives up the switch
-/// to it. A link proven slow has the rung it starts on probed too. A ladder `ladder(of:)` kept whole (a rung that tells
-/// no codecs) has every rung probed. The probe is dropped
-/// once the streams are described, the one of the variant played included: its download was held to the opening's
-/// buffer, and what it left is asked for again unheld (continuing it would hold the start of playback to a link as it
-/// is the moment the opening ends). A lane that is not read afterwards downloads nothing more. The first segment of a run
-/// the lane then reads is kept by it (`HLSLane.startBody`) for a seek or the demuxer's rewind to its start, which
-/// replay what was read and go on with the same download. A lane read again for a switch starts at the segment
-/// after the one the picture is at (`HLSLane.catchUp`); the demuxer drops its pictures up to the keyframe it splices at.
+/// segment), as the opening's requests (`HTTPSessionTransport`'s opening limit: no adaptive-bitrate sample, but a
+/// measure of the link, `openingLinkRate`). Of a ladder of one codec, range and groups only the top is (with the audio
+/// renditions, side by side), as hls.js and ExoPlayer read the start variant alone; the next rung down is probed beside
+/// it when it has not answered in `answerLimit`, and the first to answer goes on. The other rungs are its clones:
+/// described as it, with their `RESOLUTION`, until their first read describes them (`variantDescription(id:)`,
+/// `redescribe`); one that turns out other is rejected, and the demuxer gives up the switch to it. A link proven slow
+/// has the rung it starts on probed too. A ladder `ladder(of:)` kept whole (a rung that tells no codecs) has every rung
+/// probed.
+///
+/// The rung probed to start on (`HTTPSessionInput.Opening.start`) is asked for whole, not held: its download goes on
+/// past the analysis, measures the link past its slow start (`HTTPSessionTransport.skipSlowStart`, `waitForOpeningRate`)
+/// and is the start of playback; the others are held to a small buffer. A probe's segment is kept by its lane
+/// (`HLSLane.startBody`) once the streams are described, as the first segment of any run the lane reads is: a run that
+/// starts there (the demuxer's first read, its rewind to the start after its opening scan, a seek) replays what was read
+/// and goes on with the same download, and a lane that is not read drops it and downloads nothing more. A lane read
+/// again for a switch starts at the segment after the one the picture is at (`HLSLane.catchUp`); the demuxer drops its
+/// pictures up to the keyframe it splices at.
 ///
 /// Timeline 0 is the first segment listed when the playlist was first loaded, live or not (so `timelineOrigin` is 0 and
 /// nothing is rebased); the window is told from the playlist's own model (`liveWindow`).
@@ -98,9 +101,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     static let edgeMargin = 3.0
     /// Bits a second under which the opening's transfers prove the link slow, and the start is a lower rung than the top
     /// (measured by the first client, which prefetched 128 KB segment starts, at TCP's slow start: 4.8 to 62 Mbit/s on
-    /// fast links). The probes here read more (a segment, often) from every variant side by side, which
-    /// shares the link: the rate is a lower bound of it, so it proves a link slow, never fast; not measured with these
-    /// probes on a real link yet.
+    /// fast links). Here the rate is the start's download (and the renditions' probes beside it) past its slow start
+    /// (`HTTPSessionTransport.skipSlowStart`); not set from a measure of that yet.
     static let slowLinkLimit = 3_000_000.0
 
     private struct StreamInfo {
@@ -139,7 +141,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// The variants described from another rung's probe (`redescribe`): pending until their first read, then described
     /// or rejected. A variant not in it is described by a probe of its own.
     private let descriptions = OSAllocatedUnfairLock<[Int: MediaDemuxer.VariantDescription]>(initialState: [:])
-    /// What the opening's probes carried (`HTTPSessionTransport.openingThroughput`), read once they ended.
+    /// The link's rate the opening measured (`HTTPSessionTransport.waitForOpeningRate`), read once the probes ended.
     private var openingRate: Double?
     let isLivePlaylist: Bool
     let durationSeconds: Double
@@ -154,7 +156,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     var timelineOrigin: Int64 { 0 }
     var network: (any NetworkReadAccount)? { isNetworkSource ? meter : nil }
 
-    /// What the opening's probes carried, when it proves the link slow: playback then starts on a rung that fits it.
+    /// The link's rate the opening measured, past the slow start of its transfers (the start's download and the
+    /// renditions' probes beside it, `HTTPSessionTransport.waitForOpeningRate`), when it proves the link slow: playback
+    /// then starts on a rung that fits it.
     var openingLinkRate: Double? {
         guard !variants.isEmpty, let rate = openingRate, rate < Self.slowLinkLimit else { return nil }
         return rate
@@ -343,6 +347,12 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         // into it. A top that has not answered in `answerLimit` has the next rung down probed beside it, and the first to
         // answer describes the ladder (`raceForModel`).
         let isProbing = !plan.isEmpty
+        // The rate the opening measures leaves the slow start of its transfers out, by the round trip to the segments'
+        // server the playlists' requests measured.
+        let roundTrip =
+            isProbing
+            ? transport.skipSlowStart(
+                forSegmentsOn: reference.entry(at: startTime)?.segment.url.host, limit: Self.slowLinkLimit) : nil
         let results = built.map { _ in Slot<HLSSegmentReaderError>() }
         let probedLanes = built.map { _ in Slot<Bool>() }
         let lanesToOpen = built
@@ -350,11 +360,12 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             isProbing
             ? Self.cloneCandidates(plan: plan, listed: listed, top: referenceIndex) { lanesToOpen[$0] != nil } : []
         let probeTime = startTime
-        @Sendable func probe(_ index: Int) {
+        /// Probes the lane at `index` of `wanted`; `.start` for a rung playback starts on, whose download goes on.
+        @Sendable func probe(_ index: Int, opening: HTTPSessionInput.Opening = .held) {
             // A subtitle rendition's streams are known without a read (its first segment may have no cues).
             guard let lane = lanesToOpen[index], lane.kind != .subtitle else { return }
             do throws(HLSSegmentReaderError) {
-                try lane.probe(at: probeTime)
+                try lane.probe(at: probeTime, opening: opening)
                 probedLanes[index].set(true)
             } catch {
                 results[index].set(error)
@@ -414,7 +425,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 do throws(HLSSegmentReaderError) { try lane.open(at: startTime) } catch { results[0].set(error) }
             }
         } else if candidates.isEmpty {
-            DispatchQueue.concurrentPerform(iterations: built.count) { probe($0) }
+            DispatchQueue.concurrentPerform(iterations: built.count) {
+                probe($0, opening: $0 == referenceIndex ? .start : .held)
+            }
         } else {
             let raced = Set(candidates)
             let besides = built.indices.filter { !raced.contains($0) }
@@ -426,20 +439,37 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 }
             }
         }
-        // What the opening's probes carried: read now, before a start rung probed below adds to it.
-        openingRate = isProbing ? transport.openingThroughput : nil
+        // A rung of the race that was probed beside the model (both described) starts nothing: its whole-segment
+        // download (`.start`) would share the link with the one played, and the measure of it.
+        if let model = modelSlot.value {
+            for index in candidates where index != model && probedLanes[index].value == true {
+                lanesToOpen[index]?.endDownload()
+            }
+        }
+        // The link's rate, from the opening's transfers past their slow start: the start's download goes on past its
+        // probe, and is waited for until it tells (a second at most at the limit). Read now, before a start rung probed
+        // below adds to it.
+        let rateWait = ContinuousClock.now
+        openingRate = isProbing ? transport.waitForOpeningRate(limit: Self.slowLinkLimit) : nil
+        let rateTold = ContinuousClock.now
+        // The measure as it was told (the start's download goes on adding to it).
+        let rateReport = isProbing ? transport.openingRateReport : ""
         let model = modelSlot.value
         /// Rungs described as the model, by their position in `wanted`.
         var clones = Set(
             model == nil ? [] : candidates.filter { probedLanes[$0].value != true && results[$0].value == nil })
         // A link proven slow starts on a rung below the top (`MediaDemuxer.adoptVariants`, the same rule: `startRung`): one
         // described as the model is probed now, as the demuxer starts only on a rung described by its own probe. One that
-        // fails is left out, and the next rung down is the start: the demuxer then picks it the same way.
+        // fails is left out, and the next rung down is the start: the demuxer then picks it the same way. The download of
+        // the rung probed to start on (`.start`) stops: it would share the slow link with the one played.
         if let rate = openingRate, rate < Self.slowLinkLimit {
             let open = plan.filter { lanesToOpen[$0.video] != nil && results[$0.video].value == nil }
             if let start = Self.startRung(plan: open, linkRate: rate),
                 let startBandwidth = open.first(where: { $0.video == start })?.bandwidth
             {
+                if let probedStart = model ?? (candidates.isEmpty ? referenceIndex : nil), probedStart != start {
+                    lanesToOpen[probedStart]?.endDownload()
+                }
                 let downward =
                     [start]
                     + open.filter { $0.bandwidth < startBandwidth }
@@ -448,7 +478,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     if probedLanes[rung].value == true { break }
                     guard clones.contains(rung) else { continue }
                     AppLog.info(.demuxer, "HLS: the link is slow, probing \(built[rung]?.label ?? "") to start on")
-                    probe(rung)
+                    probe(rung, opening: .start)
                     clones.remove(rung)
                     if probedLanes[rung].value == true { break }
                 }
@@ -575,7 +605,12 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlists) \(probes) "
                 + "clones=\(cloneLanes.count) describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         if isProbing {
-            AppLog.info(.demuxer, "\(HLSOpeningMeasure.rate) " + transport.openingRateReport)
+            let told = openingRate.map { "\(Int($0 / 1000))kbit/s" } ?? "-"
+            AppLog.info(
+                .demuxer,
+                "\(HLSOpeningMeasure.rate) " + rateReport
+                    + " rtt=\(roundTrip.map { "\(Int(($0 * 1000).rounded()))ms" } ?? "-") rate=\(told) "
+                    + "wait=\(ms(rateTold - rateWait))")
         }
         AppLog.info(
             .demuxer,
@@ -967,7 +1002,7 @@ private final class ProbeRace: @unchecked Sendable {
         DispatchQueue.global(qos: .userInitiated).async { [group] in
             let failure: HLSSegmentReaderError?
             do throws(HLSSegmentReaderError) {
-                try lane.probe(at: time, loader: probeLoader) {
+                try lane.probe(at: time, loader: probeLoader, opening: .start) {
                     state.withLock { if $0.winner == nil { $0.winner = index } }
                     changed.signal()
                 }

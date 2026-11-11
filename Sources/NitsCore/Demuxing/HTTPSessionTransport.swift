@@ -77,6 +77,51 @@ final class HTTPSessionTransport: Sendable {
     /// The opening's rate at the points it could be read at, for the measurement (`OpeningLimit.rateReport`).
     var openingRateReport: String { openingLimit.rateReport }
 
+    /// Bytes of the opening's transfers left out of the link's rate at least (`skipSlowStart`).
+    static let slowStartBytes = 128 << 10
+    /// How long `skipSlowStart` waits for the round trip of a request read through.
+    static let metricsWait: Duration = .milliseconds(100)
+
+    /// Leaves the start of the opening's transfers out of the link's rate (`OpeningLimit.linkRate`): TCP's slow start,
+    /// in which a fresh connection carries a window a round trip whatever the link (at 180 ms of round trip a single
+    /// probe brought its first 256 KB at 3.4–5.2 Mbit/s on a fat link, 2.6–2.8 by its first half second). As many bytes
+    /// as a link at `limit` carries in two round trips, `slowStartBytes` at least; the round trip is one measured to
+    /// `host` (`NetworkTransferMeter.roundTrip(host:)`: the master's and playlists' requests set up its connections),
+    /// none for another host. Before the opening's transfers start. Returns the round trip it took, for the log.
+    ///
+    /// A request's metrics may come after its body was read through: those still to come for `host`
+    /// (`NetworkTransferMeter.awaitsMetrics(host:)`) are waited for, `metricsWait` at most, in steps of 10 ms.
+    func skipSlowStart(forSegmentsOn host: String?, limit: Double) -> Double? {
+        var roundTrip = host.flatMap { meter.roundTrip(host: $0) }
+        if let host, roundTrip == nil {
+            let deadline = ContinuousClock.now + Self.metricsWait
+            let wake = DispatchSemaphore(value: 0)
+            while roundTrip == nil, meter.awaitsMetrics(host: host), ContinuousClock.now < deadline, !shouldAbort() {
+                _ = wake.wait(timeout: .now() + .milliseconds(10))
+                roundTrip = meter.roundTrip(host: host)
+            }
+        }
+        let bytes = max(Self.slowStartBytes, Int((limit / 8 * (roundTrip ?? 0) * 2).rounded()))
+        openingLimit.skip(bytes)
+        return roundTrip
+    }
+
+    /// The link's rate as the opening's transfers tell it against `limit` (`OpeningLimit.linkRate`), waited for while
+    /// they go on (a start's download, `HTTPSessionInput.Opening.start`, goes on past the probes): at most until a link
+    /// at `limit` would have carried what it takes, about a second at 3 Mbit/s. When the transfers ended first, the rate of
+    /// what came (`OpeningLimit.rateOfWhatCame`: nil for less than half a second of transfer, a link that brought all
+    /// they asked for at once); nil for an abort. Blocks the opening's thread, as its
+    /// probes do (`shouldAbort`, checked every 20 ms).
+    func waitForOpeningRate(limit: Double) -> Double? {
+        let wake = DispatchSemaphore(value: 0)
+        while true {
+            if let rate = openingLimit.linkRate(limit: limit) { return rate }
+            if shouldAbort() { return nil }
+            if !openingLimit.isTransferring { return openingLimit.rateOfWhatCame }
+            _ = wake.wait(timeout: .now() + .milliseconds(20))
+        }
+    }
+
     /// The demuxer has opened: the inputs opened meanwhile are held no longer (see `HTTPSessionInput.OpeningLimit`).
     func endOpening() {
         openingLimit.lift()
@@ -84,11 +129,12 @@ final class HTTPSessionTransport: Sendable {
 
     /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `cookies` is
     /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
-    /// master was served from, after its redirects). `abort` interrupts this request too, besides `shouldAbort` (a probe
-    /// of the opening that lost its race, `HLSInput`).
+    /// master was served from, after its redirects). `opening`: a request of the demuxer's opening, and how it is read
+    /// (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
+    /// that lost its race, `HLSInput`).
     func open(
-        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?, whileOpening: Bool = false,
-        followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil
+        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?,
+        opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil
     ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
         if let cookies {
@@ -105,8 +151,8 @@ final class HTTPSessionTransport: Sendable {
         }
         let input = HTTPSessionInput(
             holder: holder, request: request, offset: offset, end: end, meter: meter,
-            openingLimit: whileOpening ? openingLimit : nil, followsRedirects: followsRedirects,
-            shouldAbort: interrupts)
+            openingLimit: opening == nil ? nil : openingLimit, opening: opening ?? .held,
+            followsRedirects: followsRedirects, shouldAbort: interrupts)
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()
@@ -184,9 +230,39 @@ final class NetworkTransferMeter: Sendable {
             (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
         /// Body bytes received by every transfer so far.
         var receivedBytes = 0
+        /// The shortest round trip to each host its connections were set up in (`HTTPSessionInput.roundTrip(of:)`).
+        var roundTrips: [String: Double] = [:]
+        /// Tasks to each host whose metrics have not come yet.
+        var awaitedMetrics: [String: Int] = [:]
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// A connection to `host` was set up in a round trip of `seconds`.
+    func noteRoundTrip(_ seconds: Double, host: String) {
+        guard seconds > 0 else { return }
+        state.withLock { state in state.roundTrips[host] = min(state.roundTrips[host] ?? .infinity, seconds) }
+    }
+
+    /// The shortest round trip a connection to `host` was set up in, if one was.
+    func roundTrip(host: String) -> Double? {
+        state.withLock { $0.roundTrips[host] }
+    }
+
+    /// A task to `host` started: its metrics are to come (`metricsCame`).
+    func awaitMetrics(host: String) {
+        state.withLock { $0.awaitedMetrics[host, default: 0] += 1 }
+    }
+
+    /// The metrics of a task to `host` came (`noteRoundTrip` before, when they tell one).
+    func metricsCame(host: String) {
+        state.withLock { state in state.awaitedMetrics[host] = max((state.awaitedMetrics[host] ?? 0) - 1, 0) }
+    }
+
+    /// Whether a task to `host` has its metrics still to come: a round trip may be on the way.
+    func awaitsMetrics(host: String) -> Bool {
+        state.withLock { ($0.awaitedMetrics[host] ?? 0) > 0 }
+    }
 
     /// `count` body bytes came, to whichever transfer.
     func received(_ count: Int) {
@@ -310,8 +386,21 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     static let openingHighWater = 256 << 10
     static let openingLowWater = 64 << 10
 
-    /// Held to `openingHighWater` while `isLimited`: shared by the inputs a DASH demuxer opens while it opens, and lifted
-    /// when it has (`HTTPSessionTransport.endOpening`), the buffers of those it keeps reading then growing as any.
+    /// How a request of the demuxer's opening (`OpeningLimit`) is read. Its bytes are the opening's either way: counted
+    /// in its rate, and no adaptive-bitrate sample.
+    enum Opening: Sendable {
+        /// A probe of a stream's description, of which FFmpeg's analysis reads a little: held to `openingHighWater`,
+        /// asked for in pieces of it.
+        case held
+        /// The segment playback starts on (`HLSInput`'s start rung): asked for whole and not held, so that its probe goes
+        /// on as the segment read (`HLSLane.startBody`) and its transfer measures the link (`OpeningLimit.linkRate`).
+        /// What comes after the opening is a sample of the link's rate, as any segment's (`openingEnded`).
+        case start
+    }
+
+    /// What the inputs opened while a demuxer opens share (`HTTPSessionTransport.open(opening:)`), until it has
+    /// (`HTTPSessionTransport.endOpening`): the held ones are held to `openingHighWater` while `isLimited`, their buffers
+    /// growing as any's once lifted, and all of them measure the link together (`throughput`, `linkRate`).
     final class OpeningLimit: Sendable {
         private struct State {
             var isLimited = true
@@ -324,6 +413,11 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             /// reached half a second: the points `throughput` could be read at, for the measurement (`rateReport`).
             var secondsAtHighWater: Double?
             var bytesAtHalfSecond: (bytes: Int, seconds: Double)?
+            /// The bytes `linkRate` leaves out, and the bytes and busy seconds once they had come.
+            var skip = 0
+            var atSkip: (bytes: Int, seconds: Double)?
+            /// What `lift` tells the inputs that go on past the opening (`HTTPSessionInput.openingEnded`).
+            var onLift: [@Sendable () -> Void] = []
 
             var seconds: Double {
                 busySeconds + (busySince.map { (ContinuousClock.now - $0) / .seconds(1) } ?? 0)
@@ -334,12 +428,79 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var isLimited: Bool { state.withLock { $0.isLimited } }
         /// Ends the measuring: what the inputs do from now on is not the opening's.
         func lift() {
-            state.withLock { state in
+            let told = state.withLock { state -> [@Sendable () -> Void] in
                 state.isLimited = false
                 if let since = state.busySince {
                     state.busySeconds += (ContinuousClock.now - since) / .seconds(1)
                     state.busySince = nil
                 }
+                defer { state.onLift = [] }
+                return state.onLift
+            }
+            // Outside the lock: an input tells its transfer's end and start under its own, which takes this one.
+            for tell in told { tell() }
+        }
+
+        /// `tell` is called when the opening ends; false (nothing registered) once it has.
+        func whenLifted(_ tell: @escaping @Sendable () -> Void) -> Bool {
+            state.withLock { state in
+                guard state.isLimited else { return false }
+                state.onLift.append(tell)
+                return true
+            }
+        }
+
+        /// The first `bytes` the inputs bring are no measure of the link (`linkRate`). Before they come.
+        func skip(_ bytes: Int) {
+            state.withLock { $0.skip = max(bytes, 0) }
+        }
+
+        /// Whether an input transfers now, while the opening goes on.
+        var isTransferring: Bool { state.withLock { $0.isLimited && $0.busySince != nil } }
+
+        /// Bytes `linkRate` measures the link over, past the skipped ones.
+        static let measuredBytes = 256 << 10
+        /// The least time past the skip a rate of a link slower than the limit is measured over; less, and it is the
+        /// whole opening's.
+        static let shortestMeasure = 0.25
+
+        /// Bits a second of the link, once they can be told against `limit` (bits a second): over `measuredBytes` past the
+        /// first `skip` ones (TCP's slow start), or, when a link at `limit` would have brought them and the skip by now,
+        /// over what came past the skip (all that came, past it for less than `shortestMeasure`): a link proven slower
+        /// than the limit, whose rate a full measure would only wait for. Nil until then. The time is the time any input
+        /// transferred (`throughput`).
+        func linkRate(limit: Double) -> Double? {
+            state.withLock { state in
+                let seconds = state.seconds
+                if let start = state.atSkip {
+                    let bytes = state.bytes - start.bytes
+                    let time = seconds - start.seconds
+                    if bytes >= Self.measuredBytes, time > 0 { return Double(bytes) * 8 / time }
+                }
+                guard limit > 0, seconds >= Double(state.skip + Self.measuredBytes) * 8 / limit else { return nil }
+                if let start = state.atSkip, seconds - start.seconds >= Self.shortestMeasure,
+                    state.bytes > start.bytes
+                {
+                    return Double(state.bytes - start.bytes) * 8 / (seconds - start.seconds)
+                }
+                return Double(state.bytes) * 8 / seconds
+            }
+        }
+
+        /// Bits a second of what came, when the transfers ended before `linkRate` could tell (a start's segment smaller
+        /// than the skip and the measure, a start's probe that failed): past the skip when that ran `shortestMeasure`,
+        /// else all of it. Nil for less than half a second of transfer: a link that brought all it was asked for that
+        /// fast is no slow one.
+        var rateOfWhatCame: Double? {
+            state.withLock { state in
+                let seconds = state.seconds
+                guard seconds >= 0.5, state.bytes > 0 else { return nil }
+                if let start = state.atSkip, seconds - start.seconds >= Self.shortestMeasure,
+                    state.bytes > start.bytes
+                {
+                    return Double(state.bytes - start.bytes) * 8 / (seconds - start.seconds)
+                }
+                return Double(state.bytes) * 8 / seconds
             }
         }
 
@@ -373,6 +534,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 if state.bytesAtHalfSecond == nil, seconds >= 0.5 {
                     state.bytesAtHalfSecond = (state.bytes, seconds)
                 }
+                if state.atSkip == nil, state.bytes >= state.skip {
+                    state.atSkip = (state.bytes, seconds)
+                }
             }
         }
 
@@ -389,8 +553,14 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 }
                 let atHalf = state.bytesAtHalfSecond.map { "\(kbps($0.bytes, $0.seconds))/\($0.bytes >> 10)KB" }
                 let seconds = state.seconds
+                let ms = { (seconds: Double) in Int((seconds * 1000).rounded()) }
+                let pastSkip = state.atSkip.map { start in
+                    let bytes = state.bytes - start.bytes
+                    return "\(kbps(bytes, seconds - start.seconds))/\(bytes >> 10)KB/\(ms(seconds - start.seconds))ms"
+                }
                 return "at\(highWater >> 10)KB=\(atHighWater ?? "-") at0.5s=\(atHalf ?? "-") "
-                    + "all=\(kbps(state.bytes, seconds))/\(state.bytes >> 10)KB/\(Int((seconds * 1000).rounded()))ms"
+                    + "all=\(kbps(state.bytes, seconds))/\(state.bytes >> 10)KB/\(ms(seconds))ms "
+                    + "skip=\(state.skip >> 10)KB past=\(pastSkip ?? "-")"
             }
         }
 
@@ -406,12 +576,16 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     private let openingLimit: OpeningLimit?
+    /// How the input is read while the demuxer opens, when it is one of the opening's (`openingLimit`).
+    private let opening: Opening
     /// A redirect is followed here, and the answer of where it leads is the input's. For a request whose address is whole
     /// and whose answer needs no other address to be read (a live stream's segment, `LiveSegmentGate`); an HLS playlist's
     /// is FFmpeg's, which resolves the relative addresses in it against where it was served from.
     private let followsRedirects: Bool
-    private var highWater: Int { openingLimit?.isLimited == true ? Self.openingHighWater : Self.highWater }
-    private var lowWater: Int { openingLimit?.isLimited == true ? Self.openingLowWater : Self.lowWater }
+    /// Held to the opening's buffer: a held input of the opening, while it goes on.
+    private var isHeld: Bool { opening == .held && openingLimit?.isLimited == true }
+    private var highWater: Int { isHeld ? Self.openingHighWater : Self.highWater }
+    private var lowWater: Int { isHeld ? Self.openingLowWater : Self.lowWater }
     /// Seconds before asking again for a body cut short, a retry each: FFmpeg's `reconnect` waits 0, 1, 2, … s.
     static let retryDelays = [0.0, 1, 2]
     /// `AVERROR_EXIT` (`-MKTAG('E', 'X', 'I', 'T')`), FFmpeg's error for an interrupted call.
@@ -430,10 +604,12 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     init(
         holder: HTTPSessionHolder, request: URLRequest, offset: Int64, end: Int64?, meter: NetworkTransferMeter,
-        openingLimit: OpeningLimit? = nil, followsRedirects: Bool = false, shouldAbort: @escaping @Sendable () -> Bool
+        openingLimit: OpeningLimit? = nil, opening: Opening = .held, followsRedirects: Bool = false,
+        shouldAbort: @escaping @Sendable () -> Bool
     ) {
         self.followsRedirects = followsRedirects
         self.openingLimit = openingLimit
+        self.opening = opening
         self.holder = holder
         self.request = request
         self.offset = offset
@@ -447,15 +623,23 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// A task for the body from `position` on (the request's offset at first), to `end`: while the demuxer opens
-    /// (`OpeningLimit`), to `openingHighWater` bytes only, so the server sends no more (a suspended task's socket still
-    /// takes in what the kernel buffers: megabytes of a slow link) and `startContinuation` asks for the rest.
-    /// Made behind `state`'s lock, as the task is its `task`.
+    /// (`OpeningLimit`), a held one to `openingHighWater` bytes only, so the server sends no more (a suspended task's
+    /// socket still takes in what the kernel buffers: megabytes of a slow link) and `startContinuation` asks for the
+    /// rest. Made behind `state`'s lock, as the task is its `task`.
     private func makeTask(from position: Int64, in state: inout State) -> URLSessionDataTask {
         var request = request
         var last = end.map { $0 - 1 }
         state.isChunked = false
         state.isOpeningTask = openingLimit?.isLimited == true
-        if openingLimit?.isLimited == true {
+        if state.isOpeningTask, opening == .start {
+            // Whole, and read on past the opening: what comes after it is a sample, as any segment's.
+            let registered =
+                openingLimit?.whenLifted { [weak self] in
+                    self?.openingEnded()
+                } ?? false
+            if !registered { state.isOpeningTask = false }
+        }
+        if isHeld {
             let chunkLast = position + Int64(Self.openingHighWater) - 1
             if last.map({ chunkLast < $0 }) ?? true {
                 last = chunkLast
@@ -469,6 +653,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         // being picked and its being made (a task made on a closed session is an exception that ends the app).
         let task = holder.dataTask(with: request)
         task.delegate = self
+        if let host = request.url?.host { meter.awaitMetrics(host: host) }
         state.task = task
         return task
     }
@@ -542,6 +727,18 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             }
             state.transferringSince = nil
             openingLimit?.transferEnded()
+        }
+    }
+
+    /// The opening ended while a start's task (`Opening.start`) goes on: what it brought so far is the opening's, what it
+    /// brings from now on a sample of the link. Its spell is ended and begun again, outside the opening.
+    private func openingEnded() {
+        state.withLockUnchecked { state in
+            guard state.isOpeningTask else { return }
+            let isTransferring = state.transferringSince != nil
+            setTransferring(false, in: &state)
+            state.isOpeningTask = false
+            if isTransferring { setTransferring(true, in: &state) }
         }
     }
 
@@ -778,6 +975,13 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        for transaction in metrics.transactionMetrics {
+            guard let host = transaction.request.url?.host, let roundTrip = Self.roundTrip(of: transaction) else {
+                continue
+            }
+            meter.noteRoundTrip(roundTrip, host: host)
+        }
+        if let host = task.originalRequest?.url?.host { meter.metricsCame(host: host) }
         guard let transaction = metrics.transactionMetrics.last, let requested = transaction.fetchStartDate,
             let answered = transaction.responseStartDate, let ended = transaction.responseEndDate
         else { return }
@@ -790,6 +994,21 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             "HTTP: \(requestURL.lastPathComponent) @\(offset) \(received) B, answer \(ms(answered.timeIntervalSince(requested))) ms, "
                 + "transfer \(ms(transfer)) ms (\(rate)), \(transaction.isReusedConnection ? "reused" : "new") "
                 + "\(transaction.networkProtocolName ?? "?")")
+    }
+
+    /// A round trip to the server, from how a new connection was set up: TCP's handshake alone (to the start of TLS, or
+    /// to the connection for plain HTTP), or QUIC's for HTTP/3, one round trip with its TLS. Nil for a connection reused
+    /// or through a proxy (the round trip is the proxy's), or one not timed.
+    static func roundTrip(of transaction: URLSessionTaskTransactionMetrics) -> Double? {
+        guard !transaction.isReusedConnection, !transaction.isProxyConnection,
+            let start = transaction.connectStartDate
+        else { return nil }
+        let end =
+            transaction.networkProtocolName == "h3"
+            ? transaction.connectEndDate : (transaction.secureConnectionStartDate ?? transaction.connectEndDate)
+        guard let end else { return nil }
+        let seconds = end.timeIntervalSince(start)
+        return seconds > 0 ? seconds : nil
     }
 
     /// What FFmpeg is told of `response`, the file's size, and the body bytes it serves.

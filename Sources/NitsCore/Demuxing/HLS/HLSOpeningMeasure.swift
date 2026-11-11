@@ -8,8 +8,8 @@ enum HLSOpeningMeasure {
     static let opening = "HLS opening:"
     /// A run of segments opened, with its steps (`HLSSegmentReader.OpenTiming`). Debug.
     static let run = "HLS run:"
-    /// What the opening's probes brought, at the points its rate could be read at
-    /// (`HTTPSessionInput.OpeningLimit.rateReport`). Info.
+    /// What the opening's transfers brought, at the points its rate could be read at and past the slow start it skips
+    /// (`HTTPSessionInput.OpeningLimit.rateReport`), with the round trip, the rate told and the wait for it. Info.
     static let rate = "HLS opening rate:"
 
     static func ms(_ duration: Duration) -> String {

@@ -59,7 +59,7 @@ struct HTTPSessionOpeningLimitTests {
         let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
         guard
             case .input(let held) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, whileOpening: true)
+                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .held)
         else {
             Issue.record("not served")
             return
@@ -71,7 +71,7 @@ struct HTTPSessionOpeningLimitTests {
         // One opened with no such limit takes the whole body at once.
         guard
             case .input(let free) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, whileOpening: false)
+                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
         else {
             Issue.record("not served")
             return
@@ -104,7 +104,7 @@ extension HTTPSessionOpeningLimitTests {
         guard
             case .input(let input) = transport.open(
                 server.url("body"), offset: Int64(offset), end: Int64(end), cookies: nil, cookieOrigin: nil,
-                whileOpening: true)
+                opening: .held)
         else {
             Issue.record("not served")
             return
@@ -162,7 +162,7 @@ extension HTTPSessionOpeningLimitTests {
         let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
         guard
             case .input(let input) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, whileOpening: true)
+                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .held)
         else {
             Issue.record("not served")
             return
@@ -254,5 +254,80 @@ struct HTTPSessionHolderTests {
         let holder = HTTPSessionHolder(fixed: session)
         holder.replace(session)
         #expect(holder.session === session)
+    }
+}
+
+extension HTTPSessionOpeningLimitTests {
+    @Test("The link's rate leaves the skipped start out, and is told once measured, or once the link is proven slower")
+    func linkRatePastTheSkip() async throws {
+        // Measured: 256 kB past a skip of 100 kB, the skip's own time left out.
+        let fast = HTTPSessionInput.OpeningLimit()
+        fast.skip(100_000)
+        fast.transferBegan()
+        fast.received(100_000)
+        #expect(fast.linkRate(limit: 3_000_000) == nil)
+        try await Task.sleep(for: .milliseconds(200))
+        fast.received(HTTPSessionInput.OpeningLimit.measuredBytes)
+        let rate = try #require(fast.linkRate(limit: 3_000_000))
+        // 256 kB in about 0.2 s: some 10 Mbit/s; with the skip counted it would be some 14.
+        #expect(rate > 5_000_000 && rate < 11_000_000, "\(rate) bit/s")
+        fast.transferEnded()
+
+        // Proven slow: by the time a link at the limit would have brought the skip and the measure, less came.
+        let slow = HTTPSessionInput.OpeningLimit()
+        slow.skip(100_000)
+        slow.transferBegan()
+        slow.received(100_000)
+        // 356 kB at 30 Mbit/s: 0.1 s.
+        try await Task.sleep(for: .milliseconds(400))
+        slow.received(50_000)
+        let slower = try #require(slow.linkRate(limit: 30_000_000))
+        // 50 kB past the skip in about 0.4 s: 1 Mbit/s.
+        #expect(slower < 2_000_000, "\(slower) bit/s")
+        slow.transferEnded()
+        #expect(!slow.isTransferring)
+
+        // Ended before either: no told rate, but the rate of what came, over more than half a second.
+        let short = HTTPSessionInput.OpeningLimit()
+        short.transferBegan()
+        short.received(100_000)
+        #expect(short.rateOfWhatCame == nil)
+        try await Task.sleep(for: .milliseconds(600))
+        short.transferEnded()
+        #expect(short.linkRate(limit: 3_000_000) == nil)
+        let whatCame = try #require(short.rateOfWhatCame)
+        // 100 kB in about 0.6 s: some 1.3 Mbit/s.
+        #expect(whatCame > 800_000 && whatCame < 1_400_000, "\(whatCame) bit/s")
+    }
+
+    @Test("The start's input is asked for whole and not held while opening; what comes after the opening is a sample")
+    func startIsWholeAndSampledAfterTheOpening() async throws {
+        let (server, directory) = try Self.server()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        // 4 MB in 2 s.
+        server.setDefaultBehavior(.init(bytesPerSecond: Self.size / 2))
+        let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
+        guard
+            case .input(let input) = transport.open(
+                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .start)
+        else {
+            Issue.record("not served")
+            return
+        }
+        defer { input.close() }
+        #expect(Self.read(input, 4096) == 4096)
+        // Unread, it goes on past the opening's buffer.
+        let whileOpening = await Self.wait(for: input, toReceive: 1 << 20)
+        #expect(whileOpening >= 1 << 20, "\(whileOpening) bytes while opening")
+        #expect(server.requests.allSatisfy { $0.range == nil }, "\(server.requests.map(\.range))")
+        transport.endOpening()
+        #expect(Self.read(input, Self.size) == Self.size - 4096)
+        input.close()
+        // What came after the opening is a sample; what came during it is not.
+        let sampled = transport.meter.take().reduce(0) { $0 + $1.bytes }
+        #expect(sampled > 0 && sampled <= Self.size - whileOpening, "\(sampled) bytes sampled of \(Self.size)")
     }
 }

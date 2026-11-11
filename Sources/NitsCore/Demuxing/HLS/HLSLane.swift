@@ -149,20 +149,25 @@ final class HLSLane: @unchecked Sendable {
 
     /// Reads the start of the segment that holds `time` as far as FFmpeg's analysis goes, to describe the lane's streams, as
     /// `open(at:)` does with all of it. The run is not read on: `endProbe` drops it, and the lane is started with
-    /// `reposition` or `catchUp`, or left unread. A probe anchors nothing (`HLSTimestampAnchors`): the lanes probed side by
-    /// side would race for it, and the run read first anchors its sequence.
-    /// `loader` stands in for the lane's own (one that gives way to an abort of the probe alone); `onAnswer` is told once
-    /// the server answered (`HLSSegmentReader`).
+    /// `reposition` or `catchUp`, or left unread; its segment's body is kept (`startBody`), and a run that starts at
+    /// the same segment goes on with its download rather than asking for it again. A probe anchors nothing
+    /// (`HLSTimestampAnchors`): the lanes probed side by side would race for it, and the run read first anchors its
+    /// sequence.
+    /// `loader` stands in for the lane's own (one that gives way to an abort of the probe alone); `opening`: how its
+    /// request is read while the demuxer opens (`.start` for the segment playback starts on); `onAnswer` is told once the
+    /// server answered (`HLSSegmentReader`).
     func probe(
-        at time: Double, loader probeLoader: HLSSegmentLoader? = nil, onAnswer: (() -> Void)? = nil
+        at time: Double, loader probeLoader: HLSSegmentLoader? = nil, opening: HTTPSessionInput.Opening = .held,
+        onAnswer: (() -> Void)? = nil
     ) throws(HLSSegmentReaderError) {
         guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
         let began = ContinuousClock.now
         let probed = try HLSSegmentReader(
             loader: probeLoader ?? loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
-            isProbe: true, onAnswer: onAnswer
+            probe: opening, onAnswer: onAnswer
         ) { nil }
         reader = probed
+        probedSegment = entry.segment
         slotOfReaderStream = [:]
         AppLog.debug(
             .demuxer,
@@ -204,11 +209,24 @@ final class HLSLane: @unchecked Sendable {
                 + "\(outcome)=\(HLSOpeningMeasure.ms(ContinuousClock.now - run.began))")
     }
 
+    /// The segment the last probe read.
+    private var probedSegment: HLSSegment?
+
     /// Ends a probe: the streams are described. The first picture the lane reads is compared with the probe's extradata
-    /// (a stream's later init section brings new parameter sets then).
+    /// (a stream's later init section brings new parameter sets then). The probe's segment is kept to start on
+    /// (`startBody`): what was downloaded is replayed, and the download goes on.
     func endProbe() {
         learnPicture(from: reader?.streams ?? [])
+        if let reader, let segment = probedSegment { keepStart(of: reader, segment) }
+        probedSegment = nil
         dropRun()
+    }
+
+    /// Gives up the download of the probe's segment, the streams it found kept until `endProbe`: playback starts on
+    /// another lane (a slow link's rung, `HLSInput`), and a start's download (`HTTPSessionInput.Opening.start`) would go
+    /// on sharing the link with it.
+    func endDownload() {
+        reader?.endDownload()
     }
 
     /// What the lane's later runs need of its picture, from the streams that describe it (a probe's, or the first run of

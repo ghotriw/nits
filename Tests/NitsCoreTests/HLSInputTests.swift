@@ -202,10 +202,9 @@ struct HLSInputTests {
         let paths = stand.server.requests.map(\.path)
         // The rungs below were never asked for a segment.
         #expect(!paths.contains { ($0.hasPrefix("v0_") || $0.hasPrefix("v1_")) && $0.hasSuffix(".ts") }, "\(paths)")
-        // The first segment of the one read: the probe's piece (held to the opening's buffer, in ranges), and the play's,
-        // once, whole.
-        let playing = stand.server.requests.filter { $0.path == "v2_000.ts" && $0.range == nil }
-        #expect(playing.count == 1, "\(stand.server.requests.filter { $0.path == "v2_000.ts" }.map(\.range))")
+        // The first segment of the one read: asked for once, whole, by the probe, whose download goes on as the play's.
+        let first = stand.server.requests.filter { $0.path == "v2_000.ts" }
+        #expect(first.count == 1 && first.first?.range == nil, "\(first.map(\.range))")
     }
 
     @Test("A top that doesn't answer in time has the next rung down probed beside it; the first to answer describes")

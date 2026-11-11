@@ -76,7 +76,7 @@ inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` 
 `DispatchSemaphore` (`blocking`, up to 90 s). `HLSLane` waits for a live playlist's next segment the same way, on a
 `DispatchSemaphore` in steps of 50 ms (`HLSInput`, Nits' own HLS client). All three run on the thread of the demuxer's read (or of its opening, a pool
 thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). The opening of an HLS stream waits
-the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in steps of 50 ms, then the probes' threads), as
+the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in steps of 50 ms, then the probes' threads) and for the link's rate (`HTTPSessionTransport.waitForOpeningRate`, steps of 20 ms; `skipSlowStart` for a round trip's metrics, 100 ms at most), as
 it already blocks its thread on the playlists and the probes side by side; its requests give way to an abort too. Not a
 pattern for other code.
 

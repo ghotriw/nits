@@ -354,12 +354,12 @@ final class HLSSegmentBody {
 
 extension HLSSegmentLoader {
     /// The segment's bytes as they arrive (`HLSSegmentBody`): the download starts now and the caller reads as it comes.
-    /// `whileOpening`: a probe of the stream's description (`HLSLane.probe`), which FFmpeg's analysis reads as far as it
-    /// needs and the caller then closes: the request is the opening's (`HTTPSessionTransport.open(whileOpening:)`), held
-    /// to a small buffer so that the server sends little more than is read, and counted in no adaptive-bitrate sample, but
-    /// in `HTTPSessionTransport.openingThroughput`. `retains`: the body can be `replayed`.
+    /// `opening`: a probe of the stream's description (`HLSLane.probe`), which FFmpeg's analysis reads as far as it
+    /// needs: the request is the opening's (`HTTPSessionTransport.open(opening:)`), counted in its rate and in no
+    /// adaptive-bitrate sample; held to a small buffer so that the server sends little more than is read, but for the
+    /// segment playback starts on (`.start`). `retains`: the body can be `replayed`.
     func segmentBody(
-        _ segment: HLSSegment, whileOpening: Bool = false, retains: Bool = false
+        _ segment: HLSSegment, opening: HTTPSessionInput.Opening? = nil, retains: Bool = false
     ) throws(HLSSegmentLoadError) -> HLSSegmentBody {
         if segment.key != nil || segment.byteRange?.length == 0 {
             return HLSSegmentBody(data: try self.segment(segment))
@@ -368,7 +368,7 @@ extension HLSSegmentLoader {
         let range = segment.byteRange
         let opened = transport.open(
             segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
-            cookies: nil, cookieOrigin: nil, whileOpening: whileOpening, followsRedirects: true, abort: abort)
+            cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort)
         switch opened {
         case .input(let input):
             return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
