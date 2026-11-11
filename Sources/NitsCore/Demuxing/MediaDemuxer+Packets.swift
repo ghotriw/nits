@@ -124,6 +124,10 @@ extension MediaDemuxer {
         /// do not match.
         package private(set) var breakCount = 0
 
+        /// Where each break started (the elements the timeline broke at), in order; `searchFloor` is the last. A cut of the
+        /// tail (`truncate`) takes back the breaks in it. Those before the head are dropped with it, as the elements are.
+        package private(set) var breakIndices: [Int] = []
+
         /// The cursor is before the start of the timeline now: the position is on the older one, and a target compared
         /// against the newer would land on other content.
         package var isBeforeBreak: Bool {
@@ -132,6 +136,11 @@ extension MediaDemuxer {
 
         /// Presentation timestamp of the latest packet (a keyframe's for video) appended: a smaller one is a break.
         private var lastTimelinePTS: Int64 = Int64.min
+
+        /// Presentation timestamp of the last packet handed out (`popFirst`), or where the cursor was put (`seekTo`): a cut
+        /// of a stream in presentation order (sound) at or before it would take back what is handed out, which the elements
+        /// themselves no longer tell when history is off.
+        package private(set) var lastHandedOutPTS: Int64 = Int64.min
 
         /// Configured limit for retained history bytes. When 0 (default for local files),
         /// history is immediately pruned as packets are consumed.
@@ -188,6 +197,7 @@ extension MediaDemuxer {
                 let leeway = indexesKeyframes ? 0 : max(element.duration, 0)
                 if lastTimelinePTS != Int64.min, pts.addingReportingOverflow(leeway).partialValue < lastTimelinePTS {
                     searchFloor = newIndex
+                    breakIndices.append(newIndex)
                     breakCount += 1
                     maxPacketEndPTS = Int64.min
                 }
@@ -239,6 +249,7 @@ extension MediaDemuxer {
                     continue
                 }
                 readIndex += 1
+                if element.effectivePTS != Int64.min { lastHandedOutPTS = element.effectivePTS }
                 let size = element.data.count
                 forwardBytes -= size
                 backBytes += size
@@ -296,6 +307,14 @@ extension MediaDemuxer {
                 backBytes += delta
             }
             readIndex = elementIndex
+            // The packet before the cursor, when it is held: with no history nothing says (a cut then refuses nothing it
+            // should not, and takes only what is ahead of the cursor).
+            var before = elementIndex - 1
+            lastHandedOutPTS = Int64.min
+            while before >= headIndex, lastHandedOutPTS == Int64.min {
+                lastHandedOutPTS = elements[before]?.effectivePTS ?? Int64.min
+                before -= 1
+            }
         }
 
         /// Finds the element index of the keyframe covering `targetPTS`.
@@ -462,6 +481,7 @@ extension MediaDemuxer {
                 readIndex -= headIndex
                 let offset = headIndex
                 searchFloor = max(0, searchFloor - offset)
+                breakIndices = breakIndices.compactMap { $0 >= offset ? $0 - offset : nil }
                 headIndex = 0
                 keyframeIndices = keyframeIndices.compactMap { idx in
                     let newIdx = idx - offset
@@ -470,10 +490,97 @@ extension MediaDemuxer {
             }
         }
 
+        /// The index of the first keyframe at or after the cursor whose presentation timestamp is `pts`: the cut of a tail
+        /// that a new variant's keyframe of the same time replaces (keyframes share their presentation times across
+        /// variants, not their decode times).
+        package func keyframeIndex(withPTS pts: Int64) -> Int? {
+            guard indexesKeyframes else { return nil }
+            var position = keyframePosition(atOrAfter: readIndex)
+            while position < keyframeIndices.count {
+                let index = keyframeIndices[position]
+                if let packet = elements[index], packet.effectivePTS == pts { return index }
+                position += 1
+            }
+            return nil
+        }
+
+        /// The index of the first packet at or after the cursor that is presented at or after `pts`, for a stream whose
+        /// packets come in presentation order (audio): where the sound of a variant given up is cut.
+        package func firstIndex(atOrAfterPTS pts: Int64) -> Int? {
+            var index = readIndex
+            while index < elements.count {
+                if let packet = elements[index], packet.effectivePTS >= pts { return index }
+                index += 1
+            }
+            return nil
+        }
+
+        /// Takes the packets from element `index` on out of the buffer, with what the buffer tells of them: their bytes, their
+        /// keyframes and the breaks of the timeline that start in them. The cursor must not be past `index`: a packet already
+        /// handed out is not taken back (false, nothing changed). An index at the end cuts nothing.
+        ///
+        /// What is kept of the timeline is what the packets before `index` make of it: the last timeline packet's time
+        /// (the next append compares with it to tell a break) and the furthest end since the timeline's start.
+        @discardableResult
+        package mutating func truncate(from index: Int) -> Bool {
+            guard index >= readIndex, index >= headIndex else { return false }
+            guard index < elements.count else { return true }
+            for position in index..<elements.count {
+                if let packet = elements[position] { forwardBytes = max(0, forwardBytes - packet.data.count) }
+            }
+            // The first timeline packet of the tail, for a timeline the cut leaves with none of its own.
+            var firstCutPTS = Int64.min
+            for position in index..<elements.count {
+                if let packet = elements[position], !indexesKeyframes || packet.isKeyFrame,
+                    packet.effectivePTS != Int64.min
+                {
+                    firstCutPTS = packet.effectivePTS
+                    break
+                }
+            }
+            elements.removeSubrange(index...)
+            while let last = keyframeIndices.last, last >= index { keyframeIndices.removeLast() }
+            while let last = breakIndices.last, last >= index {
+                breakIndices.removeLast()
+                breakCount = max(0, breakCount - 1)
+            }
+            if searchFloor >= index { searchFloor = breakIndices.last ?? 0 }
+            // The timeline as the packets left make it.
+            lastTimelinePTS = Int64.min
+            var position = elements.count
+            while position > headIndex {
+                position -= 1
+                guard let packet = elements[position], !indexesKeyframes || packet.isKeyFrame,
+                    packet.effectivePTS != Int64.min
+                else { continue }
+                lastTimelinePTS = packet.effectivePTS
+                break
+            }
+            // Nothing of the timeline is left (no history: the whole queue was ahead of the cursor): the next packet carries
+            // on from a tick before the first one cut, so a keyframe of that time is no break and an earlier one is.
+            if lastTimelinePTS == Int64.min, firstCutPTS != Int64.min { lastTimelinePTS = firstCutPTS - 1 }
+            maxPacketEndPTS = Int64.min
+            for position in max(searchFloor, headIndex)..<elements.count {
+                if let packet = elements[position] { maxPacketEndPTS = max(maxPacketEndPTS, packet.packetEnd) }
+            }
+            return true
+        }
+
+        /// `truncate(from:)` at the first packet presented at or after `pts` (`firstIndex(atOrAfterPTS:)`).
+        @discardableResult
+        package mutating func truncate(fromPTS pts: Int64) -> Bool {
+            // A packet at or after `pts` already handed out is not taken back: the sound is past the cut, and the cut will
+            // not do (the caller waits for another). Said by the cursor's own record, which holds with no history too.
+            guard lastHandedOutPTS < pts else { return false }
+            guard let index = firstIndex(atOrAfterPTS: pts) else { return true }
+            return truncate(from: index)
+        }
+
         package mutating func removeAll(keepingCapacity: Bool = false) {
             elements.removeAll(keepingCapacity: keepingCapacity)
             headIndex = 0
             readIndex = 0
+            lastHandedOutPTS = Int64.min
             keyframeIndices.removeAll(keepingCapacity: keepingCapacity)
             forwardBytes = 0
             backBytes = 0
@@ -481,6 +588,7 @@ extension MediaDemuxer {
             searchFloor = 0
             lastTimelinePTS = Int64.min
             breakCount = 0
+            breakIndices.removeAll(keepingCapacity: keepingCapacity)
         }
 
         package mutating func removeAll(where shouldBeRemoved: (T) -> Bool) {
@@ -492,11 +600,21 @@ extension MediaDemuxer {
             var newBackBytes = 0
             var newMaxPacketEndPTS = Int64.min
             var newFloor: Int?
+            // The breaks go to the packet that is kept at or after where each was: one whose packet is removed passes to the
+            // next kept, two that meet there stay two (the same index twice), and one with nothing kept after it is at the
+            // end. `breakCount` is what the stream has been through, and removing packets does not undo it: the cache
+            // compares it between video and sound.
+            var newBreaks: [Int] = []
+            var breaks = breakIndices.filter { $0 >= headIndex }[...]
 
             for i in headIndex..<elements.count {
                 guard let el = elements[i] else { continue }
                 if shouldBeRemoved(el) { continue }
                 let newIdx = active.count
+                while let first = breaks.first, first <= i {
+                    breaks.removeFirst()
+                    newBreaks.append(newIdx)
+                }
                 active.append(el)
                 let end = el.packetEnd
                 if i >= searchFloor, newFloor == nil { newFloor = newIdx }
@@ -516,11 +634,14 @@ extension MediaDemuxer {
             elements = active
             headIndex = 0
             readIndex = newReadIndex
+            // Removing packets does not undo their hand-out: the record changes only when a packet before the cursor is kept.
+            if newReadIndex > 0, let before = active[newReadIndex - 1] { lastHandedOutPTS = before.effectivePTS }
             keyframeIndices = newKeyframes
             forwardBytes = newForwardBytes
             backBytes = newBackBytes
             maxPacketEndPTS = newMaxPacketEndPTS
             searchFloor = newFloor ?? active.count
+            breakIndices = newBreaks + Array(repeating: active.count, count: breaks.count)
         }
     }
 }
