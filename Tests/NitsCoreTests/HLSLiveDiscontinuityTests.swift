@@ -308,8 +308,9 @@ struct HLSLiveDiscontinuityTests {
         var times: [Double] = []
         var audio: [(start: Double, end: Double)] = []
         let audioTimebase = demuxer.audioTimebase
-        // 28 s: number 10 to 16.
-        while times.count < 840, let sample = demuxer.nextVideoSample() {
+        // About 28 s: number 10 to 16, as far as the pinned window goes (a seek that lands at the start of number 10 has no
+        // segment before it to make up the last pictures: the read stops at the time, not at a count).
+        while (times.last ?? 0) < edge + 27.5, let sample = demuxer.nextVideoSample() {
             times.append(Self.seconds(sample))
             while let packet = demuxer.nextAudioPacket() {
                 let start = Double(packet.pts) * Double(audioTimebase.num) / Double(audioTimebase.den)
@@ -322,7 +323,7 @@ struct HLSLiveDiscontinuityTests {
         // the segments asked for.
         let asked = Set(server.requests.map(\.path))
         #expect(asked.isSuperset(of: ["c15.ts", "c16.ts"]), "Segments asked for: \(asked.sorted())")
-        #expect(times.count == 840, "\(times.count) pictures")
+        #expect(times.count > 800, "\(times.count) pictures")
         let first = try #require(times.first)
         #expect(abs(first - edge) < 4.5, "A seek to \(edge) s landed at \(first) s")
         let step = zip(times, times.dropFirst()).map { abs($1 - $0) }.max() ?? 0

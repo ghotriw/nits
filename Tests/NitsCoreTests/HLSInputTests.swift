@@ -412,11 +412,11 @@ struct HLSInputTests {
         #expect(ContinuousClock.now - began < .seconds(2))
     }
 
-    @Test("A live stream rewinds to where it was joined, not to the start of its window")
-    func liveRewindGoesToTheJoinPoint() throws {
+    @Test("A live stream rewinds to the start of its window")
+    func liveRewindGoesToTheWindowStart() throws {
         guard let stand = try Self.stand(.hlsVariants) else { return }
         defer { stand.server.stop() }
-        // Five segments of 2 s (the three again after a break): joined 3 target durations behind the edge, at 4 s.
+        // Five segments of 2 s (the three again after a break): the timeline starts at the window's first segment.
         stand.server.setResponder(forPath: "window.m3u8") {
             var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
             for (index, name) in ["v0_000", "v0_001", "v0_002", "v0_000", "v0_001"].enumerated() {
@@ -426,7 +426,7 @@ struct HLSInputTests {
             return Data((lines.joined(separator: "\n") + "\n").utf8)
         }
         let input = try #require(Self.open(stand, "window.m3u8"))
-        #expect(input.timelineOrigin == 4 * Int64(AV_TIME_BASE))
+        #expect(input.timelineOrigin == 0)
         _ = Self.drain(input, limit: 30)
         input.rewind()
         let (packets, _) = Self.drain(input, limit: 30)

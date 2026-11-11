@@ -219,17 +219,28 @@ final class HLSLane: @unchecked Sendable {
         landing = nil
     }
 
+    /// Reloads a live playlist the server has moved on from (not loaded for a target duration). Nil to go on; else the
+    /// error to stop with.
+    private func reloadIfStale() -> Int32? {
+        guard timeline.liveWindow != nil, !timeline.hasEnded,
+            ContinuousClock.now - lastLoad > .seconds(timeline.targetDuration)
+        else {
+            return nil
+        }
+        return reload()
+    }
+
     /// Settles `start` into `resume` / `current`. Nil to go on; else what `fill` returns.
     private func resolveStart() -> Int32? {
         guard let chosen = start else { return nil }
         // A lane left unread for long has a playlist the server has moved on from.
-        if timeline.liveWindow != nil, ContinuousClock.now - lastLoad > .seconds(timeline.targetDuration) {
-            if let code = reload() { return code }
-        }
+        if let code = reloadIfStale() { return code }
         start = nil
         switch chosen {
         case .containing(let time):
-            resume = timeline.entry(at: time) ?? timeline.entries.last
+            // A time before the window (a rewind after it slid) is the window's first segment, not its edge.
+            resume =
+                time < timeline.start ? timeline.entries.first : (timeline.entry(at: time) ?? timeline.entries.last)
         case .following(let time):
             if time < timeline.start {
                 resume = timeline.entries.first
@@ -528,6 +539,11 @@ final class HLSLane: @unchecked Sendable {
     /// The segment after `entry`, waiting for a live playlist to list it.
     private func following(_ entry: HLSTimeline.Entry) -> Step {
         while true {
+            // A live read that is behind has a window the server has moved on from: reload it before the next segment, as
+            // hls.c does, so a segment that expired is skipped rather than asked for.
+            // Only an abort stops the read here: segments are listed ahead, and a stuck or failing playlist is decided
+            // at the edge (`waitForReload`).
+            if let code = reloadIfStale(), code == HTTPSessionInput.averrorExit { return .stopped(code) }
             switch timeline.next(after: entry) {
             case .entry(let next):
                 return .entry(next, breaksRun: next.segment.isGap || entry.segment.isGap)

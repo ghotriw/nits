@@ -25,14 +25,13 @@ import os
 /// replay what was read and go on with the same download. A lane read again for a switch starts at the segment
 /// after the one the picture is at (`HLSLane.catchUp`); the demuxer drops its pictures up to the keyframe it splices at.
 ///
-/// The timeline starts at zero at the first segment of the playlist as first loaded; for a live stream the packets are
-/// moved to start at the segment reading began at (`timelineOrigin`), as the FFmpeg path does, and the window is told
-/// from the playlist's own model (`liveWindow`).
+/// Timeline 0 is the first segment listed when the playlist was first loaded, live or not (so `timelineOrigin` is 0 and
+/// nothing is rebased); the window is told from the playlist's own model (`liveWindow`).
 ///
-/// Used behind `HLSInput.isEnabled`.
+/// On by default for what `applies(to:)` accepts; `NITS_HLS_CLIENT=0` gives those URLs to FFmpeg's demuxer again while both exist.
 final class HLSInput: DemuxerInput, @unchecked Sendable {
-    /// Whether `MediaDemuxer` opens HTTP(S) `.m3u8` URLs with this client (`NITS_HLS_CLIENT=1`), while both paths exist.
-    static var isEnabled: Bool { ProcessInfo.processInfo.environment["NITS_HLS_CLIENT"] == "1" }
+    /// Whether `MediaDemuxer` opens HTTP(S) `.m3u8` URLs with this client (off with `NITS_HLS_CLIENT=0`), while both paths exist.
+    static var isEnabled: Bool { ProcessInfo.processInfo.environment["NITS_HLS_CLIENT"] != "0" }
 
     /// Whether `url` is one this input opens: a playlist over HTTP(S).
     static func applies(to url: String) -> Bool {
@@ -89,8 +88,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// The variants of a master playlist (none for a media playlist), in the order it lists them.
     private var variants: [Variant] = []
     private let meter: TransferAccount
-    /// Seconds on the timeline that the packets handed out are moved by.
-    private let origin: Double
     /// The timeline's seconds of the last picture handed out: where a lane read again starts.
     private var lastTime = 0.0
     /// The variant being caught up for a switch: its pictures are not where the picture is.
@@ -104,7 +101,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     let chapters: [MediaChapter.Raw] = []
     let attachedFonts: [AssScript.Font] = []
 
-    var timelineOrigin: Int64 { Int64((origin * Double(AV_TIME_BASE)).rounded()) }
+    /// The timeline starts at zero at the first segment listed at the opening, live or not: nothing to rebase.
+    var timelineOrigin: Int64 { 0 }
     var network: (any NetworkReadAccount)? { meter }
 
     /// What the opening's probes carried, when it proves the link slow: playback then starts on a rung that fits it.
@@ -248,8 +246,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let isLive = referencePlaylist.isLive
         let startTime =
             isLive ? max(reference.start, reference.end - Self.edgeMargin * reference.targetDuration) : reference.start
-        let startEntry = reference.entry(at: startTime)
-        origin = isLive ? (startEntry?.start ?? 0) : 0
         isLivePlaylist = isLive
         durationSeconds = isLive ? 0 : reference.end - reference.start
 
@@ -442,9 +438,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// The window of the lane the picture is read from (the one read; the first before any is).
     func liveWindow() -> LiveWindow? {
         let primaries = lanes.filter { $0.kind == .primary }
-        guard var window = (primaries.first { $0.isRead } ?? primaries.first)?.window else { return nil }
-        window.start -= origin
-        window.end -= origin
+        guard let window = (primaries.first { $0.isRead } ?? primaries.first)?.window else { return nil }
         return window
     }
 
@@ -477,7 +471,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         if lanes.lazy.filter({ $0.kind == .primary && $0.isRead }).count < 2 { catchingUp = nil }
         if best.kind == .primary, best !== catchingUp, best.pendingTime.isFinite { lastTime = best.pendingTime }
         best.take(into: &pkt)
-        rebase(&pkt)
         return 0
     }
 
@@ -485,15 +478,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// one a switch is catching up; the demuxer's splice never comes and the old one plays on).
     private func canDrop(_ lane: HLSLane) -> Bool {
         lane.kind != .primary || lanes.contains { $0 !== lane && $0.kind == .primary && $0.isRead }
-    }
-
-    /// Moves a packet from the playlist's timeline to the zero-based one handed out.
-    private func rebase(_ pkt: inout AVPacket) {
-        guard origin != 0, let stream = table.stream(Int(pkt.stream_index)) else { return }
-        let base = stream.pointee.time_base
-        let shift = Int64((origin * Double(base.den) / Double(base.num)).rounded())
-        if pkt.pts != Int64.min { pkt.pts -= shift }
-        if pkt.dts != Int64.min { pkt.dts -= shift }
     }
 
     // MARK: Seeking
@@ -514,7 +498,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// the lane of the stream up to its first keyframe at or after it, the others up to it.
     private func reposition(to target: Int64, of index: Int, flags: Int32) -> Int32 {
         guard let stream = table.stream(index), infos.indices.contains(index) else { return -1 }
-        let seconds = Self.seconds(target, stream.pointee.time_base) + origin
+        let seconds = Self.seconds(target, stream.pointee.time_base)
         let seekLane = lanes[infos[index].lane]
         let isForward = flags & AVSEEK_FLAG_BACKWARD == 0
         guard !isForward || seekLane.contains(seconds) else { return -1 }
@@ -528,11 +512,10 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         return 0
     }
 
-    /// Back to where reading began: the start, or a live stream's join point (`origin`), as `FFmpegInput` rewinds to
-    /// `timelineOrigin`.
+    /// Back to the start of the timeline: the first segment listed at the opening (the window's start for a live stream).
     func rewind() {
-        for lane in lanes where lane.isRead { lane.reposition(at: origin) }
-        lastTime = origin
+        for lane in lanes where lane.isRead { lane.reposition(at: 0) }
+        lastTime = 0
     }
 
     func setReading(_ isRead: Bool, stream index: Int) {

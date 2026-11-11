@@ -112,14 +112,14 @@ struct SyncPatternTests {
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         defer { engine.stop() }
         // Two 6 s stretches, each with its own timestamps from 0, the break at 6 s: the stretches, picture and sound
-        // from playlists of their own, must put flash and click on the seconds of the whole timeline: the picture keeps
-        // the 2 frames of lead the first stretch has (in this synthetic stream the video is shifted by its reordering,
-        // the tracks being encoded apart), the sound has none.
+        // from playlists of their own, must put flash and click on the seconds of the whole timeline. Each run is placed
+        // by its first picture's presentation time, so the 2 frames the synthetic video lies after the sound by its
+        // reordering (the tracks being encoded apart) do not come back at the break as a shift between picture and sound.
         engine.load(MediaLoadRequest(path: server.url(url.lastPathComponent), startTime: 4.2))
         #expect(await engine.waitUntil { engine.isLoaded }, "The playlist did not load")
         engine.play()
         #expect(await engine.waitForPlayback(advancingBy: 0.2))
-        let lead = 2.0 / 30
+        let lead = 0.0
         let seen = await Self.check(engine, "across the HLS break", for: .seconds(4), pictureLead: lead)
         #expect(engine.currentTime > 7.0, "Playback reached only \(engine.currentTime) s")
         // The seconds repeat, so the fractions above would pass a second stretch that is a whole number of seconds
