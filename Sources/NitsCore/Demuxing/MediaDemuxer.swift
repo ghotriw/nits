@@ -769,7 +769,13 @@ public final class MediaDemuxer: @unchecked Sendable {
             if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
             // The playlist is reloaded inside the read: the window it tells moved.
             if isLive, liveHistory == nil { publishLiveWindow() }
+            // The variant switched to was described by its first read, inside this one.
+            let givenUp = variantSwitch == nil ? [] : verifyVariantSwitchTarget()
             if ret >= 0 {
+                if givenUp.contains(Int(pkt.stream_index)) {
+                    av_packet_unref(&pkt)
+                    continue
+                }
                 if variantSwitch != nil, !admitDuringVariantSwitch(&pkt) {
                     av_packet_unref(&pkt)
                     continue

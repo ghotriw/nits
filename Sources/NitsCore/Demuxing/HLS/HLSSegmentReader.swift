@@ -134,11 +134,12 @@ final class HLSSegmentReader {
     /// describe the streams (`HLSLane.probe`): the run is not meant to be read on. `timelineShift` gives a WebVTT
     /// segment's offset by its discontinuity sequence. `knownVideoDelay`: the caller has the streams described already
     /// (a lane past its probe), and their picture's reorder depth (`video_delay`, 0 without a picture): the analysis
-    /// only finds where the run starts (`openContext`).
+    /// only finds where the run starts (`openContext`). `onAnswer` is told once the first segment's first bytes came (its init
+    /// section's before them): the server answers, whatever the analysis then takes.
     init(
         loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
         anchoring: Anchoring? = nil, isProbe: Bool = false, knownVideoDelay: Int? = nil,
-        firstBody: HLSSegmentBody? = nil,
+        firstBody: HLSSegmentBody? = nil, onAnswer: (() -> Void)? = nil,
         next: @escaping () -> HLSSegment?
     ) throws(HLSSegmentReaderError) {
         self.loader = loader
@@ -172,6 +173,7 @@ final class HLSSegmentReader {
                 packedTimestamp = HLSPackedAudioTag.transportStreamTimestamp(data)
             }
             openTiming.answer = ContinuousClock.now - began
+            onAnswer?()
         } catch {
             opened?.close()
             throw .load(error)

@@ -544,19 +544,39 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   by `HLSInput` as any playlist: its relative addresses are files, the absolute ones go over the network. Other
   sources are FFmpeg's, opened with the network options (`MediaURL.applySourceOptions`).
 - **HLS opening.** `HLSInput` loads the master and every media playlist it needs at once (one request each, on
-  `HTTPSessionTransport`), and probes the lane of each variant and rendition side by side: the start of its first
-  segment, streamed (`HLSSegmentBody`) through an `AVIOContext` of ours into FFmpeg's analysis, which reads what it
-  needs of it (`HLSLane.probe`). The probe's requests are the opening's (`whileOpening`: held to a 256 KB buffer, no
+  `HTTPSessionTransport`), and probes lanes to describe their streams: the start of a lane's first segment, streamed
+  (`HLSSegmentBody`) through an `AVIOContext` of ours into FFmpeg's analysis, which reads what it needs of it
+  (`HLSLane.probe`). The probe's requests are the opening's (`whileOpening`: held to a 256 KB buffer, no
   adaptive-bitrate sample, but counted in `openingThroughput`), and are dropped once the streams are described; a lane
-  that is not read afterwards downloads nothing more. FFmpeg's own HLS demuxer did this one request after another, and
-  Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one; here only
-  the variants that switch with the best one (`HLSInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
-  `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded and probed at all. A media playlist given
-  alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`HLSLane.startBody`), so the
-  demuxer's rewind to the start after its opening scan replays what was read and goes on with the same download.
-  `HLSInput.read` hands out the packet of the lane read that decodes first, so every lane holds its next packet; a
-  subtitle rendition's lane loads no segment that starts after the picture's and sound's next packet
-  (`HLSLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
+  that is not read afterwards downloads nothing more. FFmpeg's own HLS demuxer probed every variant one request after
+  another, and Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one.
+  Here only the variants that switch with the best one (`HLSInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
+  `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded at all, and of such a ladder only the
+  top rung is probed, with the audio renditions beside it (hls.js and ExoPlayer read the start variant alone):
+  - *Clones.* The other rungs are described as the top (`HLSInput.cloneCandidates`): its table streams copied, the
+    picture of the size the rung's `RESOLUTION` tells (0, unknown, without one). A rung whose `CODECS` tell other sound
+    muxed into it is probed itself. A clone's variant is `pending` (`DemuxerInput.variantDescription(id:)`) until its
+    first run: that run's streams replace the description in the table, the table's time base kept
+    (`HLSInput.redescribe`, `HLSLane.describeFirstRun`), or, of other kinds or numbers, make it `rejected` and the lane
+    reads nothing (`HLSLane.rejected`). Its runs are analysed as briefly as the top's (`HLSLane.analyzesAs`).
+  - *The demuxer* starts only on a described variant (`adoptVariants`), and checks a switch to a pending one once its
+    first read described it (`verifyVariantSwitchTarget`, in `readPacket`): rejected, or not `canSwitch` with the
+    variant played, the switch is given up and the variant never chosen again (`VariantSelection.rejected`, out of
+    adaptive bitrate and `selectVariant`). A seek during a switch to a variant still pending has the input probe it at
+    the target (`describeVariant(id:at:)`), under `lock`, before it splices: its decoders are made from the table.
+  - *A slow answer.* A top that has not answered in `HLSInput.answerLimit` (4 s; the request's own timeout is 10 s of
+    silence) has the next rung down probed beside it (`ProbeRace`); the first to answer describes the ladder, the other's
+    requests are stopped (`HLSSegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
+    left out, and the next rung down is probed. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
+  - *A slow link* (`openingLinkRate`): the rung it starts on is probed too, before the demuxer chooses (the same rule,
+    `HLSInput.startRung`), and the next one down when that probe fails.
+  A ladder `ladder(of:)` keeps whole (a rung that tells no codecs) has every rung probed side by side. A media playlist
+  given alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`HLSLane.startBody`), so
+  the demuxer's rewind to the start after its opening scan replays what was read and goes on with the same download.
+  `HLSInput.read` hands out the packet of the lane read that decodes first, so every lane holds its next packet (at a
+  time two variants share, the one a switch catches up first: its keyframe splices before the old variant's picture of
+  that time is handed out); a subtitle rendition's lane loads no segment that starts after the picture's and sound's
+  next packet (`HLSLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
   another to find the next cue before any packet came out, or wait at a live edge while the picture's packets were ready.
   A playlist URL (`.m3u8`, `.m3u`) opens this way, over HTTP(S) or as a saved manifest (a file whose text is an HLS
   manifest); an address with no extension is asked for its first bytes (`HLSInput.sniffsAsPlaylist`, one small range

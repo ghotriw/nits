@@ -129,7 +129,8 @@ extension MediaDemuxer {
             readAhead = max(readAhead, adaptiveBitrate.logic.config.highBuffer)
             isReadAheadReal = false
         }
-        let ladder = variants.filter(\.isSwitchable).map {
+        let rejected = selection.rejected
+        let ladder = variants.filter { $0.isSwitchable && !rejected.contains($0.id) }.map {
             AdaptiveBitrateLogic.Variant(id: $0.id, bandwidth: $0.bandwidth, pixels: $0.width * $0.height)
         }
         guard

@@ -151,12 +151,16 @@ final class HLSLane: @unchecked Sendable {
     /// `open(at:)` does with all of it. The run is not read on: `endProbe` drops it, and the lane is started with
     /// `reposition` or `catchUp`, or left unread. A probe anchors nothing (`HLSTimestampAnchors`): the lanes probed side by
     /// side would race for it, and the run read first anchors its sequence.
-    func probe(at time: Double) throws(HLSSegmentReaderError) {
+    /// `loader` stands in for the lane's own (one that gives way to an abort of the probe alone); `onAnswer` is told once
+    /// the server answered (`HLSSegmentReader`).
+    func probe(
+        at time: Double, loader probeLoader: HLSSegmentLoader? = nil, onAnswer: (() -> Void)? = nil
+    ) throws(HLSSegmentReaderError) {
         guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
         let began = ContinuousClock.now
         let probed = try HLSSegmentReader(
-            loader: loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
-            isProbe: true
+            loader: probeLoader ?? loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
+            isProbe: true, onAnswer: onAnswer
         ) { nil }
         reader = probed
         slotOfReaderStream = [:]
@@ -203,18 +207,59 @@ final class HLSLane: @unchecked Sendable {
     /// Ends a probe: the streams are described. The first picture the lane reads is compared with the probe's extradata
     /// (a stream's later init section brings new parameter sets then).
     func endProbe() {
-        let picture = reader?.streams.first {
+        learnPicture(from: reader?.streams ?? [])
+        dropRun()
+    }
+
+    /// What the lane's later runs need of its picture, from the streams that describe it (a probe's, or the first run of
+    /// a lane described by another rung's probe): its reorder depth, and the extradata a later init section is compared
+    /// with.
+    private func learnPicture(from streams: [UnsafeMutablePointer<AVStream>]) {
+        let picture = streams.first {
             HLSInput.keeps($0, in: kind) && $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
         }
         videoDelay = picture.map { max(Int($0.pointee.codecpar.pointee.video_delay), 0) } ?? 0
-        if let video = reader?.streams.first(where: { HLSInput.keeps($0, in: kind) }),
+        if let video = streams.first(where: { HLSInput.keeps($0, in: kind) }),
             video.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
             let bytes = video.pointee.codecpar.pointee.extradata, video.pointee.codecpar.pointee.extradata_size > 0
         {
             lastExtradata = Data(bytes: bytes, count: Int(video.pointee.codecpar.pointee.extradata_size))
         }
-        dropRun()
     }
+
+    /// A lane whose streams were described from another rung's probe (`HLSInput`'s clones): its first run's streams are
+    /// handed to this before any packet, which describes them for good and says whether they are the ones described
+    /// (the same kinds, as many). Nil once told, and for a lane probed itself.
+    var describeFirstRun: (([UnsafeMutablePointer<AVStream>]) -> Bool)?
+
+    /// A clone's runs are analysed as briefly as `model`'s (its probe's reorder depth, `knownVideoDelay`): the rungs of a
+    /// ladder of one codec are encoded alike, and a full analysis of the first switched to (`max_analyze_duration`, 4K
+    /// fMP4: some 3 MB before its first packet) would hold the read during playback. `describeFirstRun` still checks the
+    /// streams it finds.
+    func analyzesAs(_ model: HLSLane) {
+        videoDelay = model.videoDelay
+    }
+    /// The first run's streams are not the ones described: the lane hands out nothing (`fill` returns `rejected`).
+    private(set) var isRejected = false
+
+    /// Describes a lane awaiting its first run (`describeFirstRun`) by a probe at `time` instead: a seek splices to a
+    /// variant before it has been read. False when the probe fails (still to be described) or finds other streams.
+    func describeByProbe(at time: Double) -> Bool {
+        guard let describe = describeFirstRun else { return !isRejected }
+        do throws(HLSSegmentReaderError) { try probe(at: time) } catch { return false }
+        describeFirstRun = nil
+        if describe(readerStreams) {
+            endProbe()
+            return true
+        }
+        isRejected = true
+        dropRun()
+        return false
+    }
+
+    /// What `fill` returns for a lane whose streams turned out other than described (`describeFirstRun`). No FFmpeg error
+    /// (`FFERRTAG`'s form, `'HLSR'`).
+    static let rejected: Int32 = -0x5253_4C48
 
     /// The streams the lane's reader found, to describe in the input's table.
     var readerStreams: [UnsafeMutablePointer<AVStream>] {
@@ -420,6 +465,7 @@ final class HLSLane: @unchecked Sendable {
     func fill(before limit: Double? = nil, picture: Double? = nil) -> Int32 {
         guard isRead else { return MediaDemuxer.averrorEOF }
         if hasPending { return 0 }
+        if isRejected { return Self.rejected }
         if let code = resolveStart() { return code }
         readLimit = limit
         pictureTime = picture
@@ -437,6 +483,11 @@ final class HLSLane: @unchecked Sendable {
                         resume = entry
                         if let stop = recover(from: error.code) { return stop }
                         continue
+                    }
+                    if isRejected {
+                        logOpenedRun("rejected")
+                        dropRun()
+                        return Self.rejected
                     }
                     if let again = redo {
                         // The media puts the first segment of a seek elsewhere than its durations did, and the one that
@@ -698,6 +749,14 @@ final class HLSLane: @unchecked Sendable {
         }
         keepStart(of: opened, first.segment)
         reader = opened
+        if let describe = describeFirstRun {
+            describeFirstRun = nil
+            if describe(opened.streams) {
+                learnPicture(from: opened.streams)
+            } else {
+                isRejected = true
+            }
+        }
         openedRun = (reason, replay != nil, first.sequence, opened.openTiming, began)
         slotOfReaderStream = [:]
         needsExtradataCheck = true

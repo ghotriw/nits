@@ -129,8 +129,28 @@ final class ThumbnailSource {
         guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt), !input.isLivePlaylist else {
             return nil
         }
-        let candidates = input.variantCandidates()
-        let chosen = candidates?.filter { $0.streams.video != nil }.min { $0.bandwidth < $1.bandwidth }
+        let withPicture = (input.variantCandidates()?.filter { $0.streams.video != nil } ?? [])
+            .sorted { $0.bandwidth < $1.bandwidth }
+        // The cheapest rung that is described. One described as another (`DemuxerInput.variantDescription`) is described
+        // by its first read, before the decoder is made from its stream: read once, then back to the start (which replays
+        // what was read). One whose read fails or finds other streams gives way to the next cheapest.
+        var chosen: MediaDemuxer.VariantCandidate?
+        for candidate in withPicture {
+            guard let video = candidate.streams.video else { continue }
+            if input.variantDescription(id: candidate.id) == .pending {
+                for index in 0..<input.streamCount { input.setReading(index == video, stream: index) }
+                var packet: UnsafeMutablePointer<AVPacket>? = av_packet_alloc()
+                if let packet { _ = input.read(&packet.pointee) }
+                av_packet_free(&packet)
+                input.rewind()
+            }
+            if input.variantDescription(id: candidate.id) == .described {
+                input.setReading(true, stream: video)
+                chosen = candidate
+                break
+            }
+            input.setReading(false, stream: video)
+        }
         let picture =
             chosen?.streams.video
             ?? (0..<input.streamCount).first {
@@ -140,7 +160,7 @@ final class ThumbnailSource {
             input.close()
             return nil
         }
-        for index in 0..<input.streamCount where index != picture { input.setReading(false, stream: index) }
+        for index in 0..<input.streamCount { input.setReading(index == picture, stream: index) }
         let timebase = stream.pointee.time_base
         return ThumbnailSource(
             stream: stream, streamIndex: Int32(picture), containerDuration: input.durationSeconds,

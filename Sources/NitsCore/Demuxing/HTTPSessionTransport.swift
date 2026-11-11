@@ -84,10 +84,11 @@ final class HTTPSessionTransport: Sendable {
 
     /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `cookies` is
     /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
-    /// master was served from, after its redirects).
+    /// master was served from, after its redirects). `abort` interrupts this request too, besides `shouldAbort` (a probe
+    /// of the opening that lost its race, `HLSInput`).
     func open(
         _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?, whileOpening: Bool = false,
-        followsRedirects: Bool = false
+        followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil
     ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
         if let cookies {
@@ -95,10 +96,17 @@ final class HTTPSessionTransport: Sendable {
         }
         var request = URLRequest(url: requestURL)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        let interrupts: @Sendable () -> Bool
+        if let abort {
+            let shouldAbort = shouldAbort
+            interrupts = { shouldAbort() || abort() }
+        } else {
+            interrupts = shouldAbort
+        }
         let input = HTTPSessionInput(
             holder: holder, request: request, offset: offset, end: end, meter: meter,
             openingLimit: whileOpening ? openingLimit : nil, followsRedirects: followsRedirects,
-            shouldAbort: shouldAbort)
+            shouldAbort: interrupts)
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()

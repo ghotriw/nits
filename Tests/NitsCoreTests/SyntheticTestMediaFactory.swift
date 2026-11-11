@@ -140,6 +140,11 @@ public enum SyntheticTestMediaFactory {
         /// between the segments, the timestamps of each starting again), to switch variant after the break. Made as a
         /// directory; `filename` is its master playlist
         case hlsDiscontinuityLadder
+        /// HLS master playlist (6 s, 2 s segments, MPEG-TS) of three H.264 rungs of one picture whose sound differs:
+        /// `v0` 320x180 without sound, `v1` 480x270 with AAC at 44.1 kHz, `v2` 640x360 with AAC at 48 kHz (the top). The
+        /// master (`filename`) lists every rung with `CODECS` "avc1.64001e,mp4a.40.2", as if they were muxed alike; a test
+        /// serves another master to tell otherwise
+        case hlsMixedSoundLadder
         /// `hlsDiscontinuity` with the second segment bigger than the first and a third like it: 4 s at 320x180, a
         /// discontinuity, 4 s at 640x360 (an advertisement in another encoding), a discontinuity, 4 s at 320x180 again.
         /// `filename` is the media playlist
@@ -203,7 +208,7 @@ public enum SyntheticTestMediaFactory {
         var isHLS: Bool {
             [
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
-                .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
+                .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsMixedSoundLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
                 .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
             ]
@@ -330,6 +335,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_ladder/master.m3u8"
             case .hlsDiscontinuity:
                 return "synth_hls_discontinuity/media.m3u8"
+            case .hlsMixedSoundLadder:
+                return "synth_hls_mixed_sound_ladder/master.m3u8"
             case .hlsDiscontinuityLadder:
                 return "synth_hls_discontinuity_ladder/master.m3u8"
             case .hlsDiscontinuityResize:
@@ -552,6 +559,8 @@ public enum SyntheticTestMediaFactory {
                 else { return nil }
             } else if preset == .hlsLiveAds {
                 guard makeHLSLiveAds(ffmpeg, in: directory, preset: preset) else { return nil }
+            } else if preset == .hlsMixedSoundLadder {
+                guard makeHLSMixedSoundLadder(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition
@@ -680,6 +689,41 @@ public enum SyntheticTestMediaFactory {
             v0.m3u8
             #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"
             v1.m3u8
+
+            """
+        return FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+    }
+
+    /// `hlsMixedSoundLadder`: each rung encoded on its own (the same picture, scaled; the same timestamps), as an HLS media
+    /// playlist of MPEG-TS segments.
+    private static func makeHLSMixedSoundLadder(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let rungs: [(size: String, rate: String, sampleRate: Int?)] = [
+            ("320x180", "250k", nil), ("480x270", "500k", 44100), ("640x360", "800k", 48000),
+        ]
+        for (index, rung) in rungs.enumerated() {
+            var arguments = ["-y", "-f", "lavfi", "-i", "testsrc2=size=\(rung.size):rate=30:duration=6"]
+            if let sampleRate = rung.sampleRate {
+                arguments += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=\(sampleRate):duration=6"]
+                arguments += ["-c:a", "aac", "-b:a", "64k"]
+            }
+            arguments += [
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0", "-b:v", rung.rate,
+                "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod",
+                "-hls_segment_filename", directory.appendingPathComponent("v\(index)_%03d.ts").path,
+                directory.appendingPathComponent("v\(index).m3u8").path,
+            ]
+            guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+        }
+        let master = """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS="avc1.64001e,mp4a.40.2"
+            v0.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=480x270,CODECS="avc1.64001e,mp4a.40.2"
+            v1.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"
+            v2.m3u8
 
             """
         return FileManager.default.createFile(
@@ -1128,7 +1172,8 @@ public enum SyntheticTestMediaFactory {
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
         case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
-            .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsDiscontinuityResize,
+            .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsMixedSoundLadder,
+            .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
             .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
             .dashSegments, .dashLadder,

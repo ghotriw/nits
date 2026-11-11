@@ -1,4 +1,5 @@
 import CFFmpeg
+import CoreMedia
 import Foundation
 import Testing
 import os
@@ -183,31 +184,172 @@ struct HLSInputTests {
 
     // MARK: Variants
 
-    @Test("Every variant is a candidate, probed by the start of its first segment, and only those read download more")
-    func variantsAreProbedNotDownloaded() throws {
+    @Test("Only the top variant is probed; the others are described as it, by their RESOLUTION, and download nothing")
+    func onlyTheTopIsProbed() throws {
         guard let stand = try Self.stand(.hlsLadder) else { return }
         defer { stand.server.stop() }
         let input = try #require(Self.open(stand, "master.m3u8"))
-        let candidates = try #require(input.variantCandidates())
+        let candidates = try #require(input.variantCandidates()).sorted { $0.bandwidth > $1.bandwidth }
         #expect(candidates.count == 3)
-        #expect(candidates.allSatisfy { $0.streams.video != nil })
-        // Each has a picture of its own, described from the probe.
-        let widths = candidates.sorted { $0.bandwidth > $1.bandwidth }.compactMap { candidate in
+        #expect(candidates.allSatisfy { $0.streams.video != nil && $0.streams.audio.count == 1 })
+        let widths = candidates.compactMap { candidate in
             candidate.streams.video.flatMap { input.stream($0)?.pointee.codecpar.pointee.width }
         }
         #expect(widths == [640, 480, 320])
+        #expect(candidates.map { input.variantDescription(id: $0.id) } == [.described, .pending, .pending])
         let (_, code) = Self.drain(input)
         #expect(code == MediaDemuxer.averrorEOF)
         let paths = stand.server.requests.map(\.path)
-        // The variants not read were asked for the first segment only (probed), none of the rest.
-        let lowest = try #require(candidates.min { $0.bandwidth < $1.bandwidth })
-        #expect(lowest.streams.video != nil)
-        #expect(paths.filter { $0.hasPrefix("v0_") && $0.hasSuffix(".ts") }.count == 1, "\(paths)")
-        #expect(paths.filter { $0.hasPrefix("v1_") && $0.hasSuffix(".ts") }.count == 1, "\(paths)")
+        // The rungs below were never asked for a segment.
+        #expect(!paths.contains { ($0.hasPrefix("v0_") || $0.hasPrefix("v1_")) && $0.hasSuffix(".ts") }, "\(paths)")
         // The first segment of the one read: the probe's piece (held to the opening's buffer, in ranges), and the play's,
         // once, whole.
         let playing = stand.server.requests.filter { $0.path == "v2_000.ts" && $0.range == nil }
         #expect(playing.count == 1, "\(stand.server.requests.filter { $0.path == "v2_000.ts" }.map(\.range))")
+    }
+
+    @Test("A top that doesn't answer in time has the next rung down probed beside it; the first to answer describes")
+    func slowTopRacesTheNextRung() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        var slow = TestHTTPServer.Behavior()
+        slow.delay = .seconds(3)
+        stand.server.setBehavior(slow, forPaths: { $0 == "v2_000.ts" })
+        let began = ContinuousClock.now
+        let input = try #require(
+            HLSInput(
+                url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt(),
+                answerLimit: .milliseconds(300)))
+        defer { input.close() }
+        // The top's request was stopped once the rung below answered, not waited for.
+        #expect(ContinuousClock.now - began < .seconds(2))
+        let candidates = try #require(input.variantCandidates()).sorted { $0.bandwidth > $1.bandwidth }
+        #expect(candidates.map { input.variantDescription(id: $0.id) } == [.pending, .described, .pending])
+        let widths = candidates.compactMap { candidate in
+            candidate.streams.video.flatMap { input.stream($0)?.pointee.codecpar.pointee.width }
+        }
+        #expect(widths == [640, 480, 320])
+        let paths = stand.server.requests.map(\.path)
+        #expect(paths.contains("v1_000.ts") && !paths.contains("v0_000.ts"), "\(paths)")
+    }
+
+    @Test("A top that fails on its own while the next rung is probed beside it is left out, not taken for a clone")
+    func slowTopThatFailsIsLeftOut() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        var failing = TestHTTPServer.Behavior()
+        failing.delay = .milliseconds(600)
+        failing.failure = .status(404)
+        stand.server.setBehavior(failing, forPaths: { $0 == "v2_000.ts" })
+        // The rung below answers after the top has failed.
+        var slow = TestHTTPServer.Behavior()
+        slow.delay = .milliseconds(1500)
+        stand.server.setBehavior(slow, forPaths: { $0 == "v1_000.ts" })
+        let input = try #require(
+            HLSInput(
+                url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt(),
+                answerLimit: .milliseconds(300)))
+        defer { input.close() }
+        let candidates = try #require(input.variantCandidates()).sorted { $0.bandwidth > $1.bandwidth }
+        #expect(candidates.count == 2)
+        #expect(candidates.map { input.variantDescription(id: $0.id) } == [.described, .pending])
+        #expect(
+            candidates.first.flatMap { $0.streams.video }.flatMap { input.stream($0)?.pointee.codecpar.pointee.width }
+                == 480)
+    }
+
+    @Test("A rung whose CODECS tell other sound muxed into it is probed itself, not described as the top")
+    func otherSoundToldIsProbed() throws {
+        guard let stand = try Self.stand(.hlsMixedSoundLadder) else { return }
+        defer { stand.server.stop() }
+        let master = try String(contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
+        stand.server.setResponder(forPath: "master.m3u8") {
+            Data(
+                master.replacingOccurrences(
+                    of: "RESOLUTION=320x180,CODECS=\"avc1.64001e,mp4a.40.2\"",
+                    with: "RESOLUTION=320x180,CODECS=\"avc1.64001e\""
+                ).utf8)
+        }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let candidates = try #require(input.variantCandidates()).sorted { $0.bandwidth > $1.bandwidth }
+        #expect(candidates.map { input.variantDescription(id: $0.id) } == [.described, .pending, .described])
+        #expect(candidates.map(\.streams.audio.count) == [1, 1, 0])
+        let paths = stand.server.requests.map(\.path)
+        #expect(paths.contains("v0_000.ts") && !paths.contains("v1_000.ts"), "\(paths)")
+    }
+
+    @Test("Which ladders are described from one rung: one codec, range and groups, and the sound the top's")
+    func cloneCandidates() throws {
+        func candidates(_ lines: String) throws -> [Int] {
+            let text = "#EXTM3U\n" + lines
+            guard
+                case .master(let master) = try HLSPlaylist.parse(Data(text.utf8), url: URL(string: "http://h/m.m3u8")!)
+            else { return [] }
+            let listed = HLSInput.ladder(of: master)
+            let plan = listed.enumerated().map {
+                (bandwidth: $1.bandwidth, video: $0, audio: [Int](), subtitles: [Int]())
+            }
+            let top = try #require(plan.max { $0.bandwidth < $1.bandwidth }).video
+            return HLSInput.cloneCandidates(plan: plan, listed: listed, top: top) { _ in true }
+        }
+        let avc = { (bandwidth: Int, codecs: String) in
+            "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth),CODECS=\"\(codecs)\"\nv\(bandwidth).m3u8\n"
+        }
+        // One codec: the top first, then down.
+        #expect(
+            try candidates(
+                avc(1, "avc1.64001e,mp4a.40.2") + avc(3, "avc1.640028,mp4a.40.2") + avc(2, "avc1.64001f,mp4a.40.2"))
+                == [1, 2, 0])
+        // Codecs mixed: `ladder(of:)` keeps the top's, the others are no rungs.
+        #expect(
+            try candidates(
+                avc(1, "avc1.64001e,mp4a.40.2") + avc(3, "hvc1.2.4.L120.B0,mp4a.40.2") + avc(2, "avc1.64001f,mp4a.40.2")
+            )
+                == [])
+        // A rung that tells no codecs: every rung is kept, and probed.
+        #expect(try candidates(avc(1, "avc1.64001e,mp4a.40.2") + "#EXT-X-STREAM-INF:BANDWIDTH=3\nv3.m3u8\n") == [])
+        // Another sound muxed: probed apart.
+        #expect(
+            try candidates(avc(1, "avc1.64001e") + avc(3, "avc1.640028,mp4a.40.2") + avc(2, "avc1.64001f,mp4a.40.2"))
+                == [1, 2])
+        // Sound only besides pictures: no rung of the ladder.
+        #expect(
+            try candidates(
+                avc(1, "mp4a.40.2") + avc(3, "avc1.640028,mp4a.40.2") + avc(2, "avc1.64001f,mp4a.40.2")) == [0, 1])
+    }
+
+    @Test(
+        "A rung found at its first read to have other streams than described, or sound that doesn't switch, is left out"
+    )
+    func untoldOtherStreamsAreLeftOut() throws {
+        guard let stand = try Self.stand(.hlsMixedSoundLadder) else { return }
+        defer { stand.server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: stand.server.url("master.m3u8")))
+        let byWidth = Dictionary(uniqueKeysWithValues: demuxer.variants.map { ($0.width, $0.id) })
+        let top = try #require(byWidth[640])
+        #expect(demuxer.selectedVariantId == top)
+        let changes = OSAllocatedUnfairLock(initialState: [Int]())
+        demuxer.onVariantChanged = { change in changes.withLock { $0.append(change.variant.id) } }
+        var widths: [Int32] = []
+        var times: [Double] = []
+        while let sample = demuxer.nextVideoSample() {
+            widths.append(
+                CMSampleBufferGetFormatDescription(sample).map(CMVideoFormatDescriptionGetDimensions)?.width ?? 0)
+            times.append(CMSampleBufferGetPresentationTimeStamp(sample).seconds)
+            // No sound at all, then sound at 44.1 kHz (the top's is at 48 kHz).
+            if widths.count == 20, let id = byWidth[320] { demuxer.selectVariant(id: id) }
+            if widths.count == 90, let id = byWidth[480] { demuxer.selectVariant(id: id) }
+        }
+        // A switch given up reports the variant that plays on.
+        #expect(changes.withLock { $0 }.allSatisfy { $0 == top })
+        #expect(demuxer.selectedVariantId == top)
+        #expect(widths.count == 180 && widths.allSatisfy { $0 == 640 })
+        #expect(Set(times.map { ($0 * 30).rounded() }).count == 180)
+        let paths = stand.server.requests.map(\.path)
+        #expect(paths.contains { $0.hasPrefix("v0_") } && paths.contains { $0.hasPrefix("v1_") }, "\(paths)")
+        // Neither is asked for again.
+        demuxer.selectVariant(id: byWidth[320] ?? 0)
+        #expect(demuxer.variantSelection.withLock { $0.requested } == nil)
     }
 
     @Test("Variants that can't switch with the best, and renditions only they refer to, are neither loaded nor probed")
@@ -251,7 +393,7 @@ struct HLSInputTests {
         #expect(whole.count == 1, "\(stand.server.requests.map(\.path))")
     }
 
-    @Test("A variant read for a switch joins at a segment after the picture's, at a keyframe")
+    @Test("A variant read for a switch joins at a segment after the picture's, at a keyframe, described by that read")
     func switchedVariantJoinsAtTheNextSegment() throws {
         guard let stand = try Self.stand(.hlsLadder) else { return }
         defer { stand.server.stop() }
@@ -261,6 +403,7 @@ struct HLSInputTests {
         let lowVideo = try #require(low.streams.video)
         let (before, _) = Self.drain(input, limit: 60)
         let reached = try #require(before.filter(\.isVideo).last).dts
+        #expect(input.variantDescription(id: low.id) == .pending)
         for index in low.streams.all { input.setReading(true, stream: index) }
         let (after, _) = Self.drain(input, limit: 400)
         let joined = try #require(after.first { $0.stream == lowVideo })
@@ -269,7 +412,10 @@ struct HLSInputTests {
         #expect(joined.dts - reached < 2.1)
         // The segment the picture was in, of the lowest variant, was not downloaded to be dropped.
         let paths = stand.server.requests.map(\.path).filter { $0.hasPrefix("v0_") }
-        #expect(paths.filter { $0 == "v0_000.ts" }.count == 1, "\(paths)")
+        #expect(!paths.contains("v0_000.ts"), "\(paths)")
+        // Described as the top until then; its own read describes it.
+        #expect(input.variantDescription(id: low.id) == .described)
+        #expect(input.stream(lowVideo)?.pointee.codecpar.pointee.width == 320)
     }
 
     @Test("A subtitle rendition's cues are on the picture's timeline, whichever variant is read")

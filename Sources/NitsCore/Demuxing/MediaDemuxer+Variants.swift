@@ -31,6 +31,9 @@ extension MediaDemuxer {
         var requested: Int?
         /// Adaptive bitrate chooses (`isAdaptiveBitrateEnabled`).
         var isAutomatic = true
+        /// Variants whose first read found other streams than described, or ones that don't switch
+        /// (`verifyVariantSwitchTarget`): neither asked for nor chosen again.
+        var rejected: Set<Int> = []
     }
 
     struct VariantSwitch {
@@ -64,6 +67,9 @@ extension MediaDemuxer {
         var heldVideo: [HeldVideoPacket] = []
         /// DASH: the old variant's pictures delayed while the keyframe is looked for (`admitVideoWaitingForOld`).
         var heldOld: [HeldVideoPacket] = []
+        /// The target was described by its own read when the switch began, or has been since and switches
+        /// (`verifyVariantSwitchTarget`).
+        var isTargetVerified = false
     }
 
     /// Switches to variant `id` without a seek; see the type's description. Takes effect from the next read, and
@@ -72,6 +78,7 @@ extension MediaDemuxer {
     public func selectVariant(id: Int) {
         guard variants.contains(where: { $0.id == id && $0.isSwitchable }) else { return }
         variantSelection.withLock { selection in
+            guard !selection.rejected.contains(id) else { return }
             selection.requested = id
             selection.isAutomatic = false
         }
@@ -169,11 +176,15 @@ extension MediaDemuxer {
         // Its top, unless the link's rate is known: a DASH ladder is read side by side while it opens, and an HLS
         // master's opening may prove the link slow. Then the rung it carries, not the top (its first segment,
         // megabytes, downloaded before a switch could splice).
-        var start = ladder.max { $0.bandwidth < $1.bandwidth } ?? best
+        // Only a variant described by its own read starts: the decoders are made from its streams before any is read
+        // (`DemuxerInput.variantDescription`; the input describes the rung a slow link starts on).
+        let startable = ladder.filter { input.variantDescription(id: $0.id) == .described }
+        let rungs = startable.isEmpty ? ladder : startable
+        var start = rungs.max { $0.bandwidth < $1.bandwidth } ?? best
         if let linkRate {
             let share = AdaptiveBitrateLogic.Config().safety
-            let fitting = ladder.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
-            start = fitting ?? ladder.min { $0.bandwidth < $1.bandwidth } ?? best
+            let fitting = rungs.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
+            start = fitting ?? rungs.min { $0.bandwidth < $1.bandwidth } ?? best
         }
 
         let selected = start
@@ -263,6 +274,7 @@ extension MediaDemuxer {
             }
         }
         guard let selected = selectedVariantId, requested != selected,
+            !variantSelection.withLock({ $0.rejected.contains(requested) }),
             let target = variants.first(where: { $0.id == requested }),
             let streams = variantStreams[requested], let previous = variantStreams[selected]
         else { return }
@@ -271,6 +283,9 @@ extension MediaDemuxer {
             target: target, streams: streams, previous: previous, audioStream: -1,
             previousVideoTime: lastVideoReadTime)
         newSwitch.audioStream = newSwitch.audioStream(replacing: audioStreamIndex)
+        // A variant described by its own read switches as `isSwitchable` said; one described as another is checked once
+        // its read describes it (`verifyVariantSwitchTarget`).
+        newSwitch.isTargetVerified = input.variantDescription(id: requested) == .described
         variantSwitch = newSwitch
         // Its video and the rendition of the audio track selected; the other renditions stay off.
         applyStreamSelection()
@@ -424,10 +439,50 @@ extension MediaDemuxer {
         finishVariantSwitch()
     }
 
-    /// Completes a switch before a seek to `seconds`, which reads from the new variant at once.
+    /// The variant a switch goes to, once the input has described it by its own read (`DemuxerInput.variantDescription`):
+    /// one whose streams are not those described, or don't switch with the variant played (`canSwitch`, which held for
+    /// the description), is given up for good. Returns the streams of a switch given up so: a packet of them read now is
+    /// dropped. Behind `lock` and `queueLock`.
+    func verifyVariantSwitchTarget() -> [Int] {
+        guard let pending = variantSwitch, !pending.isTargetVerified, pending.spliceTime == nil else { return [] }
+        let description = input.variantDescription(id: pending.target.id)
+        if description == .pending { return [] }
+        if description == .described, canSwitch(from: pending.previous, to: pending.streams) {
+            variantSwitch?.isTargetVerified = true
+            return []
+        }
+        AppLog.warning(
+            .demuxer,
+            "\(streamingName): \(pending.target.bandwidth / 1000) kbit/s "
+                + (description == .rejected
+                    ? "has other streams than its manifest tells" : "does not switch with the variant played")
+                + "; left out")
+        variantSelection.withLock { _ = $0.rejected.insert(pending.target.id) }
+        let dropped = pending.streams.all.filter { !pending.previous.all.contains($0) }
+        cancelVariantSwitch()
+        return dropped
+    }
+
+    /// Completes a switch before a seek to `seconds`, which reads from the new variant at once. A variant not yet
+    /// described by its own read can't be spliced to (its decoders would be made from the description it was given): the
+    /// input describes it now (`DemuxerInput.describeVariant`), and when it can't, the switch is given up and asked for
+    /// again, to start after the seek.
     func completeVariantSwitchBeforeSeek(at seconds: Double) {
         beginRequestedVariantSwitch()
+        if let pending = variantSwitch, !pending.isTargetVerified, pending.spliceTime == nil,
+            input.variantDescription(id: pending.target.id) == .pending
+        {
+            _ = input.describeVariant(id: pending.target.id, at: seconds)
+        }
+        _ = verifyVariantSwitchTarget()
         guard let pending = variantSwitch else { return }
+        if !pending.isTargetVerified, pending.spliceTime == nil {
+            cancelVariantSwitch(reporting: false)
+            variantSelection.withLock { selection in
+                if selection.requested == nil { selection.requested = pending.target.id }
+            }
+            return
+        }
         if pending.spliceTime == nil {
             // The keyframe waited for the old variant; the seek reads from the new one at its target instead (the parameter
             // sets that were in band with the keyframe are still its).

@@ -41,6 +41,13 @@ protocol DemuxerInput: StreamDescriptions {
     /// Bits a second the link carried while the input opened, when that is known and tells the start variant
     /// (`adoptVariants`): a DASH ladder read side by side, an HLS master's opening that proves the link slow.
     var openingLinkRate: Double? { get }
+    /// How far variant `id`'s streams are described: an HLS rung described as another (the one probed) until its first
+    /// read is `pending`, and `rejected` when that read found other streams. `described` for every other.
+    func variantDescription(id: Int) -> MediaDemuxer.VariantDescription
+    /// Describes a `pending` variant now, by a read of its own (a probe at `seconds`, the seek's target), and says how it
+    /// is described then: a seek
+    /// splices to a variant before its first read. Blocks for the network; behind `lock`.
+    func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription
     /// A playlist that slides and has no end yet, as opened.
     var isLivePlaylist: Bool { get }
     /// The window of a live playlist as last loaded, on the timeline; nil for other media. Read after `read`, on the
@@ -113,7 +120,22 @@ protocol NetworkReadAccount: AnyObject {
     var transferMeter: NetworkTransferMeter? { get }
 }
 
+extension DemuxerInput {
+    func variantDescription(id: Int) -> MediaDemuxer.VariantDescription { .described }
+    func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription { .described }
+}
+
 extension MediaDemuxer {
+    /// How far a variant's streams are described (`DemuxerInput.variantDescription(id:)`).
+    enum VariantDescription: Sendable {
+        /// By its own read: the table's streams are its.
+        case described
+        /// As another variant, by what its manifest tells (an HLS rung's `CODECS`, `RESOLUTION`): its first read tells.
+        case pending
+        /// Its first read found other streams than described: it plays never.
+        case rejected
+    }
+
     /// A variant as the input groups its streams; see `DemuxerInput.variantCandidates()`.
     struct VariantCandidate {
         let id: Int

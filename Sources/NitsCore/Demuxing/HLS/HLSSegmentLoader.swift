@@ -37,7 +37,9 @@ final class HLSSegmentLoader: Sendable {
     /// Local files are read too: the playlist itself is a file (a saved manifest). A playlist served over HTTP(S) never
     /// reaches the disk, whatever it lists.
     let allowsFiles: Bool
-    private let cache = OSAllocatedUnfairLock(initialState: Cache())
+    private let cache: OSAllocatedUnfairLock<Cache>
+    /// Interrupts this loader's requests besides the transport's `shouldAbort` (`aborting(when:)`).
+    private let abort: (@Sendable () -> Bool)?
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
     static let cacheLimit = 32
@@ -49,6 +51,21 @@ final class HLSSegmentLoader: Sendable {
     init(transport: HTTPSessionTransport, allowsFiles: Bool = false) {
         self.transport = transport
         self.allowsFiles = allowsFiles
+        cache = OSAllocatedUnfairLock(initialState: Cache())
+        abort = nil
+    }
+
+    private init(sharing loader: HLSSegmentLoader, abort: @escaping @Sendable () -> Bool) {
+        transport = loader.transport
+        allowsFiles = loader.allowsFiles
+        cache = loader.cache
+        self.abort = abort
+    }
+
+    /// The same loader (transport, kept init sections and keys) whose requests also give way to `abort`: a probe of the
+    /// opening that another one beat (`HLSInput`'s race), stopped without stopping the stream.
+    func aborting(when abort: @escaping @Sendable () -> Bool) -> HLSSegmentLoader {
+        HLSSegmentLoader(sharing: self, abort: abort)
     }
 
     /// The segment's bytes, decrypted.
@@ -78,7 +95,8 @@ final class HLSSegmentLoader: Sendable {
             return (try file(url, range: nil), url)
         }
         switch transport.open(
-            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
+            abort: abort)
         {
         case .input(let input):
             let servedFrom = input.servedFrom ?? url
@@ -138,7 +156,7 @@ final class HLSSegmentLoader: Sendable {
         let address = url.absoluteString
         let opened = transport.open(
             address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, cookies: nil,
-            cookieOrigin: nil, followsRedirects: true)
+            cookieOrigin: nil, followsRedirects: true, abort: abort)
         switch opened {
         case .input(let input):
             // A server may answer a range with more than was asked for (206 with a longer range).
@@ -157,7 +175,8 @@ final class HLSSegmentLoader: Sendable {
     private func wholeFile(_ url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
         guard
             case .input(let input) = transport.open(
-                url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+                url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
+                abort: abort)
         else { throw .notServed(url) }
         let whole = try read(input, limit: Int(range.range.upperBound))
         guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
@@ -349,7 +368,7 @@ extension HLSSegmentLoader {
         let range = segment.byteRange
         let opened = transport.open(
             segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
-            cookies: nil, cookieOrigin: nil, whileOpening: whileOpening, followsRedirects: true)
+            cookies: nil, cookieOrigin: nil, whileOpening: whileOpening, followsRedirects: true, abort: abort)
         switch opened {
         case .input(let input):
             return HLSSegmentBody(input: input, limit: range?.length, retains: retains)

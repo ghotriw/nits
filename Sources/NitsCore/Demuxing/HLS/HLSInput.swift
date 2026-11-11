@@ -14,10 +14,16 @@ import os
 ///
 /// **Variants.** Every variant is a lane with streams of its own, which `variantCandidates()` groups as `hls.c`'s
 /// programs: the demuxer chooses the start and switches (`MediaDemuxer+Variants.swift`), with the splice it has for any
-/// input. It reads the lanes of the variants selected only (`setReading`). Every variant is probed at the opening: its
-/// first segment is read as far as FFmpeg's analysis goes (up to `max_analyze_duration` of media: often the whole of
-/// a short segment), all variants side by side, as the opening's requests (`HTTPSessionTransport`'s opening limit: held
-/// to a small buffer, no adaptive-bitrate sample, but a measure of the link, `openingLinkRate`). The probe is dropped
+/// input. It reads the lanes of the variants selected only (`setReading`). At the opening a rung is probed: its first
+/// segment is read as far as FFmpeg's analysis goes (up to `max_analyze_duration` of media: often the whole of a short
+/// segment), as the opening's requests (`HTTPSessionTransport`'s opening limit: held to a small buffer, no
+/// adaptive-bitrate sample, but a measure of the link, `openingLinkRate`). Of a ladder of one codec, range and groups
+/// only the top is (with the audio renditions, side by side), as hls.js and ExoPlayer read the start variant alone; the
+/// next rung down is probed beside it when it has not answered in `answerLimit`, and the first to answer goes on. The
+/// other rungs are its clones: described as it, with their `RESOLUTION`, until their first read describes them
+/// (`variantDescription(id:)`, `redescribe`); one that turns out other is rejected, and the demuxer gives up the switch
+/// to it. A link proven slow has the rung it starts on probed too. A ladder `ladder(of:)` kept whole (a rung that tells
+/// no codecs) has every rung probed. The probe is dropped
 /// once the streams are described, the one of the variant played included: its download was held to the opening's
 /// buffer, and what it left is asked for again unheld (continuing it would hold the start of playback to a link as it
 /// is the moment the opening ends). A lane that is not read afterwards downloads nothing more. The first segment of a run
@@ -130,6 +136,11 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     private var lastTime = 0.0
     /// The variant being caught up for a switch: its pictures are not where the picture is.
     private var catchingUp: HLSLane?
+    /// The variants described from another rung's probe (`redescribe`): pending until their first read, then described
+    /// or rejected. A variant not in it is described by a probe of its own.
+    private let descriptions = OSAllocatedUnfairLock<[Int: MediaDemuxer.VariantDescription]>(initialState: [:])
+    /// What the opening's probes carried (`HTTPSessionTransport.openingThroughput`), read once they ended.
+    private var openingRate: Double?
     let isLivePlaylist: Bool
     let durationSeconds: Double
 
@@ -145,7 +156,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     /// What the opening's probes carried, when it proves the link slow: playback then starts on a rung that fits it.
     var openingLinkRate: Double? {
-        guard !variants.isEmpty, let rate = transport.openingThroughput, rate < Self.slowLinkLimit else { return nil }
+        guard !variants.isEmpty, let rate = openingRate, rate < Self.slowLinkLimit else { return nil }
         return rate
     }
 
@@ -159,7 +170,11 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Opens the stream at `url`, a master or a media playlist. Nil when it can't (recorded on `interrupt`).
-    init?(url address: String, headers: [String: String], interrupt: FFmpegInterrupt) {
+    /// `answerLimit`: how long the top rung's probe waits for an answer before the next rung down is probed beside it.
+    init?(
+        url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
+        answerLimit: Duration = HLSInput.answerLimit
+    ) {
         let url = MediaURL.normalizeMediaPath(address)
         self.interrupt = interrupt
         let began = ContinuousClock.now
@@ -202,12 +217,14 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         var variables: [String: String] = [:]
         /// Each variant of the master: its bandwidth and the positions in `wanted` of its playlist and renditions.
         var plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])] = []
+        /// The variants of `plan`, in its order.
+        var listed: [HLSVariant] = []
         switch parsed {
         case .media:
             wanted = [Wanted(url: masterURL, kind: .primary, rendition: nil)]
         case .master(let master):
             variables = master.variables
-            let listed = Self.ladder(of: master)
+            listed = Self.ladder(of: master)
             guard !listed.isEmpty else {
                 fail("the master playlist lists no variant")
                 return nil
@@ -317,58 +334,131 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 loader: loader, anchors: anchors, shouldAbort: shouldAbort)
         }
 
-        // Each lane opened at the segment that holds the start, side by side, to learn its streams. One playlist alone
-        // is read from its first segment at once; a master's lanes are probed (the start of the segment only) and the
-        // ones the demuxer chooses are started afterwards.
+        // Each lane opened at the segment that holds the start, to learn its streams. One playlist alone is read from its
+        // first segment at once; a master's lanes are probed (the start of the segment only) and the ones the demuxer
+        // chooses are started afterwards. Of a ladder whose rungs tell one codec, range and groups (`cloneCandidates`)
+        // one rung is probed, the top (hls.js and ExoPlayer read the start variant alone), and the others are described
+        // as it: clones, whose first read describes them for good (`redescribe`). The audio renditions are probed beside
+        // it (small, and nothing in the master describes them), and so is a rung whose `CODECS` tells other sound muxed
+        // into it. A top that has not answered in `answerLimit` has the next rung down probed beside it, and the first to
+        // answer describes the ladder (`raceForModel`).
         let isProbing = !plan.isEmpty
-        // Measurement of candidate 2's first step (`HLSOpeningMeasure.probesTopOnly`): the top rung and its renditions
-        // alone are probed, the others left out, so the opening's rate is one transfer's, not a ladder's side by side.
-        // The lanes left out, kept for a rung to fall back on when the top's probe fails.
-        var heldBack: [Int: HLSLane] = [:]
-        if isProbing, HLSOpeningMeasure.probesTopOnly, let top = plan.first(where: { $0.video == referenceIndex }) {
-            let kept = Set([top.video] + top.audio + top.subtitles)
-            for index in built.indices where !kept.contains(index) {
-                heldBack[index] = built[index]
-                built[index] = nil
+        let results = built.map { _ in Slot<HLSSegmentReaderError>() }
+        let probedLanes = built.map { _ in Slot<Bool>() }
+        let lanesToOpen = built
+        let candidates =
+            isProbing
+            ? Self.cloneCandidates(plan: plan, listed: listed, top: referenceIndex) { lanesToOpen[$0] != nil } : []
+        let probeTime = startTime
+        @Sendable func probe(_ index: Int) {
+            // A subtitle rendition's streams are known without a read (its first segment may have no cues).
+            guard let lane = lanesToOpen[index], lane.kind != .subtitle else { return }
+            do throws(HLSSegmentReaderError) {
+                try lane.probe(at: probeTime)
+                probedLanes[index].set(true)
+            } catch {
+                results[index].set(error)
             }
         }
-        let results = built.map { _ in Slot<HLSSegmentReaderError>() }
-        /// Probes (or opens) the lanes at `indices` of `built` side by side.
-        func start(_ indices: [Int]) {
-            let toOpen = indices.map { built[$0] }
-            DispatchQueue.concurrentPerform(iterations: toOpen.count) { position in
-                // A subtitle rendition's streams are known without a read (its first segment may have no cues).
-                guard let lane = toOpen[position], lane.kind != .subtitle else { return }
-                do throws(HLSSegmentReaderError) {
-                    if isProbing {
-                        try lane.probe(at: startTime)
-                    } else {
-                        try lane.open(at: startTime)
+        /// Probes the rungs of `order` (the top first, then down) until one describes the ladder: the top, or a rung below
+        /// it probed beside it once the top has not answered in `answerLimit` (the first to answer goes on, the other is
+        /// stopped), or the next one down after a probe failed. A rung stopped so is described as the one that answered.
+        @Sendable func raceForModel(_ order: [Int]) -> Int? {
+            var queue = order[...]
+            while let first = queue.popFirst() {
+                guard let lane = lanesToOpen[first] else { continue }
+                let race = ProbeRace()
+                race.start(first, lane: lane, at: probeTime, loader: loader)
+                var started = [first]
+                let deadline = ContinuousClock.now + answerLimit
+                while !race.isSettled {
+                    if started.count == 1, !race.hasWinner, ContinuousClock.now >= deadline, let next = queue.first,
+                        let neighbour = lanesToOpen[next]
+                    {
+                        queue.removeFirst()
+                        AppLog.warning(
+                            .demuxer,
+                            "HLS: \(lane.label) has not answered in \(HLSOpeningMeasure.ms(answerLimit)), "
+                                + "probing \(neighbour.label) beside it")
+                        race.start(next, lane: neighbour, at: probeTime, loader: loader)
+                        started.append(next)
                     }
-                } catch {
-                    results[indices[position]].set(error)
+                    race.waitForChange()
+                }
+                race.finish()
+                var stopped: [Int] = []
+                for index in started {
+                    if let error = race.error(of: index) {
+                        if race.lost(index) {
+                            stopped.append(index)
+                        } else {
+                            results[index].set(error)
+                        }
+                    } else {
+                        probedLanes[index].set(true)
+                    }
+                }
+                if let model = race.winner.flatMap({ probedLanes[$0].value == true ? $0 : nil })
+                    ?? started.first(where: { probedLanes[$0].value == true })
+                {
+                    return model
+                }
+                // The one that answered failed after: those stopped for it are probed again.
+                queue = stopped + queue
+            }
+            return nil
+        }
+        let modelSlot = Slot<Int>()
+        if !isProbing {
+            if let lane = built[0] {
+                do throws(HLSSegmentReaderError) { try lane.open(at: startTime) } catch { results[0].set(error) }
+            }
+        } else if candidates.isEmpty {
+            DispatchQueue.concurrentPerform(iterations: built.count) { probe($0) }
+        } else {
+            let raced = Set(candidates)
+            let besides = built.indices.filter { !raced.contains($0) }
+            DispatchQueue.concurrentPerform(iterations: besides.count + 1) { position in
+                if position == besides.count {
+                    if let model = raceForModel(candidates) { modelSlot.set(model) }
+                } else {
+                    probe(besides[position])
                 }
             }
         }
-        start(Array(built.indices))
-        // The top's probe failed (its init unanswered, say): the next rung down is probed, with its renditions not
-        // probed yet, until one opens. A rung of a ladder probed whole is simply left out (below).
-        if !heldBack.isEmpty {
-            var failed = results[referenceIndex].value != nil
-            for entry in plan.sorted(by: { $0.bandwidth > $1.bandwidth }) where failed && heldBack[entry.video] != nil {
-                AppLog.warning(.demuxer, "HLS: the top rung failed to probe, probing \(entry.bandwidth / 1000)k")
-                let indices = ([entry.video] + entry.audio + entry.subtitles).filter { heldBack[$0] != nil }
-                for index in indices { built[index] = heldBack.removeValue(forKey: index) }
-                start(indices)
-                failed = results[entry.video].value != nil
+        // What the opening's probes carried: read now, before a start rung probed below adds to it.
+        openingRate = isProbing ? transport.openingThroughput : nil
+        let model = modelSlot.value
+        /// Rungs described as the model, by their position in `wanted`.
+        var clones = Set(
+            model == nil ? [] : candidates.filter { probedLanes[$0].value != true && results[$0].value == nil })
+        // A link proven slow starts on a rung below the top (`MediaDemuxer.adoptVariants`, the same rule: `startRung`): one
+        // described as the model is probed now, as the demuxer starts only on a rung described by its own probe. One that
+        // fails is left out, and the next rung down is the start: the demuxer then picks it the same way.
+        if let rate = openingRate, rate < Self.slowLinkLimit {
+            let open = plan.filter { lanesToOpen[$0.video] != nil && results[$0.video].value == nil }
+            if let start = Self.startRung(plan: open, linkRate: rate),
+                let startBandwidth = open.first(where: { $0.video == start })?.bandwidth
+            {
+                let downward =
+                    [start]
+                    + open.filter { $0.bandwidth < startBandwidth }
+                    .sorted { $0.bandwidth > $1.bandwidth }.map(\.video).filter { $0 != start }
+                for rung in downward {
+                    if probedLanes[rung].value == true { break }
+                    guard clones.contains(rung) else { continue }
+                    AppLog.info(.demuxer, "HLS: the link is slow, probing \(built[rung]?.label ?? "") to start on")
+                    probe(rung)
+                    clones.remove(rung)
+                    if probedLanes[rung].value == true { break }
+                }
             }
-            for lane in heldBack.values { lane.close() }
         }
-        let opened = built.filter { $0 != nil && $0?.kind != .subtitle }.count
+        let opened = built.indices.filter { probedLanes[$0].value == true }.count + (isProbing ? 0 : 1)
         let probed = ContinuousClock.now
         var laneOfWanted: [Int: Int] = [:]
         for (index, lane) in built.enumerated() {
-            guard let lane else { continue }
+            guard let lane, !clones.contains(index) else { continue }
             if let error = results[index].value {
                 if !isProbing {
                     fail("the first segment failed to open (\(error))", code: error.code)
@@ -417,6 +507,40 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             laneOfWanted[index] = laneIndex
             lanes.append(lane)
         }
+        // The clones: the model's streams, each rung's picture of the size its `RESOLUTION` tells.
+        var cloneLanes = Set<Int>()
+        if let model, let modelLane = laneOfWanted[model].map({ lanes[$0] }) {
+            for index in clones.sorted() {
+                guard let lane = built[index] else { continue }
+                let laneIndex = lanes.count
+                let size = plan.indices.first { plan[$0].video == index }.flatMap { listed[$0].resolution }
+                var slotsOfLane: [HLSLane.StreamSlot] = []
+                for slot in modelLane.streams {
+                    guard let source = table.stream(slot.table), let added = table.addStream() else { continue }
+                    Self.describe(source, in: added)
+                    if slot.type == AVMEDIA_TYPE_VIDEO {
+                        // Without `RESOLUTION` the size is unknown (0), not the model's: adaptive bitrate's screen cap
+                        // and the variants' list read it.
+                        added.pointee.codecpar.pointee.width = Int32(size?.width ?? 0)
+                        added.pointee.codecpar.pointee.height = Int32(size?.height ?? 0)
+                    }
+                    infos.append(StreamInfo(lane: laneIndex, slot: slotsOfLane.count, title: ""))
+                    slotsOfLane.append(
+                        HLSLane.StreamSlot(table: Int(added.pointee.index), timebase: slot.timebase, type: slot.type))
+                }
+                lane.setStreams(slotsOfLane)
+                lane.analyzesAs(modelLane)
+                lane.describeFirstRun = { [weak self] streams in
+                    self?.redescribe(lane: laneIndex, from: streams) ?? false
+                }
+                lane.reposition(at: startTime)
+                laneOfWanted[index] = laneIndex
+                lanes.append(lane)
+                cloneLanes.insert(laneIndex)
+            }
+        } else {
+            for index in clones { built[index]?.close() }
+        }
         guard lanes.contains(where: { $0.kind == .primary }) else {
             fail("the stream has nothing to play")
             return nil
@@ -432,7 +556,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             }
         }
 
-        // The variants whose playlist opened, with the renditions that did.
+        // The variants whose playlist opened, with the renditions that did. A clone's is described by its first read.
         for (position, entry) in plan.enumerated() {
             guard let video = laneOfWanted[entry.video] else { continue }
             variants.append(
@@ -440,6 +564,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     id: position + 1, bandwidth: entry.bandwidth, lane: video,
                     audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
                     subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
+            if cloneLanes.contains(video) { descriptions.withLock { $0[position + 1] = .pending } }
         }
         let ms = HLSOpeningMeasure.ms
         let ended = ContinuousClock.now
@@ -448,18 +573,104 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         AppLog.info(
             .demuxer,
             "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlists) \(probes) "
-                + "describe=\(ms(ended - probed)) total=\(ms(ended - began))")
+                + "clones=\(cloneLanes.count) describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         if isProbing {
-            AppLog.info(
-                .demuxer,
-                "\(HLSOpeningMeasure.rate) \(HLSOpeningMeasure.probesTopOnly ? "top" : "all") "
-                    + transport.openingRateReport)
+            AppLog.info(.demuxer, "\(HLSOpeningMeasure.rate) " + transport.openingRateReport)
         }
         AppLog.info(
             .demuxer,
             "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"
-                + (transport.openingThroughput.map { ", opening \(Int($0 / 1000)) kbit/s" } ?? "")
+                + (openingRate.map { ", opening \(Int($0 / 1000)) kbit/s" } ?? "")
         )
+    }
+
+    /// Seconds a probe of the opening may wait for its first bytes before the next rung down is probed beside it
+    /// (`raceForModel`): Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms, where the request's own
+    /// timeout (`HTTPSessionTransport`, 10 s of silence) fails it.
+    static let answerLimit: Duration = .seconds(4)
+
+    /// The rungs of a ladder that may describe the others (`plan`'s pictures, by position in `wanted`): the top, then
+    /// down by bandwidth. Every rung of a `ladder(of:)` that kept one codec, range and groups (all tell their video
+    /// codec), and of those the ones whose `CODECS` tells the same sound muxed into them as the top's (`muxedSound`): a
+    /// rung that tells another is probed itself. Empty for a ladder of one rung, or one `ladder(of:)` kept whole (a rung
+    /// that tells no codecs): every rung is probed then.
+    static func cloneCandidates(
+        plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])], listed: [HLSVariant], top: Int,
+        isOpen: (Int) -> Bool
+    ) -> [Int] {
+        guard plan.count == listed.count, listed.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil }),
+            let topPosition = plan.indices.first(where: { plan[$0].video == top })
+        else { return [] }
+        let sound = muxedSound(listed[topPosition])
+        var seen = Set<Int>()
+        let rungs = plan.indices
+            .filter { muxedSound(listed[$0]) == sound && isOpen(plan[$0].video) }
+            .sorted { plan[$0].bandwidth > plan[$1].bandwidth }
+            .map { plan[$0].video }
+            .filter { seen.insert($0).inserted }
+        guard rungs.count > 1, rungs.first == top else { return [] }
+        return rungs
+    }
+
+    /// The sound `CODECS` tells muxed into a variant's own segments: its audio entries, when the variant names no audio
+    /// group (with one, the sound is the group's, and the rungs of a ladder share their groups).
+    static func muxedSound(_ variant: HLSVariant) -> [String] {
+        guard variant.audioGroup == nil, let codecs = variant.codecs else { return [] }
+        let text = ["wvtt", "stpp", "c608", "c708", "tx3g"]
+        return codecs.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter {
+            entry in CodecFamily.video(in: entry) == nil && !text.contains { entry.hasPrefix($0) }
+        }
+    }
+
+    /// The rung (by position in `wanted`) a link of `linkRate` bits a second starts on, as `MediaDemuxer.adoptVariants`
+    /// chooses it: the best that fits the link's safe share, else the lowest.
+    static func startRung(plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])], linkRate: Double)
+        -> Int?
+    {
+        let share = AdaptiveBitrateLogic.Config().safety
+        let fitting = plan.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
+        return (fitting ?? plan.min { $0.bandwidth < $1.bandwidth })?.video
+    }
+
+    /// A clone's first run found `streams` (`HLSLane.describeFirstRun`): when they are of the kinds and number its lane
+    /// was described with, their description replaces the model's in the table (the time base kept: the lane puts its
+    /// packets on it), and its variants are `described`; else they are `rejected`, and the lane reads nothing. On the
+    /// reading thread, before any packet of the lane: the demuxer reads a variant's streams once it splices to it.
+    private func redescribe(lane index: Int, from streams: [UnsafeMutablePointer<AVStream>]) -> Bool {
+        let lane = lanes[index]
+        let kept = streams.filter { Self.keeps($0, in: lane.kind) }
+        let ids = variants.filter { $0.lane == index }.map(\.id)
+        let kinds = [AVMEDIA_TYPE_VIDEO, AVMEDIA_TYPE_AUDIO]
+        let found = kinds.map { kind in kept.filter { $0.pointee.codecpar.pointee.codec_type == kind } }
+        let slots = kinds.map { kind in lane.streams.filter { $0.type == kind } }
+        guard zip(found, slots).allSatisfy({ $0.count == $1.count }) else {
+            AppLog.warning(
+                .demuxer,
+                "HLS: \(lane.label) has \(found.map(\.count)) pictures and sounds, not \(slots.map(\.count)) as the "
+                    + "rung it was described as; left out")
+            descriptions.withLock { for id in ids { $0[id] = .rejected } }
+            return false
+        }
+        for (streamsOfKind, slotsOfKind) in zip(found, slots) {
+            for (stream, slot) in zip(streamsOfKind, slotsOfKind) {
+                guard let added = table.stream(slot.table) else { continue }
+                Self.describe(stream, in: added, keepingTimebase: true)
+            }
+        }
+        descriptions.withLock { for id in ids { $0[id] = .described } }
+        return true
+    }
+
+    func variantDescription(id: Int) -> MediaDemuxer.VariantDescription {
+        descriptions.withLock { $0[id] } ?? .described
+    }
+
+    /// A clone probed at the seek's target `seconds` (`HLSLane.describeByProbe`), which `redescribe`s it.
+    func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription {
+        if variantDescription(id: id) == .pending, let variant = variants.first(where: { $0.id == id }) {
+            _ = lanes[variant.lane].describeByProbe(at: seconds)
+        }
+        return variantDescription(id: id)
     }
 
     /// The variants the stream is played from: those with a picture, when there are any (a sound-only variant is no rung
@@ -492,10 +703,14 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
     }
 
-    /// Copies what the decoders and the track lists read of `stream` into the table's `added`.
-    private static func describe(_ stream: UnsafeMutablePointer<AVStream>, in added: UnsafeMutablePointer<AVStream>) {
+    /// Copies what the decoders and the track lists read of `stream` into the table's `added` (its time base too, unless
+    /// `keepingTimebase`: a lane's packets are put on the table stream's).
+    private static func describe(
+        _ stream: UnsafeMutablePointer<AVStream>, in added: UnsafeMutablePointer<AVStream>,
+        keepingTimebase: Bool = false
+    ) {
         _ = avcodec_parameters_copy(added.pointee.codecpar, stream.pointee.codecpar)
-        added.pointee.time_base = stream.pointee.time_base
+        if !keepingTimebase { added.pointee.time_base = stream.pointee.time_base }
         added.pointee.avg_frame_rate = stream.pointee.avg_frame_rate
         added.pointee.r_frame_rate = stream.pointee.r_frame_rate
         added.pointee.sample_aspect_ratio = stream.pointee.sample_aspect_ratio
@@ -591,14 +806,20 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 if code == MediaDemuxer.averrorEOF || (lane.kind != .primary && code == HLSLane.held) { continue }
                 if code < 0 {
                     guard code != HTTPSessionInput.averrorExit, canDrop(lane) else { return code }
-                    AppLog.warning(.demuxer, "HLS: a rendition failed (\(code)) and is left out")
+                    AppLog.warning(.demuxer, "HLS: \(lane.label) failed (\(code)) and is left out")
                     lane.giveUp()
                     continue
                 }
             }
             if lane.kind != .subtitle { media = min(media ?? .infinity, lane.pendingTime) }
             if lane.kind == .primary { picture = min(picture ?? .infinity, lane.pendingTime) }
-            if best.map({ lane.pendingTime < $0.pendingTime }) ?? true { best = lane }
+            // At a time both have, the variant a switch catches up first: its keyframe splices before the old one's
+            // picture of that time is handed out (else the demuxer has both).
+            let isFirst =
+                best.map {
+                    lane.pendingTime < $0.pendingTime || (lane.pendingTime == $0.pendingTime && lane === catchingUp)
+                } ?? true
+            if isFirst { best = lane }
         }
         guard let best else { return MediaDemuxer.averrorEOF }
         // Where reading is: the picture's, not a rendition read ahead of it.
@@ -717,4 +938,71 @@ private final class TransferAccount: NetworkReadAccount {
     {
         transferMeter?.lastAnswer.map { ($0.asked, $0.answered, $0.total, $0.seconds) }
     }
+}
+
+/// The probes of the rungs that may describe a ladder at the opening (`HLSInput`'s `raceForModel`): the top's, and the
+/// next rung down's beside it once the top has not answered in time. The first to answer goes on; the other's requests
+/// are stopped (`HLSSegmentLoader.aborting(when:)`), which ends its probe with an error.
+private final class ProbeRace: @unchecked Sendable {
+    private struct State {
+        var winner: Int?
+        var running = 0
+        var finished: Set<Int> = []
+        var errors: [Int: HLSSegmentReaderError] = [:]
+        /// Probes interrupted because another had answered: no failure of their own.
+        var stopped: Set<Int> = []
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let changed = DispatchSemaphore(value: 0)
+    private let group = DispatchGroup()
+
+    /// Probes `lane` (at `index` of the opening's playlists) at `time` on a thread of its own.
+    func start(_ index: Int, lane: HLSLane, at time: Double, loader: HLSSegmentLoader) {
+        state.withLock { $0.running += 1 }
+        let state = state
+        let changed = changed
+        let lost: @Sendable () -> Bool = { state.withLock { $0.winner.map { $0 != index } ?? false } }
+        let probeLoader = loader.aborting(when: lost)
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [group] in
+            let failure: HLSSegmentReaderError?
+            do throws(HLSSegmentReaderError) {
+                try lane.probe(at: time, loader: probeLoader) {
+                    state.withLock { if $0.winner == nil { $0.winner = index } }
+                    changed.signal()
+                }
+                failure = nil
+            } catch {
+                failure = error
+            }
+            state.withLock { state in
+                state.running -= 1
+                state.finished.insert(index)
+                if let failure {
+                    state.errors[index] = failure
+                    let isLoser = state.winner.map { $0 != index } ?? false
+                    if isLoser, failure.code == HTTPSessionInput.averrorExit { state.stopped.insert(index) }
+                }
+            }
+            changed.signal()
+            group.leave()
+        }
+    }
+
+    /// Decided: the probe that answered first ended, or every probe started did without one answering.
+    var isSettled: Bool {
+        state.withLock { state in state.winner.map { state.finished.contains($0) } ?? (state.running == 0) }
+    }
+    var hasWinner: Bool { state.withLock { $0.winner != nil } }
+    var winner: Int? { state.withLock { $0.winner } }
+
+    /// Whether the probe at `index` was stopped for another that answered first (interrupted after it had); a probe
+    /// that failed on its own (a 404, a timeout) was not, whoever answered.
+    func lost(_ index: Int) -> Bool { state.withLock { $0.stopped.contains(index) } }
+    func error(of index: Int) -> HLSSegmentReaderError? { state.withLock { $0.errors[index] } }
+
+    /// Waits for a probe to answer or end, 50 ms at most.
+    func waitForChange() { _ = changed.wait(timeout: .now() + .milliseconds(50)) }
+    /// Waits for every probe started to end.
+    func finish() { group.wait() }
 }
