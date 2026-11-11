@@ -74,6 +74,8 @@ final class HTTPSessionTransport: Sendable {
 
     /// Bits a second the inputs held while opening have brought (`OpeningLimit.throughput`).
     var openingThroughput: Double? { openingLimit.throughput }
+    /// The opening's rate at the points it could be read at, for the measurement (`OpeningLimit.rateReport`).
+    var openingRateReport: String { openingLimit.rateReport }
 
     /// The demuxer has opened: the inputs opened meanwhile are held no longer (see `HTTPSessionInput.OpeningLimit`).
     func endOpening() {
@@ -310,6 +312,14 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             var busySince: ContinuousClock.Instant?
             var busySeconds = 0.0
             var bytes = 0
+            /// The busy seconds when `bytes` first reached `openingHighWater`, and the bytes when the busy time first
+            /// reached half a second: the points `throughput` could be read at, for the measurement (`rateReport`).
+            var secondsAtHighWater: Double?
+            var bytesAtHalfSecond: (bytes: Int, seconds: Double)?
+
+            var seconds: Double {
+                busySeconds + (busySince.map { (ContinuousClock.now - $0) / .seconds(1) } ?? 0)
+            }
         }
 
         private let state = OSAllocatedUnfairLock(initialState: State())
@@ -345,15 +355,42 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         }
 
         func received(_ count: Int) {
-            state.withLock { if $0.isLimited { $0.bytes += count } }
+            state.withLock { state in
+                guard state.isLimited else { return }
+                state.bytes += count
+                let seconds = state.seconds
+                if state.secondsAtHighWater == nil, state.bytes >= HTTPSessionInput.openingHighWater {
+                    state.secondsAtHighWater = seconds
+                }
+                if state.bytesAtHalfSecond == nil, seconds >= 0.5 {
+                    state.bytesAtHalfSecond = (state.bytes, seconds)
+                }
+            }
+        }
+
+        /// The rate at the points it could be read at (the first `openingHighWater` bytes, the first half second of
+        /// transfer) and over all, for the measurement of the opening (`HLSOpeningMeasure.rate`).
+        var rateReport: String {
+            state.withLock { state in
+                func kbps(_ bytes: Int, _ seconds: Double) -> String {
+                    seconds > 0 ? "\(Int(Double(bytes) * 8 / seconds / 1000))kbit/s" : "-"
+                }
+                let highWater = HTTPSessionInput.openingHighWater
+                let atHighWater = state.secondsAtHighWater.map {
+                    "\(kbps(highWater, $0))/\(Int(($0 * 1000).rounded()))ms"
+                }
+                let atHalf = state.bytesAtHalfSecond.map { "\(kbps($0.bytes, $0.seconds))/\($0.bytes >> 10)KB" }
+                let seconds = state.seconds
+                return "at\(highWater >> 10)KB=\(atHighWater ?? "-") at0.5s=\(atHalf ?? "-") "
+                    + "all=\(kbps(state.bytes, seconds))/\(state.bytes >> 10)KB/\(Int((seconds * 1000).rounded()))ms"
+            }
         }
 
         /// Bits a second the inputs brought together over the time any of them transferred (the ladder's rungs read
         /// side by side share the link: each one's own rate is a share of it), once there is enough to say.
         var throughput: Double? {
             state.withLock { state in
-                var seconds = state.busySeconds
-                if let since = state.busySince { seconds += (ContinuousClock.now - since) / .seconds(1) }
+                let seconds = state.seconds
                 guard state.bytes >= HTTPSessionInput.openingHighWater, seconds >= 0.5 else { return nil }
                 return Double(state.bytes) * 8 / seconds
             }

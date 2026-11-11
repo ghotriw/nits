@@ -321,21 +321,50 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         // is read from its first segment at once; a master's lanes are probed (the start of the segment only) and the
         // ones the demuxer chooses are started afterwards.
         let isProbing = !plan.isEmpty
-        let toOpen = built
-        let results = toOpen.map { _ in Slot<HLSSegmentReaderError>() }
-        DispatchQueue.concurrentPerform(iterations: toOpen.count) { index in
-            // A subtitle rendition's streams are known without a read (its first segment may have no cues).
-            guard let lane = toOpen[index], lane.kind != .subtitle else { return }
-            do throws(HLSSegmentReaderError) {
-                if isProbing {
-                    try lane.probe(at: startTime)
-                } else {
-                    try lane.open(at: startTime)
-                }
-            } catch {
-                results[index].set(error)
+        // Measurement of candidate 2's first step (`HLSOpeningMeasure.probesTopOnly`): the top rung and its renditions
+        // alone are probed, the others left out, so the opening's rate is one transfer's, not a ladder's side by side.
+        // The lanes left out, kept for a rung to fall back on when the top's probe fails.
+        var heldBack: [Int: HLSLane] = [:]
+        if isProbing, HLSOpeningMeasure.probesTopOnly, let top = plan.first(where: { $0.video == referenceIndex }) {
+            let kept = Set([top.video] + top.audio + top.subtitles)
+            for index in built.indices where !kept.contains(index) {
+                heldBack[index] = built[index]
+                built[index] = nil
             }
         }
+        let results = built.map { _ in Slot<HLSSegmentReaderError>() }
+        /// Probes (or opens) the lanes at `indices` of `built` side by side.
+        func start(_ indices: [Int]) {
+            let toOpen = indices.map { built[$0] }
+            DispatchQueue.concurrentPerform(iterations: toOpen.count) { position in
+                // A subtitle rendition's streams are known without a read (its first segment may have no cues).
+                guard let lane = toOpen[position], lane.kind != .subtitle else { return }
+                do throws(HLSSegmentReaderError) {
+                    if isProbing {
+                        try lane.probe(at: startTime)
+                    } else {
+                        try lane.open(at: startTime)
+                    }
+                } catch {
+                    results[indices[position]].set(error)
+                }
+            }
+        }
+        start(Array(built.indices))
+        // The top's probe failed (its init unanswered, say): the next rung down is probed, with its renditions not
+        // probed yet, until one opens. A rung of a ladder probed whole is simply left out (below).
+        if !heldBack.isEmpty {
+            var failed = results[referenceIndex].value != nil
+            for entry in plan.sorted(by: { $0.bandwidth > $1.bandwidth }) where failed && heldBack[entry.video] != nil {
+                AppLog.warning(.demuxer, "HLS: the top rung failed to probe, probing \(entry.bandwidth / 1000)k")
+                let indices = ([entry.video] + entry.audio + entry.subtitles).filter { heldBack[$0] != nil }
+                for index in indices { built[index] = heldBack.removeValue(forKey: index) }
+                start(indices)
+                failed = results[entry.video].value != nil
+            }
+            for lane in heldBack.values { lane.close() }
+        }
+        let opened = built.filter { $0 != nil && $0?.kind != .subtitle }.count
         let probed = ContinuousClock.now
         var laneOfWanted: [Int: Int] = [:]
         for (index, lane) in built.enumerated() {
@@ -412,7 +441,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
                     subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
         }
-        let opened = toOpen.filter { $0 != nil && $0?.kind != .subtitle }.count
         let ms = HLSOpeningMeasure.ms
         let ended = ContinuousClock.now
         let playlists = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - masterLoaded))"
@@ -421,6 +449,12 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             .demuxer,
             "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlists) \(probes) "
                 + "describe=\(ms(ended - probed)) total=\(ms(ended - began))")
+        if isProbing {
+            AppLog.info(
+                .demuxer,
+                "\(HLSOpeningMeasure.rate) \(HLSOpeningMeasure.probesTopOnly ? "top" : "all") "
+                    + transport.openingRateReport)
+        }
         AppLog.info(
             .demuxer,
             "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"

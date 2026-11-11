@@ -31,7 +31,15 @@ struct HLSOpeningMeasurement {
         let rtt = URL(string: url)?.host().flatMap(Self.roundTrip(to:)) ?? "-"
         let openStart = Date()
         let clock = ContinuousClock.now
-        let demuxer = try #require(MediaDemuxer(url: url))
+        guard let demuxer = MediaDemuxer(url: url) else {
+            // Why it failed: the client's own lines (a playlist or probe that failed, a timeout) are in the log only.
+            print("MEASURE-OPEN label=\(label) url=\(url) run=\(run) rtt=\(rtt) FAILED to open")
+            for entry in LogStore.shared.snapshot() where entry.timestamp >= openStart {
+                print("MEASURE-OPEN   [failed] \(entry.message)")
+            }
+            Issue.record("\(url) failed to open")
+            return
+        }
         let open = ContinuousClock.now - clock
         let decoder = try #require(VideoDecoderFactory.makeDecoder(for: demuxer.codec, demuxer: demuxer))
         let frameQueue = FrameQueue()
@@ -71,7 +79,7 @@ struct HLSOpeningMeasurement {
                 + seekReport)
         for entry in LogStore.shared.snapshot() where entry.timestamp >= openStart && entry.timestamp <= ended {
             // "HLS client:" tells the opening's link rate, which chooses the start on a slow link (`openingLinkRate`).
-            let prefixes = [HLSOpeningMeasure.opening, HLSOpeningMeasure.run, "HLS client:"]
+            let prefixes = [HLSOpeningMeasure.opening, HLSOpeningMeasure.rate, HLSOpeningMeasure.run, "HLS client:"]
             guard prefixes.contains(where: entry.message.hasPrefix) else { continue }
             print("MEASURE-OPEN   [\(entry.timestamp < seekStart ? "open" : "seek")] \(entry.message)")
         }
