@@ -377,6 +377,10 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         /// The task was made while the demuxer opened: all its bytes and time are the opening's, whenever they come.
         var isOpeningTask = false
         var needsContinuation = false
+        /// When the request was made, and when its first answer came (`progress`).
+        var requestedAt: ContinuousClock.Instant?
+        var answeredAt: ContinuousClock.Instant?
+        var lastObserved: ContinuousClock.Instant?
     }
 
     static let highWater = 32 << 20
@@ -668,14 +672,70 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     fileprivate func start() {
         state.withLockUnchecked { state in
+            state.requestedAt = .now
             makeTask(from: offset, in: &state).resume()
         }
+    }
+
+    /// How far the request has got, for the rule that gives a download up (`AdaptiveBitrateLogic.abandonment`).
+    struct Progress: Sendable, Equatable {
+        /// Body bytes received, read or not.
+        var bytes: Int
+        /// The body's length, as the server told it.
+        var length: Int64?
+        /// Seconds since the request was made.
+        var elapsed: Double
+        /// Seconds until the first answer, once it came.
+        var firstAnswer: Double?
+        /// Seconds the transfer ran (not suspended by a full buffer) since the first answer, and the bytes it brought in
+        /// them: what came while the demuxer opened is left out of both (the ladder's rungs read side by side, a share
+        /// of the link, not its rate); none while that goes on.
+        var transferring: Double
+        var measuredBytes: Int
+        /// The task is suspended: the reader is behind, so a slow download is not the link's doing.
+        var isSuspended: Bool
+    }
+
+    /// Told how far the request has got while the reader waits for its bytes, at most every `observeInterval`: the
+    /// read thread is blocked there exactly when a download is too slow. Set before the first read.
+    var onProgress: (@Sendable (Progress) -> Void)?
+    static let observeInterval = Duration.milliseconds(100)
+
+    var progress: Progress {
+        state.withLock { state in
+            let now = ContinuousClock.now
+            let spell = state.transferringSince.map { (now - $0) / .seconds(1) } ?? 0
+            return Progress(
+                bytes: state.received, length: state.answeredLength,
+                elapsed: state.requestedAt.map { (now - $0) / .seconds(1) } ?? 0,
+                firstAnswer: state.requestedAt.flatMap { requested in
+                    state.answeredAt.map { ($0 - requested) / .seconds(1) }
+                },
+                transferring: max(
+                    state.transferSeconds + spell - state.limitedSeconds - (state.isOpeningTask ? spell : 0), 0),
+                measuredBytes: state.isOpeningTask ? 0 : max(state.received - state.limitedBytes, 0),
+                isSuspended: state.isSuspended)
+        }
+    }
+
+    private func observeIfDue() {
+        guard let onProgress else { return }
+        let isDue = state.withLock { state -> Bool in
+            let now = ContinuousClock.now
+            guard state.answeredAt != nil, !state.isFinished, !state.isClosed,
+                state.lastObserved.map({ now - $0 >= Self.observeInterval }) ?? true
+            else { return false }
+            state.lastObserved = now
+            return true
+        }
+        if isDue { onProgress(progress) }
     }
 
     /// Waits for `condition` on the state, checking `shouldAbort` every 50 ms: false when interrupted.
     private func wait(until condition: (State) -> Bool) -> Bool {
         while !state.withLockUnchecked({ condition($0) }) {
             if shouldAbort() { return false }
+            observeIfDue()
             _ = changed.wait(timeout: .now() + .milliseconds(50))
         }
         return true
@@ -870,6 +930,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 }
             }
             state.answer = answered.answer
+            state.answeredAt = state.answeredAt ?? .now
             state.servedFrom = response.url
             state.answeredLength = answered.remaining
             state.fileSize = answered.fileSize

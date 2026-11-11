@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+import os
 
 /// One rendition of an HLS stream being read: the variant's playlist (its video, and the sound muxed into it) or an
 /// audio rendition's. It owns the rendition's timeline (reloaded while the stream is live), the reader of the run being
@@ -31,7 +32,8 @@ final class HLSLane: @unchecked Sendable {
     let url: URL
     /// The master's variables, which the media playlist may import (`EXT-X-DEFINE`).
     private let variables: [String: String]
-    private let loader: HLSSegmentLoader
+    private var loader: HLSSegmentLoader
+    private let progressRelay: HLSSegmentProgressRelay
     private let shouldAbort: () -> Bool
     /// The offsets of the stream's timestamps, which its lanes share (`HLSTimestampAnchors`): a run of the lane's takes or
     /// sets its sequence's, a subtitle rendition's cues are placed by them.
@@ -110,11 +112,40 @@ final class HLSLane: @unchecked Sendable {
         self.url = url
         self.timeline = timeline
         self.variables = variables
-        self.loader = loader
+        let relay = HLSSegmentProgressRelay()
+        progressRelay = relay
+        self.loader = loader.watching(relay)
         self.shouldAbort = shouldAbort
         self.anchors = anchors
         initialEnd = timeline.end
         packet = av_packet_alloc()
+        relay.handler = { [weak self] segment, progress in self?.segmentProgress(segment, progress) }
+    }
+
+    /// The segment being downloaded, with where it is on the timeline and how far it has got.
+    struct SegmentInFlight: Sendable, Equatable {
+        let sequence: Int
+        let start: Double
+        let duration: Double
+        let progress: HTTPSessionInput.Progress
+    }
+
+    /// Told while a segment's bytes are waited for (a picture lane's; set by `HLSInput`, once it is open).
+    func observeProgress(_ observer: @escaping @Sendable (SegmentInFlight) -> Void) {
+        progressObserver.withLock { $0 = observer }
+    }
+
+    private let progressObserver = OSAllocatedUnfairLock<(@Sendable (SegmentInFlight) -> Void)?>(initialState: nil)
+
+    /// `current` is the segment the reader downloads: it is set before the reader asks for the segment's bytes.
+    private func segmentProgress(_ segment: HLSSegment, _ progress: HTTPSessionInput.Progress) {
+        guard kind == .primary, isRead, !isOpening, let observer = progressObserver.withLock({ $0 }),
+            let entry = current,
+            entry.sequence == segment.sequence, entry.segment.url == segment.url
+        else { return }
+        observer(
+            SegmentInFlight(
+                sequence: entry.sequence, start: entry.start, duration: segment.duration, progress: progress))
     }
 
     /// How the lane's runs take the shared offsets: cues in a container (IMSC in fMP4, subtitles in MPEG-TS) are sparse,
@@ -739,6 +770,8 @@ final class HLSLane: @unchecked Sendable {
             if let id = startSegment, id.url == first.segment.url, id.range == first.segment.byteRange {
                 replay = kept.replayedBody()
                 if replay == nil { kept.close() }
+                // The probe's loader made the download: it tells nothing of how far it has got unless told to.
+                replay?.watch(progressRelay, segment: first.segment)
             } else {
                 kept.close()
             }

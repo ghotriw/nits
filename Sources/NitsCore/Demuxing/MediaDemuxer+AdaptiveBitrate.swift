@@ -13,6 +13,8 @@ extension MediaDemuxer {
         var nextDecision = 0.0
         /// `adaptiveTime` the read-ahead thread last waited at the live edge, for a playlist reload.
         var liveEdgeReachedAt: Double?
+        /// The segment a decision to give a download up was last logged for (`noteSegmentInFlight`).
+        var abandonmentLog = AbandonmentLog()
         let epoch = ContinuousClock.now
     }
 

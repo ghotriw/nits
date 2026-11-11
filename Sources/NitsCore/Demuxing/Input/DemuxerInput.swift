@@ -62,6 +62,9 @@ protocol DemuxerInput: StreamDescriptions {
     var network: (any NetworkReadAccount)? { get }
     /// The opening is done (`MediaDemuxer.init`, after its scan of the first packets).
     func finishOpening()
+    /// Told, on the thread that reads, how far the segment being downloaded has got while the read waits for it (an HLS
+    /// input's; others tell nothing). Called once the opening is done.
+    func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void)
 
     // MARK: Reading
 
@@ -121,6 +124,7 @@ protocol NetworkReadAccount: AnyObject {
 }
 
 extension DemuxerInput {
+    func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {}
     func variantDescription(id: Int) -> MediaDemuxer.VariantDescription { .described }
     func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription { .described }
 }

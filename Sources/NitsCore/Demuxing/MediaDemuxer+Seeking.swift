@@ -56,6 +56,7 @@ extension MediaDemuxer {
         readAheadHitEOF = false
         readAheadControl.withLock { $0.isHeld = false }
         consumedSeconds = seconds
+        adaptiveBitrate.abandonmentLog.last = nil
         defer { readAheadWake.signal() }
         let previousReadAhead = readAheadState.withLock { $0 }
         subtitleTracker.beginSeek(previousReadAhead: previousReadAhead)

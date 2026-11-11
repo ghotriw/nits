@@ -819,6 +819,21 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         _ = transport.meter.take()
     }
 
+    /// Each variant's picture lane tells how far its segment's download has got (`HLSLane.onSegmentProgress`).
+    func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {
+        for laneIndex in Set(variants.map(\.lane)) where lanes.indices.contains(laneIndex) {
+            // Variants that differ in their audio group share a playlist, so a lane may be several variants'.
+            let ids = variants.filter { $0.lane == laneIndex }.map(\.id)
+            let hasMuxedAudio = !tableStreams(ofLane: laneIndex, AVMEDIA_TYPE_AUDIO).isEmpty
+            lanes[laneIndex].observeProgress { segment in
+                observer(
+                    .init(
+                        variants: ids, sequence: segment.sequence, start: segment.start,
+                        duration: segment.duration, progress: segment.progress, hasMuxedAudio: hasMuxedAudio))
+            }
+        }
+    }
+
     // MARK: Reading
 
     /// Hands out the packet that decodes first of the lanes'. Each lane read holds its next packet, but a subtitle

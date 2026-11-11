@@ -574,7 +574,13 @@ public final class MediaDemuxer: @unchecked Sendable {
         return seconds
     }
     /// Timeline second of the packets last taken from the queues: the read-ahead target is measured from it.
-    var consumedSeconds = 0.0
+    var consumedSeconds: Double {
+        get { consumedState.withLock { $0 } }
+        set { consumedState.withLock { $0 = newValue } }
+    }
+    /// Behind its own lock as well, for the callback of a download that waits with `queueLock` released
+    /// (`noteSegmentInFlight`).
+    private let consumedState = OSAllocatedUnfairLock(initialState: 0.0)
     var readAheadLimits = ReadAheadLimits()
     /// Consumers waiting in `nextVideoSample(waitingForReadAhead:)` for `packetArrival`.
     var packetWaiters = 0
@@ -673,7 +679,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.liveHistory = liveHistory
         self.liveWindowState = liveWindowState
         // The opening scan of the first packets (`extractVideoFormatDescription`) is part of the opening.
-        defer { input.finishOpening() }
+        defer {
+            input.finishOpening()
+            input.observeSegments { [weak self] segment in self?.noteSegmentInFlight(segment) }
+        }
 
         // FFmpeg indexes what its seeks read past `readPacket` elsewhere (the MPEG-TS timestamp search, the generic
         // seek): only the index of Matroska and MP4 comes from the file.

@@ -40,6 +40,8 @@ final class HLSSegmentLoader: Sendable {
     private let cache: OSAllocatedUnfairLock<Cache>
     /// Interrupts this loader's requests besides the transport's `shouldAbort` (`aborting(when:)`).
     private let abort: (@Sendable () -> Bool)?
+    /// Told how far each segment download has got while the reader waits for it (`watching`).
+    private let relay: HLSSegmentProgressRelay?
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
     static let cacheLimit = 32
@@ -53,19 +55,26 @@ final class HLSSegmentLoader: Sendable {
         self.allowsFiles = allowsFiles
         cache = OSAllocatedUnfairLock(initialState: Cache())
         abort = nil
+        relay = nil
     }
 
-    private init(sharing loader: HLSSegmentLoader, abort: @escaping @Sendable () -> Bool) {
+    private init(sharing loader: HLSSegmentLoader, abort: (@Sendable () -> Bool)?, relay: HLSSegmentProgressRelay?) {
         transport = loader.transport
         allowsFiles = loader.allowsFiles
         cache = loader.cache
         self.abort = abort
+        self.relay = relay
+    }
+
+    /// The same loader whose segment downloads tell `relay` how far they have got.
+    func watching(_ relay: HLSSegmentProgressRelay) -> HLSSegmentLoader {
+        HLSSegmentLoader(sharing: self, abort: abort, relay: relay)
     }
 
     /// The same loader (transport, kept init sections and keys) whose requests also give way to `abort`: a probe of the
     /// opening that another one beat (`HLSInput`'s race), stopped without stopping the stream.
     func aborting(when abort: @escaping @Sendable () -> Bool) -> HLSSegmentLoader {
-        HLSSegmentLoader(sharing: self, abort: abort)
+        HLSSegmentLoader(sharing: self, abort: abort, relay: relay)
     }
 
     /// The segment's bytes, decrypted.
@@ -216,6 +225,16 @@ final class HLSSegmentLoader: Sendable {
     }
 }
 
+/// Where a lane's segment downloads tell how far they have got (`HLSSegmentLoader.watching`): the lane sets its
+/// handler once it is made, after the loader it reads with. Called on the thread that reads the segment, while it waits.
+final class HLSSegmentProgressRelay: @unchecked Sendable {
+    var handler: ((HLSSegment, HTTPSessionInput.Progress) -> Void)?
+
+    func tell(_ segment: HLSSegment, _ progress: HTTPSessionInput.Progress) {
+        handler?(segment, progress)
+    }
+}
+
 /// A segment's bytes as they come: the demuxer starts on a segment's first bytes while the rest is still on the way
 /// (`HLSSegmentLoader.segmentBody`), as FFmpeg's `hls.c` reads one, so the first picture of a segment does not wait for
 /// the whole of it (30 MB for a 4K segment of six seconds, on a link that may take seconds to carry them). Not for an
@@ -297,6 +316,12 @@ final class HLSSegmentBody {
         }
     }
 
+    /// The download tells `relay` how far it has got, for a body that a loader other than the lane's made (a probe's).
+    func watch(_ relay: HLSSegmentProgressRelay, segment: HLSSegment) {
+        guard case .input(let input, _) = source else { return }
+        input.onProgress = { [segment] progress in relay.tell(segment, progress) }
+    }
+
     /// Everything that is left.
     func rest() throws(HLSSegmentLoadError) -> Data {
         var all = Data()
@@ -371,6 +396,7 @@ extension HLSSegmentLoader {
             cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort)
         switch opened {
         case .input(let input):
+            if let relay { input.onProgress = { [segment] progress in relay.tell(segment, progress) } }
             return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
         case .failed(let code):
             throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)

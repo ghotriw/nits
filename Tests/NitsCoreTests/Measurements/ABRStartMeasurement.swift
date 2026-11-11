@@ -124,6 +124,9 @@ struct ABRStartRealMeasurement {
         }
         consumer.stop()
         demuxer.stopReadAhead()
+        for entry in LogStore.shared.snapshot() where entry.message.hasPrefix("ABR abandon") {
+            print("MEASURE-REAL   [abandon] \(entry.message)")
+        }
         print(
             "MEASURE-REAL label=\(ProcessInfo.processInfo.environment["NITS_MEASURE_LABEL"] ?? "-") url=\(url) open=\(String(format: "%.1f", open)) s start=\(first.map { "\($0.width)p@\($0.bandwidth / 1000)k" } ?? "-") "
                 + "firstPicture=\(firstPicture.map { String(format: "%.1f", $0) } ?? "none") s stalled=\(String(format: "%.1f", consumer.stalled)) s "
