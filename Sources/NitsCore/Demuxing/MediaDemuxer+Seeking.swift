@@ -55,12 +55,16 @@ extension MediaDemuxer {
         reportsVideoSizeAtNextKeyframe = true
         readAheadHitEOF = false
         readAheadControl.withLock { $0.isHeld = false }
+        let handedOut = consumedSeconds
         consumedSeconds = seconds
         adaptiveBitrate.abandonmentLog.last = nil
         defer { readAheadWake.signal() }
-        let previousReadAhead = readAheadState.withLock { $0 }
-        subtitleTracker.beginSeek(previousReadAhead: previousReadAhead)
-        secondarySubtitleTracker.beginSeek(previousReadAhead: previousReadAhead)
+        // Captions in the pictures exist only up to the picture handed out, not up to what was read: the span ends there.
+        subtitleTracker.beginSeek(
+            previousReadAhead: subtitleReadAhead(inVideo: subtitleTracker.readsCaptionsInVideo, handedOut: handedOut))
+        secondarySubtitleTracker.beginSeek(
+            previousReadAhead: subtitleReadAhead(
+                inVideo: secondarySubtitleTracker.readsCaptionsInVideo, handedOut: handedOut))
         // After the seek's own reads: a keyframe search that backs off, or reads to the end, would leave them ahead.
         defer {
             readAheadState.withLock { $0 = seconds }
@@ -332,7 +336,6 @@ extension MediaDemuxer {
             if pkt.stream_index == audioStreamIndex {
                 audioQueue.append(DemuxedAudioPacket(pkt))
             } else if pkt.stream_index == videoStreamIndex {
-                subtitleTracker.processVideoPacket(&pkt)
                 keyframe = videoPacket(from: pkt)
             }
         }
@@ -421,7 +424,6 @@ extension MediaDemuxer {
                 if requireAtOrBeforeTarget && keyPts > target && !isLastChance {
                     break
                 }
-                subtitleTracker.processVideoPacket(&pkt)
                 videoQueue.append(videoPacket(from: pkt))
                 landed = true
                 break

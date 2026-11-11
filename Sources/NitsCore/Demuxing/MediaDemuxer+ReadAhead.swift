@@ -171,7 +171,6 @@ extension MediaDemuxer {
         }
         defer { av_packet_unref(&pkt) }
         if pkt.stream_index == videoStreamIndex {
-            subtitleTracker.processVideoPacket(&pkt)
             videoQueue.append(videoPacket(from: pkt))
         } else if pkt.stream_index == audioStreamIndex {
             audioQueue.append(DemuxedAudioPacket(pkt))
@@ -234,7 +233,7 @@ extension MediaDemuxer {
         guard readsAhead else { return .none }
         let deadline = ContinuousClock.now + .seconds(10)
         while true {
-            while let packet = videoQueue.popFirst() {
+            while let packet = takeQueuedVideo() {
                 videoQueue.pruneGOPs()
                 pruneAudioQueueIfNeeded()
                 let time = packet.pts != Int64.min ? packet.pts : packet.dts
@@ -252,5 +251,39 @@ extension MediaDemuxer {
             queueLock.lock()
             packetWaiters -= 1
         }
+    }
+}
+
+extension MediaDemuxer {
+    /// The next queued picture, handed to the decoder: its captions are decoded now, in the order the decoder takes the
+    /// pictures (`LiveSubtitleTracker.processHandedOut`), so a tail of the queue that is cut (a download given up for
+    /// a lower variant's) never reaches the caption decoder, whose state could not be undone. The pictures it still
+    /// holds are flushed with the last one of an ended input. Behind `queueLock`.
+    func takeQueuedVideo() -> DemuxedVideoPacket? {
+        guard let packet = videoQueue.popFirst() else {
+            // The consumer caught up with the read: the last picture was handed out before the input's end was known.
+            // The flush is idempotent (nothing waiting, nothing held: no screens).
+            if inputEnded { subtitleTracker.finishCaptions(video: true) }
+            return nil
+        }
+        subtitleTracker.processHandedOut(packet)
+        if inputEnded, videoQueue.isEmpty { subtitleTracker.finishCaptions(video: true) }
+        return packet
+    }
+
+    /// Where the subtitles of a track are known up to: for captions in the pictures only the picture last handed out,
+    /// not what is read ahead (they are decoded as the pictures leave the queue). `handedOut`: that picture's second
+    /// (`consumedSeconds`; a seek takes it before it moves it).
+    func subtitleReadAhead(inVideo: Bool, handedOut: Double? = nil) -> Double {
+        let readAhead = readAheadState.withLock { $0 }
+        guard inVideo, readsAhead else { return readAhead }
+        return min(readAhead, handedOut ?? consumedSeconds)
+    }
+}
+
+extension MediaDemuxer {
+    /// Whether the subtitle track `id` is closed captions in the video's pictures.
+    func isCaptionsInVideo(_ id: Int?) -> Bool {
+        id.flatMap { id in subtitleTracks.first { $0.id == id } }?.captionsInVideo == true
     }
 }

@@ -304,7 +304,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         streamSelectionChanged = true
         if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
         // Packets from where the reads are now on belong to the new track; what came before is for a window read.
-        let readAhead = readAheadState.withLock { $0 }
+        let readAhead = subtitleReadAhead(inVideo: isCaptionsInVideo(trackId))
         subtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: input, readAhead: readAhead)
     }
 
@@ -323,7 +323,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         selectedSecondarySubtitleTrackId = trackId
         streamSelectionChanged = true
         if trackId != nil, !variants.isEmpty { selectionOutdatesCache = true }
-        let readAhead = readAheadState.withLock { $0 }
+        let readAhead = subtitleReadAhead(inVideo: isCaptionsInVideo(trackId))
         secondarySubtitleTracker.selectTrack(id: trackId, tracks: subtitleTracks, in: input, readAhead: readAhead)
     }
 
@@ -352,7 +352,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// is whole at `time` (track time: the subtitle delay applied), less what the lists hold already; `nil` when
     /// nothing is missing.
     func subtitleWindow(around time: Double, of slot: SubtitleSlot = .main) -> ClosedRange<Double>? {
-        let readAhead = readAheadState.withLock { $0 }
+        let readAhead = subtitleReadAhead(inVideo: tracker(slot).readsCaptionsInVideo)
         return tracker(slot).subtitleWindow(around: time, readAhead: readAhead)
     }
 
@@ -506,7 +506,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// `readAheadEnded` tells it.
     var inputEndedOnDemand: Bool = false
     /// Behind `queueLock`.
-    private var inputEnded: Bool { readsAhead ? readAheadEnded : inputEndedOnDemand }
+    var inputEnded: Bool { readsAhead ? readAheadEnded : inputEndedOnDemand }
     /// Every video packet of the input has been taken (or it has no video).
     public var isVideoEOF: Bool {
         queueLock.lock()
@@ -798,7 +798,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             } else if ret == Self.averrorEOF {
                 endVariantSwitchAtEOF()
                 readAheadState.withLock { $0 = .infinity }
-                subtitleTracker.finishCaptions()
+                subtitleTracker.finishCaptions(video: false)
             }
             return ret
         }
@@ -837,7 +837,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         defer { queueLock.unlock() }
 
         // Drain videoQueue first if audio reading buffered video packets
-        while let vp = videoQueue.popFirst() {
+        while let vp = takeQueuedVideo() {
             if let sample = createVideoSample(from: vp) {
                 return sample
             }
@@ -848,11 +848,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         var pkt = AVPacket()
         while readPacket(&pkt, releasingQueueLock: true) >= 0 {
             if pkt.stream_index == videoStreamIndex {
-                subtitleTracker.processVideoPacket(&pkt)
                 // Through the queue, behind what the read itself queued (the pictures a variant switch held back).
                 videoQueue.append(videoPacket(from: pkt))
                 av_packet_unref(&pkt)
-                while let vp = videoQueue.popFirst() {
+                while let vp = takeQueuedVideo() {
                     if let sample = createVideoSample(from: vp) { return sample }
                 }
             } else if pkt.stream_index == audioStreamIndex {
@@ -865,10 +864,11 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         // The read loop ends at the end of the input (or an error); what is queued (the pictures a switch held until
         // then) is still to be taken.
-        while let vp = videoQueue.popFirst() {
+        // The input has ended before the last of them is taken: the caption decoder is flushed with it (`takeQueuedVideo`).
+        inputEndedOnDemand = true
+        while let vp = takeQueuedVideo() {
             if let sample = createVideoSample(from: vp) { return sample }
         }
-        inputEndedOnDemand = true
         return nil
     }
 
@@ -919,7 +919,6 @@ public final class MediaDemuxer: @unchecked Sendable {
                 return audioPacket
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
-                subtitleTracker.processVideoPacket(&pkt)
                 let packet = videoPacket(from: pkt)
                 videoQueue.append(packet)
                 av_packet_unref(&pkt)

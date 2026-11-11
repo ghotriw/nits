@@ -290,17 +290,25 @@ final class ClosedCaptionDecoder {
     /// whose step has passed.
     func decode(_ packet: UnsafePointer<AVPacket>) -> [Screen] {
         guard let data = packet.pointee.data, packet.pointee.size > 0 else { return [] }
-        let bytes = UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size))
+        return decode(
+            UnsafeRawBufferPointer(start: data, count: Int(packet.pointee.size)), pts: packet.pointee.pts,
+            dts: packet.pointee.dts, duration: packet.pointee.duration)
+    }
+
+    /// The same for a packet's bytes and times as the demuxer's queue holds them (`DemuxedVideoPacket`): the pictures
+    /// are decoded from there, in the order they are handed out.
+    func decode(_ bytes: UnsafeRawBufferPointer, pts: Int64, dts: Int64, duration: Int64) -> [Screen] {
+        guard !bytes.isEmpty else { return [] }
         let noPTS = Int64.min  // AV_NOPTS_VALUE
         let seconds = { (ticks: Int64) in
             ticks == noPTS ? nil : Double(ticks) * Double(self.timebase.num) / Double(self.timebase.den)
         }
         guard let videoCodec else {
-            guard let time = seconds(packet.pointee.pts) ?? seconds(packet.pointee.dts) else { return [] }
+            guard let time = seconds(pts) ?? seconds(dts) else { return [] }
             var screens = advance(to: time, with: Array(bytes))
             // A caption track has packets only where it has pairs: nothing changes before the packet's end, which
             // may be seconds away. Without a duration, nothing tells.
-            let end = packet.pointee.duration > 0 ? seconds(packet.pointee.duration).map { time + $0 } : nil
+            let end = duration > 0 ? seconds(duration).map { time + $0 } : nil
             if let screen = held, end.map({ Self.step(of: $0) > screen.step }) ?? true {
                 screens.append(screen)
                 held = nil
@@ -309,7 +317,7 @@ final class ClosedCaptionDecoder {
         }
 
         let triplets = ClosedCaptions.cea608Triplets(in: bytes, codec: videoCodec, lengthSize: lengthSize)
-        guard let time = seconds(packet.pointee.pts) else {
+        guard let time = seconds(pts) else {
             // A second field's packet without a time of its own belongs to the picture before it.
             if !triplets.isEmpty, !pending.isEmpty { pending[pending.count - 1].triplets += triplets }
             return []
@@ -317,7 +325,7 @@ final class ClosedCaptionDecoder {
         pending.append((time, triplets))
         var screens: [Screen] = []
         // A picture decoded later is shown no earlier than it is decoded: what is due before that is complete.
-        let decoded = seconds(packet.pointee.dts)
+        let decoded = seconds(dts)
         while let first = earliestPending(), (decoded.map { first.time < $0 } ?? false) || pending.count > reorderDepth
         {
             let picture = pending.remove(at: first.index)

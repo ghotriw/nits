@@ -121,10 +121,9 @@ extension MediaDemuxer {
         }
     }
 
-    /// Queues a held picture as every picture is: its captions, then the queue with the format it plays with, and the
+    /// Queues a held picture as every picture is: the queue with the format it plays with, and the
     /// account of what has been read.
     private func queueHeldVideo(_ held: HeldVideoPacket) {
-        subtitleTracker.processVideoPacket(held.packet)
         videoQueue.append(DemuxedVideoPacket(held, format: videoFormat))
         lastVideoReadTime = held.decodeTime
         recordReadAhead(held.packet.pointee)

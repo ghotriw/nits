@@ -122,6 +122,12 @@ Accepted for now, noted for later.
   flag holds until that setting is changed (`LaunchArguments.dropOverrides`), so turning it on takes off-then-on.
 - **Subtitles dropped with a playlist file are not attached.** `MediaOpenRequest.open` attaches them only to the path
   it loaded; a `.m3u` hands on to its first item, so `engine.currentPath` differs and they are only logged.
+- **Closed captions in the pictures: a second caption track is not decoded while playing, and the decoder keeps the first
+  variant's stream.** The captions are decoded as a picture is handed out of the queue (`MediaDemuxer.takeQueuedVideo`),
+  and only into the main subtitle tracker (as when they were decoded at the read): a second CC track in the pictures
+  (`secondarySubtitleTracker`) gets none. `ClosedCaptionDecoder` takes its codec and the size of the NAL length prefix
+  from the stream it was made on; after an HLS variant switch the stream read is another one, which matters only for
+  fMP4 variants with different length sizes (MPEG-TS is Annex B throughout).
 - **An exact seek into audio past the video's end lands on the last frame.** With audio longer than video (video to
   50 s, audio to 60 s), a seek to 54 s lands on the last frame's 49.96 s: the position is the picture's, while audio
   starts at 54 s, so playback resumes with ~4 s of silence, and the next arrow press steps from 49.96 s again, never

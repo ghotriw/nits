@@ -1,4 +1,5 @@
 import CFFmpeg
+import CoreMedia
 import Foundation
 import Testing
 
@@ -302,6 +303,89 @@ struct ClosedCaptionTests {
         demuxer.seek(to: 0.5, exact: false)
         while demuxer.nextVideoSample() != nil {}
         expectScript(demuxer.getLiveSubtitleDocument().cues.sorted { $0.startTime < $1.startTime })
+    }
+
+    /// A demuxer reading ahead on the captioned stream, with the track selected and the whole file read.
+    private func readAheadDemuxer() throws -> (demuxer: MediaDemuxer, track: SubtitleTrack)? {
+        guard let path = Factory.ensureMedia(preset: .captionsH264MKV) else { return nil }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        let track = try #require(demuxer.subtitleTracks.first)
+        demuxer.selectSubtitleTrack(trackId: track.id)
+        demuxer.startReadAhead(limits: .init())
+        let deadline = ContinuousClock.now + .seconds(10)
+        while demuxer.readAheadSeconds != .infinity, ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return (demuxer, track)
+    }
+
+    private func texts(_ demuxer: MediaDemuxer) -> [String] {
+        demuxer.getLiveSubtitleDocument().cues.sorted { $0.startTime < $1.startTime }.map(\.text)
+    }
+
+    @Test(
+        "Reading ahead decodes no captions: they come as the pictures are handed out, in the order the decoder takes them"
+    )
+    func captionsFollowTheHandOut() throws {
+        guard let (demuxer, _) = try readAheadDemuxer() else { return }
+        // The whole file is read and queued; no picture is handed out yet.
+        #expect(texts(demuxer).isEmpty, "Captions decoded from the queue's read side: \(texts(demuxer))")
+        // Up to the first caption's clear, the first caption only.
+        while let sample = demuxer.nextVideoSample(),
+            CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) < 3.0
+        {}
+        #expect(texts(demuxer) == ["HELLO WORLD"])
+        while demuxer.nextVideoSample() != nil {}
+        expectScript(demuxer.getLiveSubtitleDocument().cues.sorted { $0.startTime < $1.startTime })
+    }
+
+    @Test("A seek back while reading ahead (never the cache's, with captions selected) lists the captions once")
+    func readAheadSeekBackKeepsCaptions() throws {
+        guard let (demuxer, _) = try readAheadDemuxer() else { return }
+        while demuxer.nextVideoSample() != nil {}
+        #expect(texts(demuxer) == Factory.captionScript.map(\.text))
+        let fromCache = demuxer.seekReportingCache(to: 0.5, exact: false).fromCache
+        #expect(!fromCache, "Captions are decoders that keep state: the packet cache does not serve a seek")
+        while demuxer.nextVideoSample() != nil {}
+        expectScript(demuxer.getLiveSubtitleDocument().cues.sorted { $0.startTime < $1.startTime })
+    }
+
+    @Test("A seek forward while reading ahead leaves the captions it skipped to a window read, not claimed as read")
+    func readAheadSeekForwardLeavesAGap() throws {
+        guard let (demuxer, _) = try readAheadDemuxer() else { return }
+        while let sample = demuxer.nextVideoSample(),
+            CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) < 0.5
+        {}
+        let fromCache = demuxer.seekReportingCache(to: 3.2, exact: false, forward: true).fromCache
+        #expect(!fromCache, "Captions are decoders that keep state: the packet cache does not serve a seek")
+        while demuxer.nextVideoSample() != nil {}
+        // Only what was handed out is in the lists: the captions of the pictures skipped are not.
+        #expect(!texts(demuxer).contains("HELLO WORLD"), "Captions of pictures never handed out: \(texts(demuxer))")
+        // And the span skipped is for a window read to fill: it is not claimed as covered.
+        let window = try #require(demuxer.subtitleWindow(around: 2.0), "The skipped span was claimed as read")
+        #expect(window.lowerBound <= 1.0 && window.upperBound >= 2.5, "\(window)")
+    }
+
+    @Test("The caption shown in the last step of the stream comes out at its end, read on demand")
+    func lastScreenWithoutReadAhead() throws {
+        guard let path = Factory.ensureMedia(preset: .captionsH264TSLastStep) else { return }
+        let demuxer = try #require(MediaDemuxer(url: path))
+        demuxer.selectSubtitleTrack(trackId: try #require(demuxer.subtitleTracks.first).id)
+        while demuxer.nextVideoSample() != nil {}
+        #expect(texts(demuxer) == ["HELLO WORLD", "LAST"])
+    }
+
+    @Test("The same reading ahead, the pictures taken while the read goes on and after it has ended")
+    func lastScreenReadingAhead() throws {
+        guard let path = Factory.ensureMedia(preset: .captionsH264TSLastStep) else { return }
+        for limit in [0.2, 1.0, 30.0] {
+            let demuxer = try #require(MediaDemuxer(url: path))
+            demuxer.selectSubtitleTrack(trackId: try #require(demuxer.subtitleTracks.first).id)
+            demuxer.startReadAhead(limits: .init(seconds: limit))
+            while demuxer.nextVideoSample() != nil {}
+            #expect(texts(demuxer) == ["HELLO WORLD", "LAST"], "Read-ahead of \(limit) s")
+            demuxer.stopReadAhead()
+        }
     }
 
     @Test("A window read takes the captions from the video stream and joins what playback collected")

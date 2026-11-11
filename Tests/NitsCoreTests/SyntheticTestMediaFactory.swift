@@ -120,6 +120,9 @@ public enum SyntheticTestMediaFactory {
         /// H.264 MPEG-TS (6s, 320x240, 30 fps, no B-frames) with `captionScript` as CEA-608 CC1 in SEI messages
         /// (`captionSEI`), field 2 null padding and a CEA-708 triplet beside it in every picture
         case captionsH264TS
+        /// `captionsH264TS` with a caption shown in the last step of the stream (`lastStepCaptionScript`), never cleared:
+        /// only a flush of the caption decoder at the end of the input brings its screen out
+        case captionsH264TSLastStep
         /// `captionsH264TS` remuxed into Matroska: length-prefixed units, no decode timestamps
         case captionsH264MKV
         /// H.264 MOV (6s, 320x240) with `captionScript` in a `c608` caption track, made from `captionSCC`
@@ -202,7 +205,9 @@ public enum SyntheticTestMediaFactory {
         case dashLadderCaptions
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
-        var hasCaptionSEI: Bool { self == .captionsH264TS || self == .captionsH264MKV }
+        var hasCaptionSEI: Bool {
+            self == .captionsH264TS || self == .captionsH264MKV || self == .captionsH264TSLastStep
+        }
 
         /// Presets made as a directory of playlists and segments, `filename` being the master playlist.
         var isHLS: Bool {
@@ -313,6 +318,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_ass_fade_subtitles.mkv"
             case .dvbSubtitlesTS:
                 return "synth_dvb_subtitles.ts"
+            case .captionsH264TSLastStep:
+                return "synth_captions_h264_last_step.ts"
             case .captionsH264TS:
                 return "synth_captions_h264.ts"
             case .captionsH264MKV:
@@ -593,12 +600,17 @@ public enum SyntheticTestMediaFactory {
             ]
             guard runFFmpeg(ffmpeg, arguments: encode, preset: preset),
                 let stream = FileManager.default.contents(atPath: streamPath),
-                FileManager.default.createFile(atPath: streamPath, contents: captionedStream(stream)),
+                FileManager.default.createFile(
+                    atPath: streamPath,
+                    contents: captionedStream(
+                        stream,
+                        pairs: preset == .captionsH264TSLastStep
+                            ? captionPairs(for: lastStepCaptionScript) : captionPairsPerPicture)),
                 runFFmpeg(
                     ffmpeg,
                     arguments: [
                         "-y", "-f", "h264", "-framerate", "30", "-i", streamPath, "-c", "copy",
-                        "-f", preset == .captionsH264TS ? "mpegts" : "matroska", encodedPath,
+                        "-f", preset == .captionsH264MKV ? "matroska" : "mpegts", encodedPath,
                     ], preset: preset)
             else { return nil }
             guard rename(encodedPath, targetPath) == 0 else {
@@ -1171,7 +1183,8 @@ public enum SyntheticTestMediaFactory {
 
     private static func arguments(for preset: Preset, outputPath: String, metadataPath: String) -> [String] {
         switch preset {
-        case .captionsH264TS, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile,
+        case .captionsH264TS, .captionsH264TSLastStep, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4,
+            .hlsVariantsAV1, .hlsVariantsSingleFile,
             .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsMixedSoundLadder,
             .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
@@ -1847,6 +1860,12 @@ extension SyntheticTestMediaFactory {
         (3.0, 4.5, 1, "TOP LINE"),
     ]
 
+    /// `captionScript`'s first caption, and one shown in the last step of the 6 s stream and never cleared: its screen is
+    /// held until the next step, which never comes, so only the end of the input brings it out.
+    static let lastStepCaptionScript: [(shown: Double, cleared: Double, row: Int, text: String)] = [
+        (1.0, 2.5, 15, "HELLO WORLD"), (5.85, 99.0, 15, "LAST"),
+    ]
+
     /// The captions of `dashLadderCaptions`, timed so that the keyframe of each second (30 pictures) carries the first
     /// pair of the text of one: a splice at a keyframe that drops its captions garbles the caption (the control codes
     /// are sent twice, and a text pair is not).
@@ -1887,7 +1906,10 @@ extension SyntheticTestMediaFactory {
             let shown = Int((caption.shown * 30).rounded())
             for (offset, pair) in pairs.enumerated() { pictures[shown - (pairs.count - 2) + offset] = pair }
             let cleared = Int((caption.cleared * 30).rounded())
-            for (offset, pair) in clearPairs.enumerated() { pictures[cleared + offset] = pair }
+            // A clear past the stream (the sentinel of a caption that is never cleared) is none.
+            if cleared + clearPairs.count <= pictures.count {
+                for (offset, pair) in clearPairs.enumerated() { pictures[cleared + offset] = pair }
+            }
         }
         return pictures
     }

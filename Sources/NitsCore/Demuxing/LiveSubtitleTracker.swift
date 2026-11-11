@@ -71,7 +71,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     }
 
     /// Stream index of the selected subtitle track, whose packets go to `processPacket`, or -1 if none (also for
-    /// closed captions in the video stream's pictures, which `processVideoPacket` reads).
+    /// closed captions in the video stream's pictures, which `processHandedOut` reads).
     /// Modified under `MediaDemuxer.lock`; can be read under `MediaDemuxer.lock` without locking `liveSubtitleState`.
     private(set) var selectedStreamIndex: Int = -1
 
@@ -79,6 +79,10 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     private var liveBitmapDecoder: BitmapSubtitleDecoder?
     /// Decodes the selected track when it is closed captions; used under the demuxer's main lock, like the above.
     private var liveCaptionDecoder: ClosedCaptionDecoder?
+    /// Guards `liveCaptionDecoder` and its use: the captions in the pictures are decoded when the pictures are handed out
+    /// of the queue (`processHandedOut`, under `queueLock` alone), the rest under `MediaDemuxer.lock`. Order: this ->
+    /// `liveSubtitleState`.
+    private let captionLock = OSAllocatedUnfairLock()
 
     /// Live in-band subtitle state is guarded by its own lightweight lock, NOT the demuxer's I/O lock.
     /// Lock order: demuxer lock -> liveSubtitleState (never the reverse).
@@ -122,13 +126,15 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         let track = trackId.flatMap { id in tracks.first { $0.id == id } }
         let streamIndex = track?.streamIndex ?? -1
         liveBitmapDecoder = nil
-        liveCaptionDecoder = nil
+        captionLock.withLockUnchecked { liveCaptionDecoder = nil }
         if let field = track?.closedCaptionField, let stream = input.stream(streamIndex) {
-            liveCaptionDecoder = ClosedCaptionDecoder(field: field, stream: stream)
+            let decoder = ClosedCaptionDecoder(field: field, stream: stream)
+            captionLock.withLockUnchecked { liveCaptionDecoder = decoder }
         }
-        // Captions in the video's pictures come through `processVideoPacket`: the video's packets must not go to the
+        // Captions in the video's pictures come through `processHandedOut`: the video's packets must not go to the
         // subtitle path, and a caption stream FFmpeg can't decode isn't read as text.
-        let readsCaptionStream = track?.captionsInVideo == false && liveCaptionDecoder != nil
+        let readsCaptionStream =
+            track?.captionsInVideo == false && captionLock.withLockUnchecked { liveCaptionDecoder != nil }
         self.selectedStreamIndex = track?.closedCaptionField == nil || readsCaptionStream ? streamIndex : -1
 
         // Closed captions in the video's pictures aren't kept: a window read gets them.
@@ -178,7 +184,7 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     /// seek's own reads (which leave the read-ahead mark where it was) are done.
     func beginSeek(previousReadAhead: Double) {
         liveBitmapDecoder?.flush()
-        addCaptions(liveCaptionDecoder?.reset() ?? [])
+        resetCaptions()
         liveSubtitleState.withLock { state in
             if let start = state.spanStart, previousReadAhead >= start { state.cover(start...previousReadAhead) }
             state.spanStart = nil
@@ -340,10 +346,12 @@ final class LiveSubtitleTracker: @unchecked Sendable {
     ) {
         guard selectedStreamIndex >= 0, let stream = input.stream(selectedStreamIndex) else { return }
 
-        if let liveCaptionDecoder {
-            addCaptions(liveCaptionDecoder.decode(pkt))
-            return
+        let isCaptionStream = captionLock.withLockUnchecked { () -> Bool in
+            guard let decoder = liveCaptionDecoder else { return false }
+            addCaptions(decoder.decode(pkt))
+            return true
         }
+        if isCaptionStream { return }
         if let liveBitmapDecoder {
             let output = liveBitmapDecoder.decode(pkt)
             liveSubtitleState.withLock { state in
@@ -379,18 +387,40 @@ final class LiveSubtitleTracker: @unchecked Sendable {
         }
     }
 
-    /// The closed captions of the selected track in a video packet playback decodes: every picture that reaches the
-    /// decoder, and only those, as the captions' screens build on each other. Under `MediaDemuxer.lock`.
-    func processVideoPacket(_ pkt: UnsafePointer<AVPacket>) {
-        guard let liveCaptionDecoder, liveCaptionDecoder.readsVideo else { return }
-        addCaptions(liveCaptionDecoder.decode(pkt))
+    /// The closed captions of the selected track in a video packet handed out of the queue to the decoder: every picture
+    /// that reaches it, and only those, in the order it takes them, as the captions' screens build on each other (a
+    /// picture read ahead and then dropped, as a variant switch drops the old variant's tail, never reaches the CC
+    /// decoder, whose state could not be undone). Under `queueLock`; the decoder is guarded by its own lock.
+    func processHandedOut(_ packet: MediaDemuxer.DemuxedVideoPacket) {
+        captionLock.withLockUnchecked {
+            guard let decoder = liveCaptionDecoder, decoder.readsVideo else { return }
+            let screens = packet.data.withUnsafeBytes {
+                decoder.decode($0, pts: packet.pts, dts: packet.dts, duration: packet.duration)
+            }
+            addCaptions(screens)
+        }
     }
 
-    /// The closed captions of the last pictures, held back for those shown before them: the input has ended. Under
-    /// `MediaDemuxer.lock`.
-    func finishCaptions() {
-        guard let liveCaptionDecoder else { return }
-        addCaptions(liveCaptionDecoder.finish())
+    /// Whether the selected captions ride in the video's pictures: they exist only up to the picture last handed out, not
+    /// up to what is read ahead (`MediaDemuxer.subtitleReadAhead`).
+    var readsCaptionsInVideo: Bool {
+        captionLock.withLockUnchecked { liveCaptionDecoder?.readsVideo == true }
+    }
+
+    /// The closed captions of the last pictures, held back for those shown before them: the input has ended (`video`:
+    /// the last picture was handed out, for captions in the pictures; else the last packet was read, for a caption
+    /// stream). Under `MediaDemuxer.lock` or `queueLock`.
+    func finishCaptions(video: Bool) {
+        captionLock.withLockUnchecked {
+            guard let decoder = liveCaptionDecoder, decoder.readsVideo == video else { return }
+            addCaptions(decoder.finish())
+        }
+    }
+
+    /// Forgets the captions' screen and the pictures waiting: what is handed out next is not what followed the last
+    /// (a seek, in the packet cache too).
+    func resetCaptions() {
+        captionLock.withLockUnchecked { addCaptions(liveCaptionDecoder?.reset() ?? []) }
     }
 
     private func addCaptions(_ screens: [ClosedCaptionDecoder.Screen]) {
