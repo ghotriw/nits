@@ -2,7 +2,7 @@
 
 Tests that measure instead of assert: each is skipped (`.enabled(if:)` on an environment variable) unless asked for, so
 a normal `swift test` only compiles them. They use `@testable` internals, which is why they live in the test target.
-Run with the bundled FFmpeg: `PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig swift test --filter <suite>`.
+Run with the bundled FFmpeg: `PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig swift test --filter <type>`, the suite's type name (`HLSOpeningMeasurement`; the display names in the table below do not match a filter).
 Every output line starts with `MEASURE`; keep results in `docs/` (ROADMAP / OPEN_ISSUES), not here.
 
 **The environment is part of the result.** Network Link Conditioner (NLC) can't be scripted: agree the profile with the
@@ -17,6 +17,7 @@ ten minutes without one before it, and a series throws away its first (warm-up) 
 | `Ladder ABR seek measurement` (same file) | In real-time playback with adaptive bitrate, how many seeks back the cache serves, and how many cross a variant splice | `NITS_MEASURE_ABR` + `NITS_MEASURE_URL` | `NITS_MEASURE_ABR_SECONDS` (150), `NITS_MEASURE_ABR_SEEK_EVERY` (20, playhead seconds) |
 | `ABR start measurement` (`ABRStartMeasurement.swift`) | Start on a slow link: opening, time to the first picture, stalls, the width over time. Synthetic ladder behind `TestHTTPServer` at a rate | `NITS_MEASURE_START` | `NITS_LINK_KBPS` ("1500,600"), `NITS_MEASURE_START_SECONDS` (60) |
 | `ABR start measurement, real stream` (same file) | The opening's prefetch rate (wait and bodies told apart) against the estimate playback reaches; when the picture changes against when ABR decided | `NITS_MEASURE_START_URL` | `NITS_MEASURE_START_SECONDS` (25; 90-120 on a slow link), `NITS_MEASURE_LABEL` (e.g. "RTT+150 cold"), `NITS_MEASURE_START_KBPS` (start on the switchable variant nearest that bandwidth, adaptive bitrate on) |
+| `HLS opening measurement` (`HLSOpeningMeasurement.swift`) | Where the opening of a real HLS stream goes (master, media playlists, each rung's probe, the first run's `find_stream_info`, first picture), and a run opened by a seek to 40 % | `NITS_MEASURE_OPEN_URL` (comma-separated) | `NITS_MEASURE_OPEN_N` (runs after the warm-up run 0, 5), `NITS_MEASURE_LABEL` |
 
 Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/examples/`): `bipbop_adv_example_hevc/master.m3u8`
 (54 variants), `av1-sample/av1-sample.m3u8`; see `docs/ROADMAP.md` (Stage 3.5) for the series already recorded.
@@ -29,3 +30,9 @@ Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/exampl
   adapt to): keep `NITS_MEASURE_ABR_SEEK_EVERY` at 30 or more for ABR to move.
 - `ABRStart` real stream: `prefetch=[...]` is the client's log line when the opening ends (`HLS client: ... opening N kbit/s`,
   `HLSInput.openingLinkRate`'s source); `decided=` is the read position's choice, `shown=` what the picture was.
+- `HLSOpening`: `rtt=` is `ping`'s average. The `[open]` and `[seek]` lines are the client's own (debug level): `HLS opening:` splits
+  `HLSInput.init` (playlists `count/time`, probes `count/time` side by side, `describe` the rest); each `HLS run:` is a run
+  of segments: `probe`, `reposition` (the opening's start, a seek, a rewind; `+replay` reuses the kept first segment),
+  `switch`, `next`, with `init=` (init section), `answer=` (first bytes), `open=` / `analyze=` (`avformat_open_input` /
+  `find_stream_info`), `bytes=` handed to the demuxer by the end of the analysis, `firstPacket=` from the run's start, or
+  `redone=` for a seek's run restarted at a better segment. `open=` minus `HLS opening: total` is the demuxer's first scan.

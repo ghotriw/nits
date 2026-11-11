@@ -140,6 +140,7 @@ final class HLSLane: @unchecked Sendable {
     /// Opens the first run at the segment that holds `time` and probes its streams: the first reader the lane keeps.
     func open(at time: Double) throws(HLSSegmentReaderError) {
         guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
+        nextRunReason = .open
         try startRun(at: entry)
     }
 
@@ -149,11 +150,51 @@ final class HLSLane: @unchecked Sendable {
     /// side would race for it, and the run read first anchors its sequence.
     func probe(at time: Double) throws(HLSSegmentReaderError) {
         guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
-        reader = try HLSSegmentReader(
+        let began = ContinuousClock.now
+        let probed = try HLSSegmentReader(
             loader: loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
             isProbe: true
         ) { nil }
+        reader = probed
         slotOfReaderStream = [:]
+        AppLog.debug(
+            .demuxer,
+            "\(HLSOpeningMeasure.run) probe \(label) seq=\(entry.sequence) \(probed.openTiming.description) "
+                + "total=\(HLSOpeningMeasure.ms(ContinuousClock.now - began))")
+    }
+
+    /// The playlist's address shortened for the log: its folder and name (a ladder's playlists often share the name).
+    var label: String {
+        let folder = url.deletingLastPathComponent().lastPathComponent
+        return folder.isEmpty || folder == "/" ? url.lastPathComponent : "\(folder)/\(url.lastPathComponent)"
+    }
+
+    /// Why the next run opens, for the log (`HLSOpeningMeasure.run`).
+    private enum RunReason: String {
+        /// The lane's first run, of a media playlist alone (`open(at:)`).
+        case open
+        /// A start where the demuxer put the lane: the opening's after the probes, a seek, a rewind, a track read again.
+        case reposition
+        /// A variant switched to, catching up with the picture (`catchUp`).
+        case `switch`
+        /// The run after the last one ended: a discontinuity, a new init section, a failed segment skipped.
+        case next
+    }
+    private var nextRunReason = RunReason.next
+    /// The run opened and not yet logged: logged with its first packet (`fill`), or as redone.
+    private var openedRun:
+        (
+            reason: RunReason, replayed: Bool, sequence: Int, timing: HLSSegmentReader.OpenTiming,
+            began: ContinuousClock.Instant
+        )?
+
+    private func logOpenedRun(_ outcome: String) {
+        guard let run = openedRun else { return }
+        openedRun = nil
+        AppLog.debug(
+            .demuxer,
+            "\(HLSOpeningMeasure.run) \(run.reason.rawValue)\(run.replayed ? "+replay" : "") \(label) seq=\(run.sequence) \(run.timing.description) "
+                + "\(outcome)=\(HLSOpeningMeasure.ms(ContinuousClock.now - run.began))")
     }
 
     /// Ends a probe: the streams are described. The first picture the lane reads is compared with the probe's extradata
@@ -216,6 +257,7 @@ final class HLSLane: @unchecked Sendable {
         dropRun()
         skipped = 0
         start = .containing(time)
+        nextRunReason = .reposition
         resume = nil
         current = nil
         self.landing = landing
@@ -281,6 +323,7 @@ final class HLSLane: @unchecked Sendable {
         dropRun()
         skipped = 0
         start = .following(time)
+        nextRunReason = .switch
         seekTarget = nil
         resume = nil
         current = nil
@@ -337,6 +380,7 @@ final class HLSLane: @unchecked Sendable {
     private func dropRun() {
         reader?.close()
         reader = nil
+        openedRun = nil
         if hasPending {
             av_packet_unref(packet)
             hasPending = false
@@ -391,8 +435,11 @@ final class HLSLane: @unchecked Sendable {
                         // The media puts the first segment of a seek elsewhere than its durations did, and the one that
                         // holds the target is another: start there, before a packet is read.
                         redo = nil
+                        let reason = openedRun?.reason ?? .next
+                        logOpenedRun("redone")
                         dropRun()
                         resume = again
+                        nextRunReason = reason
                     } else {
                         seekTarget = nil
                     }
@@ -410,6 +457,7 @@ final class HLSLane: @unchecked Sendable {
             if code >= 0 {
                 if place() {
                     skipped = 0
+                    logOpenedRun("firstPacket")
                     return 0
                 }
                 continue
@@ -604,6 +652,9 @@ final class HLSLane: @unchecked Sendable {
     }
 
     private func startRun(at first: HLSTimeline.Entry) throws(HLSSegmentReaderError) {
+        let began = ContinuousClock.now
+        let reason = nextRunReason
+        nextRunReason = .next
         // Before the reader: probing reads on into the next segments, asking `nextSegment` for them from this one.
         var replay: HLSSegmentBody?
         if let kept = startBody {
@@ -637,6 +688,7 @@ final class HLSLane: @unchecked Sendable {
         }
         keepStart(of: opened, first.segment)
         reader = opened
+        openedRun = (reason, replay != nil, first.sequence, opened.openTiming, began)
         slotOfReaderStream = [:]
         needsExtradataCheck = true
         resetReloads = 0

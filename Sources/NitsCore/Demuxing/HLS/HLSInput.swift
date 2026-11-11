@@ -162,6 +162,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     init?(url address: String, headers: [String: String], interrupt: FFmpegInterrupt) {
         let url = MediaURL.normalizeMediaPath(address)
         self.interrupt = interrupt
+        let began = ContinuousClock.now
         let isLocal = !HTTPSessionTransport.serves(url)
         guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url), let table = AVStreamTable() else {
             return nil
@@ -181,9 +182,11 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
         let first: (data: Data, servedFrom: URL)
         let parsed: HLSPlaylist
+        var masterLoaded = began
         do {
             first = try loader.playlist(masterURL)
             parsed = try HLSPlaylist.parse(first.data, url: first.servedFrom)
+            masterLoaded = ContinuousClock.now
         } catch let error as HLSSegmentLoadError {
             let code = HLSSegmentReader.code(for: error)
             fail("playlist failed to load (\(error))", code: code)
@@ -262,6 +265,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             }
         }
 
+        let playlistsLoaded = ContinuousClock.now
+
         // The reference the others are aligned to, and where reading starts: the top of the ladder that loaded.
         let referenceIndex: Int
         if plan.isEmpty {
@@ -331,6 +336,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 results[index].set(error)
             }
         }
+        let probed = ContinuousClock.now
         var laneOfWanted: [Int: Int] = [:]
         for (index, lane) in built.enumerated() {
             guard let lane else { continue }
@@ -406,6 +412,15 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
                     subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
         }
+        let opened = toOpen.filter { $0 != nil && $0?.kind != .subtitle }.count
+        let ms = HLSOpeningMeasure.ms
+        let ended = ContinuousClock.now
+        let playlists = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - masterLoaded))"
+        let probes = "\(isProbing ? "probes" : "firstRun")=\(opened)/\(ms(probed - playlistsLoaded))"
+        AppLog.info(
+            .demuxer,
+            "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlists) \(probes) "
+                + "describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         AppLog.info(
             .demuxer,
             "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"

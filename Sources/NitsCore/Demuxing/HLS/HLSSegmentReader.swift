@@ -105,6 +105,28 @@ final class HLSSegmentReader {
     /// The segment being read (`body`) has handed out bytes: a failure of it ends the run inside a packet.
     private var bodyHasBytes = false
 
+    /// How long the opening of the run took, by step (`HLSOpeningMeasure`): the measurement suites read it from the log.
+    struct OpenTiming {
+        /// Loading the init section, when the run has one.
+        var initSection: Duration?
+        /// Until the first segment's first bytes came (the init section included).
+        var answer: Duration = .zero
+        /// `avformat_open_input`: the container probed.
+        var open: Duration = .zero
+        /// `avformat_find_stream_info`: the streams analysed, which reads on into the media.
+        var analyze: Duration = .zero
+        /// Bytes handed to the container demuxer once the streams were analysed (the init section's included).
+        var bytes: Int64 = 0
+
+        var description: String {
+            let ms = HLSOpeningMeasure.ms
+            let steps = "answer=\(ms(answer)) open=\(ms(open)) analyze=\(ms(analyze)) bytes=\(bytes)"
+            guard let initSection else { return steps }
+            return "init=\(ms(initSection)) " + steps
+        }
+    }
+    private(set) var openTiming = OpenTiming()
+
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
     /// section): the caller's thread. A probe (`isProbe`) reads `first` only as far as FFmpeg's analysis goes, to
     /// describe the streams (`HLSLane.probe`): the run is not meant to be read on. `timelineShift` gives a WebVTT
@@ -122,8 +144,12 @@ final class HLSSegmentReader {
         var head = Data()
         var data = Data()
         var opened: HLSSegmentBody?
+        let began = ContinuousClock.now
         do throws(HLSSegmentLoadError) {
-            if let section = first.initSection { head = try loader.initSection(section) }
+            if let section = first.initSection {
+                head = try loader.initSection(section)
+                openTiming.initSection = ContinuousClock.now - began
+            }
             // The segment's first bytes, as they come: enough to tell what it is.
             let body: HLSSegmentBody
             if let firstBody {
@@ -139,6 +165,7 @@ final class HLSSegmentReader {
                 while data.count < min(tag, 1 << 20), let chunk = try body.next() { data.append(chunk) }
                 packedTimestamp = HLSPackedAudioTag.transportStreamTimestamp(data)
             }
+            openTiming.answer = ContinuousClock.now - began
         } catch {
             opened?.close()
             throw .load(error)
@@ -279,6 +306,7 @@ final class HLSSegmentReader {
         if let firstSegment { segmentStarts = [(initBytes, firstSegment, 0)] }
         segmentsStarted = 1
         try openContext(over: feed)
+        openTiming.bytes = delivered
         timelineOffset = openedOffset()
         if reportsStarts, let anchoring, anchoring.role != .cues, let notify = anchoring.onSegmentStart,
             let openedStart,
@@ -349,6 +377,7 @@ final class HLSSegmentReader {
         let feed = SegmentFeed(head: data) { .end }
         self.feed = feed
         try openContext(over: feed)
+        openTiming.bytes = Int64(data.count)
     }
 
     private func openContext(over feed: SegmentFeed) throws(HLSSegmentReaderError) {
@@ -358,7 +387,9 @@ final class HLSSegmentReader {
         allocated.pointee.pb = io.context
         allocated.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
         var opened: UnsafeMutablePointer<AVFormatContext>? = allocated
+        let began = ContinuousClock.now
         var result = avformat_open_input(&opened, nil, nil, nil)
+        openTiming.open = ContinuousClock.now - began
         guard result >= 0 else {
             // A context that failed to open is freed by FFmpeg.
             throw .open(failure.map(Self.code(for:)) ?? result)
@@ -367,7 +398,9 @@ final class HLSSegmentReader {
         // As `hls.c` bounds its own probing: a few seconds of media, read across the segments as they come (an end
         // of input faked at the first segment would stay: `mov` ends for good at one).
         ctx.pointee.max_analyze_duration = 4 * Int64(AV_TIME_BASE)
+        let analysing = ContinuousClock.now
         result = avformat_find_stream_info(ctx, nil)
+        openTiming.analyze = ContinuousClock.now - analysing
         guard result >= 0 else {
             avformat_close_input(&opened)
             throw .open(failure.map(Self.code(for:)) ?? result)
