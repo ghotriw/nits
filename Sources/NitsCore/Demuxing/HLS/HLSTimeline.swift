@@ -15,6 +15,11 @@ struct HLSTimeline: Sendable, Equatable {
     struct Entry: Sendable, Equatable {
         var segment: HLSSegment
         var start: Double
+        /// `start` was read off the media (`measure`), not only summed from durations.
+        var isMeasured = false
+        /// The run of the timeline the entry was placed in (`epoch`): a restart numbers its segments again, and an entry of
+        /// an earlier one that has the same number is not the one listed now.
+        var epoch = 0
 
         var end: Double { start + segment.duration }
         var sequence: Int { segment.sequence }
@@ -69,6 +74,8 @@ struct HLSTimeline: Sendable, Equatable {
     /// What the server's discontinuity sequence numbers are short of those matched by media sequence (a server that
     /// doesn't keep `EXT-X-DISCONTINUITY-SEQUENCE`, a restart): added to the numbers of segments loaded since.
     private var discontinuityCorrection = 0
+    /// Counts the restarts (`startRun`): entries placed after one belong to a run of the timeline of their own.
+    private var epoch = 0
 
     /// Places `playlist`'s segments from `start`.
     init(_ playlist: HLSMediaPlaylist, start: Double = 0) {
@@ -79,7 +86,7 @@ struct HLSTimeline: Sendable, Equatable {
         hasSlid = !beganAtStreamStart
         emptyStart = start
         streamStart = beganAtStreamStart ? start : nil
-        entries = Self.place(playlist.segments, from: start)
+        entries = Self.place(playlist.segments, from: start, epoch: 0)
     }
 
     /// Places `playlist`, another rendition of the stream, on `reference`'s timeline (`alignedStart`).
@@ -142,10 +149,11 @@ struct HLSTimeline: Sendable, Equatable {
 
     /// What comes after `read`, an entry of this timeline read before (not another rendition's: its segments need not
     /// meet this one's ends, and an overlap would read as a gap): by media sequence while the window still lists it
-    /// where it was, else by time (a restart numbers from zero again, a late reload skips numbers).
+    /// where it was (the same run of the timeline: a place moved by `measure` is still its place), else by
+    /// time (a restart numbers from zero again, a late reload skips numbers).
     func next(after read: Entry) -> Next {
         guard let first = entries.first, let last = entries.last else { return hasEnded ? .ended : .pending }
-        if entry(sequence: read.sequence)?.start == read.start {
+        if entry(sequence: read.sequence)?.epoch == read.epoch {
             return read.sequence == last.sequence
                 ? (hasEnded ? .ended : .pending) : .entry(entries[read.sequence + 1 - first.sequence])
         }
@@ -155,6 +163,84 @@ struct HLSTimeline: Sendable, Equatable {
             return hasEnded ? .ended : .pending
         }
         return abs(next.start - read.end) <= tolerance ? .entry(next) : .expired(resumingAt: next)
+    }
+
+    // MARK: Measuring
+
+    /// Takes where the media says the segment with media sequence `sequence` starts (the first presentation time of its
+    /// first picture, on this timeline), as hls.js corrects a fragment's start from its PTS (`updateFragPTSDTS`). The
+    /// durations the playlist lists are rounded (an integer `EXTINF` for 6.006 s) and add up to a drift; the media's own
+    /// times don't. The entries around it follow:
+    /// - between two measured entries the durations are scaled to fit the span (the error spreads evenly);
+    /// - before the first measured entry and after the last, they are placed from it as listed.
+    ///
+    /// Nothing changes (false) for a segment the window doesn't list, or listed under another address (`url`: a reload
+    /// that renumbered), for a start further than a target duration from where the timeline puts it (the media's clock
+    /// jumped: its offset is `HLSTimestampAnchors`' to decide, not a correction of the span) and for one that would
+    /// scale a span by more than half or double.
+    @discardableResult
+    mutating func measure(sequence: Int, url: URL, byteRange: HLSByteRange?, start observed: Double) -> Bool {
+        guard let first = firstSequence, sequence >= first, sequence - first < entries.count else { return false }
+        let index = sequence - first
+        // By path and byte range: a CDN that signs addresses anew at each reload changes the query only, while a renumbering
+        // moves the range of a segment in a file of them all.
+        guard entries[index].segment.url.path == url.path, entries[index].segment.byteRange == byteRange,
+            observed.isFinite
+        else { return false }
+        let delta = observed - entries[index].start
+        guard abs(delta) <= max(targetDuration, 1) else { return false }
+        if abs(delta) < Self.measureResolution {
+            entries[index].isMeasured = true
+            return false
+        }
+        var placed = entries
+        placed[index].start = observed
+        placed[index].isMeasured = true
+        let before = placed[..<index].lastIndex(where: \.isMeasured)
+        let after = placed[(index + 1)...].firstIndex(where: \.isMeasured)
+        guard Self.fit(&placed, from: before, to: index), Self.fit(&placed, from: index, to: after) else {
+            return false
+        }
+        entries = placed
+        return true
+    }
+
+    /// Differences smaller than this are rounding of the playlist's durations (milliseconds), not drift.
+    static let measureResolution = 0.001
+
+    /// Places the entries between `lower` and `upper` (either may be nil: an end of the window) from the measured one
+    /// at the other side. Both measured: the durations from `lower` up to `upper` are scaled so that `lower` ends where
+    /// `upper` starts. False when the span can't take it (it would shrink or stretch by more than half / double).
+    private static func fit(_ entries: inout [Entry], from lower: Int?, to upper: Int?) -> Bool {
+        switch (lower, upper) {
+        case (let lower?, let upper?):
+            guard upper > lower else { return true }
+            let listed = entries[lower..<upper].reduce(0) { $0 + $1.segment.duration }
+            let span = entries[upper].start - entries[lower].start
+            guard listed > 0, span > 0, span / listed >= 0.5, span / listed <= 2 else { return false }
+            let ratio = span / listed
+            var cursor = entries[lower].start
+            for position in lower..<upper {
+                entries[position].start = cursor
+                entries[position].segment.duration *= ratio
+                cursor += entries[position].segment.duration
+            }
+        case (let lower?, nil):
+            var cursor = entries[lower].end
+            for position in (lower + 1)..<max(entries.count, lower + 1) {
+                entries[position].start = cursor
+                cursor = entries[position].end
+            }
+        case (nil, let upper?):
+            var cursor = entries[upper].start
+            for position in (0..<upper).reversed() {
+                cursor -= entries[position].segment.duration
+                entries[position].start = cursor
+            }
+        case (nil, nil):
+            break
+        }
+        return true
     }
 
     // MARK: Reloading
@@ -195,7 +281,7 @@ struct HLSTimeline: Sendable, Equatable {
             // Nothing was listed: the new segments start where the timeline does, and the first that are listed tell
             // how the playlist began.
             accept(playlist)
-            entries = Self.place(segments, from: emptyStart)
+            entries = Self.place(segments, from: emptyStart, epoch: epoch)
             if isLive, !segments.isEmpty {
                 beganAtStreamStart = Self.listsFromStreamStart(playlist)
                 hasSlid = !beganAtStreamStart
@@ -225,11 +311,13 @@ struct HLSTimeline: Sendable, Equatable {
             discontinuityCorrection = anchor.segment.discontinuitySequence - newFirst.discontinuitySequence
             var cursor = anchor.start
             entries = corrected(segments).map { segment in
-                var entry = Entry(segment: segment, start: cursor)
+                var entry = Entry(segment: segment, start: cursor, epoch: epoch)
                 // One listed before keeps its place, duration and run; what to load (its address, signed anew by
                 // some CDNs at every reload, its key, a gap) is the new playlist's.
                 if let known = self.entry(sequence: segment.sequence) {
                     entry.start = known.start
+                    entry.isMeasured = known.isMeasured
+                    entry.epoch = known.epoch
                     entry.segment.duration = known.segment.duration
                     entry.segment.discontinuitySequence = known.segment.discontinuitySequence
                     entry.segment.isDiscontinuity = known.segment.isDiscontinuity
@@ -250,7 +338,7 @@ struct HLSTimeline: Sendable, Equatable {
             discontinuityCorrection =
                 oldLast.segment.discontinuitySequence - newFirst.discontinuitySequence
                 + (newFirst.isDiscontinuity ? 1 : 0)
-            entries = Self.place(corrected(segments), from: oldLast.end)
+            entries = Self.place(corrected(segments), from: oldLast.end, epoch: epoch)
             hasSlid = true
             return .updated(added: segments.count, expired: expired)
         }
@@ -286,7 +374,8 @@ struct HLSTimeline: Sendable, Equatable {
         {
             discontinuityCorrection = last.segment.discontinuitySequence + 1 - first.discontinuitySequence
         }
-        entries = Self.place(corrected(playlist.segments), from: last.end + gap)
+        epoch += 1
+        entries = Self.place(corrected(playlist.segments), from: last.end + gap, epoch: epoch)
         entries[0].segment.isDiscontinuity = true
         hasSlid = true
         return .restarted(gap: gap)
@@ -315,11 +404,11 @@ struct HLSTimeline: Sendable, Equatable {
         }
     }
 
-    private static func place(_ segments: [HLSSegment], from start: Double) -> [Entry] {
+    private static func place(_ segments: [HLSSegment], from start: Double, epoch: Int) -> [Entry] {
         var cursor = start
         return segments.map { segment in
             defer { cursor += segment.duration }
-            return Entry(segment: segment, start: cursor)
+            return Entry(segment: segment, start: cursor, epoch: epoch)
         }
     }
 

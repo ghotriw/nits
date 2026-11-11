@@ -49,6 +49,79 @@ struct HLSTimelineTests {
         #expect(timeline.next(after: timeline.entries[3]) == .ended)
     }
 
+    // MARK: Measured starts
+
+    private static func url(_ sequence: Int) -> URL { URL(string: "s\(sequence).ts", relativeTo: base)!.absoluteURL }
+
+    @Test("A measured start moves the entries around it as listed; the rest of the playlist keeps its durations")
+    func measureMovesNeighbours() throws {
+        var timeline = HLSTimeline(try Self.playlist([6, 6, 6, 6], ended: true))
+        let applied1 = timeline.measure(sequence: 2, url: Self.url(2), byteRange: nil, start: 12.5)
+        #expect(applied1)
+        #expect(timeline.entries.map(\.start) == [0.5, 6.5, 12.5, 18.5])
+        #expect(timeline.entries.map(\.isMeasured) == [false, false, true, false])
+        #expect(timeline.index(at: 12.2) == 1 && timeline.index(at: 12.5) == 2)
+        // A start the timeline already has changes nothing, a rounding of a millisecond either.
+        let applied2 = timeline.measure(sequence: 2, url: Self.url(2), byteRange: nil, start: 12.5004)
+        #expect(!applied2)
+        #expect(timeline.entries.map(\.start) == [0.5, 6.5, 12.5, 18.5])
+    }
+
+    @Test("Between two measured entries the durations are scaled to fit: integer EXTINFs of 6.006 s segments")
+    func measureSpreadsDrift() throws {
+        var timeline = HLSTimeline(try Self.playlist([6, 6, 6, 6, 6], ended: true))
+        _ = timeline.measure(sequence: 0, url: Self.url(0), byteRange: nil, start: 0)
+        let applied4 = timeline.measure(sequence: 4, url: Self.url(4), byteRange: nil, start: 24.024)
+        #expect(applied4)
+        let starts = timeline.entries.map(\.start)
+        #expect(zip(starts, [0, 6.006, 12.012, 18.018, 24.024]).allSatisfy { abs($0 - $1) < 1e-9 })
+        // Contiguous, and the end follows the last measured start as listed.
+        #expect(abs(timeline.entries[3].end - timeline.entries[4].start) < 1e-9)
+        #expect(timeline.entry(at: 18.0)?.sequence == 2 && timeline.entry(at: 18.02)?.sequence == 3)
+    }
+
+    @Test(
+        "A measure that doesn't fit is refused: another address, a jump past a target duration, a span scaled by more than double"
+    )
+    func measureRefusals() throws {
+        var timeline = HLSTimeline(try Self.playlist([6, 6, 6], ended: true))
+        let before = timeline.entries
+        let applied5 = timeline.measure(sequence: 1, url: Self.url(7), byteRange: nil, start: 6.5)
+        #expect(!applied5)
+        let applied6 = timeline.measure(sequence: 1, url: Self.url(1), byteRange: nil, start: 6 + 7)
+        #expect(!applied6)
+        let applied7 = timeline.measure(sequence: 5, url: Self.url(5), byteRange: nil, start: 30)
+        #expect(!applied7)
+        #expect(timeline.entries == before)
+        _ = timeline.measure(sequence: 0, url: Self.url(0), byteRange: nil, start: 0)
+        // The span from 0 to 2's start would be 1 s for 12 s listed.
+        let applied9 = timeline.measure(sequence: 2, url: Self.url(2), byteRange: nil, start: 1)
+        #expect(!applied9)
+        #expect(timeline.entries.map(\.start) == [0, 6, 12])
+    }
+
+    @Test("A reload keeps the measured places and durations; after a restart an old entry is not found by number")
+    func measureSurvivesReload() throws {
+        var timeline = HLSTimeline(try Self.playlist([6, 6, 6], sequence: 10, ended: false))
+        let applied10 = timeline.measure(sequence: 11, url: Self.url(11), byteRange: nil, start: 6.2)
+        #expect(applied10)
+        let read = try #require(timeline.entry(sequence: 11))
+        #expect(timeline.reload(try Self.playlist([6, 6, 6, 6], sequence: 11)) == .updated(added: 2, expired: 1))
+        #expect(timeline.entry(sequence: 11)?.start == 6.2 && timeline.entry(sequence: 11)?.isMeasured == true)
+        #expect(timeline.entry(sequence: 14)?.start == 6.2 + 18)
+        // Read before the window moved: still the same place, so what follows is by number.
+        #expect(timeline.next(after: read) == .entry(try #require(timeline.entry(sequence: 12))))
+        // A restart numbers its segments again: an entry of the run before is not found by number.
+        let old = try #require(timeline.entry(sequence: 12))
+        timeline.restart(try Self.playlist([6, 6], sequence: 12))
+        #expect(timeline.entries.first?.epoch == 1)
+        guard case .expired(let next) = timeline.next(after: old) else {
+            Issue.record("the old run's entry was found by number in the new run")
+            return
+        }
+        #expect(next.epoch == 1)
+    }
+
     @Test("A segment of no duration at the end gives way to the one before")
     func zeroDurationAtEnd() throws {
         let timeline = HLSTimeline(try Self.playlist([6, 0], ended: true))

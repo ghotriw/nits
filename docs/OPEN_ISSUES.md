@@ -228,16 +228,22 @@ Accepted for now, noted for later.
       anchored anew plays against an audio rendition still on the old offset, apart by the difference, until the next
       seek opens both again; the log says "anchored anew". hls.c and the client before kept an offset per playlist,
       with the same effect whenever the playlists' durations disagreed.
-    - A seek chooses the segment by the playlist's durations and lands by the timestamps. Where the `EXTINF`s summed
-      more than the media (durations listed too long), the segment chosen may start, by its timestamps, after the target:
-      picture or sound then start up to that error late (a backward seek finds no keyframe before the target). Bounded
-      by a target duration (past it the run is anchored anew). hls.js corrects a segment's start from the timestamps it
-      read (`updateFragPTSDTS`); the client could move its timeline's entries the same way.
-    - The same error makes the timeline's zero depend on where a sequence was first anchored. A stream whose `EXTINF`s
-      say 6 for segments of 6.006 s, opened (or resumed) at 50 minutes, anchors there; a seek to the start then hands out
-      packets at about -3 s, and past a target duration of error (100 minutes here) runs are anchored anew one after
-      another, each against the last. The correction above would settle this too; until then integer durations on long
-      streams are the case to watch.
+    - A seek chooses the segment by the timeline's places and lands by the timestamps. The places are corrected from the
+      media (`HLSTimeline.measure`, hls.js's `updateFragPTSDTS`): the reader tells where the first picture of each segment
+      is (`HLSSegmentReader.Anchoring.onSegmentStart`: the first packet of the reference stream whose `pos` falls in the
+      segment's bytes), and the entries between two measured ones have their durations scaled to fit, those outside
+      follow as listed. A seek whose first segment turns out not to hold the target (listed durations too long or too
+      short, so the segment started after it or ended before it) restarts, as the run opens (the first segment is measured from
+      the start times before any packet is read), at the one the corrected timeline picks
+      (`HLSLane.segmentStarted`, at most twice; `seekCorrectsTheTimelineFromTheMedia`). What is not corrected: a place
+      nothing has been read near (a seek far from every segment read still chooses by the listed sums, and costs the
+      restart above), a measure further than a target duration from the entry (the media's clock jumped: the offset
+      decides, as before), a run whose streams have no start time (its first segment is then measured by `pos` after
+      packets went out, so it refines the places but decides no restart) and segments after the first whose `pos` is unset.
+    - The timeline's zero still depends on where a sequence was first anchored: a stream whose `EXTINF`s say 6 for
+      segments of 6.006 s, opened (or resumed) at 50 minutes, anchors there, and the first segment, once read, is at
+      about -3 s. The entries are consistent with the media from then on, but the zero is not moved (the engine has
+      been told 0 is the start); past a target duration of error (100 minutes here) a run is still anchored anew.
     - A subtitle playlist that lacks the picture's breaks (all its segments in sequence 0 while the picture has an
       advertisement) places the cues after the break by sequence 0's offset, which the picture's first stretch anchored:
       off by the break's change of timestamps. The picture's offset is the fallback only for a sequence nobody anchored.

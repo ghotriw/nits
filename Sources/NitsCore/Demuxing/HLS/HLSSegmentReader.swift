@@ -54,6 +54,9 @@ final class HLSSegmentReader {
         let sequence: Int
         let tolerance: Double
         let role: HLSTimestampAnchors.Role
+        /// Told where the media puts each segment of the run: its sequence, and the time of its first picture (else its
+        /// first stream's sound) on the timeline (`HLSTimeline.measure`). Not for a run that has no timestamps of its own.
+        var onSegmentStart: ((HLSSegment, Double) -> Void)?
     }
 
     /// Container formats of elementary audio (packed audio), whose timestamps are counted from the run's first sample:
@@ -61,6 +64,9 @@ final class HLSSegmentReader {
     private static let packedFormats: Set<String> = ["aac", "ac3", "eac3", "mp3"]
     /// The `PRIV` timestamp of the run's first segment (90 kHz), when it starts with an ID3 tag that has one.
     private var packedTimestamp: Int64?
+    /// The init section's length and the run's first segment, where `segmentStarts` begins.
+    private var initBytes: Int64 = 0
+    private var firstSegment: HLSSegment?
 
     private var context: UnsafeMutablePointer<AVFormatContext>?
     private var io: SegmentIO?
@@ -75,6 +81,20 @@ final class HLSSegmentReader {
     private(set) var timelineOffset: Double?
     private var unwrappers: [Int: TimestampUnwrapper] = [:]
     private var shifts: [Int: Int64] = [:]
+    /// Where each segment's bytes start in what the context has read (init section and segments as one stream), for the
+    /// segments whose packets may still come: a packet's `pos` says which it is from (`noteSegmentStart`).
+    private var segmentStarts: [(offset: Int64, segment: HLSSegment, number: Int)] = []
+    /// Bytes handed to the context so far.
+    private var delivered: Int64 = 0
+    /// The number (place in the run) of the last segment that told where it starts.
+    private var toldThrough = -1
+    private var segmentsStarted = 0
+    /// The stream whose packets tell where a segment starts: the first picture, else the first stream.
+    private var referenceStream: Int?
+    /// Whether the run's segments tell where they start: not for packed audio without a `PRIV` (placed by its playlist).
+    private var reportsStarts = true
+    /// The first segment's start on the timeline by the streams' start times, from the open.
+    private var openedStart: Double?
     /// The segment's own shift of a WebVTT context, in seconds.
     private var segmentShift: Double = 0
     /// Why the run's bytes ended early, if they did (a segment that failed to load): `read` returns an error for it,
@@ -139,6 +159,8 @@ final class HLSSegmentReader {
                 throw error
             }
         } else {
+            initBytes = Int64(head.count)
+            firstSegment = first
             head.append(data)
             body = opened
             bodyHasBytes = !data.isEmpty
@@ -253,8 +275,18 @@ final class HLSSegmentReader {
     private func openContinuousContext(_ head: Data) throws(HLSSegmentReaderError) {
         let feed = SegmentFeed(head: head) { [weak self] in self?.nextChunk() ?? .end }
         self.feed = feed
+        delivered = Int64(head.count)
+        if let firstSegment { segmentStarts = [(initBytes, firstSegment, 0)] }
+        segmentsStarted = 1
         try openContext(over: feed)
         timelineOffset = openedOffset()
+        if reportsStarts, let anchoring, anchoring.role != .cues, let notify = anchoring.onSegmentStart,
+            let openedStart,
+            let firstSegment
+        {
+            toldThrough = 0
+            notify(firstSegment, openedStart)
+        }
     }
 
     /// The next bytes of a continuous run: what is left of the segment being read, else the first of the next segment
@@ -265,6 +297,7 @@ final class HLSSegmentReader {
                 do throws(HLSSegmentLoadError) {
                     if let chunk = try current.next() {
                         bodyHasBytes = true
+                        delivered += Int64(chunk.count)
                         return .data(chunk)
                     }
                 } catch {
@@ -277,6 +310,8 @@ final class HLSSegmentReader {
             }
             guard let segment = next() else { return .end }
             bodyHasBytes = false
+            segmentStarts.append((delivered, segment, segmentsStarted))
+            segmentsStarted += 1
             do throws(HLSSegmentLoadError) {
                 body = try loader.segmentBody(segment)
             } catch {
@@ -358,7 +393,14 @@ final class HLSSegmentReader {
                 && $0.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC == 0
         }
         guard let stream = candidates.first(where: isPicture) ?? candidates.first else { return nil }
-        return settleOffset(first: stream.pointee.start_time, of: stream)
+        referenceStream = Int(stream.pointee.index)
+        let offset = settleOffset(first: stream.pointee.start_time, of: stream)
+        // Where the run's first segment starts by the media, known before any packet is read (`noteSegmentStart` tells
+        // the later ones): a seek whose segment is not the one that holds its target restarts before anything is handed out.
+        let index = Int(stream.pointee.index)
+        let ticks = unwrappers[index]?.unwrapped(stream.pointee.start_time) ?? stream.pointee.start_time
+        openedStart = Self.seconds(ticks, stream.pointee.time_base) + offset
+        return offset
     }
 
     /// The run's offset, its first timestamp being `ticks` of `stream`: the sequence's shared one (`anchoring`), or its
@@ -383,6 +425,7 @@ final class HLSSegmentReader {
                 wrap = Double(Int64(1) << 33) / 90_000
             } else {
                 anchoring = nil
+                reportsStarts = false
             }
         }
         var offset = start - first
@@ -447,6 +490,36 @@ final class HLSSegmentReader {
         }
         if packet.pts != Int64.min { packet.pts = packet.pts &+ shift }
         if packet.dts != Int64.min { packet.dts = packet.dts &+ shift }
+        if reportsStarts, let anchoring, anchoring.role != .cues, let notify = anchoring.onSegmentStart, !isSegmentwise,
+            timelineOffset != nil
+        {
+            noteSegmentStart(of: packet, stream: stream, notify)
+        }
+    }
+
+    /// The first packet of the reference stream that comes from a segment (by its `pos` in the bytes handed to the
+    /// context) is where the media puts the segment's start: told once for each segment, as it is read. A packet of
+    /// no known place (`pos` unset) tells nothing.
+    private func noteSegmentStart(
+        of packet: AVPacket, stream: UnsafeMutablePointer<AVStream>, _ notify: (HLSSegment, Double) -> Void
+    ) {
+        if referenceStream == nil {
+            let all = streams
+            let picture = all.first {
+                $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
+                    && $0.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC == 0
+            }
+            referenceStream = (picture ?? all.first).map { Int($0.pointee.index) } ?? -1
+        }
+        guard Int(packet.stream_index) == referenceStream, packet.pos >= 0,
+            let position = segmentStarts.lastIndex(where: { $0.offset <= packet.pos })
+        else { return }
+        let started = segmentStarts[position]
+        guard started.number > toldThrough else { return }
+        toldThrough = started.number
+        segmentStarts.removeFirst(position)
+        let ticks = packet.pts != Int64.min ? packet.pts : packet.dts
+        if ticks != Int64.min { notify(started.segment, Self.seconds(ticks, stream.pointee.time_base)) }
     }
 }
 

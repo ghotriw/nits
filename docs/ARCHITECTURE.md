@@ -718,8 +718,18 @@ its segment). The demuxer's timeline is therefore the playlist's: the engine, th
 going back) is a safety for what the client does not cover (a file of segments cut and joined, an MPEG-TS with a
 reset). Segments of a live playlist that expired while the read was behind are skipped by the model
 (`HLSTimeline.next(after:)` answers `.expired(resumingAt:)`), and what follows is placed where the playlist puts it
-(`expiredSegmentsKeepTheTimeline`). A server that keeps its timestamps is not touched by any of it. The tests need no
-particular FFmpeg build.
+(`expiredSegmentsKeepTheTimeline`). The places of the segments are the playlist's durations summed, corrected from the
+media as hls.js does from a fragment's PTS (`updateFragPTSDTS`): the reader reports where the first picture of each
+segment of a run is (the first packet of its reference stream whose `pos` lies in the segment's bytes,
+`HLSSegmentReader.noteSegmentStart`), `HLSTimeline.measure` takes it, and the entries between two measured places have
+their durations scaled to fit, the others follow as listed (an integer `EXTINF` of a 6.006 s segment no longer drifts the
+places). A seek chooses its segment by these places. The first segment of a run is measured as the run opens, from the
+streams' start times before any packet is read, and when it turns out not to hold the target the lane restarts the run at
+the segment that does (`HLSLane.segmentStarted`, `startRun`): nothing has been handed out by then, so a restart can't
+roll the sound back. The segments after the first are measured by `pos` as they are read and only refine the places.
+Entries are told apart across a restart by `HLSTimeline.Entry.epoch`, not by their place, which a measure moves. The
+rendition aligned to the stream's start (`streamStart`) keeps the old zero when a measure moves the first entry. A
+server that keeps its timestamps is not touched by any of it. The tests need no particular FFmpeg build.
 
 The picture's size can change at a break too (an advertisement in another encoding): the parameter sets in the stream
 change, and the demuxer starts a new format description where a keyframe carries others (`videoPacket(from:)`, for

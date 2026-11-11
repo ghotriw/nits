@@ -520,6 +520,47 @@ struct HLSInputTests {
         #expect(read.contains { abs($0 - audio) < 0.002 }, "audio after the seek at \(audio) s")
     }
 
+    @Test("A seek into segments whose listed durations drift lands in the segment that holds it, by the media's times")
+    func seekCorrectsTheTimelineFromTheMedia() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        // Every segment listed 25 % short (1.5 s of 2 s): the third starts at 3 s by the list, 4 s by the media.
+        let listed = try String(contentsOf: stand.directory.appendingPathComponent("v0.m3u8"), encoding: .utf8)
+        stand.server.setResponder(forPath: "short.m3u8") {
+            Data(listed.replacingOccurrences(of: "#EXTINF:2.000000,", with: "#EXTINF:1.500000,").utf8)
+        }
+        stand.server.setResponder(forPath: "alone.m3u8") {
+            Data("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=400000,CODECS=\"avc1.64000d,mp4a.40.2\"\nshort.m3u8\n".utf8)
+        }
+        let input = try #require(Self.open(stand, "alone.m3u8"))
+        // Read from the start, which anchors the sequence where the media is.
+        let (head, _) = Self.drain(input, limit: 20)
+        #expect(abs((head.first?.pts ?? 99) - 0) < 0.1)
+        let videoIndex = try #require(
+            (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_VIDEO })
+        let base = input.stream(videoIndex)!.pointee.time_base
+        // By the listed durations 3.5 s is in the third segment (3…4.5 s), which the media starts at 4 s.
+        let target = 3.5
+        #expect(
+            input.seek(
+                stream: videoIndex, to: Int64(target * Double(base.den) / Double(base.num)), flags: AVSEEK_FLAG_BACKWARD
+            )
+                >= 0)
+        let (packets, _) = Self.drain(input, limit: 40)
+        let video = packets.filter(\.isVideo)
+        let first = try #require(video.first?.pts)
+        // The segment before, from 2 s: the keyframe at or before the target, not the one of the third segment (4 s).
+        #expect(first <= target + 0.001 && first > target - 2.1, "the picture after the seek starts at \(first) s")
+        // And the times that follow are the media's.
+        #expect(abs(first - 2) < 0.2, "the picture after the seek starts at \(first) s")
+        // The sound of the segment dropped never came out: its times don't run back after the first (a rewind in the
+        // sound would move the demuxer's search floor and feed the decoder twice).
+        let audio = packets.filter { !$0.isVideo }.map(\.dts)
+        #expect(!audio.isEmpty)
+        #expect(zip(audio, audio.dropFirst()).allSatisfy { $1 >= $0 - 0.05 }, "sound times \(audio)")
+        #expect((audio.first ?? 99) < 2.5, "the sound after the seek starts at \(audio.first ?? 99) s")
+    }
+
     // MARK: Where the playlist is
 
     @Test("A saved playlist is read from its directory: the file is the master, its segments files")

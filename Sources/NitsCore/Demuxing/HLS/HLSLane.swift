@@ -37,6 +37,8 @@ final class HLSLane: @unchecked Sendable {
     /// sets its sequence's, a subtitle rendition's cues are placed by them.
     private let anchors: HLSTimestampAnchors
     private(set) var timeline: HLSTimeline
+    /// Where the timeline ended when the lane was made, before any measure moved it (`contains`).
+    private let initialEnd: Double
     /// The streams the lane hands out, in the order its readers find them (`slotIndex` matches a run's by kind).
     private(set) var streams: [StreamSlot] = []
     /// Whether the lane is read at all: one of its streams is. A lane nothing reads downloads nothing.
@@ -108,6 +110,7 @@ final class HLSLane: @unchecked Sendable {
         self.loader = loader
         self.shouldAbort = shouldAbort
         self.anchors = anchors
+        initialEnd = timeline.end
         packet = av_packet_alloc()
     }
 
@@ -216,6 +219,58 @@ final class HLSLane: @unchecked Sendable {
         resume = nil
         current = nil
         self.landing = landing
+        seekTarget = time
+        redo = nil
+        redoAttempts = 0
+    }
+
+    /// Where the last `reposition` was to start, until the run it opens has told where its first segment starts: the
+    /// playlist's durations choose the segment, the media's timestamps may put its start elsewhere (`segmentStarted`).
+    private var seekTarget: Double?
+    /// The first segment of the run being read.
+    private var runFirst: HLSTimeline.Entry?
+    /// A better segment to start the run at, found once the first one's start was measured (`fill` restarts there).
+    private var redo: HLSTimeline.Entry?
+    private var redoAttempts = 0
+    /// A run's reader is being opened (`startRun`), which is when its first segment's start is told.
+    private var isOpening = false
+    /// Restarts of a seek's run for a segment the durations chose wrongly. The target is kept while the run restarted is
+    /// measured too, and dropped once a run holds it or these are used up.
+    private static let maxRedos = 2
+
+    /// The media says where `segment` starts (`HLSSegmentReader.Anchoring.onSegmentStart`): the timeline takes it
+    /// (`HLSTimeline.measure`), and a seek's run, whose first segment the playlist's durations chose, restarts at the
+    /// segment that holds the target by the corrected timeline when that is another (the chosen one started after the
+    /// target, or ended before it).
+    private func segmentStarted(_ segment: HLSSegment, at time: Double) {
+        timeline.measure(sequence: segment.sequence, url: segment.url, byteRange: segment.byteRange, start: time)
+        current = refreshed(current)
+        resume = refreshed(resume)
+        runFirst = refreshed(runFirst)
+        // Only the measure taken as the run opens decides a restart (nothing has been handed out yet).
+        guard isOpening, let first = runFirst, first.sequence == segment.sequence, let target = seekTarget else {
+            return
+        }
+        guard redoAttempts < Self.maxRedos, let better = timeline.entry(at: target), better.sequence != first.sequence,
+            better.epoch == first.epoch
+        else {
+            seekTarget = nil
+            return
+        }
+        redoAttempts += 1
+        redo = better
+        AppLog.info(
+            .demuxer,
+            "HLS: segment \(first.sequence) starts at \(String(format: "%.3f", time)) s, not by its durations; \(String(format: "%.3f", target)) s is in segment \(better.sequence)"
+        )
+    }
+
+    /// `entry` as the timeline lists it now (its start may have been measured since).
+    private func refreshed(_ entry: HLSTimeline.Entry?) -> HLSTimeline.Entry? {
+        guard let entry, let now = timeline.entry(sequence: entry.sequence), now.epoch == entry.epoch else {
+            return entry
+        }
+        return now
     }
 
     /// Starts the next run at the first segment that begins after the one holding `time`: a variant switched to joins
@@ -226,6 +281,7 @@ final class HLSLane: @unchecked Sendable {
         dropRun()
         skipped = 0
         start = .following(time)
+        seekTarget = nil
         resume = nil
         current = nil
         landing = nil
@@ -264,9 +320,11 @@ final class HLSLane: @unchecked Sendable {
         return nil
     }
 
-    /// Whether `time` is within the timeline (a forward seek past the end is none).
+    /// Whether `time` is within the timeline (a forward seek past the end is none). The end of the timeline as first
+    /// loaded counts too: the length shown comes from it, and measuring may have moved the end back (durations listed
+    /// too long).
     func contains(_ time: Double) -> Bool {
-        timeline.index(at: time) != nil
+        timeline.index(at: time) != nil || (!timeline.isEmpty && time <= initialEnd)
     }
 
     var window: LiveWindow? { timeline.liveWindow }
@@ -323,8 +381,20 @@ final class HLSLane: @unchecked Sendable {
                 switch nextRunStart() {
                 case .start(let entry):
                     do throws(HLSSegmentReaderError) { try startRun(at: entry) } catch {
+                        seekTarget = nil
+                        redo = nil
                         resume = entry
                         if let stop = recover(from: error.code) { return stop }
+                        continue
+                    }
+                    if let again = redo {
+                        // The media puts the first segment of a seek elsewhere than its durations did, and the one that
+                        // holds the target is another: start there, before a packet is read.
+                        redo = nil
+                        dropRun()
+                        resume = again
+                    } else {
+                        seekTarget = nil
                     }
                 case .held:
                     return Self.held
@@ -547,14 +617,19 @@ final class HLSLane: @unchecked Sendable {
             }
         }
         current = first
+        runFirst = first
         runDescription = RunDescription(
             initSection: first.segment.initSection, discontinuity: first.segment.discontinuitySequence)
+        isOpening = true
+        defer { isOpening = false }
         let opened = try HLSSegmentReader(
             loader: loader, first: first.segment, start: first.start,
             timelineShift: kind == .subtitle ? timelineShift : nil,
             anchoring: .init(
                 anchors: anchors, sequence: first.segment.discontinuitySequence,
-                tolerance: max(timeline.targetDuration, 1), role: anchorRole),
+                tolerance: max(timeline.targetDuration, 1), role: anchorRole,
+                onSegmentStart: kind == .subtitle
+                    ? nil : { [weak self] segment, time in self?.segmentStarted(segment, at: time) }),
             firstBody: replay
         ) {
             [weak self] in
