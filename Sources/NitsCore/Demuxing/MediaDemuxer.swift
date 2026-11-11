@@ -544,6 +544,11 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     /// A second demuxer can read the source by its address (`DemuxerInputTraits.opensAsFile`).
     var canOpenAsFile: Bool { input.traits.opensAsFile }
+    /// How to read subtitle stream `index` outside playback when the input is an HLS stream (a rendition of a VOD
+    /// playlist), which a second demuxer can't open as a file; nil for any other.
+    func hlsSubtitleSource(streamIndex index: Int) -> HLSSubtitleWindowSource? {
+        (input as? HLSInput)?.subtitleWindowSource(forStream: index)
+    }
     /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
     var streamSelectionChanged = false
     /// A subtitle rendition of an HLS stream was selected after the packets in the queues were read: it is a playlist of

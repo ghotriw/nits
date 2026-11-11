@@ -121,6 +121,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// (`HLSTimestampAnchors`) after a seek, and the subtitle renditions' last, read only as far as the others are.
     private var readOrder: [HLSLane] = []
     private var infos: [StreamInfo] = []
+    /// How to read each subtitle rendition outside playback, by table stream; set once at the end of `init`.
+    private var subtitleSources: [Int: HLSSubtitleWindowSource] = [:]
     /// The variants of a master playlist (none for a media playlist), in the order it lists them.
     private var variants: [Variant] = []
     private let meter: TransferAccount
@@ -385,6 +387,15 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             return nil
         }
         readOrder = [HLSLane.Kind.primary, .audio, .subtitle].flatMap { kind in lanes.filter { $0.kind == kind } }
+        // A live stream's renditions are read by playback alone (its window moves).
+        if !isLive {
+            for lane in lanes where lane.kind == .subtitle {
+                guard let slot = lane.streams.first else { continue }
+                subtitleSources[slot.table] = HLSSubtitleWindowSource(
+                    address: url, headers: headers, allowsFiles: isLocal, url: lane.url, timeline: lane.timeline,
+                    variables: variables, anchors: anchors, cookies: { [transport] in transport.cookies })
+            }
+        }
 
         // The variants whose playlist opened, with the renditions that did.
         for (position, entry) in plan.enumerated() {
@@ -496,6 +507,11 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         guard let window = (primaries.first { $0.isRead } ?? primaries.first)?.window else { return nil }
         return window
     }
+
+    /// The source for reading the subtitle rendition behind table stream `index` outside playback
+    /// (`EmbeddedSubtitleReader.readSubtitles(hls:in:interrupt:)`); nil for any other stream and for a live stream.
+    /// Made once at the opening: readable from any thread.
+    func subtitleWindowSource(forStream index: Int) -> HLSSubtitleWindowSource? { subtitleSources[index] }
 
     /// The opening is done: what it downloaded (the probes, the first segment read to describe the picture, on a link
     /// that may not be the one playback runs on) is no sample of the link for adaptive bitrate.

@@ -115,6 +115,15 @@ final class HTTPSessionTransport: Sendable {
     /// brought 4K down a step 4 s in.
     static let oneTimeRequestBytes: Int64 = 16 << 10
 
+    /// The cookies the session holds, from `Set-Cookie` answers and FFmpeg's option.
+    var cookies: [HTTPCookie] { holder.cookieStorage?.cookies ?? [] }
+
+    /// Takes over cookies another session holds (a read of the same stream on a session of its own).
+    func adopt(_ cookies: [HTTPCookie]) {
+        guard let storage = holder.cookieStorage else { return }
+        for cookie in cookies { storage.setCookie(cookie) }
+    }
+
     /// The cookies of `cookies` (FFmpeg's option, as it was last) into the session's, which sends them where they
     /// apply. Without a domain of their own they are `origin`'s.
     private func store(_ cookies: String, from origin: URL) {

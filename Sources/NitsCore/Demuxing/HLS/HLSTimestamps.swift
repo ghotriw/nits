@@ -131,6 +131,11 @@ final class HLSTimestampAnchors: Sendable {
         state.withLock { Self.cueOffset(of: sequence, in: $0) }
     }
 
+    /// Whether any run has anchored a sequence: before, cues are placed with no offset at all.
+    var hasAnchors: Bool {
+        state.withLock { !$0.offsets.isEmpty }
+    }
+
     /// Whether a run of `sequence` has anchored it.
     func isAnchored(_ sequence: Int) -> Bool {
         state.withLock { $0.offsets[sequence] != nil }

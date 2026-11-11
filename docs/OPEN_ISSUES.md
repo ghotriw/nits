@@ -359,6 +359,11 @@ Accepted for now, noted for later.
     frames dropped for the last 30 of 90 s; with it the picture follows the clock to the end, nothing dropped (engine,
     2026-11-06; audio not looked at). The content ids are in `.ref/exoplayer/demos/main/src/main/assets/media.exolist.json`;
     the `tears-of-steel` example is out of date (its content segments answer 404).
+- **HLS subtitle renditions: a window past a break the pictures have not anchored waits for playback.** The window read
+  (`EmbeddedSubtitleReader.readSubtitles(hls:…)`) reads only the stretch whose discontinuity sequences the pictures
+  anchored (from the first such segment to the first that isn't), and waits up to 2 s for any: cues elsewhere would be
+  placed by a wrong offset. Playback reads them when it gets there; only a negative subtitle delay shows the
+  difference.
 - **Advertisement segments on streams of their own: done by the client, not on every kind of stream.** Mux's Deltatre
   DAI stream (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`: ads of 720x408, `METHOD=NONE` among
   AES-128 segments, MPEG-TS with their own PMT) lost the 180 s of ads to FFmpeg's HLS demuxer (the picture stood at

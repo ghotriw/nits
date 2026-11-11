@@ -139,16 +139,6 @@ struct HLSOverHTTPTests {
         #expect(pictures == 180)
         #expect(Set(Self.segments(of: 1, in: server.requests)) == ["v1_000.ts", "v1_001.ts", "v1_002.ts"])
 
-        // Subtitle windows and the index are read by a demuxer of their own, opened the same way. It opens FFmpeg on the
-        // address, which has no HLS demuxer since deps 1.7.0 (Homebrew's has one): until it reads HLS through the client
-        // (phase 7, "Not done" in `.agents/hls-client/PLAN.md`) this fails there, and reports when it no longer does.
-        var window = EmbeddedSubtitleReader.openInput(url: path, headers: [:], interrupt: nil)
-        withKnownIssue("EmbeddedSubtitleReader opens HLS through FFmpeg, which no longer reads it") {
-            #expect(window != nil, "The subtitle reader couldn't open the saved playlist")
-        } when: {
-            av_find_input_format("hls") == nil
-        }
-        avformat_close_input(&window)
     }
 }
 
@@ -207,6 +197,47 @@ struct HLSRenditionTests {
         #expect(fetched.contains { $0.hasPrefix("vEnglish_") })
         #expect(!fetched.contains { $0.hasPrefix("vUkrainian_") }, "\(fetched)")
         #expect(!fetched.contains { $0.hasSuffix(".vtt") || $0.contains("_vtt") }, "\(fetched)")
+    }
+
+    @Test("A subtitle rendition is read outside playback through the client: a window and the whole track")
+    func subtitleRenditionReadOutsidePlayback() throws {
+        guard let (server, demuxer, opened) = try Self.open() else { return }
+        defer { server.stop() }
+        let track = try #require(demuxer.subtitleTracks.first)
+        let source = try #require(demuxer.hlsSubtitleSource(streamIndex: track.streamIndex))
+        #expect(demuxer.canOpenAsFile == false)
+
+        demuxer.startReadAhead()
+        _ = demuxer.nextVideoSample()
+        let before = server.requests.count
+        let whole = try #require(EmbeddedSubtitleReader.readSubtitles(hls: source, in: 0...Double.infinity))
+        #expect(whole.covered?.upperBound == .infinity)
+        #expect(whole.packets.cues.map(\.text).contains { $0.contains("Hello") }, "\(whole.packets.cues.map(\.text))")
+        #expect(whole.packets.cues.map(\.text).contains { $0.contains("World") }, "\(whole.packets.cues.map(\.text))")
+        // The cue on screen at 3.5 s starts at 3 s: a window around it holds it, and not the one that ends before.
+        let window = try #require(EmbeddedSubtitleReader.readSubtitles(hls: source, in: 3.5...4))
+        #expect(window.packets.cues.contains { $0.text.contains("World") })
+        // Read by a client of its own: the rendition's segments were asked for.
+        let fetched = Self.paths(server, after: before).filter { $0.hasSuffix(".vtt") }
+        #expect(!fetched.isEmpty, "\(fetched)")
+    }
+
+    @Test("A read of a rendition outside playback sends the cookies the master's answer set")
+    func renditionReadSendsCookies() throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        server.setBehavior(.init(setCookie: "token=abc; Path=/"), forPaths: { $0 == "master.m3u8" })
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.startReadAhead()
+        _ = demuxer.nextVideoSample()
+        let track = try #require(demuxer.subtitleTracks.first)
+        let source = try #require(demuxer.hlsSubtitleSource(streamIndex: track.streamIndex))
+        let before = server.requests.count
+        _ = try #require(EmbeddedSubtitleReader.readSubtitles(hls: source, in: 0...Double.infinity))
+        let cues = server.requests.dropFirst(before).filter { $0.path.hasSuffix(".vtt") }
+        #expect(!cues.isEmpty)
+        #expect(cues.allSatisfy { $0.cookie?.contains("token=abc") == true }, "\(cues.map(\.cookie))")
     }
 
     @Test("Selecting another audio track or a subtitle track downloads it from the seek that follows")

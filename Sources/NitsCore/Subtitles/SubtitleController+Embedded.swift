@@ -35,16 +35,19 @@ extension SubtitleController {
         }
         let time = max(0, seconds - delay)
         let isNetwork = demuxer.isNetworkSource
+        // A rendition of an HLS stream is read through the client by a lane of its own: no file, no index.
+        let hlsSource = demuxer.hlsSubtitleSource(streamIndex: selection.streamIndex)
         // Before the stash is merged the window may be larger than it will be, never smaller.
         guard
             Self.subtitleWindow(
-                of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
+                of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork,
+                hls: hlsSource)
                 != nil
         else { return }
 
         reads.window?.cancel()
         let headers = host.currentHeaders
-        if demuxer.needsSubtitleIndex, indexLoad == nil {
+        if hlsSource == nil, demuxer.needsSubtitleIndex, indexLoad == nil {
             let interrupt = FFmpegInterrupt()
             let task = Task.detached(priority: .utility) {
                 let index = EmbeddedSubtitleReader.readIndex(url: path, headers: headers, interrupt: interrupt)
@@ -67,7 +70,8 @@ extension SubtitleController {
             await pendingMain?.value
             guard !Task.isCancelled,
                 let (range, starts) = Self.subtitleWindow(
-                    of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork)
+                    of: demuxer, slot: slot, around: time, streamIndex: selection.streamIndex, isNetwork: isNetwork,
+                    hls: hlsSource)
             else {
                 await MainActor.run {
                     if reads.window?.interrupt === interrupt { reads.window = nil }
@@ -79,6 +83,38 @@ extension SubtitleController {
             if starts?.isEmpty == true {
                 merged = demuxer.mergeLiveSubtitles(
                     .init(), covering: range, selection: selection.id, span: selection.span, of: slot)
+            } else if let hlsSource {
+                // The picture of a start from a saved position or of a seek may not have anchored its sequence yet (the
+                // cue on screen is what this read is for): wait for it a little, as the picture is read meanwhile.
+                var read = EmbeddedSubtitleReader.readSubtitles(hls: hlsSource, in: range, interrupt: interrupt)
+                var waits = 0
+                while let attempt = read, attempt.covered == nil, waits < Self.anchorWaitSteps, !Task.isCancelled,
+                    !interrupt.isCancelled
+                {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    waits += 1
+                    read = EmbeddedSubtitleReader.readSubtitles(hls: hlsSource, in: range, interrupt: interrupt)
+                }
+                if let read {
+                    if let covered = read.covered {
+                        // Up to the first break the pictures have not anchored: the rest is playback's to read.
+                        merged = demuxer.mergeLiveSubtitles(
+                            read.packets, covering: covered, selection: selection.id, span: selection.span, of: slot)
+                    } else {
+                        // Nothing can be placed yet (the pictures anchored nothing of the window within the wait): playback
+                        // reads the cues when it gets there. Left running, so the time tick doesn't ask again; the next
+                        // seek, track switch or delay change replaces it.
+                        failed = true
+                    }
+                } else {
+                    failed = true
+                    if !interrupt.isCancelled {
+                        AppLog.warning(
+                            .subtitles,
+                            "Can't read subtitle rendition \(selection.streamIndex) from \(range.lowerBound) s to "
+                                + "\(range.upperBound) s; what playback reads still shows")
+                    }
+                }
             } else if let packets = EmbeddedSubtitleReader.readSubtitles(
                 url: path, headers: headers, streamIndex: selection.streamIndex,
                 captionField: selection.captionField, in: (starts?.first ?? range.lowerBound)...range.upperBound,
@@ -114,10 +150,14 @@ extension SubtitleController {
     /// elsewhere a window would read every stream of the file for seconds, against playback refilling after a seek.
     nonisolated private static func subtitleWindow(
         of demuxer: MediaDemuxer, slot: MediaDemuxer.SubtitleSlot, around time: Double, streamIndex: Int,
-        isNetwork: Bool
+        isNetwork: Bool, hls: HLSSubtitleWindowSource?
     ) -> (range: ClosedRange<Double>, starts: [Double]?)? {
-        // An HLS playlist is no file for a second demuxer to open (its renditions come from playback's own reads).
-        guard demuxer.canOpenAsFile, let range = demuxer.subtitleWindow(around: time, of: slot) else { return nil }
+        // An HLS playlist is no file for a second demuxer to open: a VOD rendition is read through the client (`hls`,
+        // whole window, no index), the rest of it (a live stream's) comes from playback's own reads.
+        guard demuxer.canOpenAsFile || hls != nil, let range = demuxer.subtitleWindow(around: time, of: slot) else {
+            return nil
+        }
+        if hls != nil { return (range, nil) }
         let starts = demuxer.indexedSubtitleStarts(of: streamIndex, in: range)
         // Until the index is read, the read that reads it decides.
         if isNetwork, starts == nil, !demuxer.needsSubtitleIndex { return nil }
@@ -171,4 +211,9 @@ extension SubtitleController {
         mainReads.cancelWindow()
         secondaryReads.cancelWindow()
     }
+}
+
+extension SubtitleController {
+    /// How many 100 ms steps a window read of an HLS rendition waits for the pictures to anchor their sequence.
+    nonisolated static let anchorWaitSteps = 20
 }

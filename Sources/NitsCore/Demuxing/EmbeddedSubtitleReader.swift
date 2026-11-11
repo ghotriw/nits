@@ -58,6 +58,15 @@ enum EmbeddedSubtitleReader {
             if captionField != nil, captionDecoder == nil { return nil }
         }
 
+        /// A stream of text cues described by its codec and time base alone (a WebVTT rendition of an HLS stream).
+        init(textCodec: AVCodecID, timebase: AVRational, index: Int) {
+            streamIndex = index
+            codecId = textCodec
+            self.timebase = timebase
+            bitmapDecoder = nil
+            captionDecoder = nil
+        }
+
         mutating func add(_ pkt: inout AVPacket) {
             guard pkt.stream_index == streamIndex else { return }
             if let captionDecoder {
@@ -243,6 +252,51 @@ enum EmbeddedSubtitleReader {
         // A read error isn't the end: what follows is just unread.
         collector.finish(atEnd: result == MediaDemuxer.averrorEOF)
         return collector.packets
+    }
+
+    /// The cues of an HLS subtitle rendition (`HLSInput.subtitleWindowSource(forStream:)`) within `range` of the
+    /// timeline (`upperBound` may be `infinity`: the whole rendition), read through Nits' own client by a lane of its own:
+    /// its own transport (the requests are no sample for adaptive bitrate, and give way to `interrupt`), the playlist and
+    /// the offsets the stream's pictures anchored. The run starts at the segment that holds the lower bound and stops at
+    /// the first cue past the upper, and loads no segment that starts after it (a stretch without cues is not read to its
+    /// next cue). It stops too at a discontinuity sequence the stream's pictures have not anchored yet
+    /// (`HLSSubtitleWindowSource.readable(in:)`): cues there would be placed wrongly. `covered` is what was
+    /// read, `nil` when nothing could be (the first segment's sequence is not anchored); a read that stopped at such a
+    /// break covers up to it, and playback reads the rest when it gets there. A segment that fails is skipped, as in
+    /// playback (and counts as read). The result is `nil` when the read was cancelled or the lane gave an error up.
+    static func readSubtitles(
+        hls source: HLSSubtitleWindowSource, in range: ClosedRange<Double>, interrupt: FFmpegInterrupt? = nil
+    ) -> (packets: Packets, covered: ClosedRange<Double>?)? {
+        guard let readable = source.readable(in: range) else { return (Packets(), nil) }
+        let covered = readable.range
+        let limit = readable.limit
+        let timebase = AVRational(num: 1, den: 1000)
+        // One condition for the transport (on URLSession's queue, where `Task.isCancelled` is never the task's), the lane
+        // and the loop: the interrupt, which the controller sets when it cancels the read.
+        let abort: @Sendable () -> Bool = { interrupt?.shouldInterruptFFmpeg == true }
+        let transport = HTTPSessionTransport(source: source.address, headers: source.headers, shouldAbort: abort)
+        transport.adopt(source.cookies())
+        let lane = HLSLane(
+            kind: .subtitle, url: source.url, timeline: source.timeline, variables: source.variables,
+            loader: HLSSegmentLoader(transport: transport, allowsFiles: source.allowsFiles), anchors: source.anchors,
+            shouldAbort: abort)
+        defer { lane.close() }
+        lane.setStreams([HLSLane.StreamSlot(table: 0, timebase: timebase, type: AVMEDIA_TYPE_SUBTITLE)])
+        lane.reposition(at: covered.lowerBound)
+        var collector = PacketCollector(textCodec: AV_CODEC_ID_WEBVTT, timebase: timebase, index: 0)
+        var pkt = AVPacket()
+        while !isCancelled(interrupt) {
+            let code = lane.fill(before: limit.isFinite ? limit : nil)
+            if code == MediaDemuxer.averrorEOF || code == HLSLane.held {
+                return isCancelled(interrupt) ? nil : (collector.packets, covered)
+            }
+            guard code >= 0 else { return nil }
+            if lane.pendingTime > covered.upperBound { return (collector.packets, covered) }
+            lane.take(into: &pkt)
+            collector.add(&pkt)
+            av_packet_unref(&pkt)
+        }
+        return nil
     }
 
     /// The starts of each subtitle stream's packets by the file's own index, on the zero-based timeline, from a
