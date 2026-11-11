@@ -143,6 +143,7 @@ extension MediaDemuxer {
     /// Behind `lock` and `queueLock`.
     private func readOnePacketAhead() -> Bool {
         adaptBitrateIfDue()
+        pollInFlightSegments()
         guard !readAheadEnded, !isReadAheadFull else { return true }
         var pkt = AVPacket()
         let mark = readMark

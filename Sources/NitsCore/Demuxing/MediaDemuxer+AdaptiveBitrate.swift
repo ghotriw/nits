@@ -15,6 +15,11 @@ extension MediaDemuxer {
         var liveEdgeReachedAt: Double?
         /// The segment a decision to give a download up was last logged for (`noteSegmentInFlight`).
         var abandonmentLog = AbandonmentLog()
+        /// The ladder the check takes (`abandonmentLadder`), and `adaptiveTime` of the next check at idle.
+        var abandonmentLadder: (builtAt: Double, rejected: Set<Int>, ladder: [AdaptiveBitrateLogic.Variant])?
+        var nextInFlightPoll = 0.0
+        /// What the checks saw (`trace`), when `NITS_ABR_TRACE` asks.
+        var trace = AbandonTrace()
         let epoch = ContinuousClock.now
     }
 

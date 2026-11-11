@@ -819,10 +819,19 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         _ = transport.meter.take()
     }
 
-    /// Each variant's picture lane tells how far its segment's download has got (`HLSLane.onSegmentProgress`).
+    /// A lane's segment as the demuxer wants it told: with the variants the lane serves and whether sound is muxed in.
+    private func inFlight(_ segment: HLSLane.SegmentInFlight, laneIndex: Int) -> MediaDemuxer.InFlightSegment {
+        // Variants that differ in their audio group share a playlist, so a lane may be several variants'.
+        .init(
+            variants: variants.filter { $0.lane == laneIndex }.map(\.id), sequence: segment.sequence,
+            start: segment.start, duration: segment.duration, progress: segment.progress,
+            hasMuxedAudio: !tableStreams(ofLane: laneIndex, AVMEDIA_TYPE_AUDIO).isEmpty)
+    }
+
+    /// Each variant's picture lane tells how far its segment's download has got (`HLSLane.observeProgress`).
     func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {
-        for laneIndex in Set(variants.map(\.lane)) where lanes.indices.contains(laneIndex) {
-            // Variants that differ in their audio group share a playlist, so a lane may be several variants'.
+        // A rendition's lanes too (no variants: told so): the thread may stand on their input while a picture downloads.
+        for laneIndex in lanes.indices {
             let ids = variants.filter { $0.lane == laneIndex }.map(\.id)
             let hasMuxedAudio = !tableStreams(ofLane: laneIndex, AVMEDIA_TYPE_AUDIO).isEmpty
             lanes[laneIndex].observeProgress { segment in
@@ -831,6 +840,13 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                         variants: ids, sequence: segment.sequence, start: segment.start,
                         duration: segment.duration, progress: segment.progress, hasMuxedAudio: hasMuxedAudio))
             }
+        }
+    }
+
+    /// The same, asked for now, of the lanes read: while the read-ahead is full nothing waits for the download.
+    func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void) {
+        for laneIndex in Set(variants.map(\.lane)) where lanes.indices.contains(laneIndex) {
+            if let segment = lanes[laneIndex].pollProgress() { observer(inFlight(segment, laneIndex: laneIndex)) }
         }
     }
 

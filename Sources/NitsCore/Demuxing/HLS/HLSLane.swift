@@ -130,7 +130,9 @@ final class HLSLane: @unchecked Sendable {
         let progress: HTTPSessionInput.Progress
     }
 
-    /// Told while a segment's bytes are waited for (a picture lane's; set by `HLSInput`, once it is open).
+    /// Told while a segment's bytes are waited for, of every lane (a picture's, a rendition's): the thread that reads
+    /// stands on the input it waits for, and the check of the picture's download is made from whichever it is
+    /// (`MediaDemuxer.noteSegmentInFlight` polls the pictures' lanes from a rendition's wait). Set by `HLSInput`, once open.
     func observeProgress(_ observer: @escaping @Sendable (SegmentInFlight) -> Void) {
         progressObserver.withLock { $0 = observer }
     }
@@ -139,13 +141,24 @@ final class HLSLane: @unchecked Sendable {
 
     /// `current` is the segment the reader downloads: it is set before the reader asks for the segment's bytes.
     private func segmentProgress(_ segment: HLSSegment, _ progress: HTTPSessionInput.Progress) {
-        guard kind == .primary, isRead, !isOpening, let observer = progressObserver.withLock({ $0 }),
+        guard isRead, !isOpening, let observer = progressObserver.withLock({ $0 }),
             let entry = current,
             entry.sequence == segment.sequence, entry.segment.url == segment.url
         else { return }
         observer(
             SegmentInFlight(
                 sequence: entry.sequence, start: entry.start, duration: segment.duration, progress: progress))
+    }
+
+    /// The segment being downloaded and how far it has got, asked for while the thread that reads is idle (the read-ahead
+    /// is full, the download goes on in the background and nothing waits for it). On that thread, as `segmentProgress`.
+    func pollProgress() -> SegmentInFlight? {
+        guard kind == .primary, isRead, !isOpening, let entry = current, let flying = progressRelay.inFlight,
+            entry.sequence == flying.segment.sequence, entry.segment.url == flying.segment.url
+        else { return nil }
+        return SegmentInFlight(
+            sequence: entry.sequence, start: entry.start, duration: flying.segment.duration,
+            progress: flying.progress)
     }
 
     /// How the lane's runs take the shared offsets: cues in a container (IMSC in fMP4, subtitles in MPEG-TS) are sparse,

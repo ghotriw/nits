@@ -229,9 +229,29 @@ final class HLSSegmentLoader: Sendable {
 /// handler once it is made, after the loader it reads with. Called on the thread that reads the segment, while it waits.
 final class HLSSegmentProgressRelay: @unchecked Sendable {
     var handler: ((HLSSegment, HTTPSessionInput.Progress) -> Void)?
+    /// The download last begun, for a check made while the thread that reads is idle (`HLSLane.pollProgress`): the
+    /// download goes on in the background while the read-ahead is full, and nothing waits for it then.
+    private let latest = OSAllocatedUnfairLock<(segment: HLSSegment, input: Weak<HTTPSessionInput>)?>(
+        initialState: nil)
+
+    final class Weak<T: AnyObject>: @unchecked Sendable {
+        weak var value: T?
+        init(_ value: T) { self.value = value }
+    }
 
     func tell(_ segment: HLSSegment, _ progress: HTTPSessionInput.Progress) {
         handler?(segment, progress)
+    }
+
+    func began(_ segment: HLSSegment, _ input: HTTPSessionInput) {
+        latest.withLock { $0 = (segment, Weak(input)) }
+    }
+
+    /// The segment last begun and how far its download has got; nil once it is through, closed or gone.
+    var inFlight: (segment: HLSSegment, progress: HTTPSessionInput.Progress)? {
+        guard let (segment, weak) = latest.withLock({ $0 }), let input = weak.value else { return nil }
+        let progress = input.progress
+        return progress.isFinished ? nil : (segment, progress)
     }
 }
 
@@ -320,6 +340,7 @@ final class HLSSegmentBody {
     func watch(_ relay: HLSSegmentProgressRelay, segment: HLSSegment) {
         guard case .input(let input, _) = source else { return }
         input.onProgress = { [segment] progress in relay.tell(segment, progress) }
+        relay.began(segment, input)
     }
 
     /// Everything that is left.
@@ -391,12 +412,15 @@ extension HLSSegmentLoader {
         }
         if segment.url.isFileURL { return HLSSegmentBody(data: try file(segment.url, range: segment.byteRange)) }
         let range = segment.byteRange
+        var onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)?
+        if let relay { onProgress = { [segment] progress in relay.tell(segment, progress) } }
         let opened = transport.open(
             segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
-            cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort)
+            cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort,
+            onProgress: onProgress)
         switch opened {
         case .input(let input):
-            if let relay { input.onProgress = { [segment] progress in relay.tell(segment, progress) } }
+            relay?.began(segment, input)
             return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
         case .failed(let code):
             throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)

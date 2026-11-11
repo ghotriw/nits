@@ -65,6 +65,9 @@ protocol DemuxerInput: StreamDescriptions {
     /// Told, on the thread that reads, how far the segment being downloaded has got while the read waits for it (an HLS
     /// input's; others tell nothing). Called once the opening is done.
     func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void)
+    /// Tells `observer` how far the segment being downloaded has got, now: for a check made while the read-ahead is full
+    /// and the thread that reads does not wait for the download (on that thread, with `lock` held).
+    func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void)
 
     // MARK: Reading
 
@@ -125,6 +128,7 @@ protocol NetworkReadAccount: AnyObject {
 
 extension DemuxerInput {
     func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {}
+    func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void) {}
     func variantDescription(id: Int) -> MediaDemuxer.VariantDescription { .described }
     func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription { .described }
 }

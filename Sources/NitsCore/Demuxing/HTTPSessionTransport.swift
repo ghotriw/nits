@@ -131,10 +131,12 @@ final class HTTPSessionTransport: Sendable {
     /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
     /// master was served from, after its redirects). `opening`: a request of the demuxer's opening, and how it is read
     /// (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
-    /// that lost its race, `HLSInput`).
+    /// that lost its race, `HLSInput`). `onProgress` is told how far the request has got while it waits for its answer
+    /// too (a server that stalls before its headers), and for its bytes after.
     func open(
         _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?,
-        opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil
+        opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil,
+        onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)? = nil
     ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
         if let cookies {
@@ -153,6 +155,7 @@ final class HTTPSessionTransport: Sendable {
             holder: holder, request: request, offset: offset, end: end, meter: meter,
             openingLimit: opening == nil ? nil : openingLimit, opening: opening ?? .held,
             followsRedirects: followsRedirects, shouldAbort: interrupts)
+        input.onProgress = onProgress
         input.start()
         let begin = ContinuousClock.now
         let opened = input.waitForAnswer()
@@ -694,6 +697,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var measuredBytes: Int
         /// The task is suspended: the reader is behind, so a slow download is not the link's doing.
         var isSuspended: Bool
+        /// The body is through, or the request closed: nothing is left to watch.
+        var isFinished = false
     }
 
     /// Told how far the request has got while the reader waits for its bytes, at most every `observeInterval`: the
@@ -714,7 +719,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 transferring: max(
                     state.transferSeconds + spell - state.limitedSeconds - (state.isOpeningTask ? spell : 0), 0),
                 measuredBytes: state.isOpeningTask ? 0 : max(state.received - state.limitedBytes, 0),
-                isSuspended: state.isSuspended)
+                isSuspended: state.isSuspended, isFinished: state.isFinished || state.isClosed)
         }
     }
 
@@ -722,7 +727,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         guard let onProgress else { return }
         let isDue = state.withLock { state -> Bool in
             let now = ContinuousClock.now
-            guard state.answeredAt != nil, !state.isFinished, !state.isClosed,
+            guard !state.isFinished, !state.isClosed,
                 state.lastObserved.map({ now - $0 >= Self.observeInterval }) ?? true
             else { return false }
             state.lastObserved = now

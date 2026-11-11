@@ -26,10 +26,11 @@ struct AdaptiveBitrateAbandonmentTests {
     @Test("A heavy start is given up for the variant the link carries")
     func heavyStart() throws {
         let logic = AdaptiveBitrateLogic()
-        // 1 Mbit/s: the rest of 3.75 MB takes ~25 s, the 1.5 Mbit/s one 9 s, the lowest 3 s; nothing is buffered.
+        // 1 Mbit/s: the rest of 3.75 MB takes ~25 s, the 1.5 Mbit/s one 9.2 s (a stall that long), the lowest 3.2 s; nothing is buffered.
         let decision = try #require(
             logic.abandonment(
                 of: Self.download(elapsed: 4, rate: 1_000_000), among: Self.ladder, buffer: 0, roundTrip: 0.2))
+        // Nothing arrives within an empty buffer: the lowest, as hls.js (each second it loads is a second of stall).
         #expect(decision.target == 0)
         #expect(decision.remaining > 20)
         #expect(decision.lower < decision.remaining)
@@ -163,5 +164,47 @@ struct AdaptiveBitrateAbandonmentExpectedTests {
             logic.abandonment(
                 of: Self.download(length: 8_000_000), among: Self.ladder, buffer: 5, roundTrip: 0.2, playlistLoad: 0.4))
         #expect(abs(live.lower - plain.lower - 0.4) < 1e-9)
+    }
+}
+
+@Suite("Abandoning a segment download: margin and pick")
+struct AdaptiveBitrateAbandonmentMarginTests {
+    private static let ladder: [AdaptiveBitrateLogic.Variant] = [
+        .init(id: 0, bandwidth: 500_000), .init(id: 1, bandwidth: 1_500_000), .init(id: 2, bandwidth: 5_000_000),
+    ]
+
+    /// A 6 s segment of the top rung of `length` bytes, 4 s in at 2.5 Mbit/s (1.19 MB loaded).
+    private static func download(length: Int64) -> AdaptiveBitrateLogic.Download {
+        .init(
+            variant: 2, duration: 6, bytes: 1_187_500, length: length, elapsed: 4, firstAnswer: 0.2, transferring: 3.8,
+            measuredBytes: 1_187_500)
+    }
+
+    @Test("A lower segment that is barely sooner than finishing is no reason to throw the bytes away")
+    func marginRefusesAGain() {
+        let logic = AdaptiveBitrateLogic()
+        // 2 s left; the lowest rung takes 1.4 s: 0.6 s for the bytes loaded and a fivefold drop in quality.
+        #expect(
+            logic.abandonment(of: Self.download(length: 1_812_500), among: Self.ladder, buffer: 1, roundTrip: 0.2)
+                == nil)
+    }
+
+    @Test("With none within the buffer the lowest is picked, not a higher one that merely beats the download")
+    func lowestWhenNoneFits() throws {
+        let logic = AdaptiveBitrateLogic()
+        // 6.4 s left at 2.5 Mbit/s; buffer 1 s. The 1.5 Mbit/s rung takes 3.8 s (3.8 s of stall), the lowest 1.4 s.
+        let decision = try #require(
+            logic.abandonment(of: Self.download(length: 3_187_500), among: Self.ladder, buffer: 1, roundTrip: 0.2))
+        #expect(decision.target == 0)
+        #expect(decision.lower < decision.remaining - 1)
+    }
+
+    @Test("One within the buffer is still the highest that fits it")
+    func withinTheBuffer() throws {
+        let logic = AdaptiveBitrateLogic()
+        // Buffer of 5 s: the 1.5 Mbit/s rung (3.8 s) arrives in it, so it is the pick.
+        let decision = try #require(
+            logic.abandonment(of: Self.download(length: 3_187_500), among: Self.ladder, buffer: 5, roundTrip: 0.2))
+        #expect(decision.target == 1)
     }
 }
