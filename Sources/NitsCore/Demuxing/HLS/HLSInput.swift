@@ -28,15 +28,51 @@ import os
 /// Timeline 0 is the first segment listed when the playlist was first loaded, live or not (so `timelineOrigin` is 0 and
 /// nothing is rebased); the window is told from the playlist's own model (`liveWindow`).
 ///
-/// On by default for what `applies(to:)` accepts; `NITS_HLS_CLIENT=0` gives those URLs to FFmpeg's demuxer again while both exist.
 final class HLSInput: DemuxerInput, @unchecked Sendable {
-    /// Whether `MediaDemuxer` opens HTTP(S) `.m3u8` URLs with this client (off with `NITS_HLS_CLIENT=0`), while both paths exist.
-    static var isEnabled: Bool { ProcessInfo.processInfo.environment["NITS_HLS_CLIENT"] != "0" }
 
-    /// Whether `url` is one this input opens: a playlist over HTTP(S).
-    static func applies(to url: String) -> Bool {
-        guard HTTPSessionTransport.serves(url), let parsed = URL(string: url) else { return false }
-        return ["m3u8", "m3u"].contains(parsed.pathExtension.lowercased())
+    /// Whether `url` is one this input opens: a playlist (`.m3u8`, `.m3u`) over HTTP(S), or a saved one, a file whose
+    /// text is an HLS manifest (`PlaylistParser.isHLSManifest`; a plain `.m3u` list of tracks is not).
+    static func applies(to path: String) -> Bool {
+        let url = MediaURL.normalizeMediaPath(path)
+        if HTTPSessionTransport.serves(url) {
+            guard let parsed = URL(string: url) else { return false }
+            return playlistExtensions.contains(parsed.pathExtension.lowercased())
+        }
+        let file = URL(fileURLWithPath: url)
+        guard playlistExtensions.contains(file.pathExtension.lowercased()),
+            let data = try? Data(contentsOf: file, options: .mappedIfSafe),
+            let text = TextFileEncoding.decode(data)?.text
+        else { return false }
+        return PlaylistParser.isHLSManifest(content: text)
+    }
+
+    private static let playlistExtensions: Set<String> = ["m3u8", "m3u"]
+
+    /// Whether an HTTP(S) address that FFmpeg could not open (`AVERROR_INVALIDDATA`) serves a playlist under another
+    /// name or none (`.php?id=`, `.txt`, no extension): its first bytes say. The one request is a range of a few hundred
+    /// bytes, answered and dropped. Asked only after FFmpeg failed, so a file never pays for it.
+    static func sniffsAsPlaylist(_ url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Bool {
+        guard HTTPSessionTransport.serves(url) else { return false }
+        let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
+        guard
+            case .input(let input) = transport.open(
+                url, offset: 0, end: 512, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+        else { return false }
+        defer { input.close() }
+        let wanted = 16
+        var head = [UInt8](repeating: 0, count: wanted)
+        var count = 0
+        while count < wanted {
+            let offset = count
+            let read = head.withUnsafeMutableBufferPointer {
+                input.read($0.baseAddress! + offset, Int32(wanted - offset))
+            }
+            if read <= 0 { break }
+            count += Int(read)
+        }
+        var bytes = head.prefix(count)
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = bytes.dropFirst(3) }
+        return bytes.starts(with: Array("#EXTM3U".utf8))
     }
 
     /// The streams of a reader that a lane of `kind` describes and reads: pictures and sounds of a variant (not cover
@@ -55,8 +91,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// A live stream is joined this many target durations behind its edge (RFC 8216 6.3.3).
     static let edgeMargin = 3.0
     /// Bits a second under which the opening's transfers prove the link slow, and the start is a lower rung than the top
-    /// (`HLSPlaylistPrefetcher.Throughput.slowLinkLimit`, measured there on 128 KB segment starts at TCP's slow start: 4.8 to
-    /// 62 Mbit/s on fast links). The probes here read more (a segment, often) from every variant side by side, which
+    /// (measured by the first client, which prefetched 128 KB segment starts, at TCP's slow start: 4.8 to 62 Mbit/s on
+    /// fast links). The probes here read more (a segment, often) from every variant side by side, which
     /// shares the link: the rate is a lower bound of it, so it proves a link slow, never fast; not measured with these
     /// probes on a real link yet.
     static let slowLinkLimit = 3_000_000.0
@@ -95,15 +131,15 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     let isLivePlaylist: Bool
     let durationSeconds: Double
 
-    let traits = DemuxerInputTraits(hasIndex: false, landsBetweenKeyframes: true)
-    let isNetworkSource = true
+    let traits = DemuxerInputTraits(hasIndex: false, landsBetweenKeyframes: true, opensAsFile: false)
+    let isNetworkSource: Bool
     let streamingName = "HLS"
     let chapters: [MediaChapter.Raw] = []
     let attachedFonts: [AssScript.Font] = []
 
     /// The timeline starts at zero at the first segment listed at the opening, live or not: nothing to rebase.
     var timelineOrigin: Int64 { 0 }
-    var network: (any NetworkReadAccount)? { meter }
+    var network: (any NetworkReadAccount)? { isNetworkSource ? meter : nil }
 
     /// What the opening's probes carried, when it proves the link slow: playback then starts on a rung that fits it.
     var openingLinkRate: Double? {
@@ -121,14 +157,19 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Opens the stream at `url`, a master or a media playlist. Nil when it can't (recorded on `interrupt`).
-    init?(url: String, headers: [String: String], interrupt: FFmpegInterrupt) {
+    init?(url address: String, headers: [String: String], interrupt: FFmpegInterrupt) {
+        let url = MediaURL.normalizeMediaPath(address)
         self.interrupt = interrupt
-        guard let masterURL = URL(string: url), let table = AVStreamTable() else { return nil }
+        let isLocal = !HTTPSessionTransport.serves(url)
+        guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url), let table = AVStreamTable() else {
+            return nil
+        }
+        isNetworkSource = MediaURL.isNetworkSource(url)
         self.table = table
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         self.transport = transport
         meter = TransferAccount(meter: transport.meter)
-        let loader = HLSSegmentLoader(transport: transport)
+        let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
         func fail(_ message: String, code: Int32 = -EIO) {
@@ -360,6 +401,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         AppLog.info(
             .demuxer,
             "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"
+                + (transport.openingThroughput.map { ", opening \(Int($0 / 1000)) kbit/s" } ?? "")
         )
     }
 
@@ -369,7 +411,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     /// the others, and the renditions only they refer to, are never loaded or probed: Apple's AV1 example, 13 tiers × 5
     /// audio groups, probes 13 pictures and 2 sounds instead of 13 and 10; a ladder of two codecs, one.
     /// `MediaDemuxer.canSwitch` decides more finely once probed. All are kept when a variant doesn't tell its codecs.
-    private static func ladder(of master: HLSMasterPlaylist) -> [HLSVariant] {
+    static func ladder(of master: HLSMasterPlaylist) -> [HLSVariant] {
         let withPicture = master.variants.filter { $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil }
         let candidates = withPicture.isEmpty ? master.variants : withPicture
         guard let best = candidates.max(by: { $0.bandwidth < $1.bandwidth }),
@@ -549,6 +591,14 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         } else {
             lane.reposition(at: lastTime)
         }
+    }
+
+    /// Whether stream `index` is read (tests).
+    func isReading(stream index: Int) -> Bool {
+        guard infos.indices.contains(index) else { return false }
+        let info = infos[index]
+        let lane = lanes[info.lane]
+        return lane.streams.indices.contains(info.slot) && lane.streams[info.slot].isRead
     }
 
     func closeUnusedRepresentations() {}

@@ -15,8 +15,8 @@ import Foundation
 /// the seeks, `closeUnusedRepresentations`) run with `queueLock` released, and give way to the interrupt context the
 /// input was made with (`FFmpegInterrupt`).
 protocol DemuxerInput: StreamDescriptions {
-    // MARK: Description (readable outside `lock`, as track selection reads it; FFmpeg's HLS demuxer updates the
-    // duration and adds streams as it reads)
+    // MARK: Description (readable outside `lock`, as track selection reads it; an input may update the
+    // duration and add streams as it reads)
 
     /// "HLS" or "DASH" for an adaptive stream, for the log.
     var streamingName: String { get }
@@ -39,7 +39,7 @@ protocol DemuxerInput: StreamDescriptions {
     /// representation of the picture); nil for a single one. The demuxer chooses among them (`adoptVariants`).
     func variantCandidates() -> [MediaDemuxer.VariantCandidate]?
     /// Bits a second the link carried while the input opened, when that is known and tells the start variant
-    /// (`adoptVariants`): a DASH ladder read side by side, an HLS master's prefetch that proves the link slow.
+    /// (`adoptVariants`): a DASH ladder read side by side, an HLS master's opening that proves the link slow.
     var openingLinkRate: Double? { get }
     /// A playlist that slides and has no end yet, as opened.
     var isLivePlaylist: Bool { get }
@@ -92,6 +92,9 @@ struct DemuxerInputTraits: Sendable {
     /// The variants interleave by presentation time, not decode time (FFmpeg's DASH demuxer): a switch holds the new
     /// variant's keyframe for the old one's pictures that decode before it (`MediaDemuxer+VariantHold.swift`).
     var interleavesVariantsByPresentation = false
+    /// A second demuxer can open the source by its address, as a file (`EmbeddedSubtitleReader`'s reads): not a playlist
+    /// the input assembles itself (HLS).
+    var opensAsFile = true
 }
 
 /// The bytes and requests of an input's network reads (`FFmpegIOByteCounter`), as adaptive bitrate measures them

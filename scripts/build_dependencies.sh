@@ -94,8 +94,8 @@ cd "ffmpeg-$FFMPEG_VERSION"
 # The changes to FFmpeg's source (scripts/patches/, listed in THIRD_PARTY_NOTICES.md): its DASH demuxer frees
 # libxml2's state for the whole process after each manifest, which a parse going on elsewhere crashes on, and returns
 # "a packet was read" when a read is interrupted, which libavformat answers by reading again for as long as the interrupt
-# lasts; its HLS demuxer seeks in a live playlist that slides (a stream's DVR window), from upstream master's series of
-# 2026-07-08.
+# lasts. HLS is read by Nits' own client (`HLSInput`), with FFmpeg only demuxing each segment: its HLS demuxer is not
+# built (`--disable-demuxer=hls` below), so nothing can fall back on it.
 for patch_file in "$DIR"/scripts/patches/ffmpeg-*.patch; do
     echo "==> Applying $(basename "$patch_file")..."
     patch -p1 < "$patch_file"
@@ -119,7 +119,7 @@ EOF
 
 FFMPEG_CONFIGURE_FLAGS=(
     --prefix="$PREFIX"
-    --extra-version=nits-hls-timeline+nits-hls-skip+nits-dash-interrupt
+    --extra-version=nits-dash-interrupt
     --arch="$DEPS_ARCH"
     --target-os=darwin
     --cc=clang
@@ -129,6 +129,7 @@ FFMPEG_CONFIGURE_FLAGS=(
     --disable-doc
     --disable-encoders
     --disable-muxers
+    --disable-demuxer=hls
     --disable-gpl
     --disable-nonfree
     --enable-libdav1d
@@ -275,7 +276,8 @@ cp "$SRC_DIR/libunibreak-$LIBUNIBREAK_VERSION/LICENCE" "$LICENSES_DIR/libunibrea
     done
     echo "    (the DASH demuxer no longer calls xmlCleanupParser() after each manifest it reads, which frees libxml2's state"
     echo "    for the whole process and crashes a parse going on in another thread)"
-    echo "    (the HLS demuxer seeks in a live playlist that slides: upstream master's series of 2026-07-08, libavformat/hls.c)"
+    echo "    (the DASH demuxer returns an error, not \"a packet was read\", when a read is interrupted, so that a seek that"
+    echo "    interrupts a read does not leave libavformat reading again at full speed)"
     echo "  Configure flags (paths elided):"
     for flag in "${FFMPEG_CONFIGURE_FLAGS[@]}"; do
         case "$flag" in --prefix=*|--extra-*) continue ;; esac

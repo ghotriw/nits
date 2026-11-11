@@ -66,10 +66,8 @@ jobs:
             .build/dist/${{ steps.deps.outputs.archive }}
             .build/dist/${{ steps.deps.outputs.archive }}.sha256
             .build/src/ffmpeg-${{ steps.deps.outputs.ffmpeg }}.tar.xz
+            scripts/patches/ffmpeg-dashdec-interrupt.patch
             scripts/patches/ffmpeg-dashdec-keep-libxml2.patch
-            scripts/patches/ffmpeg-hls-live-seek.patch
-            scripts/patches/ffmpeg-hls-timeline.patch
-            scripts/patches/ffmpeg-hls-update-init-extradata.patch
             .build/src/dav1d-${{ steps.deps.outputs.dav1d }}.tar.bz2
             .build/src/libass-${{ steps.deps.outputs.libass }}.tar.xz
             .build/src/freetype-${{ steps.deps.outputs.freetype }}.tar.xz

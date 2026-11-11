@@ -39,6 +39,9 @@ enum MediaDurationProbe {
 
     private static func readDuration(path: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Double? {
         guard !interrupt.shouldAbort else { return nil }
+        if HLSInput.applies(to: path) {
+            return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+        }
 
         var formatCtx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
         guard let allocatedCtx = formatCtx else { return nil }
@@ -60,6 +63,12 @@ enum MediaDurationProbe {
         // On failure avformat_open_input frees the context itself.
         let ret = avformat_open_input(&formatCtx, path, nil, &options)
         guard ret >= 0, let ctx = formatCtx else {
+            // A playlist under a name that tells none (FFmpeg has no HLS demuxer).
+            if ret == MediaDemuxer.averrorInvalidData, isNetwork,
+                HLSInput.sniffsAsPlaylist(path, headers: headers, interrupt: interrupt)
+            {
+                return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+            }
             AppLog.debug(
                 .playlist, "Duration probe could not open '\(path)': \(MediaDemuxer.ffmpegErrorDescription(ret))")
             return nil
@@ -68,6 +77,12 @@ enum MediaDurationProbe {
             avformat_close_input(&formatCtx)
         }
 
+        // Opened as text (`tty` takes `.txt`): a playlist under that name.
+        if isNetwork, FFmpegInput.isTextFormat(ctx),
+            HLSInput.sniffsAsPlaylist(path, headers: headers, interrupt: interrupt)
+        {
+            return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+        }
         if let duration = headerDuration(ctx) {
             return duration
         }

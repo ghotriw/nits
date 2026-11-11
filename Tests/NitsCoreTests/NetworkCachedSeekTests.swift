@@ -557,8 +557,8 @@ struct NetworkCachedSeekTests {
     // MARK: - A discontinuity (EXT-X-DISCONTINUITY)
 
     /// Opens the two segments of `hlsDiscontinuity` (4 s and 8 s) joined into one MPEG-TS file, whose timestamps go back
-    /// to the start where the second begins: the case of a break the timeline patch of the HLS demuxer does not cover
-    /// (it moves HLS segments only). With `waitForBreak` the read-ahead (given `seconds` ahead of what is taken) goes on
+    /// to the start where the second begins: the case of a break the client's offsets per run do not cover
+    /// (they move HLS segments only). With `waitForBreak` the read-ahead (given `seconds` ahead of what is taken) goes on
     /// until it has crossed the break, nothing taken; otherwise it stays that near the start until packets are taken.
     private static func openDiscontinuity(seconds: Double, waitForBreak: Bool) throws
         -> (demuxer: MediaDemuxer, server: TestHTTPServer)?

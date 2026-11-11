@@ -5,22 +5,6 @@ import Testing
 
 @testable import NitsCore
 
-/// Whether the FFmpeg linked is the one built by `scripts/setup_dependencies.sh`, which carries our patch of the HLS
-/// demuxer (`scripts/patches/ffmpeg-hls-live-seek.patch`). Another (Homebrew's fallback) tells no live window.
-enum BundledFFmpeg {
-    static let isLinked: Bool = {
-        let version: @convention(c) () -> UInt32 = avformat_version
-        var info = Dl_info()
-        guard dladdr(unsafeBitCast(version, to: UnsafeRawPointer.self), &info) != 0, let name = info.dli_fname else {
-            return false
-        }
-        return String(cString: name).contains("/.build/dependencies/")
-    }()
-}
-
-private let needsBundledFFmpeg: ConditionTrait = .enabled(
-    if: BundledFFmpeg.isLinked, "needs the bundled FFmpeg with the live HLS patch")
-
 /// The window of a live stream: what `LiveStream` makes of it, and what the demuxer tells of a playlist that slides.
 /// Serialized: the demuxer tests below block a thread of the cooperative pool each while FFmpeg reads from a test server,
 /// and a run of the HTTP suites together has no thread left for the servers once enough of them do (every thread blocked
@@ -217,8 +201,7 @@ struct LiveStreamTests {
     }
 
     @Test(
-        "A playlist that slides is live: no duration, a window as long as its segments", .hostDependent,
-        needsBundledFFmpeg)
+        "A playlist that slides is live: no duration, a window as long as its segments", .hostDependent)
     func demuxerTellsTheWindow() throws {
         guard let server = try Self.liveServer() else { return }
         defer { server.stop() }
@@ -240,7 +223,7 @@ struct LiveStreamTests {
         #expect(demuxer.durationSeconds > 30)
     }
 
-    @Test("The window moves as the playlist does, and a seek in it lands there", .hostDependent, needsBundledFFmpeg)
+    @Test("The window moves as the playlist does, and a seek in it lands there", .hostDependent)
     func windowSlidesAndSeeks() throws {
         guard let server = try Self.liveServer(secondsPerSegment: 0.5) else { return }
         defer { server.stop() }
@@ -274,7 +257,7 @@ struct LiveStreamTests {
 /// of its own: it is `async`, and with a pool of one thread (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) it waits for the
 /// thread behind the tests of those that sleep, its clock going on: only a suite that is serialized does not overlap them.
 extension LiveStreamPlaylistTests {
-    @Test("A live stream starts at its edge, and seeks stay within its window", .hostDependent, needsBundledFFmpeg)
+    @Test("A live stream starts at its edge, and seeks stay within its window", .hostDependent)
     @MainActor
     func startsAtEdgeAndSeeksInWindow() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
@@ -370,8 +353,7 @@ struct LiveStreamPlaylistTests {
 
     @Test(
         "A master playlist whose variant playing is not the first: the window slides and a seek lands in it",
-        .hostDependent,
-        needsBundledFFmpeg)
+        .hostDependent)
     func variantPlayingIsNotTheFirst() throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
@@ -400,7 +382,7 @@ struct LiveStreamPlaylistTests {
         #expect(abs(landed - target) <= 2.5, "asked \(target), landed \(landed) in \(window)")
     }
 
-    @Test("A playlist that ends leaves its last window, marked ended", .hostDependent, needsBundledFFmpeg)
+    @Test("A playlist that ends leaves its last window, marked ended", .hostDependent)
     func endedPlaylistKeepsItsWindow() throws {
         guard let server = try Self.server(secondsPerSegment: 0.2, endsAfter: 2) else { return }
         defer { server.stop() }
@@ -452,8 +434,7 @@ struct LiveStreamPlaylistTests {
 
 extension LiveStreamPlaylistTests {
     @Test(
-        "A variant switch of a live stream leaves it without a duration, and its window moving", .hostDependent,
-        needsBundledFFmpeg)
+        "A variant switch of a live stream leaves it without a duration, and its window moving", .hostDependent)
     func variantSwitchKeepsNoDuration() throws {
         guard let server = try Self.server(windowCount: 8, secondsPerSegment: 0.5) else { return }
         defer { server.stop() }
@@ -597,8 +578,7 @@ extension LiveStreamTests {
 
 extension LiveStreamPlaylistTests {
     @Test(
-        "A seek does not wait for the read that waits at a stalled edge", .hostDependent,
-        needsBundledFFmpeg)
+        "A seek does not wait for the read that waits at a stalled edge", .hostDependent)
     func seekDoesNotWaitAtAStalledEdge() throws {
         // A playlist that stands: the read-ahead reaches its end and waits there for a segment that never comes.
         guard let server = try Self.server(windowCount: 5, secondsPerSegment: 10_000) else { return }
@@ -625,8 +605,7 @@ extension LiveStreamPlaylistTests {
 
 extension LiveStreamPlaylistTests {
     @Test(
-        "A pause longer than two windows leaves the window following the playlist, and seeks in it", .hostDependent,
-        needsBundledFFmpeg)
+        "A pause longer than two windows leaves the window following the playlist, and seeks in it", .hostDependent)
     func windowFollowsThePlaylistAfterALongPause() throws {
         // Two segments of 2 s listed, one more every 2 s: the playlist moves as fast as the clock, as a live one does.
         guard let server = try Self.server(windowCount: 2, secondsPerSegment: 2) else { return }
@@ -660,7 +639,7 @@ extension LiveStreamPlaylistTests {
 extension LiveStreamPlaylistTests {
     @Test(
         "Variants numbered from different bases leave the window following the clock, not jumping by the difference",
-        .hostDependent, needsBundledFFmpeg,
+        .hostDependent,
         arguments: [(first: 0, second: 500_000), (first: 500_000, second: 0)])
     func variantsOfDifferentBases(bases: (first: Int, second: Int)) throws {
         // One variant is numbered from 500000, the other from 0: whichever the first timestamp came from, the one played

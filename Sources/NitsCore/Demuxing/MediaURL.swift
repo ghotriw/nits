@@ -22,8 +22,7 @@ public enum MediaURL {
     }
 
     /// A saved HLS manifest whose media is on the network (`path` a file path, as `normalizeMediaPath`
-    /// leaves it). FFmpeg opens its segments with the I/O options of the manifest's own input, so it is opened with the
-    /// network options too, and read ahead as a network source. Only the file's own text is looked at: a master
+    /// leaves it). It is read ahead as a network source. Only the file's own text is looked at: a master
     /// playlist of saved media playlists, whose segments are on the network, isn't recognised.
     public static func isHLSManifestWithRemoteMedia(atPath path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
@@ -60,8 +59,7 @@ public enum MediaURL {
 
     /// Adds the options `path` is opened with when it is a network source (`isNetworkSource`), and tells whether it
     /// is: the network options, and for a saved manifest the HTTP protocols too. A file is allowed the file
-    /// protocol's whitelist (file, crypto, data), so its segments on the network would be refused; the HLS demuxer
-    /// still opens nothing but files and HTTP(S) from it.
+    /// protocol's whitelist (file, crypto, data), so its segments on the network would be refused.
     static func applySourceOptions(
         _ options: inout OpaquePointer?, path: String, headers: [String: String], httpRequestSize: Int? = nil
     ) -> Bool {
@@ -124,11 +122,6 @@ public enum MediaURL {
         for (name, value) in requestOptions(headers: headers) {
             _ = av_dict_set(&options, name, value, 0)
         }
-        // HLS: one segment download at a time. By default FFmpeg opens the next segment while it reads one, to hide
-        // the request's latency; over HTTP/1.1 its body comes with the answer and shares the link, so the segment
-        // read, needed first, comes in at half the rate (`NetworkTransferMeter`), and after a variant switch the
-        // prefetched one is downloaded for nothing. Other formats leave the option unused.
-        _ = av_dict_set(&options, "http_multiple", "0", 0)
     }
 
     /// Checks if a network URL points to a local area network (LAN) / private network address

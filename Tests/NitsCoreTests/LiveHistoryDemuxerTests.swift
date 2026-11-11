@@ -6,8 +6,8 @@ import Testing
 
 @testable import NitsCore
 
-/// Whether the FFmpeg linked has `scripts/patches/ffmpeg-dashdec-interrupt.patch` (the build says so in its version, as
-/// for `nits-hls-timeline`): without it a DASH demuxer that is interrupted while it reads can go round at full speed for as
+/// Whether the FFmpeg linked has `scripts/patches/ffmpeg-dashdec-interrupt.patch` (the build says so in its version,
+/// `--extra-version` in `build_dependencies.sh`): without it a DASH demuxer that is interrupted while it reads can go round at full speed for as
 /// long as the interrupt lasts. Only the test that seeks hundreds of times needs it to end; the others hold on any build.
 let hasDashInterruptPatch = String(cString: av_version_info()).contains("nits-dash-interrupt")
 
@@ -70,7 +70,7 @@ struct LiveHistoryDemuxerTests {
         while demuxer.nextVideoSample() != nil { pictures += 1 }
         #expect(pictures == 25 * (Self.count - Self.first))
         // Read to the end of the manifest, the window stays the resolver's: the format context's would say the playlist
-        // ended (no `hls_live` tag).
+        // ended.
         #expect(demuxer.liveWindow == window)
         #expect(demuxer.liveReport?.window.hasEnded == false)
     }

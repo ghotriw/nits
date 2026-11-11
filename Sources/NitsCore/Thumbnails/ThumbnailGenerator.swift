@@ -61,56 +61,31 @@ public final class ThumbnailGenerator: @unchecked Sendable {
     ) -> [ThumbnailItem] {
         guard !isCancelled else { return [] }
 
-        var formatCtx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
-        guard let fmtCtx = formatCtx else { return [] }
-
-        // Setup interrupt callback to abort hung network requests or cancellation cleanly.
-        // `self` owns the token and outlives `fmtCtx`, which is closed before this method returns.
-        cancelToken.install(on: fmtCtx)
-
-        var avOptions: OpaquePointer? = nil
-        defer {
-            if avOptions != nil {
-                av_dict_free(&avOptions)
+        let cleanPath = MediaURL.normalizeMediaPath(path)
+        // A finished HLS stream goes through Nits' own client: FFmpeg has no HLS demuxer left to open it.
+        var opened: ThumbnailSource?
+        if HLSInput.applies(to: cleanPath) {
+            opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
+        } else {
+            var failure: Int32 = 0
+            opened = ThumbnailSource.openFFmpeg(
+                path: path, headers: headers, httpRequestSize: httpRequestSize, interrupt: cancelToken,
+                failureCode: &failure)
+            // A playlist under a name that tells none: FFmpeg could not open it, or took it for text.
+            let mayBePlaylist = opened.map(\.isTextFormat) ?? (failure == MediaDemuxer.averrorInvalidData)
+            if mayBePlaylist, !isCancelled,
+                HLSInput.sniffsAsPlaylist(cleanPath, headers: headers, interrupt: cancelToken)
+            {
+                opened?.close()
+                opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
             }
         }
-
-        if MediaURL.isNetworkURL(path) {
-            MediaURL.applyNetworkOptions(&avOptions, headers: headers, httpRequestSize: httpRequestSize)
-        }
-
-        let cleanPath = MediaURL.normalizeMediaPath(path)
-
-        var ret = avformat_open_input(&formatCtx, cleanPath, nil, &avOptions)
-        guard ret >= 0, let activeFormatCtx = formatCtx else {
-            let errorMsg = MediaDemuxer.ffmpegErrorDescription(ret)
-            AppLog.error(
-                .engine,
-                "ThumbnailGenerator: avformat_open_input failed with code \(ret) (\(errorMsg)) for '\(cleanPath)'")
-            return []
-        }
-        defer {
-            var tempCtx: UnsafeMutablePointer<AVFormatContext>? = activeFormatCtx
-            avformat_close_input(&tempCtx)
-        }
-
+        guard let source = opened else { return [] }
+        defer { source.close() }
         guard !isCancelled else { return [] }
 
-        ret = avformat_find_stream_info(activeFormatCtx, nil)
-        guard ret >= 0 else {
-            let errorMsg = MediaDemuxer.ffmpegErrorDescription(ret)
-            AppLog.error(.engine, "ThumbnailGenerator: avformat_find_stream_info failed with code \(ret) (\(errorMsg))")
-            return []
-        }
-
-        // Find best video stream
-        let streamIndex = av_find_best_stream(activeFormatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
-        guard streamIndex >= 0 else {
-            AppLog.error(.engine, "ThumbnailGenerator: No video stream found in '\(cleanPath)'")
-            return []
-        }
-
-        let stream = activeFormatCtx.pointee.streams[Int(streamIndex)]!
+        let stream = source.stream
+        let streamIndex = source.streamIndex
         let codecpar = stream.pointee.codecpar!
         let timebase = stream.pointee.time_base
         guard timebase.den > 0 else {
@@ -132,7 +107,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             avcodec_free_context(&tempCodecCtx)
         }
 
-        ret = avcodec_parameters_to_context(codecCtx, codecpar)
+        var ret = avcodec_parameters_to_context(codecCtx, codecpar)
         guard ret >= 0 else {
             AppLog.error(.engine, "ThumbnailGenerator: avcodec_parameters_to_context failed (code \(ret))")
             return []
@@ -151,8 +126,8 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         let durationSeconds: Double = {
             if duration > 0 {
                 return duration
-            } else if activeFormatCtx.pointee.duration > 0 {
-                return Double(activeFormatCtx.pointee.duration) / Double(AV_TIME_BASE)
+            } else if source.containerDuration > 0 {
+                return source.containerDuration
             } else if stream.pointee.duration > 0 {
                 return Double(stream.pointee.duration) * Double(timebase.num) / Double(timebase.den)
             }
@@ -172,7 +147,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         }
 
         // Anamorphic video: the scaler stretches samples to the display aspect ratio.
-        let sampleAspect = av_guess_sample_aspect_ratio(activeFormatCtx, stream, nil)
+        let sampleAspect = source.sampleAspect
         let pixelAspect = sampleAspect.num > 0 && sampleAspect.den > 0 ? av_q2d(sampleAspect) : 1
         let thumbSize = Self.thumbnailSize(displayAspect: Double(videoWidth) * pixelAspect / Double(videoHeight))
         guard
@@ -196,8 +171,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
 
         var seenKeyPackets = Set<Int64>()
         // Same zero-based timeline as MediaDemuxer (MPEG-TS / MPEG-PS start wherever the source clock was).
-        let timelineOrigin = FFmpegInput.timelineOrigin(of: activeFormatCtx)
-        let timelineOffset = FFmpegInput.timelineOffset(timelineOrigin, in: timebase)
+        let timelineOffset = source.timelineOffset
         var seenFramePts = Set<Int64>()
         let dolbyVisionProfile = Self.dolbyVisionProfile(codecpar)
         let staticLuminance = Self.staticLuminance(codecpar)
@@ -257,7 +231,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             var videoPacketsRead = 0
             var totalPacketsRead = 0
             while videoPacketsRead < maxVideoPackets && totalPacketsRead < 300 && !isCancelled
-                && av_read_frame(activeFormatCtx, packet) >= 0
+                && source.read(packet) >= 0
             {
                 defer { av_packet_unref(packet) }
                 totalPacketsRead += 1
@@ -298,14 +272,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             guard !isCancelled else { break }
 
             let targetTime = Double(i) * interval
-            let targetPts = Int64(round(targetTime * Double(timebase.den) / Double(timebase.num))) + timelineOffset
-
-            // Seek backward to keyframe (try stream-level seek first, then format-level)
-            let seekRet = av_seek_frame(activeFormatCtx, streamIndex, targetPts, AVSEEK_FLAG_BACKWARD)
-            if seekRet < 0 {
-                let targetPtsAV = Int64(round(targetTime * Double(AV_TIME_BASE))) + timelineOrigin
-                _ = av_seek_frame(activeFormatCtx, -1, targetPtsAV, AVSEEK_FLAG_BACKWARD)
-            }
+            source.seek(toSeconds: targetTime)
             avcodec_flush_buffers(codecCtx)
             hdrMetadataByPts.removeAll(keepingCapacity: true)
 
@@ -325,7 +292,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
 
         // Fallback: If seeking produced 0 thumbnails, decode the first frame linearly from start
         if allThumbnails.isEmpty && !isCancelled {
-            _ = av_seek_frame(activeFormatCtx, -1, 0, AVSEEK_FLAG_BACKWARD)
+            source.seekToBeginning()
             avcodec_flush_buffers(codecCtx)
             hdrMetadataByPts.removeAll()
             if let item = decodeFrameAfterSeek(fallbackTime: 0, keyframeShortcut: false, maxVideoPackets: 300) {

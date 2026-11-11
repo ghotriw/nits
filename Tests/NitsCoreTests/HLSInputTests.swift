@@ -303,6 +303,122 @@ struct HLSInputTests {
         #expect(cues.contains { abs($0.pts - 3.0) < 0.15 }, "\(cues.map(\.pts))")
     }
 
+    // MARK: Where the playlist is
+
+    @Test("A saved playlist is read from its directory: the file is the master, its segments files")
+    func readsSavedPlaylist() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        let path = stand.directory.appendingPathComponent("master.m3u8").path
+        #expect(HLSInput.applies(to: path))
+        let input = try #require(HLSInput(url: path, headers: [:], interrupt: FFmpegInterrupt()))
+        #expect(!input.isNetworkSource)
+        #expect(input.network == nil)
+        #expect(abs(input.durationSeconds - 6) < 0.5)
+        let (packets, code) = Self.drain(input)
+        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(packets.filter(\.isVideo).count > 100)
+    }
+
+    @Test("The length of a finished stream comes from its playlists, a live one has none")
+    func finishedDuration() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        _ = Self.liveStand(stand) { _ in (2, false) }
+        let interrupt = FFmpegInterrupt()
+        let vod = HLSInput.finishedDuration(of: stand.server.url("master.m3u8"), headers: [:], interrupt: interrupt)
+        #expect(abs((vod ?? 0) - 6) < 0.5)
+        let saved = stand.directory.appendingPathComponent("master.m3u8").path
+        #expect(abs((HLSInput.finishedDuration(of: saved, headers: [:], interrupt: interrupt) ?? 0) - 6) < 0.5)
+        #expect(HLSInput.finishedDuration(of: stand.server.url("live.m3u8"), headers: [:], interrupt: interrupt) == nil)
+    }
+
+    @Test("Thumbnails read the cheapest variant of a finished stream, seek by time, and refuse a live one")
+    func thumbnailSource() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        _ = Self.liveStand(stand) { _ in (2, false) }
+        let interrupt = FFmpegInterrupt()
+        #expect(ThumbnailSource.openHLS(url: stand.server.url("live.m3u8"), headers: [:], interrupt: interrupt) == nil)
+
+        let source = try #require(
+            ThumbnailSource.openHLS(url: stand.server.url("master.m3u8"), headers: [:], interrupt: interrupt))
+        defer { source.close() }
+        #expect(abs(source.containerDuration - 6) < 0.5)
+        #expect(source.timelineOffset == 0)
+        let packet = av_packet_alloc()!
+        defer {
+            var optional: UnsafeMutablePointer<AVPacket>? = packet
+            av_packet_free(&optional)
+        }
+        for target in [4.0, 1.0, 0.0] {
+            source.seek(toSeconds: target)
+            var first: Double?
+            while first == nil, source.read(packet) >= 0 {
+                defer { av_packet_unref(packet) }
+                guard packet.pointee.stream_index == source.streamIndex else { continue }
+                let base = source.stream.pointee.time_base
+                first = Double(packet.pointee.pts) * Double(base.num) / Double(base.den)
+                #expect(packet.pointee.flags & AV_PKT_FLAG_KEY != 0)
+            }
+            let landed = try #require(first)
+            #expect(landed <= target + 0.01 && landed > target - 3.1, "\(target) s landed at \(landed) s")
+        }
+        // The opening probes the start of every variant; only the cheapest is read on.
+        let segments = stand.server.requests.map(\.path).filter { $0.hasSuffix(".ts") }
+        #expect(Set(segments.filter { $0.hasPrefix("v1_") }).isSubset(of: ["v1_000.ts"]), "\(segments)")
+        #expect(segments.contains("v0_002.ts"))
+    }
+
+    @Test("A playlist under a name that tells none plays: FFmpeg fails on it, or takes it for text (.txt, tty)")
+    func playsPlaylistsUnderOtherNames() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        let playlist = try Data(contentsOf: stand.directory.appendingPathComponent("master.m3u8"))
+        for name in ["list.php", "list.txt", "stream"] {
+            stand.server.setResponder(forPath: name) { playlist }
+            let demuxer = try #require(MediaDemuxer(url: stand.server.url(name)), Comment(rawValue: name))
+            #expect(demuxer.variants.count == 2, "\(name)")
+            #expect(demuxer.nextVideoSample() != nil, "\(name)")
+        }
+    }
+
+    @Test("A plain track list named .m3u8 is not an HLS manifest")
+    func trackListIsNotHLS() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "NitsTrackList-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let list = directory.appendingPathComponent("tracks.m3u8")
+        try "#EXTM3U\n#EXTINF:10,Song\nsong.mp3\n".write(to: list, atomically: true, encoding: .utf8)
+        #expect(!HLSInput.applies(to: list.path))
+    }
+
+    @Test("A playlist served over HTTP(S) never reads the disk, whatever it lists")
+    func remotePlaylistDoesNotReadFiles() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        let file = stand.directory.appendingPathComponent("master.m3u8")
+        let listing = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\n\(file.absoluteString)\n#EXT-X-ENDLIST\n"
+        stand.server.setResponder(forPath: "escape.m3u8") { Data(listing.utf8) }
+        #expect(HLSInput(url: stand.server.url("escape.m3u8"), headers: [:], interrupt: FFmpegInterrupt()) == nil)
+    }
+
+    @Test("An address without an extension is a playlist when its first bytes say so")
+    func sniffsPlaylistsWithoutExtension() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        let playlist = try Data(contentsOf: stand.directory.appendingPathComponent("master.m3u8"))
+        stand.server.setResponder(forPath: "stream") { playlist }
+        stand.server.setResponder(forPath: "radio") { Data("ID3\u{3}\u{0}binary".utf8) }
+        let interrupt = FFmpegInterrupt()
+        #expect(HLSInput.sniffsAsPlaylist(stand.server.url("stream"), headers: [:], interrupt: interrupt))
+        #expect(!HLSInput.sniffsAsPlaylist(stand.server.url("radio"), headers: [:], interrupt: interrupt))
+        // Whatever the name: a playlist under another one is found by its bytes.
+        stand.server.setResponder(forPath: "list.php") { playlist }
+        #expect(HLSInput.sniffsAsPlaylist(stand.server.url("list.php"), headers: [:], interrupt: interrupt))
+    }
+
     // MARK: Seeking
 
     @Test("A seek starts at the segment that holds the target; a forward seek past the end fails")

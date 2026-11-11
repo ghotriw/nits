@@ -6,12 +6,10 @@ import os
 
 @testable import NitsCore
 
-/// A live HLS stream with breaks (advertisement splices): the window slides, and `ffmpeg-hls-timeline.patch` has to put
-/// the segments on one timeline while `ffmpeg-hls-live-seek.patch` moves the window. Serialized for the same reason as
+/// A live HLS stream with breaks (advertisement splices): the window slides, and the client has to put the segments on
+/// one timeline while it moves the window. Serialized for the same reason as
 /// `LiveStreamTests`.
-@Suite(
-    "Live HLS with discontinuities", .serialized, .hostDependent, .networkServer,
-    .enabled(if: hasHLSTimelinePatch, "needs the bundled FFmpeg's patches"))
+@Suite("Live HLS with discontinuities", .serialized, .hostDependent, .networkServer)
 struct HLSLiveDiscontinuityTests {
     /// What the segments of the stream are.
     enum Kind: CaseIterable, CustomTestStringConvertible {
@@ -75,7 +73,7 @@ struct HLSLiveDiscontinuityTests {
     /// its last answer, `firsts` the number of the first segment of every answer.
     ///
     /// A segment lasts 4 s: a window that slides faster than that moves on faster than the time goes, and a read that
-    /// falls behind it (a full run's load) finds segments expired, which FFmpeg skips. Only a test of that skip slides it
+    /// falls behind it (a full run's load) finds segments expired, which the client skips. Only a test of that skip slides it
     /// faster. With `pinnedFirst` the window does not slide with the time: it starts at the number the test sets there.
     private static func liveServer(
         _ kind: Kind, windowCount: Int, secondsPerSegment: Double, firstAtOpen: Int,
@@ -189,10 +187,10 @@ struct HLSLiveDiscontinuityTests {
 
     @Test(
         "Segments that expired while the read was behind are skipped, and what follows is where the playlist puts it",
-        .enabled(if: hasHLSSkipPatch, "needs the timeline patch's skip of expired segments"), arguments: Setup.all)
+        arguments: Setup.all)
     func expiredSegmentsKeepTheTimeline(_ setup: Setup) throws {
         // Each segment takes 1.2 s to come while the playlist slides a segment a second: at its next load (a segment's
-        // length after the last) the read is behind the window, and FFmpeg skips to the window's first segment. That one
+        // length after the last) the read is behind the window, and the client skips to the window's first segment. That one
         // has no EXT-X-DISCONTINUITY before it (a playlist lists none before its first segment), and its timestamps used
         // to keep the offset of the segment read before: 20 s on instead of 8, or 1011 s back for an advertisement's.
         let firsts = OSAllocatedUnfairLock<[Int]>(initialState: [])
@@ -227,7 +225,7 @@ struct HLSLiveDiscontinuityTests {
         }
         let skip = try #require(skippedAt, "No segment was skipped in \(times.count) pictures")
 
-        // The timeline's 0 is the start of number `firstAtOpen`, and a segment lasts 4 s. FFmpeg skips at the first load
+        // The timeline's 0 is the start of number `firstAtOpen`, and a segment lasts 4 s. the client skips at the first load
         // of the playlist whose window starts after the segment it is to read next, the one after the picture before the
         // skip (whose end is the next whole segment), and goes on with that window's first segment: no earlier window
         // started after it (FFmpeg would have skipped then), so it is the earliest such start the server answered.
@@ -255,7 +253,6 @@ struct HLSLiveDiscontinuityTests {
 
     @Test(
         "A seek whose segment expired before it was read lands where the playlist puts the segment read instead",
-        .enabled(if: hasHLSSkipPatch, "needs the timeline patch's skip of expired segments"),
         arguments: [Kind.restart, .ssai])
     func expiredSeekTarget(_ kind: Kind) throws {
         // The window is moved by the test, not the time: it starts at 9 (an advertisement's, or a restart's, timestamps

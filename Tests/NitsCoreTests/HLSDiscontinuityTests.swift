@@ -7,18 +7,7 @@ import os
 
 @testable import NitsCore
 
-/// Whether FFmpeg is the bundled build with `scripts/patches/ffmpeg-hls-timeline.patch` (its version string says so, see
-/// `--extra-version` in `build_dependencies.sh`): on a Homebrew FFmpeg the timestamps of an HLS stream that restarts at a
-/// discontinuity stay as they are.
-let hasHLSTimelinePatch = String(cString: av_version_info()).contains("nits-hls-timeline")
-
-/// Whether the timeline patch also places what follows a skip of expired live segments (`nits-hls-skip`): a build of the
-/// patch from before it has the same `nits-hls-timeline`.
-let hasHLSSkipPatch = String(cString: av_version_info()).contains("nits-hls-skip")
-
-@Suite(
-    "HLS discontinuities (bundled FFmpeg's timeline patch)",
-    .serialized, .hostDependent, .networkServer, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
+@Suite("HLS discontinuities", .serialized, .hostDependent, .networkServer)
 struct HLSDiscontinuityTests {
     private static func open(_ preset: SyntheticTestMediaFactory.Preset) throws -> (
         demuxer: MediaDemuxer, server: TestHTTPServer
@@ -323,9 +312,7 @@ struct HLSDiscontinuityTests {
     }
 }
 
-@Suite(
-    "HLS discontinuities in fragmented MP4 (a new EXT-X-MAP)",
-    .serialized, .hostDependent, .networkServer, .enabled(if: hasHLSTimelinePatch, "needs ffmpeg-hls-timeline.patch"))
+@Suite("HLS discontinuities in fragmented MP4 (a new EXT-X-MAP)", .serialized, .hostDependent, .networkServer)
 struct HLSDiscontinuityFMP4Tests {
     @Test("The pictures of a segment with another init section play, drawn at their size", .realtimePlayback)
     @MainActor

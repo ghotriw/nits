@@ -116,7 +116,8 @@ extension SubtitleController {
         of demuxer: MediaDemuxer, slot: MediaDemuxer.SubtitleSlot, around time: Double, streamIndex: Int,
         isNetwork: Bool
     ) -> (range: ClosedRange<Double>, starts: [Double]?)? {
-        guard let range = demuxer.subtitleWindow(around: time, of: slot) else { return nil }
+        // An HLS playlist is no file for a second demuxer to open (its renditions come from playback's own reads).
+        guard demuxer.canOpenAsFile, let range = demuxer.subtitleWindow(around: time, of: slot) else { return nil }
         let starts = demuxer.indexedSubtitleStarts(of: streamIndex, in: range)
         // Until the index is read, the read that reads it decides.
         if isNetwork, starts == nil, !demuxer.needsSubtitleIndex { return nil }

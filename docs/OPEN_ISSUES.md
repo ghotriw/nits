@@ -167,13 +167,13 @@ Accepted for now, noted for later.
   instead of down. It predates the packet cache. A plain reset does not do: `consumedSeconds` stays on the old
   timeline while it plays out. Check before ladders, on a stream with ad insertions; also how the engine (clock,
   position, frame queue) takes the break at all, which the demuxer-level tests do not cover.
-  For HLS the timeline patch (next entry) removes the break, and with it this; it stays for what the patch does not
+  For HLS the client's offsets per run (next entry) remove the break, and with it this; it stays for what they do not
   reach (an MPEG-TS file with a reset in it, a playlist with the discontinuity left out).
 - **A stream with breaks gets no cache after the end of its input.** The end is trusted only when what was read reaches
   the container's duration (`cachedFrontierSeconds`), measured on the last timeline; with a break it falls short of the
   playlist's total, so the seek reads again. Safe (a slow seek), and only after the end of the input.
-- **HLS `EXT-X-DISCONTINUITY`: what `ffmpeg-hls-timeline.patch` leaves.** The patch moves the timestamps of the segments
-  after a discontinuity onto the playlist's timeline ("Discontinuities in HLS" in `docs/ARCHITECTURE.md`). Before it, on
+- **HLS `EXT-X-DISCONTINUITY`: what the client leaves.** The client (until 2026-11-11 a patch of FFmpeg's HLS demuxer)
+  moves the timestamps of the segments after a discontinuity onto the playlist's timeline ("Discontinuities in HLS" in `docs/ARCHITECTURE.md`). Before it, on
   the engine (2026-11-06, also on `424a8ac`): the second segment of `hlsDiscontinuity` dropped ~89 frames and the
   picture stood at 7.99 s for the last four of 12 s; PlayOn's test stream (`s3.amazonaws.com/playon-test-videos/
   discont_test_new/discont_test.m3u8`) dropped 697 frames and stood at 8.0 s for a minute; a seek past the first break
@@ -201,7 +201,7 @@ Accepted for now, noted for later.
     (timing in the VUI), and made a session each time before (3 in 40 s, 1 now).
   - fMP4/CMAF with a new `EXT-X-MAP` at the break (2026-11-06): FFmpeg's mov sub-demuxer skips the later `moov`, so the
     stream kept the first section's `avcC` and the second stretch (640x360 after 320x180) stood at the last picture;
-    `ffmpeg-hls-update-init-extradata.patch` passes the new section's extradata on a key frame, and the size follows
+    the client (before it, `ffmpeg-hls-update-init-extradata.patch`) passes the new section's extradata on a key frame, and the size follows
     (`HLSDiscontinuityFMP4Tests`, also after a seek back into the first stretch). Only H.264 and HEVC (the sets come from
     `NEW_EXTRADATA` in `refreshVideoFormat`); AV1 and VP9 keep the open's `av1C` / `vpcC`; audio extradata that changes
     with the section (another AAC configuration) is passed on by the patch but not taken by the audio path. Streams
@@ -313,7 +313,7 @@ Accepted for now, noted for later.
     timestamp, which is small when timestamps restart), and a seek into that part stood the clock (`currentFramePTS >= 0`
     means "a picture is there" throughout the engine). `FFmpegInput.timelineOrigin(of:)` now takes the start of an
     HLS stream for the origin, negative or not (other formats flagged `AVFMT_TS_DISCONT` keep a positive one or none), so it starts at 0 as it opens and everything after is positive.
-    An EVENT playlist (no `hls_live` tag, so `isLive` is false and it has a duration) had the same fault, its first
+    An EVENT playlist (`isLive` is false and it has a duration) had the same fault, its first
     picture at -2.5 s; it starts at 0 now (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks (single
     variant only; see Ladders), a stream whose timestamps jump on without a break, an advertisement on a timeline of its
     own at a splice shorter than the 1 s threshold, audio of a rendition with its own live playlist, a live stream of
@@ -331,13 +331,13 @@ Accepted for now, noted for later.
     frames dropped for the last 30 of 90 s; with it the picture follows the clock to the end, nothing dropped (engine,
     2026-11-06; audio not looked at). The content ids are in `.ref/exoplayer/demos/main/src/main/assets/media.exolist.json`;
     the `tears-of-steel` example is out of date (its content segments answer 404).
-- **Advertisement segments whose streams differ from the first segment's are dropped by FFmpeg's HLS demuxer.** Mux's
-  Deltatre DAI stream (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`): the ads (720x408, `METHOD=NONE`
-  among AES-128 segments) are MPEG-TS with their own PMT; the subdemuxer reports `Packet corrupt (stream = 3 ...)` for them
-  and no packet of an advertisement reaches the player (2150 video packets in all, the 180 s of ads missing; the same
-  with `ffprobe`), so the picture stands at 36.2 s whatever the timeline. Not looked into: probably the streams the
-  subdemuxer adds after the header, which `hls.c` does not map (`n_main_streams`). With a change of the picture's
-  size as well (above), the next to take after the timeline.
+- **Advertisement segments on streams of their own: done by the client, not on every kind of stream.** Mux's Deltatre
+  DAI stream (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`: ads of 720x408, `METHOD=NONE` among
+  AES-128 segments, MPEG-TS with their own PMT) lost the 180 s of ads to FFmpeg's HLS demuxer (the picture stood at
+  36.2 s). Through `HLSInput` (2026-11-11) every run of segments has a demuxer of its own, and the stream plays to its
+  end: 6651 pictures, 266 s, the position never going back. Not covered: a run whose streams differ in number or type
+  from the first run's (they are mapped by order and type, as the run before's), and the picture's size change in
+  a stream whose parameter sets are not in band.
 - **The Metal shader's colour is set once per load.** `ToneMapController.mediaDidLoad` sets the matrix, primaries,
   transfer, bit depth and range (`ShaderColorimetry`) and the static peak; an HLS variant switch rereads the stream's
   colour (`configureVideoStream`) but not into the uniforms, so a ladder mixing `VIDEO-RANGE` SDR and PQ, or

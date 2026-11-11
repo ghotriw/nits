@@ -102,8 +102,8 @@ struct SyncPatternTests {
     }
 
     @Test(
-        "Across an HLS discontinuity with the sound in a rendition of its own, the flash and the clicks stay on their seconds",
-        .enabled(if: hasHLSTimelinePatch, "needs the bundled FFmpeg"))
+        "Across an HLS discontinuity with the sound in a rendition of its own, the flash and the clicks stay on their seconds"
+    )
     func acrossAnHLSBreak() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuityFlashClick) else { return }
         let url = URL(fileURLWithPath: path)

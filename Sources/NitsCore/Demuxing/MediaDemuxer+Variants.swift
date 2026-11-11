@@ -2,14 +2,15 @@ import CFFmpeg
 import CoreMedia
 import Foundation
 
-/// HLS variants. FFmpeg's HLS demuxer exposes each `EXT-X-STREAM-INF` as a program (its `BANDWIDTH` as
-/// `variant_bitrate`) and downloads the segments of every playlist with a stream not discarded.
+/// Variants of an adaptive stream. `HLSInput` lists each `EXT-X-STREAM-INF` as a candidate with streams of its own, and
+/// downloads the segments of every playlist with a stream not discarded.
 ///
-/// A switch is spliced without a seek. The new variant is enabled beside the old one; FFmpeg catches its playlist up
-/// with the read position (`AVSEEK_FLAG_ANY`, so mid-GOP), and its pictures are dropped up to its first keyframe, at
-/// T. From T on pictures come from the new variant (the old one's are dropped), with a format description of its own;
-/// queued packets keep the one they were read with. Audio of the new variant is held until the old one reaches T, then
-/// takes over from T, and the old variant is discarded: FFmpeg stops it at the end of the segment it is reading.
+/// A switch is spliced without a seek. The new variant is enabled beside the old one; the input catches its playlist up
+/// with the read position (`HLSLane.catchUp`, the segment after the picture's), and its pictures are dropped up to its
+/// first keyframe, at T. From T on pictures come from the new variant (the old one's are dropped), with a format
+/// description of its own; queued packets keep the one they were read with. Audio of the new variant is held until the
+/// old one reaches T, then takes over from T, and the old variant is discarded: the input stops it at the end of the
+/// segment it is reading.
 extension MediaDemuxer {
     struct VariantStreams {
         let video: Int?
@@ -77,9 +78,9 @@ extension MediaDemuxer {
     }
 
     /// Reads only the streams playback uses: the video, the audio track and the subtitle track selected, of the
-    /// variant read (and, during a switch, of the one switched to). FFmpeg's HLS demuxer downloads every playlist with
-    /// a stream not discarded: without this every audio rendition (languages, codecs) would be downloaded beside the
-    /// one heard, and FFmpeg discards every subtitle rendition itself on opening, so none could be selected.
+    /// variant read (and, during a switch, of the one switched to). The input downloads every playlist with a stream
+    /// not discarded: without this every audio rendition (languages, codecs) would be downloaded beside the one heard,
+    /// and every subtitle rendition with it.
     /// Behind `lock` and `queueLock`; selection on the main thread only asks for it (`streamSelectionChanged`).
     func applyStreamSelection() {
         guard let selected = selectedVariantId, let current = variantStreams[selected] else { return }
@@ -166,7 +167,7 @@ extension MediaDemuxer {
                 found
             }
         // Its top, unless the link's rate is known: a DASH ladder is read side by side while it opens, and an HLS
-        // master's prefetch may prove the link slow. Then the rung it carries, not the top (its first segment,
+        // master's opening may prove the link slow. Then the rung it carries, not the top (its first segment,
         // megabytes, downloaded before a switch could splice).
         var start = ladder.max { $0.bandwidth < $1.bandwidth } ?? best
         if let linkRate {

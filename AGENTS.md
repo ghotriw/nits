@@ -67,9 +67,9 @@ The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go th
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
 (`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: `FFmpegInput` holds it and closes the context first. An
-`AVIOContext` served by Nits (`PrefetchedInput`, an HLS opening's prefetched playlists and segment starts;
-`HTTPSessionInput`, an HLS demuxer's HTTP requests) takes a retained one, released when FFmpeg closes the input through
-`io_close2`.
+`AVIOContext` served by Nits (`HTTPSessionInput`, a DASH demuxer's HTTP requests) takes a retained one, released when
+FFmpeg closes the input through `io_close2`; the ones `HLSSegmentReader` makes for each run of segments are Nits' own and
+read through a Swift closure.
 
 So does blocking a thread, which FFmpeg's reads do by nature: `LiveSegmentGate` waits for a live stream's next segment
 inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` waits for yt-dlp and the network on a
@@ -203,9 +203,10 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
   selection never wait for the network: never call them holding `queueLock`, never take `lock` from the main thread.
   An HLS variant switch rewrites the stream description (`timebase`, `formatDescription`, `audioTimebase`, …) on the
   reading thread: once reading ahead, read it through `readingDescription`.
-  An HLS demuxer's HTTP(S) requests go through `URLSession` (`HTTPSessionTransport`), which measures each
-  request's transfer apart from its answer for adaptive bitrate; keep them one at a time (`http_multiple` off): over
-  HTTP/1.1 the next segment's body comes with its answer and halves the rate of the one read.
+  The HLS client's HTTP(S) requests go through `URLSession` (`HTTPSessionTransport`), which measures each
+  request's transfer apart from its answer for adaptive bitrate; keep them one at a time (`HLSSegmentLoader` asks for
+  the next segment only when the one read is through): over HTTP/1.1 the next segment's body comes with its answer and
+  halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
   in `docs/ARCHITECTURE.md`.
 - **A read-ahead demuxer keeps the packets it handed out** (`DemuxerPacketBuffer`, `backBytes`) so a seek inside them
@@ -219,9 +220,8 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
   timestamp going back (a discontinuity) moves `searchFloor`: nothing before it is searched, but it still plays; the
   cache refuses while the cursor is before it or the video and audio have met different numbers of breaks.
 - **A live HLS stream has a window, not a duration** (`MediaInfo.duration` stays 0). The demuxer reads the window from
-  the format context after `av_read_frame` (`publishLiveWindow`), which our patch of FFmpeg's HLS demuxer
-  (`scripts/patches/ffmpeg-hls-live-seek.patch`) keeps up to date: never from another thread, never by parsing
-  playlists. Seeks of a live stream go through `LiveStream.clamp` (`clampedSeekTarget`) and `seek` yields the input to
+  the input after `read` (`publishLiveWindow`, `HLSInput.liveWindow()`, told from its playlist model): never from
+  another thread, never by parsing playlists in the demuxer. Seeks of a live stream go through `LiveStream.clamp` (`clampedSeekTarget`) and `seek` yields the input to
   itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
   `docs/ARCHITECTURE.md`.
@@ -237,16 +237,16 @@ thread, as every FFmpeg call is), and give way to a seek or a close at once (`sh
   source decides if the stream is over: if it is, the window gets `hasEnded`; if not, the wait has no limit. Never fail a
   segment past the head to the demuxer (it skips it: a hole in time) unless the head reports it there and the server does
   not serve it, and never put a signed address in the manifest. Background: "Live streams" in `docs/ARCHITECTURE.md`.
-- **Timestamps that restart or jump at an HLS `EXT-X-DISCONTINUITY`** (ads, splices) are moved onto the playlist's
-  timeline inside the bundled FFmpeg (`scripts/patches/ffmpeg-hls-timeline.patch`): the demuxer sees one timeline, so
-  don't add offsets of your own in Nits for HLS. Tests that need the patch check the build's version string
-  (`--extra-version=nits-hls-timeline`, and `nits-hls-skip` for a skip of expired live segments) and are skipped on a
-  Homebrew FFmpeg. Background: "Discontinuities in HLS" in
-  `docs/ARCHITECTURE.md`.
+- **HLS is Nits' own client** (`Demuxing/HLS/`: `HLSPlaylist`, `HLSTimeline`, `HLSSegmentLoader`, `HLSSegmentReader`,
+  `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
+  Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
+  the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
+  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). Background: "Discontinuities
+  in HLS" in `docs/ARCHITECTURE.md`.
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
   selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
   selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only
-  FFmpeg's formats do (a format's name, `AVFMT_*` flags, DASH's quirks, `hls_live`) goes in `FFmpegInput` or a trait
+  FFmpeg's formats do (a format's name, `AVFMT_*` flags, DASH's quirks) goes in `FFmpegInput` or a trait
   of `DemuxerInputTraits`, never a check of `iformat` in the demuxer. Background: "Inputs" in `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `FFmpegInput.rebase` on another `AVFormatContext`); `DemuxerInput`'s seeks take targets on the

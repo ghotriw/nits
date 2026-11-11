@@ -5,8 +5,8 @@ import Testing
 
 @Suite("HLS segments without an extension", .serialized, .hostDependent, .networkServer)
 struct HLSSegmentExtensionTests {
-    /// Google's ad server names segments `.../videoplayback/...` with no extension: FFmpeg's HLS demuxer refuses them
-    /// unless `extension_picky` is off.
+    /// Google's ad server names segments `.../videoplayback/...` with no extension: the client takes the container
+    /// from the bytes, not the name.
     @Test("A network playlist of segments with no extension opens and plays")
     func segmentsWithoutExtension() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsDiscontinuity) else { return }

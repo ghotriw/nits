@@ -22,7 +22,7 @@ struct HLSVariantTests {
         // The other variant's audio is the same rendition again, not a second track.
         #expect(demuxer.audioTracks.count == 1)
 
-        let input = try #require(demuxer.input as? FFmpegInput)
+        let input = try #require(demuxer.input as? HLSInput)
         let read = Set([demuxer.videoStreamIndex, demuxer.audioStreamIndex])
         for index in 0..<input.streamCount {
             #expect(input.isReading(stream: index) == read.contains(index), "stream \(index)")

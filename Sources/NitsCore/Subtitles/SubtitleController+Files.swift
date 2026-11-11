@@ -354,7 +354,9 @@ extension SubtitleController {
     func documentReader(for track: SubtitleTrack) -> (@Sendable (FFmpegInterrupt) async -> SubtitleDocument?)? {
         let demuxer = host?.demuxer
         guard let url = track.externalURL else {
-            guard let path = host?.currentSourcePath, track.streamIndex >= 0 else { return nil }
+            guard let path = host?.currentSourcePath, track.streamIndex >= 0, demuxer?.canOpenAsFile != false else {
+                return nil
+            }
             let headers = host?.currentHeaders ?? [:]
             let streamIndex = track.streamIndex
             return { interrupt in

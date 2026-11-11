@@ -27,5 +27,5 @@ Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/exampl
 - `LadderABRSeek`: `fromCache=false` with `splicesBetween` > 0 is the splice rule working; the stall count includes the
   start. A seek back every 10 s of playhead leaves almost no net progress, so the network is barely used (nothing to
   adapt to): keep `NITS_MEASURE_ABR_SEEK_EVERY` at 30 or more for ABR to move.
-- `ABRStart` real stream: `prefetch=[... wait ... bodies ... window ...]` needs `HLSPlaylistPrefetcher.measuredThroughput`
-  (logs when the opening ends); `decided=` is the read position's choice, `shown=` what the picture was.
+- `ABRStart` real stream: `prefetch=[...]` is the client's log line when the opening ends (`HLS client: ... opening N kbit/s`,
+  `HLSInput.openingLinkRate`'s source); `decided=` is the read position's choice, `shown=` what the picture was.

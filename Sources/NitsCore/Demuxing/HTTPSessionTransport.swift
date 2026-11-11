@@ -2,7 +2,7 @@ import CFFmpeg
 import Foundation
 import os
 
-/// Reads an HLS demuxer's HTTP(S) inputs through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
+/// Reads the HTTP(S) inputs of Nits' HLS client (and of a DASH demuxer) through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
 /// `FFmpegIOByteCounter`). FFmpeg downloads a segment only as fast as its reads take the bytes, inside
 /// `av_read_frame`, so what the network does could only be guessed from how long reads took. Here each request is a
 /// task of its own: its answer, which `io_open` waits for (the request's latency), and its transfer, which goes on
@@ -135,7 +135,7 @@ final class HTTPSessionTransport: Sendable {
 /// take theirs: measured together, the link's busy time over every transfer, a window of an audio segment alone (half
 /// a megabyte on a connection idle since its last, which TCP starts slowly again) measured 24 Mbit/s of 300.
 ///
-/// Requests stay one at a time (`http_multiple` off, `MediaURL.applyNetworkOptions`). Asking for the next segment
+/// Requests stay one at a time (`HLSSegmentLoader`). Asking for the next segment
 /// while one is read hides its answer's wait, but over HTTP/1.1 the server sends the body with the answer: side by
 /// side, the one read, needed first, came in at half the rate (a live stream at 1.5 Mbit/s: the read-ahead empty for
 /// 7 s), and a task suspended once answered took its body all the same, into the socket's buffer.

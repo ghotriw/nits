@@ -541,6 +541,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     public internal(set) var readsAhead = false
     /// Read over the network (`MediaURL.isNetworkSource`): a URL, or a saved HLS manifest of network media.
     public var isNetworkSource: Bool { input.isNetworkSource }
+
+    /// A second demuxer can read the source by its address (`DemuxerInputTraits.opensAsFile`).
+    var canOpenAsFile: Bool { input.traits.opensAsFile }
     /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
     var streamSelectionChanged = false
     /// A subtitle rendition of an HLS stream was selected after the packets in the queues were read: it is a playlist of
@@ -591,7 +594,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
-    /// Opens `url` with FFmpeg (`FFmpegInput`).
+    /// Opens `url`: with `HLSInput` when it is an HLS playlist, else with FFmpeg (`FFmpegInput`).
     ///
     /// - Parameters:
     ///   - httpRequestSize: What a network input's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`).
@@ -607,8 +610,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     ) {
         let interrupt = interruptContext ?? InterruptContext()
         let windowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
-        // Nits' own HLS client, while it and FFmpeg's demuxer both exist (`HLSInput.isEnabled`).
-        if liveHistory == nil, HLSInput.isEnabled, HLSInput.applies(to: url) {
+        // HLS: Nits' own client (FFmpeg's HLS demuxer is not built). A playlist is known by its name; one under another
+        // name is what FFmpeg fails to open (below).
+        if liveHistory == nil, HLSInput.applies(to: url) {
             guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
@@ -619,18 +623,32 @@ public final class MediaDemuxer: @unchecked Sendable {
             return
         }
         let origin = liveHistory?.origin ?? 0
-        guard
-            let input = FFmpegInput(
-                url: url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt,
-                liveHistory: liveHistory,
-                onLiveHistoryChange: { change in
-                    windowState.withLock { state in
-                        guard let report = state else { return }
-                        state = Self.applying(change, to: report, origin: origin, now: .now)
-                    }
-                })
-        else {
-            // What the attempt started (a transport's requests, the prefetch) gives way, as the demuxer's would at its end.
+        let opened = FFmpegInput(
+            url: url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt,
+            liveHistory: liveHistory,
+            onLiveHistoryChange: { change in
+                windowState.withLock { state in
+                    guard let report = state else { return }
+                    state = Self.applying(change, to: report, origin: origin, now: .now)
+                }
+            })
+        // A playlist under a name that tells none: FFmpeg, with no HLS demuxer, took it for no format at all
+        // (`AVERROR_INVALIDDATA`), or for text (`tty`, which takes `.txt` and any small text).
+        let mayBePlaylist = opened.map(\.isTextFormat) ?? (interrupt.lastError?.code == Self.averrorInvalidData)
+        if liveHistory == nil, mayBePlaylist, HLSInput.sniffsAsPlaylist(url, headers: headers, interrupt: interrupt) {
+            // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
+            opened?.close()
+            guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
+                if interruptContext == nil { interrupt.cancel() }
+                return nil
+            }
+            self.init(
+                input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+                audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
+            return
+        }
+        guard let input = opened else {
+            // What the attempt started (a transport's requests) gives way, as the demuxer's would at its end.
             if interruptContext == nil { interrupt.cancel() }
             return nil
         }
@@ -720,6 +738,9 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         self.chapters = MediaChapter.normalized(input.chapters, duration: durationSeconds)
     }
+
+    /// `AVERROR_INVALIDDATA` (`-MKTAG('I', 'N', 'D', 'A')`): the input is of no format FFmpeg knows.
+    static let averrorInvalidData: Int32 = -0x4144_4E49
 
     /// `AVERROR_EOF` (`-MKTAG('E', 'O', 'F', ' ')`); the macro does not import into Swift.
     static let averrorEOF: Int32 = -0x2046_4F45

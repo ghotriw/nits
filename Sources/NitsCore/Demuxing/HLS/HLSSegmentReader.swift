@@ -16,8 +16,7 @@ enum HLSSegmentReaderError: Error, Equatable {
 }
 
 /// Demuxes a rendition's segments with FFmpeg's container demuxers (`mpegts`, `mov`, `aac`, `ac3`, `eac3`, `mp3`,
-/// `webvtt`), on the playlist's timeline: what FFmpeg's `hls.c` and its patch (`ffmpeg-hls-timeline.patch`) do, and
-/// nothing of the playlist's.
+/// `webvtt`), on the playlist's timeline, and nothing of the playlist's.
 ///
 /// A reader is one **run**: the segments that follow each other in the same encoding (the same init section, no
 /// discontinuity). Their bytes, the init section's first, are one stream to the container demuxer, which gets the next

@@ -1,12 +1,11 @@
 import CFFmpeg
 import Foundation
 
-/// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file, a DASH manifest, an HLS
-/// playlist (FFmpeg's HLS demuxer). See `DemuxerInput`.
+/// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file, a DASH manifest. HLS is
+/// `HLSInput`'s (FFmpeg's HLS demuxer is not built). See `DemuxerInput`.
 ///
 /// Its network requests go through `ioBytes` (`FFmpegIOByteCounter`): counted for adaptive bitrate, served by
-/// `HTTPSessionTransport` for HLS and DASH, from `HLSPlaylistPrefetcher` while an HLS master opens, and through a
-/// `LiveSegmentGate` for a live stream's history.
+/// `HTTPSessionTransport` for DASH, and through a `LiveSegmentGate` for a live stream's history.
 final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// The open context; nil once closed.
     private(set) var context: UnsafeMutablePointer<AVFormatContext>?
@@ -16,10 +15,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     let traits: DemuxerInputTraits
     let timelineOrigin: Int64
     let isNetworkSource: Bool
-    private let isHLS: Bool
     private let isDASH: Bool
-    /// Serves an HLS master's opening from what it downloaded side by side, until `finishOpening`.
-    private var prefetcher: HLSPlaylistPrefetcher?
 
     /// Opens `url`; nil when FFmpeg can't (the error is recorded on `interrupt`).
     ///
@@ -68,41 +64,18 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         if MediaURL.isInlineDASHManifest(url) {
             ioBytes.segmentRequestOptions = MediaURL.requestOptions(headers: headers)
         }
-        // An HLS demuxer's requests go through `URLSession`, which tells their answers from their transfers and
-        // keeps the connections open (`HTTPSessionTransport`, made for the first). FFmpeg's own keep-alive
-        // (`http_persistent`, an option of the HLS demuxer, which other formats leave unused) would send the
-        // playlists' reloads over the connection it read the master on, past `io_open`.
+        // A DASH demuxer's requests go through `URLSession`, which tells their answers from their transfers and keeps the
+        // connections open (`HTTPSessionTransport`, made for the first).
         if isNetworkSource {
             ioBytes.makeTransport = { [interrupt] in
                 // The requests too give way to a seek that waits for the input (`yieldIO`), not just FFmpeg's own waits.
                 HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
             }
-            _ = av_dict_set(&avOptions, "http_persistent", "0", 0)
-            // The HLS demuxer refuses a segment whose URL has no extension it knows (`extension_picky`): Google's ad
-            // segments are `redirector.googlevideo.com/videoplayback/...`, and the stream does not open at all. mpv turns
-            // the check off for HLS (`no_ext_picky`). A network source only: its protocols are the whitelist's, and a
-            // local playlist keeps the check against naming files that are not media.
-            _ = av_dict_set(&avOptions, "extension_picky", "0", 0)
-        }
-
-        // What an HLS master's opening reads, playlists and the starts of their segments, is downloaded side by side
-        // and read from memory (`HLSPlaylistPrefetcher`), through `io_open`: until `finishOpening`, as the demuxer's
-        // opening scan reads past what `avformat_find_stream_info` did.
-        var prefetcher: HLSPlaylistPrefetcher?
-        if HLSPlaylistPrefetcher.applies(to: url), let masterURL = URL(string: url) {
-            let started = HLSPlaylistPrefetcher(masterURL: masterURL, headers: headers)
-            started.start()
-            prefetcher = started
-            ioBytes.prefetched = { [interrupt] in started.take($0, offset: $1) { !interrupt.shouldAbort } }
         }
         // A failed opening ends here, as `finishOpening` does.
         var opened = false
         defer {
-            if !opened {
-                prefetcher?.cancel()
-                ioBytes.prefetched = nil
-                ioBytes.endOpening()
-            }
+            if !opened { ioBytes.endOpening() }
         }
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
@@ -129,10 +102,8 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         }
         context = formatCtx
         opened = true
-        self.prefetcher = prefetcher
 
         let formatName = formatCtx.pointee.iformat.map { String(cString: $0.pointee.name) } ?? ""
-        isHLS = formatName.split(separator: ",").contains("hls")
         isDASH = formatName == "dash"
         traits = DemuxerInputTraits(
             hasIndex: Self.describesStreams(formatCtx), landsBetweenKeyframes: Self.isUnindexedStream(formatCtx),
@@ -158,17 +129,13 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         avformat_close_input(&context)
     }
 
-    /// After the prefetch of an HLS master is over, nothing it serves: the demuxer opens on.
     func finishOpening() {
-        prefetcher?.cancel()
-        prefetcher = nil
-        ioBytes.prefetched = nil
         ioBytes.endOpening()
     }
 
     // MARK: - Description
 
-    var streamingName: String { isDASH ? "DASH" : "HLS" }
+    var streamingName: String { isDASH ? "DASH" : "FFmpeg" }
 
     var durationSeconds: Double {
         guard let context, context.pointee.duration > 0 else { return 0 }
@@ -191,14 +158,11 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         context?.stream(at: index)
     }
 
-    /// For an HLS rendition its `NAME`, which FFmpeg puts in the comment.
     func title(ofStream index: Int) -> String {
-        guard let stream = stream(index) else { return "" }
-        if let title = av_dict_get(stream.pointee.metadata, "title", nil, 0) {
-            return String(cString: title.pointee.value)
+        guard let stream = stream(index), let title = av_dict_get(stream.pointee.metadata, "title", nil, 0) else {
+            return ""
         }
-        guard isHLS, let name = av_dict_get(stream.pointee.metadata, "comment", nil, 0) else { return "" }
-        return String(cString: name.pointee.value)
+        return String(cString: title.pointee.value)
     }
 
     var network: (any NetworkReadAccount)? { ioBytes }
@@ -206,51 +170,13 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     // MARK: - Variants and live
 
     var openingLinkRate: Double? {
-        isDASH ? ioBytes.transport?.openingThroughput : prefetcher?.measuredThroughput?.provenSlowRate
+        isDASH ? ioBytes.transport?.openingThroughput : nil
     }
 
-    /// The variants of an HLS master playlist (FFmpeg exposes each `EXT-X-STREAM-INF` as a program, its `BANDWIDTH` as
-    /// `variant_bitrate`, with the `EXT-X-MEDIA` renditions it refers to), or of a DASH ladder (`dashVariants`).
+    /// The variants of a DASH ladder (`dashVariants`).
     func variantCandidates() -> [MediaDemuxer.VariantCandidate]? {
-        guard let formatCtx = context else { return nil }
-        if isDASH { return Self.dashVariants(in: formatCtx) }
-        guard formatCtx.pointee.nb_programs > 1, let programs = formatCtx.pointee.programs else { return nil }
-        var found: [MediaDemuxer.VariantCandidate] = []
-        for position in 0..<Int(formatCtx.pointee.nb_programs) {
-            guard let program = programs[position],
-                let entry = av_dict_get(program.pointee.metadata, "variant_bitrate", nil, 0),
-                let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
-            else { return nil }
-            let all = (0..<Int(program.pointee.nb_stream_indexes)).map { Int(program.pointee.stream_index[$0]) }
-            // A variant outside the ladder played, refused (`HLSPlaylistPrefetcher.playlistsOutsideLadder`).
-            guard !all.isEmpty else { continue }
-            let ofType = { (type: AVMediaType) in
-                all.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
-            }
-            found.append(
-                MediaDemuxer.VariantCandidate(
-                    id: Int(program.pointee.id), bandwidth: bandwidth,
-                    streams: MediaDemuxer.VariantStreams(
-                        video: ofType(AVMEDIA_TYPE_VIDEO).first, audio: ofType(AVMEDIA_TYPE_AUDIO),
-                        subtitles: ofType(AVMEDIA_TYPE_SUBTITLE), all: all)))
-        }
-        // Subtitle renditions are the subtitle streams of variants with different videos (a group they refer to). The
-        // others are in a video's own playlist and go with it: Apple's examples have one in each, in as many variants
-        // as there are audio groups.
-        var videosWith: [Int: Set<Int>] = [:]
-        for variant in found {
-            for index in variant.streams.subtitles {
-                videosWith[index, default: []].insert(variant.streams.video ?? -1)
-            }
-        }
-        return found.map { variant in
-            let streams = variant.streams
-            return MediaDemuxer.VariantCandidate(
-                id: variant.id, bandwidth: variant.bandwidth,
-                streams: MediaDemuxer.VariantStreams(
-                    video: streams.video, audio: streams.audio,
-                    subtitles: streams.subtitles.filter { (videosWith[$0]?.count ?? 0) > 1 }, all: streams.all))
-        }
+        guard isDASH, let formatCtx = context else { return nil }
+        return Self.dashVariants(in: formatCtx)
     }
 
     /// The variants of a DASH manifest, when it lists a ladder of pictures: FFmpeg's DASH demuxer has one program and
@@ -281,27 +207,11 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         return found
     }
 
-    /// The key our patch of FFmpeg's HLS demuxer (`scripts/patches/ffmpeg-hls-live-seek.patch`) tags a live playlist's
-    /// format context with: the media sequence number of its first segment. Removed once the playlist ends.
-    static let liveMetadataKey = "hls_live"
+    /// FFmpeg's formats have no live window of their own to tell: a DASH stream's history is told by the gate
+    /// (`LiveSegmentGate`), and a live playlist is `HLSInput`'s.
+    let isLivePlaylist = false
 
-    var isLivePlaylist: Bool {
-        guard let context else { return false }
-        return av_dict_get(context.pointee.metadata, Self.liveMetadataKey, nil, 0) != nil
-    }
-
-    /// The window the HLS demuxer tells of its playlist: the format context's `start_time` and `duration`, which it keeps
-    /// up to date at every reload. Once the playlist ended the last window stays, marked so.
-    func liveWindow() -> LiveWindow? {
-        guard let ctx = context, ctx.pointee.start_time != Int64.min, ctx.pointee.duration > 0 else { return nil }
-        let start = Double(ctx.pointee.start_time - timelineOrigin) / Double(AV_TIME_BASE)
-        let tag = av_dict_get(ctx.pointee.metadata, Self.liveMetadataKey, nil, 0)
-        // Read for every packet: no `String` made of the tag.
-        let sequence = tag?.pointee.value.map { strtoll($0, nil, 10) } ?? 0
-        return LiveWindow(
-            start: start, end: start + Double(ctx.pointee.duration) / Double(AV_TIME_BASE), hasSlid: sequence > 0,
-            hasEnded: tag == nil)
-    }
+    func liveWindow() -> LiveWindow? { nil }
 
     // MARK: - Reading
 
@@ -343,9 +253,8 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Rewinds MPEG-TS / MPEG-PS to their first packet. A timestamp seek bisects and can land past it, dropping the
-    /// keyframe that starts the file, so they rewind to their first byte. HLS can't seek by byte
-    /// (`AVFMT_NO_BYTE_SEEK`, the rewind would do nothing); a target before its first segment starts from that
-    /// segment's first keyframe.
+    /// keyframe that starts the file, so they rewind to their first byte. A format that can't seek by byte
+    /// (`AVFMT_NO_BYTE_SEEK`) rewinds by timestamp.
     func rewind() {
         guard let ctx = context else { return }
         if let iformat = ctx.pointee.iformat, (iformat.pointee.flags & AVFMT_NO_BYTE_SEEK) != 0 {
@@ -407,21 +316,22 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// Start of the playback timeline in `AV_TIME_BASE` units. MPEG-TS / MPEG-PS timestamps continue the
     /// source's clock (a DVD starts around 0.5 s, a broadcast capture hours in), so their first timestamp
     /// becomes zero. Other containers already start near zero (or slightly before, via edit lists) and
-    /// are left as they are. An HLS stream of a live or EVENT playlist can start before 0 (segments listed before the one
-    /// reading began at, placed by the timeline patch on a stream whose timestamps restart at a break): the engine counts
-    /// on times from 0 (`currentFramePTS >= 0` means a picture is there), so it starts at 0 too. Only HLS gets a negative
-    /// origin: the other formats flagged above (MPEG-PS, FLV, Ogg, ...) keep theirs as they were.
+    /// are left as they are; a negative start (MPEG-PS, FLV, Ogg, ...) is kept as it was.
     package static func timelineOrigin(of ctx: UnsafeMutablePointer<AVFormatContext>) -> Int64 {
         guard isUnindexedStream(ctx), ctx.pointee.start_time != Int64.min else { return 0 }
-        if ctx.pointee.start_time > 0 || isHLS(ctx) { return ctx.pointee.start_time }
+        if ctx.pointee.start_time > 0 { return ctx.pointee.start_time }
         return 0
     }
 
-    /// Whether `ctx` was opened by FFmpeg's HLS demuxer (`name` is a comma-separated list of the format's names).
-    static func isHLS(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+    /// Whether `ctx` was opened by FFmpeg's `tty` demuxer (ANSI art): it takes `.txt` by its extension and accepts any
+    /// small text, so a playlist under that name opens as one instead of failing (`HLSInput.sniffsAsPlaylist`).
+    static func isTextFormat(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
         guard let name = ctx.pointee.iformat?.pointee.name else { return false }
-        return String(cString: name).split(separator: ",").contains("hls")
+        return String(cString: name) == "tty"
     }
+
+    /// Whether the input was opened as a text format (`isTextFormat`).
+    var isTextFormat: Bool { context.map(Self.isTextFormat) ?? false }
 
     /// `origin` (`AV_TIME_BASE` units) in the time base of `stream`.
     package static func timelineOffset(_ origin: Int64, in timebase: AVRational) -> Int64 {

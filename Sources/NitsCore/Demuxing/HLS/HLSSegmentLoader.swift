@@ -34,6 +34,9 @@ final class HLSSegmentLoader: Sendable {
     }
 
     fileprivate let transport: HTTPSessionTransport
+    /// Local files are read too: the playlist itself is a file (a saved manifest). A playlist served over HTTP(S) never
+    /// reaches the disk, whatever it lists.
+    let allowsFiles: Bool
     private let cache = OSAllocatedUnfairLock(initialState: Cache())
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
@@ -43,8 +46,9 @@ final class HLSSegmentLoader: Sendable {
     static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
 
-    init(transport: HTTPSessionTransport) {
+    init(transport: HTTPSessionTransport, allowsFiles: Bool = false) {
         self.transport = transport
+        self.allowsFiles = allowsFiles
     }
 
     /// The segment's bytes, decrypted.
@@ -69,6 +73,10 @@ final class HLSSegmentLoader: Sendable {
 
     /// A playlist's text and where it was served from, after redirects (its relative URIs are read against that).
     func playlist(_ url: URL) throws(HLSSegmentLoadError) -> (data: Data, servedFrom: URL) {
+        if url.isFileURL {
+            guard allowsFiles else { throw .notServed(url) }
+            return (try file(url, range: nil), url)
+        }
         switch transport.open(
             url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true)
         {
@@ -126,6 +134,7 @@ final class HLSSegmentLoader: Sendable {
     /// otherwise) is asked for as the file and cut.
     private func download(_ url: URL, range: HLSByteRange?) throws(HLSSegmentLoadError) -> Data {
         if let range, range.length == 0 { return Data() }
+        if url.isFileURL { return try file(url, range: range) }
         let address = url.absoluteString
         let opened = transport.open(
             address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, cookies: nil,
@@ -336,6 +345,7 @@ extension HLSSegmentLoader {
         if segment.key != nil || segment.byteRange?.length == 0 {
             return HLSSegmentBody(data: try self.segment(segment))
         }
+        if segment.url.isFileURL { return HLSSegmentBody(data: try file(segment.url, range: segment.byteRange)) }
         let range = segment.byteRange
         let opened = transport.open(
             segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
@@ -349,5 +359,23 @@ extension HLSSegmentLoader {
             // A range the server answers whole (the request is already made once): the file, cut.
             return HLSSegmentBody(data: try wholeFileSegment(segment))
         }
+    }
+}
+
+extension HLSSegmentLoader {
+    /// A local file's bytes, or those of its `range` (mapped, not copied, while it is read).
+    fileprivate func file(_ url: URL, range: HLSByteRange?) throws(HLSSegmentLoadError) -> Data {
+        guard allowsFiles else { throw .notServed(url) }
+        let whole: Data
+        do {
+            whole = try Data(contentsOf: url, options: .mappedIfSafe)
+        } catch {
+            // The POSIX error underneath (not found, not permitted, ...), as FFmpeg's own file protocol reports it.
+            let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError
+            throw .failed(underlying?.domain == NSPOSIXErrorDomain ? -Int32(underlying?.code ?? Int(EIO)) : -EIO)
+        }
+        guard let range else { return whole }
+        guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
+        return whole.subdata(in: Int(range.offset)..<Int(range.range.upperBound))
     }
 }

@@ -5,7 +5,7 @@ import Testing
 
 @testable import NitsCore
 
-/// HLS served by `TestHTTPServer`: FFmpeg's HLS demuxer reads it as it reads any HTTP stream.
+/// HLS served by `TestHTTPServer`, read by Nits' own client.
 @Suite("HLS over HTTP", .hostDependent, .networkServer)
 struct HLSOverHTTPTests {
     private static func server() throws -> TestHTTPServer? {
@@ -257,7 +257,7 @@ struct HLSRenditionTests {
         }
         #expect(demuxer.selectedVariantId == low.id)
         let ukrainian = try #require(demuxer.audioTracks.first { $0.language == "ukr" })
-        let isRead = { (index: Int) in (demuxer.input as? FFmpegInput)?.isReading(stream: index) == true }
+        let isRead = { (index: Int) in (demuxer.input as? HLSInput)?.isReading(stream: index) == true }
         #expect(!isRead(ukrainian.streamIndex))
         #expect(demuxer.subtitleTracks.allSatisfy { !isRead($0.streamIndex) })
         #expect(isRead(demuxer.audioStreamIndex) && isRead(demuxer.videoStreamIndex))

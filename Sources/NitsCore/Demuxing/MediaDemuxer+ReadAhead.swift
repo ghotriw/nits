@@ -5,8 +5,8 @@ import os
 
 /// Read-ahead for network sources, as mpv's demuxer cache. Without it the demuxer reads only when a consumer asks,
 /// and the feeders stop asking about a second and a half ahead (a full frame queue, the audio renderer's second): a
-/// network stall of more than that stops playback, and FFmpeg's HLS demuxer, which downloads segments inside
-/// `av_read_frame`, can't be measured for throughput.
+/// network stall of more than that stops playback, and a demuxer that downloads segments inside its read can't be
+/// measured for throughput.
 ///
 /// A thread of its own reads packets into the queues up to `ReadAheadLimits` ahead of the packets taken. Consumers take
 /// packets under `queueLock` alone, which the thread releases during `av_read_frame`, so they never wait for the

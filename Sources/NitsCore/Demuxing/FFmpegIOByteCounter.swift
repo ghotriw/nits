@@ -2,10 +2,8 @@ import CFFmpeg
 import Foundation
 
 /// Counts the bytes an `AVFormatContext` reads from its inputs, as they come over the network: what packets leave out
-/// too (container overhead, and what FFmpeg reads and drops: the HLS demuxer catches a variant it switches to up from
-/// the start of a segment). Installed as the context's `io_open` / `io_close2`, which call FFmpeg's own and keep the
-/// `AVIOContext`s they open: each counts its `bytes_read`. While an HLS master opens, what `HLSPlaylistPrefetcher`
-/// downloaded is served from memory instead (`prefetched`), by inputs of its own; and once the context is an HLS
+/// too (container overhead, and what FFmpeg reads and drops). Installed as the context's `io_open` / `io_close2`, which
+/// call FFmpeg's own and keep the `AVIOContext`s they open: each counts its `bytes_read`. Once the context is a DASH
 /// demuxer's, its HTTP(S) requests go through `transport`. What FFmpeg opens itself it keeps as it is, so the HTTP
 /// options it reads back from those inputs (cookies, redirects) stay.
 ///
@@ -32,10 +30,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     /// Seconds spent opening inputs: an HTTP input is open once its response's headers are in, so this is the
     /// requests' latency (connection, TLS, the server's answer), no transfer.
     private(set) var openSeconds = 0.0
-    /// What was downloaded for a URL from an offset, while the context opens (`HLSPlaylistPrefetcher`): FFmpeg reads
-    /// it instead of asking the server. Nil for others, which FFmpeg opens itself.
-    var prefetched: ((String, Int64) -> HLSPlaylistPrefetcher.Answer?)?
-    /// The inputs served here (a download, `transport`'s requests), by their `AVIOContext`: closed here, not by FFmpeg.
+    /// The inputs served here (`transport`'s requests), by their `AVIOContext`: closed here, not by FFmpeg.
     private var customInputs: [UnsafeMutablePointer<AVIOContext>: any FFmpegInputSource] = [:]
     /// Makes `transport`, when set before the context opens: a network source's.
     var makeTransport: (() -> HTTPSessionTransport)?
@@ -51,20 +46,13 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         isOpening = false
         transport?.endOpening()
     }
-    /// Serves the HTTP(S) inputs an HLS or a DASH demuxer asks for (`isHLS`, `isDASH`): made for its first, none for
-    /// other formats.
+    /// Serves the HTTP(S) inputs a DASH demuxer asks for (`isDASH`): made for its first, none for other formats.
     private(set) var transport: HTTPSessionTransport?
-    /// The context installed on: nested ones (an HLS playlist's) call back with their own.
+    /// The context installed on.
     private var context: UnsafeMutablePointer<AVFormatContext>?
 
-    /// The context is an HLS demuxer's: known once probed, before its header is read, so its master playlist (the
-    /// input probed) is FFmpeg's to open, and every request after `transport`'s. A file read over HTTP, which seeks,
-    /// never is.
-    private var isHLS: Bool {
-        context?.pointee.iformat.map { String(cString: $0.pointee.name) == "hls" } ?? false
-    }
-
-    /// The context is a DASH demuxer's, which opens a segment (or the range of a file) per request as HLS's does.
+    /// The context is a DASH demuxer's, known once probed, before its header is read: it opens a segment (or the range
+    /// of a file) per request, which `transport` serves. A file read over HTTP, which seeks, never is.
     private var isDASH: Bool {
         context?.pointee.iformat.map { String(cString: $0.pointee.name) == "dash" } ?? false
     }
@@ -100,7 +88,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         context = ctx
         originalOpen = ctx.pointee.io_open
         originalClose = ctx.pointee.io_close2
-        // Nested contexts (the HLS demuxer's per playlist) call back with their own context, carrying this opaque.
+        // Nested contexts call back with their own context, carrying this opaque.
         ctx.pointee.opaque = Unmanaged.passUnretained(self).toOpaque()
         ctx.pointee.io_open = { s, pb, url, flags, options in
             guard
@@ -110,25 +98,15 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
             let begin = ContinuousClock.now
             let openedBefore = counter.openSeconds
             let ret: Int32
-            let prefetched =
-                pb == nil ? nil : s.flatMap { s in url.flatMap { counter.prefetchedInput(s, $0, flags, options) } }
-            switch prefetched {
+            switch pb == nil ? nil : url.flatMap({ counter.transportInput($0, options) }) {
             case .input(let input)?:
                 pb?.pointee = input
                 ret = 0
-            case .refused?:
-                ret = -ENOENT
+            case .failed(let code)?:
+                ret = code
             case nil:
-                switch pb == nil ? nil : url.flatMap({ counter.transportInput($0, options) }) {
-                case .input(let input)?:
-                    pb?.pointee = input
-                    ret = 0
-                case .failed(let code)?:
-                    ret = code
-                case nil:
-                    counter.addSegmentRequestOptions(s, url, options)
-                    ret = open(s, pb, url, flags, options)
-                }
+                counter.addSegmentRequestOptions(s, url, options)
+                ret = open(s, pb, url, flags, options)
             }
             let end = ContinuousClock.now
             counter.openSeconds += (end - begin) / .seconds(1)
@@ -157,51 +135,6 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
     }
 
-    private enum Prefetched {
-        case input(UnsafeMutablePointer<AVIOContext>)
-        /// Not to be opened (`HLSPlaylistPrefetcher.Answer.refused`).
-        case refused
-    }
-
-    /// An input reading what was downloaded for `url` from where FFmpeg asks for it (a byte range's `offset`, to its
-    /// `end_offset`), if anything was, or a refusal. Past what was downloaded it reads on from the network, through
-    /// FFmpeg's own `io_open` with the same options.
-    private func prefetchedInput(
-        _ s: UnsafeMutablePointer<AVFormatContext>, _ url: UnsafePointer<CChar>, _ flags: Int32,
-        _ options: UnsafeMutablePointer<OpaquePointer?>?
-    ) -> Prefetched? {
-        let option = { (name: String) in Self.intOption(name, in: options) }
-        let offset = option("offset") ?? 0
-        guard let prefetched, let answer = prefetched(String(cString: url), offset), let open = originalOpen,
-            let close = originalClose
-        else { return nil }
-        guard case .download(let download) = answer else { return .refused }
-        var restOptions: OpaquePointer?
-        av_dict_copy(&restOptions, options?.pointee, 0)
-        let restURL = strdup(url)
-        let input = PrefetchedInput(
-            download: download, offset: offset, end: option("end_offset") ?? download.fileSize,
-            openRest: { offset in
-                var opened: UnsafeMutablePointer<AVIOContext>?
-                var copy: OpaquePointer?
-                av_dict_copy(&copy, restOptions, 0)
-                av_dict_set_int(&copy, "offset", offset, 0)
-                let ret = open(s, &opened, restURL, flags, &copy)
-                av_dict_free(&copy)
-                return ret >= 0 ? opened : nil
-            },
-            closeRest: { rest in
-                if let rest { _ = close(s, rest) }
-                av_dict_free(&restOptions)
-                free(restURL)
-            })
-        guard let context = makeContext(serving: input) else {
-            input.close()
-            return nil
-        }
-        return .input(context)
-    }
-
     private enum TransportInput {
         case input(UnsafeMutablePointer<AVIOContext>)
         case failed(Int32)
@@ -213,7 +146,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         -> TransportInput?
     {
         let url = String(cString: url)
-        guard isHLS || isDASH, HTTPSessionTransport.serves(url) else { return nil }
+        guard isDASH, HTTPSessionTransport.serves(url) else { return nil }
         if transport == nil { transport = makeTransport?() }
         guard let transport else { return nil }
         let end = Self.intOption("end_offset", in: options).flatMap { $0 > 0 ? $0 : nil }
@@ -223,7 +156,7 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
         let offset = Self.intOption("offset", in: options) ?? 0
         let cookieOrigin = cookies == nil ? nil : masterLocation
-        let whileOpening = isOpening && isDASH
+        let whileOpening = isOpening
         let opened: HTTPSessionTransport.Opened
         if let gate = liveSegments, let segment = gate.request(for: url) {
             opened = gate.open(segment, shouldAbort: transport.shouldAbort) { address in
@@ -253,8 +186,8 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         }
     }
 
-    /// Where the master was served from, after its redirects: the `location` FFmpeg's HTTP input of it tells, as the
-    /// HLS demuxer reads it to resolve the master's URIs. Nil for a master that is a file.
+    /// Where the manifest was served from, after its redirects: the `location` FFmpeg's HTTP input of it tells. Nil for
+    /// a manifest that is a file.
     private var masterLocation: String? {
         guard let pb = context?.pointee.pb else { return nil }
         var location: UnsafeMutablePointer<UInt8>?
@@ -312,62 +245,5 @@ private final class InputBox {
 
     init(_ source: any FFmpegInputSource) {
         self.source = source
-    }
-}
-
-/// A download of `HLSPlaylistPrefetcher` read as an input (`FFmpegIOByteCounter.prefetchedInput`).
-private final class PrefetchedInput: FFmpegInputSource {
-    private let download: HLSPlaylistPrefetcher.Download
-    /// Where in the file `download` starts, and where the input ends (a byte range's end, else the file's), if known.
-    private let offset: Int64
-    private let end: Int64?
-    private var position = 0
-    private let openRest: (Int64) -> UnsafeMutablePointer<AVIOContext>?
-    private let closeRest: (UnsafeMutablePointer<AVIOContext>?) -> Void
-    private var rest: UnsafeMutablePointer<AVIOContext>?
-    private var restFailed = false
-
-    init(
-        download: HLSPlaylistPrefetcher.Download, offset: Int64, end: Int64?,
-        openRest: @escaping (Int64) -> UnsafeMutablePointer<AVIOContext>?,
-        closeRest: @escaping (UnsafeMutablePointer<AVIOContext>?) -> Void
-    ) {
-        self.download = download
-        self.offset = offset
-        self.end = end
-        self.openRest = openRest
-        self.closeRest = closeRest
-    }
-
-    func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
-        // The download may hold more than a byte range ends at: the input ends there all the same.
-        let available = min(download.data.count, end.map { Int(max($0 - offset, 0)) } ?? .max)
-        if position < available {
-            let count = min(Int(size), available - position)
-            let start = download.data.startIndex + position
-            download.data.copyBytes(to: buffer, from: start..<(start + count))
-            position += count
-            return Int32(count)
-        }
-        if let end, offset + Int64(position) >= end { return MediaDemuxer.averrorEOF }
-        if rest == nil, !restFailed {
-            rest = openRest(offset + Int64(position))
-            restFailed = rest == nil
-        }
-        guard let rest else { return -EIO }
-        let ret = avio_read(rest, buffer, size)
-        return ret == 0 ? MediaDemuxer.averrorEOF : ret
-    }
-
-    /// Only the file's size (`avio_size`, which an init section's read asks): FFmpeg reads these inputs on from where
-    /// they start.
-    func seek(_ offset: Int64, _ whence: Int32) -> Int64 {
-        guard whence & AVSEEK_SIZE != 0, let size = download.fileSize else { return Int64(-ENOSYS) }
-        return size
-    }
-
-    func close() {
-        closeRest(rest)
-        rest = nil
     }
 }
