@@ -78,6 +78,9 @@ final class HLSLane: @unchecked Sendable {
     private(set) var pendingTime = 0.0
     /// The extradata the video last read had, to tell a run that brings others (a new `EXT-X-MAP`).
     private var lastExtradata: Data?
+    /// The reorder depth of the lane's picture (0 without one), from its probe: its runs analyse only as many frames as
+    /// tell where they start (`HLSSegmentReader.knownVideoDelay`). Nil for a lane not probed: its runs are analysed in full.
+    private var videoDelay: Int?
     private var needsExtradataCheck = false
     /// A forward seek's landing, not yet reached: packets before it are dropped.
     private var landing: Landing?
@@ -200,6 +203,10 @@ final class HLSLane: @unchecked Sendable {
     /// Ends a probe: the streams are described. The first picture the lane reads is compared with the probe's extradata
     /// (a stream's later init section brings new parameter sets then).
     func endProbe() {
+        let picture = reader?.streams.first {
+            HLSInput.keeps($0, in: kind) && $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
+        }
+        videoDelay = picture.map { max(Int($0.pointee.codecpar.pointee.video_delay), 0) } ?? 0
         if let video = reader?.streams.first(where: { HLSInput.keeps($0, in: kind) }),
             video.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
             let bytes = video.pointee.codecpar.pointee.extradata, video.pointee.codecpar.pointee.extradata_size > 0
@@ -681,6 +688,9 @@ final class HLSLane: @unchecked Sendable {
                 tolerance: max(timeline.targetDuration, 1), role: anchorRole,
                 onSegmentStart: kind == .subtitle
                     ? nil : { [weak self] segment, time in self?.segmentStarted(segment, at: time) }),
+            // The streams are the table's since the probe: the analysis only finds where the run starts. A lane opened
+            // without a probe (a media playlist alone) analyses its runs in full.
+            knownVideoDelay: kind == .subtitle ? nil : videoDelay,
             firstBody: replay
         ) {
             [weak self] in

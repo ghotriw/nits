@@ -43,6 +43,8 @@ final class HLSSegmentReader {
     private let start: Double
     private let timelineShift: ((Int) -> Double?)?
     private let anchoring: Anchoring?
+    /// The reorder depth of the run's picture when the caller has its streams described already (`openContext`).
+    private let knownVideoDelay: Int?
     /// The segments of a WebVTT run are read one context each.
     let isSegmentwise: Bool
 
@@ -130,14 +132,18 @@ final class HLSSegmentReader {
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
     /// section): the caller's thread. A probe (`isProbe`) reads `first` only as far as FFmpeg's analysis goes, to
     /// describe the streams (`HLSLane.probe`): the run is not meant to be read on. `timelineShift` gives a WebVTT
-    /// segment's offset by its discontinuity sequence.
+    /// segment's offset by its discontinuity sequence. `knownVideoDelay`: the caller has the streams described already
+    /// (a lane past its probe), and their picture's reorder depth (`video_delay`, 0 without a picture): the analysis
+    /// only finds where the run starts (`openContext`).
     init(
         loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
-        anchoring: Anchoring? = nil, isProbe: Bool = false, firstBody: HLSSegmentBody? = nil,
+        anchoring: Anchoring? = nil, isProbe: Bool = false, knownVideoDelay: Int? = nil,
+        firstBody: HLSSegmentBody? = nil,
         next: @escaping () -> HLSSegment?
     ) throws(HLSSegmentReaderError) {
         self.loader = loader
         self.start = start
+        self.knownVideoDelay = knownVideoDelay
         self.timelineShift = timelineShift
         self.anchoring = anchoring
         self.next = next
@@ -397,7 +403,23 @@ final class HLSSegmentReader {
         guard let ctx = opened else { throw .open(-ENOMEM) }
         // As `hls.c` bounds its own probing: a few seconds of media, read across the segments as they come (an end
         // of input faked at the first segment would stay: `mov` ends for good at one).
-        ctx.pointee.max_analyze_duration = 4 * Int64(AV_TIME_BASE)
+        if let knownVideoDelay {
+            // The streams are described: the analysis is there for where the run starts (`start_time`, `openedOffset`),
+            // the least presentation time of the frames it reads. FFmpeg's wait for 20 frames to guess the frame rate
+            // read 3.2 MB of a 4K fMP4 segment before the first packet (1.4 s at 20 Mbit/s). A container with a header
+            // reads as many frames as reach the earliest one shown: `fps_probe_size` counts the intervals between
+            // frames, so the reorder depth reads one frame more than it (AV1, without reordering, its keyframe alone).
+            // MPEG-TS, which may add streams as it reads (`AVFMTCTX_NOHEADER`), reads up to `max_analyze_duration`
+            // whatever it found, and a frame count cut short there left its sound without decode times after the first
+            // packet: it keeps FFmpeg's count, and the limit is a second, so that the picture's first frames are among
+            // what it reads where the sound comes ahead of them.
+            if ctx.pointee.ctx_flags & AVFMTCTX_NOHEADER == 0 {
+                ctx.pointee.fps_probe_size = Int32(knownVideoDelay)
+            }
+            ctx.pointee.max_analyze_duration = Int64(AV_TIME_BASE)
+        } else {
+            ctx.pointee.max_analyze_duration = 4 * Int64(AV_TIME_BASE)
+        }
         let analysing = ContinuousClock.now
         result = avformat_find_stream_info(ctx, nil)
         openTiming.analyze = ContinuousClock.now - analysing
