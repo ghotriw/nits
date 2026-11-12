@@ -58,12 +58,13 @@ struct AbandonDownloadTests {
         return true
     }
 
-    /// The first log message after the `after`th that `matches`, waited for.
-    private func waitForMessage(timeout: Duration, since: Date, _ matches: @Sendable (String) -> Bool) async -> String?
-    {
+    /// The first log message of `demuxer` since `since` that `matches`, waited for.
+    private func waitForMessage(
+        timeout: Duration, of demuxer: MediaDemuxer, since: Date, _ matches: @Sendable (String) -> Bool
+    ) async -> String? {
         var found: String?
         _ = await AdaptiveBitrateTests.waitUntil(timeout: timeout) {
-            found = logs(since: since).map(\.message).first(where: matches)
+            found = logs(of: demuxer, since: since).map(\.message).first(where: matches)
             return found != nil
         }
         return found
@@ -77,14 +78,17 @@ struct AbandonDownloadTests {
         return config
     }
 
-    /// The log entries since `since`. By time, not by how many there were: the store keeps the last 2000, and in a long run
-    /// it is full, so a count taken before the test would hide everything after it.
-    private func logs(since: Date) -> [LogEntry] {
-        LogStore.shared.snapshot().filter { $0.timestamp >= since }
+    /// `demuxer`'s log entries since `since`. By time, not by how many there were: the store keeps the last 2000, and in a
+    /// long run it is full, so a count taken before the test would hide everything after it. By the demuxer's name too
+    /// (`streamingName`, "HLS #5"): the suites running meanwhile give downloads up as well.
+    private func logs(of demuxer: MediaDemuxer, since: Date) -> [LogEntry] {
+        let name = demuxer.streamingName + ":"
+        return LogStore.shared.snapshot().filter { $0.timestamp >= since && $0.message.contains(name) }
     }
 
-    private func messages(containing text: String) -> [String] {
-        LogStore.shared.snapshot().map(\.message).filter { $0.contains(text) }
+    private func messages(of demuxer: MediaDemuxer, containing text: String) -> [String] {
+        let name = demuxer.streamingName + ":"
+        return LogStore.shared.snapshot().map(\.message).filter { $0.contains(name) && $0.contains(text) }
     }
 
     @Test("A top variant's segment on a link that cannot carry it is given up for a lower one's, and playback goes on")
@@ -105,17 +109,17 @@ struct AbandonDownloadTests {
         defer { consumer.stop() }
 
         let acted = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) {
-            logs(since: since).contains {
+            logs(of: demuxer, since: since).contains {
                 $0.message.hasPrefix("ABR abandon:") && !$0.message.contains("not acted on")
             }
         }
-        #expect(acted, "No download was given up: \(messages(containing: "ABR abandon").suffix(3))")
+        #expect(acted, "No download was given up: \(messages(of: demuxer, containing: "ABR abandon").suffix(3))")
         #expect(
             await AdaptiveBitrateTests.waitUntil(timeout: .seconds(25)) {
                 consumer.playedWidth.map { $0 < 640 } ?? false
             }, "Playing \(String(describing: consumer.playedWidth))")
         // The interrupt of the old download was no end of the input, nor an error.
-        let stopped = logs(since: since).filter { $0.message.contains("Read-ahead stopped") }
+        let stopped = logs(of: demuxer, since: since).filter { $0.message.contains("Read-ahead stopped") }
         #expect(stopped.isEmpty, "\(stopped.map(\.message))")
         let played = consumer.pictures.count
         #expect(
@@ -123,7 +127,7 @@ struct AbandonDownloadTests {
             "Playback stopped after \(played) pictures")
         // The new variant read the segment from its start: a request of a lower variant's segment that the top one's was
         // given up for.
-        let given = logs(since: since).first {
+        let given = logs(of: demuxer, since: since).first {
             $0.message.contains("given up") && $0.message.contains("read from its start")
         }
         #expect(given != nil, "The switch did not say it read the segment from its start")
@@ -159,7 +163,7 @@ struct AbandonDownloadTests {
         let slowedAt = ContinuousClock.now
         server.setLinkRate(500_000 / 8)
 
-        let message = await waitForMessage(timeout: .seconds(25), since: since) {
+        let message = await waitForMessage(timeout: .seconds(25), of: demuxer, since: since) {
             $0.hasPrefix("ABR abandon:") && !$0.contains("not acted on")
         }
         let line = try #require(message, "No download was given up")
@@ -184,7 +188,9 @@ struct AbandonDownloadTests {
         let others = otherRequests()
         let first = try #require(others.first, "No other variant's segment was asked for")
         #expect(numbers(first.path) == String(format: "%03d", sequence), "Read \(first.path), not segment \(sequence)")
-        let cut = await waitForMessage(timeout: .seconds(20), since: since) { $0.contains("given up was cut at") }
+        let cut = await waitForMessage(timeout: .seconds(20), of: demuxer, since: since) {
+            $0.contains("given up was cut at")
+        }
         #expect(cut != nil, "The old variant's queued tail was not cut")
         // The switch is cut, not joined with a hole: playback runs on from the segment given up.
         // Playback has to get past the cut to say so: the segment given up is ahead of it.
@@ -220,7 +226,7 @@ struct AbandonDownloadTests {
         late.delay = .seconds(4)
         server.setBehavior(late) { $0.hasPrefix("v0_") || $0.hasPrefix("v1_") }
         server.setLinkRate(500_000 / 8)
-        let switching = await waitForMessage(timeout: .seconds(25), since: since) {
+        let switching = await waitForMessage(timeout: .seconds(25), of: demuxer, since: since) {
             $0.contains("read from its start")
         }
         let line = try #require(switching, "No download was taken over")
@@ -244,7 +250,7 @@ struct AbandonDownloadTests {
         expectContinuous(consumer)
         // What it read again was spliced into what it had queued at the first keyframe read again.
         #expect(
-            logs(since: since).contains { $0.message.contains("a download given up is read again from") },
+            logs(of: demuxer, since: since).contains { $0.message.contains("a download given up is read again from") },
             "The segment read again was not spliced in")
         // And the top variant read the segment twice: the one given up, and again from its start.
         let number = String(format: "%03d", sequence)
@@ -302,11 +308,11 @@ struct AbandonDownloadTests {
 
     /// The line of the download given up (not one only logged), waited for; it must say the position was inside segment 1.
     private func expectGivenUpInside(_ setup: InsideSetup) async throws -> String {
-        let message = await waitForMessage(timeout: .seconds(20), since: setup.since) {
+        let message = await waitForMessage(timeout: .seconds(20), of: setup.demuxer, since: setup.since) {
             $0.hasPrefix("ABR abandon:") && !$0.contains("not acted on")
         }
         let line = try #require(
-            message, "No download was given up: \(messages(containing: "ABR abandon").suffix(3))")
+            message, "No download was given up: \(messages(of: setup.demuxer, containing: "ABR abandon").suffix(3))")
         #expect(line.contains("segment 1 "), "\(line)")
         #expect(line.contains("position inside the segment, queued keyframe at"), "\(line)")
         return line
@@ -321,7 +327,7 @@ struct AbandonDownloadTests {
         let expected = try #require(number(after: "queued keyframe at ", in: line))
         #expect(expected > 6.5 && expected < 12, "\(line)")
 
-        let splice = await waitForMessage(timeout: .seconds(15), since: setup.since) {
+        let splice = await waitForMessage(timeout: .seconds(15), of: setup.demuxer, since: setup.since) {
             $0.contains("given up was cut at")
         }
         let cut = try #require(splice, "The download given up was not spliced")
@@ -347,7 +353,7 @@ struct AbandonDownloadTests {
         late.delay = .seconds(4)
         setup.server.setBehavior(late) { $0.hasPrefix("v0_") || $0.hasPrefix("v1_") }
         _ = try await expectGivenUpInside(setup)
-        let switching = await waitForMessage(timeout: .seconds(10), since: setup.since) {
+        let switching = await waitForMessage(timeout: .seconds(10), of: setup.demuxer, since: setup.since) {
             $0.contains("read from its start")
         }
         let line = try #require(switching, "No download was taken over")
@@ -357,7 +363,7 @@ struct AbandonDownloadTests {
             $0.hasPrefix("v0_") || $0.hasPrefix("v1_") || $0 == setup.segment
         }
 
-        let again = await waitForMessage(timeout: .seconds(10), since: setup.since) {
+        let again = await waitForMessage(timeout: .seconds(10), of: setup.demuxer, since: setup.since) {
             $0.contains("a download given up is read again from")
         }
         let restart = try #require(again, "The segment read again was not spliced in")
@@ -378,7 +384,7 @@ struct AbandonDownloadTests {
         guard let setup = try playInside("rendition.m3u8", rung: "r", audioAhead: nil) else { return }
         defer { setup.stop() }
         _ = try await expectGivenUpInside(setup)
-        let splice = await waitForMessage(timeout: .seconds(15), since: setup.since) {
+        let splice = await waitForMessage(timeout: .seconds(15), of: setup.demuxer, since: setup.since) {
             $0.contains("given up was cut at")
         }
         let cut = try #require(splice, "The download given up was not spliced")
@@ -396,13 +402,18 @@ struct AbandonDownloadTests {
         #expect(Set(sound).count == sound.count, "\(sound)")
     }
 
-    @Test("Nothing is given up unless asked for")
-    func isOffByDefault() async throws {
+    @Test("On by default; turned off, nothing is given up")
+    func isOnByDefault() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
-        #expect(demuxer.abandonsDownloads == (ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] == "1"))
+        // On unless the environment turns it off: when it says nothing, on.
+        switch ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] {
+        case nil: #expect(demuxer.abandonsDownloads)
+        case let value?: #expect(demuxer.abandonsDownloads == (value != "0"))
+        }
+        demuxer.abandonsDownloads = false
         demuxer.adaptiveBitrateConfig = AdaptiveBitrateTests.config()
         let since = Date()
         server.setLinkRate(700_000 / 8)
@@ -410,7 +421,7 @@ struct AbandonDownloadTests {
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer)
         defer { consumer.stop() }
         _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(8)) { false }
-        let acted = logs(since: since).filter {
+        let acted = logs(of: demuxer, since: since).filter {
             $0.message.hasPrefix("ABR abandon:") && !$0.message.contains("not acted on")
         }
         #expect(acted.isEmpty)

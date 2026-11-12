@@ -31,7 +31,10 @@ struct AdaptiveBitrateTests {
         /// queued when nil.
         init(_ demuxer: MediaDemuxer, startAhead: Double = 2, audioAhead: Double? = nil) {
             let state = self.state
-            task = Task.detached {
+            // On a queue of its own, off the cooperative pool, as a renderer's clock is: with the HTTP suites together on a
+            // pool of one thread its clock fell a second behind, and what a test timed against it came too early.
+            let executor = QueueTaskExecutor(queue: DispatchQueue(label: "RealtimeConsumer"))
+            task = Task.detached(executorPreference: executor) {
                 while demuxer.readAheadSeconds < startAhead, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(20))
                 }
@@ -109,6 +112,48 @@ struct AdaptiveBitrateTests {
         return true
     }
 
+    /// What a slow link at the start does since the download of the top variant (640) is given up for the lowest (320),
+    /// which a buffer of a second or two leaves (`MediaDemuxer.requestAbandon`), and back up to what the link carries
+    /// (`AdaptiveBitrateLogic.Detour`): playback does not stall, never goes below `carried` once it plays it, nor back
+    /// to 640 while the link is slow, and gives up at most twice (no seesaw). Measured on 1.5 Mbit/s: 640, 320 from 2 s,
+    /// 480 from 8 s (18 s with a read-ahead of 30), one give-up, no stall (1.4 to 2.3 s before giving up existed).
+    /// With giving up off (`NITS_ABR_ABANDON=0`), what held before it: a step down from 640 straight to `carried`, never
+    /// below, and a stall of a segment's late arrival (under 4 s).
+    static func expectCameDownWithoutStalling(
+        _ consumer: RealtimeConsumer, to carried: Int32, demuxer: MediaDemuxer, since: Date,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let pictures = consumer.pictures
+        guard demuxer.abandonsDownloads else {
+            #expect(
+                consumer.stalled < 4, "Stalled \(consumer.stalled) s on the slow link", sourceLocation: sourceLocation)
+            #expect(
+                !pictures.contains { $0.width < carried }, "Went below the variant the link carries",
+                sourceLocation: sourceLocation)
+            return
+        }
+        #expect(consumer.stalled < 1, "Stalled \(consumer.stalled) s on the slow link", sourceLocation: sourceLocation)
+        if let first = pictures.firstIndex(where: { $0.width == carried }) {
+            let after = pictures[first...]
+            #expect(
+                !after.contains { $0.width < carried }, "Went below the variant the link carries after playing it",
+                sourceLocation: sourceLocation)
+        }
+        if let lowest = pictures.firstIndex(where: { $0.width < carried }) {
+            #expect(
+                !pictures[lowest...].contains { $0.width > carried }, "Back above what the link carries",
+                sourceLocation: sourceLocation)
+        }
+        // This demuxer's lines alone (`streamingName`): the suites running meanwhile give downloads up too.
+        let name = demuxer.streamingName + ":"
+        let givenUp = LogStore.shared.snapshot().filter {
+            $0.timestamp >= since && $0.message.hasPrefix("ABR abandon:") && $0.message.contains(name)
+        }
+        #expect(
+            givenUp.count <= 2, "Gave up \(givenUp.count) downloads: \(givenUp.map(\.message))",
+            sourceLocation: sourceLocation)
+    }
+
     @Test("A slow network brings the variant down to one it carries, and a fast one back up, without stalling")
     func followsTheNetwork() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
@@ -119,21 +164,19 @@ struct AdaptiveBitrateTests {
         demuxer.adaptiveBitrateConfig = Self.config()
 
         // 1.5 Mbit/s carries the 0.97 Mbit/s variant (80 % of it is 1.2), not the 2.66 one it starts on.
+        let since = Date()
         server.setLinkRate(1_500_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }
 
+        // The link slows as playback starts, with two seconds buffered: the top variant's second segment (its first was
+        // read while the demuxer opened) takes ~3.7 s at 1.5 Mbit/s and is given up for the lowest, then 480 follows.
         #expect(
-            await Self.waitUntil(timeout: .seconds(12)) { consumer.playedWidth == 480 },
+            await Self.waitUntil(timeout: .seconds(16)) { consumer.playedWidth == 480 },
             "Playing \(String(describing: consumer.playedWidth))")
         let stalledSlow = consumer.stalled
-        // The link slows as playback starts, with two seconds buffered: only a segment that arrived slowly says so, and one
-        // of the top variant (2.66 Mbit/s) takes ~3.7 s at 1.5 Mbit/s. Its first is already in when the link slows (read while
-        // the demuxer opened), so the first slow one is the second: a segment behind what a client that read the first under
-        // the limit would stall (1.4 s).
-        #expect(stalledSlow < 4, "Stalled \(stalledSlow) s on the slow network")
-        #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the network carries")
+        Self.expectCameDownWithoutStalling(consumer, to: 480, demuxer: demuxer, since: since)
 
         server.setLinkRate(8_000_000 / 8)
         // Chosen at the read position: it plays once the read-ahead before it has (9 s).
@@ -188,17 +231,19 @@ struct AdaptiveBitrateTests {
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         #expect(demuxer.variants.map(\.width) == [640, 480, 320])
         // The defaults (`MediaDemuxer.startReadAhead`), not the test's quick ones.
+        let since = Date()
         server.setLinkRate(1_500_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 30))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }
 
+        // The start's give-up takes the lowest; the step back up to 480 plays once the read-ahead before it has (~18 s).
         #expect(
-            await Self.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 480 },
+            await Self.waitUntil(timeout: .seconds(26)) { consumer.playedWidth == 480 },
             "Playing \(String(describing: consumer.playedWidth))")
         // Past the switch, long enough for the estimate to have fallen if it was going to.
         try await Task.sleep(for: .seconds(8))
-        #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the link carries")
+        Self.expectCameDownWithoutStalling(consumer, to: 480, demuxer: demuxer, since: since)
         #expect(consumer.playedWidth == 480, "Playing \(String(describing: consumer.playedWidth))")
     }
 
@@ -346,14 +391,15 @@ struct AdaptiveBitrateTests {
         demuxer.adaptiveBitrateConfig = Self.config()
 
         // Behind the edge, reads transfer all the time: the estimate is the link's.
+        let since = Date()
         server.setLinkRate(1_500_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }
         #expect(
-            await Self.waitUntil(timeout: .seconds(12)) { consumer.playedWidth == 480 },
+            await Self.waitUntil(timeout: .seconds(16)) { consumer.playedWidth == 480 },
             "Playing \(String(describing: consumer.playedWidth))")
-        #expect(!consumer.pictures.contains { $0.width == 320 }, "Went below the variant the link carries")
+        Self.expectCameDownWithoutStalling(consumer, to: 480, demuxer: demuxer, since: since)
     }
 
     @Test("A live stream's server slow to answer isn't taken for waiting at its edge")

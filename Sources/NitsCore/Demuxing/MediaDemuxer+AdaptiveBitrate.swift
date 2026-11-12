@@ -168,7 +168,8 @@ extension MediaDemuxer {
         let latency = adaptiveBitrate.logic.latencyShare.map { "\(Int($0 * 1000)) ms/s" } ?? "none"
         AppLog.info(
             .demuxer,
-            "ABR: read-ahead \(String(format: "%.1f", readAhead)) s, throughput \(estimate), latency \(latency)")
+            "ABR: \(streamingName): read-ahead \(String(format: "%.1f", readAhead)) s, throughput \(estimate), latency \(latency)"
+        )
         variantSelection.withLock { $0.requested = chosen }
     }
 }

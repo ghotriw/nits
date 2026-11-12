@@ -186,7 +186,7 @@ extension MediaDemuxer {
         }
         AppLog.info(
             .demuxer,
-            "ABR abandon\(refusalText): variant \(variant) (\(bandwidth(of: variant)) kbit/s) segment \(segment.sequence) "
+            "ABR abandon\(refusalText): \(streamingName): variant \(variant) (\(bandwidth(of: variant)) kbit/s) segment \(segment.sequence) "
                 + "[\(format(segment.start))..\(format(segment.start + segment.duration)) s] to variant \(decision.target) (\(bandwidth(of: decision.target)) kbit/s): "
                 + "\(progress.bytes >> 10)/\((progress.length ?? 0) >> 10) KB in \(format(progress.elapsed)) s at \(rate), "
                 + "remaining \(format(decision.remaining)) s, buffer \(format(buffer)) s, lower \(format(decision.lower)) s; "
@@ -314,7 +314,7 @@ extension MediaDemuxer {
         let counts = adaptiveBitrate.trace.counts
         AppLog.info(
             .demuxer,
-            "ABR abandon trace: t \(String(format: "%.1f", now)) s, checks wait \(counts[.wait] ?? 0) idle \(counts[.idle] ?? 0) polled-from-foreign \(counts[.foreignPoll] ?? 0) "
+            "ABR abandon trace: \(streamingName): t \(String(format: "%.1f", now)) s, checks wait \(counts[.wait] ?? 0) idle \(counts[.idle] ?? 0) polled-from-foreign \(counts[.foreignPoll] ?? 0) "
                 + "foreign \(counts[.foreignWait] ?? 0); last segment seen: \(adaptiveBitrate.trace.seen); "
                 + adaptiveBitrate.trace.last)
         adaptiveBitrate.trace.emittedAt = now
@@ -324,9 +324,9 @@ extension MediaDemuxer {
 }
 
 extension MediaDemuxer {
-    /// Whether the check gives a download up (`NITS_ABR_ABANDON=1`): off by default until it is on in every suite of
-    /// adaptive bitrate; off, the decisions are logged only. A test sets `abandonsDownloads` on its demuxer.
-    static let abandonsEnabled = ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] == "1"
+    /// Whether the check gives a download up: on unless `NITS_ABR_ABANDON=0`, which leaves the decisions logged only (to
+    /// compare). A test sets `abandonsDownloads` on its demuxer.
+    static let abandonsEnabled = ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] != "0"
 
     /// A download given up for a lower variant's of the same segment: the switch is made at the next read.
     struct PendingAbandon: Sendable, Equatable {
@@ -408,7 +408,9 @@ extension MediaDemuxer {
             abandonedBandwidth: variants.first { $0.id == from }?.bandwidth)
         let kbps = { (value: Double?) in value.map { "\(Int($0 / 1000)) kbit/s" } ?? "none" }
         let (was, now) = (kbps(before), kbps(adaptiveBitrate.logic.estimate))
-        if was != now { AppLog.info(.demuxer, "ABR abandon estimate: \(was) -> \(now) for variant \(target)") }
+        if was != now {
+            AppLog.info(.demuxer, "ABR abandon estimate: \(streamingName): \(was) -> \(now) for variant \(target)")
+        }
         return .requested
     }
 }

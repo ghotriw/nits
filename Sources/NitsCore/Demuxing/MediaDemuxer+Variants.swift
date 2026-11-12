@@ -20,9 +20,9 @@ extension MediaDemuxer {
         let all: [Int]
     }
 
-    /// What the variants are of, for the log: "DASH", or "HLS".
+    /// What the variants are of, and which demuxer, for the log: "DASH #2", or "HLS #5".
     var streamingName: String {
-        input.streamingName
+        "\(input.streamingName) #\(logID)"
     }
 
     struct VariantSelection: Sendable {

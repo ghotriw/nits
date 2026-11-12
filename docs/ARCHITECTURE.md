@@ -707,9 +707,11 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     at or after it is handed out, the old variant's own sound cut on its own (a rendition both share is not touched).
     With the position inside the segment the cut is at a keyframe of it still queued. The estimate learns the download
     given up (hls.js's `resetEstimator`), or `choose` climbs straight back. A switch given up before its splice reads the
-    old segment again, spliced in at its first keyframe past what is handed out (`RestartSplice`). Off by default for
-    now (`NITS_ABR_ABANDON=1` turns it on; off, the decisions are logged): on, the suites of `AdaptiveBitrateTests`
-    land on the lowest rung and stay there. Measured on Apple's HEVC example (2026-11-12): 3.5 Mbit/s and 207 ms,
+    old segment again, spliced in at its first keyframe past what is handed out (`RestartSplice`). Inside the segment a
+    lower variant is taken only when it reaches the cut and carries the rest of its segment in time (a late one leaves a
+    hole, not a stall). A give-up that took the lowest is stepped back up from once the link since carries more
+    (`AdaptiveBitrateLogic.Detour`): 1.5 Mbit/s held 480 at 1.08 between keeping and stepping up, and played 320 for some
+    40 s. On by default (`NITS_ABR_ABANDON=0` only logs the decisions). Measured on Apple's HEVC example (2026-11-12): 3.5 Mbit/s and 207 ms,
     the start on 10 Mbit/s given up at 4 s, no stall (5.5 s before); 2 Mbit/s after 45 s with 40 s buffered, the segment
     given up 4 s after the drop, no picture hole, no step back up, no stall.
   - Measured on Apple's AV1 example (2026-10-24, Wi-Fi, three runs each, 45 s from the start, time below 3840 wide):

@@ -157,6 +157,13 @@ public final class MediaDemuxer: @unchecked Sendable {
     var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
     /// Whether a download that will not arrive in time is given up for a lower variant's (`requestAbandon`).
     var abandonsDownloads = MediaDemuxer.abandonsEnabled
+    /// This demuxer's number in the log (`streamingName`): one log holds the lines of every stream open (windows,
+    /// thumbnails), and tests running side by side.
+    let logID = MediaDemuxer.logIDs.withLock { counter in
+        counter += 1
+        return counter
+    }
+    private static let logIDs = OSAllocatedUnfairLock(initialState: 0)
     /// What the input's reads transferred over the network (behind `lock`); nil for local media.
     var network: (any NetworkReadAccount)? { input.network }
     /// Decode timestamp of the latest picture `readPacket` handed on (video time base), behind `lock`.

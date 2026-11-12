@@ -378,8 +378,8 @@ final class TestHTTPServer: Sendable {
     }
 }
 
-/// Runs a task's jobs on a dispatch queue, off the cooperative pool.
-private final class QueueTaskExecutor: TaskExecutor {
+/// Runs a task's jobs on a dispatch queue, off the cooperative pool (the server's connections, `RealtimeConsumer`).
+final class QueueTaskExecutor: TaskExecutor {
     private let queue: DispatchQueue
 
     init(queue: DispatchQueue) {
