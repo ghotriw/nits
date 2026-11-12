@@ -24,6 +24,8 @@ extension MediaDemuxer {
         var trace = AbandonTrace()
         /// A download given up for a lower variant's of the same segment, taken by the next read (`requestAbandon`).
         var pendingAbandon: PendingAbandon?
+        /// A download given up read again, spliced into what it had queued (`admitRestarted`).
+        var restart: RestartSplice?
         /// `adaptiveTime` when a keyframe of a switch that took a download over was last refused for the sound (the log says it
         /// every half second at most).
         var lastSpliceRefusal = -Double.infinity

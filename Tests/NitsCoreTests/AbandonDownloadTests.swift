@@ -227,6 +227,10 @@ struct AbandonDownloadTests {
         #expect(
             past, "Playback did not get past segment \(sequence): \(String(describing: consumer.pictures.last?.pts))")
         expectContinuous(consumer)
+        // What it read again was spliced into what it had queued at the first keyframe read again.
+        #expect(
+            logs(since: since).contains { $0.message.contains("a download given up is read again from") },
+            "The segment read again was not spliced in")
         // And the top variant read the segment twice: the one given up, and again from its start.
         let number = String(format: "%03d", sequence)
         let again = server.requests.filter { $0.path.hasSuffix("_\(number).ts") }

@@ -93,4 +93,57 @@ struct AbandonDecisionTests {
             !MediaDemuxer.AbandonRefusal.join(.noSegment).isFinal,
             "a target's live playlist a reload behind lists the segment a moment later")
     }
+
+    typealias Restart = MediaDemuxer.RestartSplice
+
+    @Test(
+        "Read again from the segment's start: pictures dropped to the first keyframe past what is handed out, cut there"
+    )
+    func restartCutsAtTheFirstKeyframePastWhatIsHandedOut() {
+        var restart = Restart(video: 0, audio: nil)
+        // Handed out to 650: the segment's own keyframe at 600 is dropped with what follows it, the one at 700 is the cut.
+        #expect(restart.admitVideo(isKeyframe: true, time: 600, handedOut: 650) == .drop)
+        #expect(restart.admitVideo(isKeyframe: false, time: 640, handedOut: 650) == .drop)
+        #expect(restart.admitVideo(isKeyframe: true, time: 700, handedOut: 650) == .init(cut: 700, passes: true))
+        // An open GOP's leading pictures (after the keyframe in decode order, before it in time) pass: their queued copies
+        // were after the keyframe in the queue, cut with it.
+        #expect(restart.admitVideo(isKeyframe: false, time: 680, handedOut: 650) == .pass)
+        #expect(restart.admitVideo(isKeyframe: false, time: 720, handedOut: 650) == .pass)
+        #expect(restart.isDone)
+    }
+
+    @Test("Nothing handed out of the segment: its own keyframe is the cut")
+    func restartCutsAtTheSegmentStart() {
+        var restart = Restart(video: 0, audio: nil)
+        #expect(restart.admitVideo(isKeyframe: true, time: 600, handedOut: 400) == .init(cut: 600, passes: true))
+        var fresh = Restart(video: 0, audio: nil)
+        #expect(fresh.admitVideo(isKeyframe: true, time: 600, handedOut: nil) == .init(cut: 600, passes: true))
+    }
+
+    @Test(
+        "The sound is cut at its first packet read again, or just after what is handed out, and the rest before it dropped"
+    )
+    func restartCutsTheSound() {
+        // Read again from 600, handed out to 640: the queue is cut from 641, what is read again before it dropped.
+        var restart = Restart(video: 0, audio: 1)
+        #expect(restart.admitAudio(time: 600, handedOut: 640) == .init(cut: 641, passes: false))
+        #expect(restart.admitAudio(time: 620, handedOut: 640) == .drop)
+        #expect(!restart.isDone)
+        #expect(restart.admitAudio(time: 660, handedOut: 640) == .pass)
+        #expect(restart.admitVideo(isKeyframe: true, time: 700, handedOut: 650).passes)
+        #expect(restart.isDone)
+
+        // A rendition the lane does not read again: its next packet is past everything queued and handed out, and passes.
+        var rendition = Restart(video: 0, audio: 1)
+        #expect(rendition.admitAudio(time: 900, handedOut: 640) == .init(cut: 900, passes: true))
+    }
+
+    @Test("The splice waits for both the picture and the sound")
+    func restartIsDoneWithBoth() {
+        var restart = Restart(video: 0, audio: 1)
+        _ = restart.admitVideo(isKeyframe: true, time: 700, handedOut: nil)
+        #expect(!restart.isDone)
+        _ = restart.admitAudio(time: 700, handedOut: nil)
+        #expect(restart.isDone)
+    }
 }

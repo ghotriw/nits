@@ -454,9 +454,8 @@ final class HLSLane: @unchecked Sendable {
 
     /// Starts the next run at the segment with media sequence number `sequence`, which another variant's lane was
     /// downloading and has given up (`abandonDownload`): the picture is not behind the segment (as at `catchUp`), the
-    /// segment is the one the lane before it left half read. With a `landing`, what comes before it is dropped (a part of
-    /// the segment that is queued already, from the keyframe it is queued up to).
-    func join(sequence: Int, landing: Landing? = nil) {
+    /// segment is the one the lane before it left half read.
+    func join(sequence: Int) {
         dropRun()
         skipped = 0
         isAbandoned = false
@@ -465,7 +464,7 @@ final class HLSLane: @unchecked Sendable {
         seekTarget = nil
         resume = nil
         current = nil
-        self.landing = landing
+        landing = nil
     }
 
     /// The download of the segment being read is given up, for a lower variant's of the same segment: a read of it is

@@ -71,9 +71,9 @@ protocol DemuxerInput: StreamDescriptions {
     /// Gives up the download in flight of variant `id`'s picture, for a lower variant's of the same segment (HLS): a read of
     /// it is interrupted (`averrorExit`), now or later. Called from the thread that reads.
     func abandonDownload(ofVariant id: Int)
-    /// Reads variant `id` again from segment `sequence`, after its download was given up for a switch that did not come;
-    /// with `landingSeconds` what comes before the keyframe at that time is dropped (it is queued already).
-    func restartDownload(ofVariant id: Int, atSequence sequence: Int, landingSeconds: Double?)
+    /// Reads variant `id` again from segment `sequence`, after its download was given up for a switch that did not come
+    /// (the demuxer splices what it reads again into what it had queued: `MediaDemuxer.admitRestarted`).
+    func restartDownload(ofVariant id: Int, atSequence sequence: Int)
     /// Why variant `id` cannot read segment `sequence` from its start as the one a download given up leaves (nil: it can): it lists it,
     /// and the segment is not at a discontinuity (timestamps that restart).
     func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal?
@@ -141,7 +141,7 @@ extension DemuxerInput {
     func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {}
     func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void) {}
     func abandonDownload(ofVariant id: Int) {}
-    func restartDownload(ofVariant id: Int, atSequence sequence: Int, landingSeconds: Double?) {}
+    func restartDownload(ofVariant id: Int, atSequence sequence: Int) {}
     func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal? { .unsupported }
     func joinNext(atSequence sequence: Int?) {}
     func variantDescription(id: Int) -> MediaDemuxer.VariantDescription { .described }

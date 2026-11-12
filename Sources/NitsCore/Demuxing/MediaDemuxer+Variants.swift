@@ -317,6 +317,8 @@ extension MediaDemuxer {
             input.joinNext(atSequence: abandonment.sequence)
         }
         variantSwitch = newSwitch
+        // A download given up read again is spliced no further: the variant read from here is the new one.
+        adaptiveBitrate.restart = nil
         // Its video and the rendition of the audio track selected; the other renditions stay off.
         applyStreamSelection()
         input.joinNext(atSequence: nil)

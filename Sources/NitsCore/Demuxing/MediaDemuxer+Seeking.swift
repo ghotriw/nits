@@ -60,6 +60,7 @@ extension MediaDemuxer {
         adaptiveBitrate.abandonmentLog = AbandonmentLog()
         // A download given up and not yet switched from is read again by the seek, which moves every lane.
         adaptiveBitrate.pendingAbandon = nil
+        adaptiveBitrate.restart = nil
         defer { readAheadWake.signal() }
         // Captions in the pictures exist only up to the picture handed out, not up to what was read: the span ends there.
         subtitleTracker.beginSeek(

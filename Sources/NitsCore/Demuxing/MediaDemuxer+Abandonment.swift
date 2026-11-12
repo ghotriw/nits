@@ -419,15 +419,6 @@ extension MediaDemuxer {
         audioStreamIndex >= 0 && Set(oldStreams.audio).subtracting(newStreams.audio).contains(audioStreamIndex)
     }
 
-    /// `ticks` of the video time base in the audio's.
-    private func audioTicks(fromVideo ticks: Int64) -> Int64 {
-        av_rescale_q(ticks, timebase, audioTimebase)
-    }
-
-    private func videoTicks(fromAudio ticks: Int64) -> Int64 {
-        av_rescale_q(ticks, audioTimebase, timebase)
-    }
-
     /// Takes the tail of the queues out, from the picture at queue index `videoIndex` (nil: no picture is cut) and the
     /// sound muxed into the old variant from `audioPTS` (nil: it is not): what the new variant reads again from its
     /// keyframe. The account of what was read follows: the last picture's decode time (a tick before the cut when nothing is
@@ -490,16 +481,7 @@ extension MediaDemuxer {
         }
         let index = videoQueue.firstIndex(atOrAfterPTS: cut)
         // For the log: what of the old variant is cut, and the pictures presented before the keyframe among it (lost).
-        var cutCount = 0
-        var lost = 0
-        if let index {
-            var position = index
-            while let packet = videoQueue.peekAt(position) {
-                cutCount += 1
-                if packet.effectivePTS < cut { lost += 1 }
-                position += 1
-            }
-        }
+        let (cutCount, lost) = countCut(from: index, before: cut)
         let lastOld = videoQueue.lastElement?.effectivePTS
         guard spliceVariantVideo(at: time, keyframe: keyframe) else { return false }
         let seconds = toSeconds(time, newBase)
@@ -541,93 +523,123 @@ extension MediaDemuxer {
         AppLog.info(.demuxer, "\(streamingName): \(text)")
     }
 
-    /// What reading a download given up again does with what is queued of it.
-    enum AbandonedRestart: Equatable {
-        /// Cut the pictures at the queued keyframe at `index` (and the sound muxed into the variant at its time): `atStart`
-        /// is the keyframe the segment starts with, read again from its start; else a later one, inside the segment, and
-        /// the segment is read again with what comes before that keyframe dropped (a landing), the start being handed out.
-        case cut(index: Int, atStart: Bool)
-        /// Nothing of the segment is queued, but playback has got to its start: what was not read is lost, and the
-        /// variant reads on from the segment after.
-        case nextSegment
-        /// Nothing of it is queued, and nothing handed out: from its start.
-        case fromStart
-    }
+    /// A download given up and read again (`restartAbandonedDownload`): what the old variant reads again of the segment is
+    /// spliced into what it had queued of it as a chunk of another variant is (ExoPlayer splices a chunk reloaded after a
+    /// cancel so: `HlsMediaChunk.shouldSpliceIn`), with no use of the timeline, whose start of a segment may be the media's
+    /// less up to a second.
+    struct RestartSplice: Sendable, Equatable {
+        /// The old variant's picture, and the sound the demuxer plays (its own, read again with it, or a rendition read on).
+        let video: Int
+        let audio: Int?
+        /// Where the pictures were cut (the first keyframe read again past what is handed out), and the sound.
+        private(set) var videoCut: Int64?
+        private(set) var audioCut: Int64?
+        /// The sound has gone past its cut since: nothing more of it is read twice.
+        private(set) var isAudioThrough = false
 
-    /// Chooses what to do with the queued part of a segment whose download was given up and is read again. `keyframes` are
-    /// the old variant's queued keyframes not handed out, in order (queue index, presentation time); `start` is the
-    /// segment's start and `slack` how far the media's may be from the timeline's, in the video time base. `soundHandedOut` is
-    /// where the sound muxed into the old variant is handed out to (video time base), when it is and has been.
-    ///
-    /// The first keyframe at or after the segment's start (less `slack`), and after the sound handed out (a cut behind
-    /// the sound would leave its read again over what is handed out), is the cut. It is the segment's own start only when
-    /// within `slack` of it: a later one is inside the segment, whose start is handed out already, and cutting there while
-    /// reading the segment from its start would queue what is before it twice.
-    static func restartPlan(
-        start: Int64, slack: Int64, keyframes: [(index: Int, pts: Int64)], isStartHandedOut: Bool,
-        soundHandedOut: Int64?
-    ) -> AbandonedRestart {
-        var minimum = start - slack
-        if let soundHandedOut { minimum = max(minimum, soundHandedOut + 1) }
-        if let key = keyframes.first(where: { $0.pts >= minimum }) {
-            return .cut(index: key.index, atStart: abs(key.pts - start) <= slack)
+        init(video: Int, audio: Int?) {
+            self.video = video
+            self.audio = audio
         }
-        let isSoundIn = soundHandedOut.map { $0 >= start - slack } ?? false
-        return isStartHandedOut || isSoundIn ? .nextSegment : .fromStart
+
+        /// What is done with a packet read again: the queue cut from `cut` (its time base) first, when one is given, and the
+        /// packet handed on or dropped.
+        struct Admission: Equatable {
+            var cut: Int64?
+            var passes: Bool
+
+            static let pass = Admission(cut: nil, passes: true)
+            static let drop = Admission(cut: nil, passes: false)
+        }
+
+        /// The splice is made for both: nothing more to look at.
+        var isDone: Bool { videoCut != nil && (audio == nil || isAudioThrough) }
+
+        /// A picture read again (`time` its presentation time; `handedOut` the latest picture handed out, if any). Dropped up
+        /// to the first keyframe presented after it; the queue is cut there, from the first queued packet in decode order
+        /// presented at or after it, and every picture after passes. The same variant is read again, so the keyframe is
+        /// one the queue holds: what decodes after it and is presented before it (an open GOP's leading pictures) is after
+        /// it in the queue too, cut with it and read again once, never twice.
+        mutating func admitVideo(isKeyframe: Bool, time: Int64?, handedOut: Int64?) -> Admission {
+            if videoCut != nil { return .pass }
+            guard isKeyframe, let time else { return .drop }
+            if let handedOut, handedOut >= time { return .drop }
+            videoCut = time
+            return Admission(cut: time, passes: true)
+        }
+
+        /// A packet of the sound (`handedOut` the last one handed out, if any). At the first, the queued sound is cut from its
+        /// time, or just after what is handed out; what is read again before that is dropped, and the rest passes.
+        mutating func admitAudio(time: Int64?, handedOut: Int64?) -> Admission {
+            guard let time else { return .pass }
+            var newCut: Int64?
+            if audioCut == nil {
+                newCut = max(time, handedOut.map { $0 + 1 } ?? time)
+                audioCut = newCut
+            }
+            let passes = time >= (audioCut ?? time)
+            if passes { isAudioThrough = true }
+            return Admission(cut: newCut, passes: passes)
+        }
     }
 
-    /// A download given up for a switch that did not come (`beginRequestedVariantSwitch` could not make it, or the switch was
-    /// given up before its splice): the old variant reads the segment again. What it had queued of it is cut first, so the
-    /// decoder does not get the same times twice (`restartPlan`).
+    /// Gives up a download given up for a switch that did not come (`beginRequestedVariantSwitch` could not make it, or the
+    /// switch was given up before its splice): the old variant reads the segment again from its start, spliced in by
+    /// `admitRestarted`, so the decoder does not get the same times twice.
     func restartAbandonedDownload(_ abandoned: PendingAbandon) {
         // Read again over the same link, it may be as slow: the check may give it up again.
         adaptiveBitrate.abandonmentLog.reopen(variant: abandoned.from, sequence: abandoned.sequence)
-        let perSecond = Double(timebase.den) / Double(max(timebase.num, 1))
-        let start = Int64((abandoned.start * perSecond).rounded())
-        // The timeline's start of a segment is summed from durations, and the media's may differ a little.
-        let slack = Int64(0.1 * perSecond)
-        let keyframes = videoQueue.keyframeIndices.compactMap { index -> (index: Int, pts: Int64)? in
-            guard index >= videoQueue.readIndex, let packet = videoQueue.peekAt(index) else { return nil }
-            return (index, packet.effectivePTS)
+        let video = variantStreams[abandoned.from]?.video ?? videoStreamIndex
+        adaptiveBitrate.restart = RestartSplice(video: video, audio: audioStreamIndex >= 0 ? audioStreamIndex : nil)
+        input.restartDownload(ofVariant: abandoned.from, atSequence: abandoned.sequence)
+    }
+
+    /// Whether a packet read while a download given up is read again is handed on (`readPacket`), as `RestartSplice`
+    /// decides, cutting the queues where it says. Behind `lock` and `queueLock`. The state ends once both are spliced, or
+    /// at a seek, a switch begun or the end of the input.
+    func admitRestarted(_ pkt: inout AVPacket) -> Bool {
+        guard var restart = adaptiveBitrate.restart else { return true }
+        defer { adaptiveBitrate.restart = restart.isDone ? nil : restart }
+        let index = Int(pkt.stream_index)
+        let raw = pkt.pts != Int64.min ? pkt.pts : pkt.dts
+        let time = raw == Int64.min ? nil : raw
+        let seconds = { (ticks: Int64, base: AVRational) in Double(ticks) * Double(base.num) / Double(max(base.den, 1))
         }
-        let isMuxed =
-            variantStreams[abandoned.from].flatMap { old in
-                variantStreams[abandoned.target].map { isAudioMuxed(oldStreams: old, newStreams: $0) }
-            } ?? false
-        let sound =
-            isMuxed && audioQueue.lastHandedOutPTS != Int64.min
-            ? videoTicks(fromAudio: audioQueue.lastHandedOutPTS) : nil
-        let plan = Self.restartPlan(
-            start: start, slack: slack, keyframes: keyframes,
-            isStartHandedOut: consumedSeconds >= abandoned.start - 0.1,
-            soundHandedOut: sound)
-        switch plan {
-        case .cut(let index, let atStart):
-            let key = videoQueue.peekAt(index)?.effectivePTS ?? start
-            // The lane lands on the first keyframe at or after the time given: a hair before this one is the same landing, and
-            // a time rounded up past it would miss the keyframe and land on the next, a GOP on.
-            let seconds = Double(key) / perSecond
-            let isSoundCut = cutQueuedTail(
-                videoIndex: index, audioPTS: isMuxed ? audioTicks(fromVideo: key) : nil, atSeconds: seconds)
-            if isSoundCut {
-                input.restartDownload(
-                    ofVariant: abandoned.from, atSequence: abandoned.sequence,
-                    landingSeconds: atStart ? nil : seconds - 0.005)
-            } else {
-                // Cannot happen (the plan keeps behind the sound handed out): read on after the segment, with no repeat.
-                AppLog.warning(
-                    .demuxer, "\(streamingName): the sound could not be cut; the rest of a segment given up is lost")
-                input.restartDownload(
-                    ofVariant: abandoned.from, atSequence: abandoned.sequence + 1, landingSeconds: nil)
+        if index == restart.video {
+            let handedOut = videoQueue.largestHandedOutPTS
+            let admission = restart.admitVideo(
+                isKeyframe: pkt.flags & AV_PKT_FLAG_KEY != 0, time: time,
+                handedOut: handedOut == Int64.min ? nil : handedOut)
+            if let cut = admission.cut {
+                let cutIndex = videoQueue.firstIndex(atOrAfterPTS: cut)
+                let (count, lost) = countCut(from: cutIndex, before: cut)
+                cutQueuedTail(videoIndex: cutIndex, audioPTS: nil, atSeconds: seconds(cut, timebase))
+                AppLog.info(
+                    .demuxer,
+                    "\(streamingName): a download given up is read again from \(String(format: "%.3f", seconds(cut, timebase))) s "
+                        + "(\(count) queued pictures cut, \(lost) of them presented before it)")
             }
-        case .nextSegment:
-            AppLog.warning(
-                .demuxer,
-                "\(streamingName): a download given up is read again after playback reached its segment: the rest of it is lost"
-            )
-            input.restartDownload(ofVariant: abandoned.from, atSequence: abandoned.sequence + 1, landingSeconds: nil)
-        case .fromStart:
-            input.restartDownload(ofVariant: abandoned.from, atSequence: abandoned.sequence, landingSeconds: nil)
+            return admission.passes
         }
+        guard let audio = restart.audio, index == audio else { return true }
+        let handedOut = audioQueue.lastHandedOutPTS
+        let admission = restart.admitAudio(time: time, handedOut: handedOut == Int64.min ? nil : handedOut)
+        if let cut = admission.cut {
+            cutQueuedTail(videoIndex: nil, audioPTS: cut, atSeconds: seconds(cut, audioTimebase))
+        }
+        return admission.passes
+    }
+
+    /// For the log: how many queued pictures a cut from `index` takes, and how many of them are presented before `time`.
+    private func countCut(from index: Int?, before time: Int64) -> (count: Int, lost: Int) {
+        guard var position = index else { return (0, 0) }
+        var count = 0
+        var lost = 0
+        while let packet = videoQueue.peekAt(position) {
+            count += 1
+            if packet.effectivePTS < time { lost += 1 }
+            position += 1
+        }
+        return (count, lost)
     }
 }

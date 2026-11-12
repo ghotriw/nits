@@ -799,6 +799,10 @@ public final class MediaDemuxer: @unchecked Sendable {
                     av_packet_unref(&pkt)
                     continue
                 }
+                if adaptiveBitrate.restart != nil, !admitRestarted(&pkt) {
+                    av_packet_unref(&pkt)
+                    continue
+                }
                 if pkt.stream_index == videoStreamIndex {
                     lastVideoReadTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
                 }
@@ -807,6 +811,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 secondarySubtitleTracker.readPacket(&pkt, in: input)
             } else if ret == Self.averrorEOF {
                 endVariantSwitchAtEOF()
+                adaptiveBitrate.restart = nil
                 readAheadState.withLock { $0 = .infinity }
                 subtitleTracker.finishCaptions(video: false)
             }
