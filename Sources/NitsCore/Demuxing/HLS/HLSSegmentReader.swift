@@ -278,6 +278,13 @@ final class HLSSegmentReader {
         return retainedFirst
     }
 
+    /// Gives up the download of the segment being read for another's (`HLSLane.abandonDownload`): a read of it is
+    /// interrupted, whether it waits for it now or comes to it later.
+    func abandonDownload() {
+        body?.abandon()
+        retainedFirst?.abandon()
+    }
+
     /// Gives up the download of the segment being read, but keeps the context and its streams: a probe whose run is
     /// not read on (`HLSLane.endDownload`), which a start's download (`HTTPSessionInput.Opening.start`) would go on with.
     func endDownload() {

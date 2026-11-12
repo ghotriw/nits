@@ -70,6 +70,9 @@ extension MediaDemuxer {
         /// The target was described by its own read when the switch began, or has been since and switches
         /// (`verifyVariantSwitchTarget`).
         var isTargetVerified = false
+        /// The old variant's download of the segment the new one joins was given up (`MediaDemuxer+Abandonment`): its streams
+        /// are not read while the switch is under way, and are again if it is given up.
+        var isPreviousAbandoned = false
     }
 
     /// Switches to variant `id` without a seek; see the type's description. Takes effect from the next read, and
@@ -99,6 +102,11 @@ extension MediaDemuxer {
             involved += [pending.streams, pending.previous]
             enabled.formUnion([pending.streams.video, pending.previous.video].compactMap { $0 })
             if pending.audioStream >= 0 { enabled.insert(pending.audioStream) }
+        }
+        if let pending = variantSwitch, pending.isPreviousAbandoned {
+            // What only the old variant has (its picture, the sound muxed into it) is not read: its download was given up.
+            // The renditions both have stay.
+            enabled.subtract(Set(pending.previous.all).subtracting(pending.streams.all))
         }
         for index in Set(involved.flatMap(\.all)) {
             input.setReading(enabled.contains(index), stream: index)
@@ -260,12 +268,21 @@ extension MediaDemuxer {
     /// audio takes over at once.
     func beginRequestedVariantSwitch() {
         followSelectedAudioTrack()
-        guard
-            let requested = variantSelection.withLock({ selection -> Int? in
-                defer { selection.requested = nil }
-                return selection.requested
-            })
-        else { return }
+        // A download given up for a lower variant's of the same segment (`requestAbandon`) is switched to first; a variant
+        // asked for besides stays asked for, and its turn is the next read's (it replaces this switch if unspliced).
+        let abandonment = adaptiveBitrate.pendingAbandon
+        adaptiveBitrate.pendingAbandon = nil
+        let requested: Int
+        if let abandonment {
+            requested = abandonment.target
+        } else if let asked = variantSelection.withLock({ selection -> Int? in
+            defer { selection.requested = nil }
+            return selection.requested
+        }) {
+            requested = asked
+        } else {
+            return
+        }
         if let pending = variantSwitch {
             if pending.spliceTime == nil {
                 cancelVariantSwitch(reporting: false)
@@ -277,7 +294,11 @@ extension MediaDemuxer {
             !variantSelection.withLock({ $0.rejected.contains(requested) }),
             let target = variants.first(where: { $0.id == requested }),
             let streams = variantStreams[requested], let previous = variantStreams[selected]
-        else { return }
+        else {
+            // The old download was given up for a switch that does not come: it is read again.
+            if let abandonment { input.restartDownload(ofVariant: abandonment.from) }
+            return
+        }
 
         var newSwitch = VariantSwitch(
             target: target, streams: streams, previous: previous, audioStream: -1,
@@ -286,12 +307,21 @@ extension MediaDemuxer {
         // A variant described by its own read switches as `isSwitchable` said; one described as another is checked once
         // its read describes it (`verifyVariantSwitchTarget`).
         newSwitch.isTargetVerified = input.variantDescription(id: requested) == .described
+        if let abandonment {
+            // The new variant reads the segment from its start, and the old one's streams are not read meanwhile.
+            newSwitch.isPreviousAbandoned = true
+            input.joinNext(atSequence: abandonment.sequence)
+        }
         variantSwitch = newSwitch
         // Its video and the rendition of the audio track selected; the other renditions stay off.
         applyStreamSelection()
+        input.joinNext(atSequence: nil)
         AppLog.info(
             .demuxer,
-            "\(streamingName): switching to \(target.width)x\(target.height) at \(target.bandwidth / 1000) kbit/s")
+            "\(streamingName): switching to \(target.width)x\(target.height) at \(target.bandwidth / 1000) kbit/s"
+                + (abandonment.map {
+                    ", segment \($0.sequence) read from its start (the download of variant \($0.from) given up)"
+                } ?? ""))
     }
 
     /// An audio track selected during a switch (`selectAudioTrack`, under `queueLock` alone) is spliced to in place of
@@ -538,6 +568,17 @@ extension MediaDemuxer {
             input.setReading(false, stream: index)
         }
         variantSwitch = nil
+        // Its download was given up for the new variant's: it is read again from the segment it was in, and the packets it had
+        // queued of that segment are read again over the ones queued: the decoder gets the same times twice. Not rare: a
+        // target still described as another variant (almost every rung at a start) is verified only by this switch's
+        // first read, and one that does not match ends here. The cut of the old variant's queued tail before the re-read
+        // (`DemuxerPacketBuffer.truncate`, 5b-3) is what makes this safe; until then it is a condition of turning the
+        // switch on (`abandonsDownloads`).
+        if pending.isPreviousAbandoned {
+            AppLog.warning(
+                .demuxer, "\(streamingName): a switch that took a download over was given up; reading it again")
+            applyStreamSelection()
+        }
         // The variant asked for never played: report the one still read, from where reading is.
         if reporting {
             reportVariant(at: readAheadState.withLock { $0 })

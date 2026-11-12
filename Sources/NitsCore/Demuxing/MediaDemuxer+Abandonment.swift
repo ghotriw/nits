@@ -69,6 +69,16 @@ extension MediaDemuxer {
         trace(source, segment, "gives up")
         if let last = adaptiveBitrate.abandonmentLog.last, last == (variant, segment.sequence) { return }
         adaptiveBitrate.abandonmentLog.last = (variant, segment.sequence)
+        // Acted on only when asked for, and where the cut is the simple one: the segment is ahead of the position.
+        var outcome = AbandonOutcome.refused("not asked for")
+        if abandonsDownloads {
+            outcome =
+                isAhead
+                ? requestAbandon(from: variant, to: decision.target, sequence: segment.sequence)
+                : .refused("the position is inside the segment")
+        }
+        let refusalText: String
+        if case .refused(let reason) = outcome { refusalText = " (not acted on: \(reason))" } else { refusalText = "" }
         let format = { (value: Double) in String(format: "%.2f", value) }
         let rate = decision.loadRate.map { "\(Int($0 / 1000)) kbit/s" } ?? "estimate"
         let queued = queuedPosition(queueLockHeld: queueLockHeld)
@@ -96,7 +106,7 @@ extension MediaDemuxer {
         }
         AppLog.info(
             .demuxer,
-            "ABR abandon (not acted on): variant \(variant) (\(bandwidth(of: variant)) kbit/s) segment \(segment.sequence) "
+            "ABR abandon\(refusalText): variant \(variant) (\(bandwidth(of: variant)) kbit/s) segment \(segment.sequence) "
                 + "[\(format(segment.start))..\(format(segment.start + segment.duration)) s] to variant \(decision.target) (\(bandwidth(of: decision.target)) kbit/s): "
                 + "\(progress.bytes >> 10)/\((progress.length ?? 0) >> 10) KB in \(format(progress.elapsed)) s at \(rate), "
                 + "remaining \(format(decision.remaining)) s, buffer \(format(buffer)) s, lower \(format(decision.lower)) s; "
@@ -220,5 +230,47 @@ extension MediaDemuxer {
         adaptiveBitrate.trace.emittedAt = now
         adaptiveBitrate.trace.counts = [:]
         adaptiveBitrate.trace.last = "-"
+    }
+}
+
+extension MediaDemuxer {
+    /// Whether the check gives a download up (`NITS_ABR_ABANDON=1`): off by default, until the cut that makes the switch
+    /// invisible is made (5b-3). A test sets `abandonsDownloads` on its demuxer.
+    static let abandonsEnabled = ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] == "1"
+
+    /// A download given up for a lower variant's of the same segment: the switch is made at the next read.
+    struct PendingAbandon: Sendable, Equatable {
+        /// The variant whose download is given up, the one it is replaced by, and the segment (media sequence number).
+        let from: Int
+        let target: Int
+        let sequence: Int
+    }
+
+    /// What came of a request to give a download up.
+    enum AbandonOutcome: Equatable {
+        case requested
+        /// Why not: said in the log.
+        case refused(String)
+
+        var isRequested: Bool { self == .requested }
+    }
+
+    /// Gives up the download in flight of variant `from`'s segment `sequence` for `target`'s, which reads it from its start
+    /// (`DemuxerInput.joinNext`): the bytes stop now (the read that waits for them is interrupted), the switch itself is
+    /// made at the next read (`beginRequestedVariantSwitch`), between packets, never inside the input's read. A target still
+    /// described as another variant (a rung of a ladder that was probed once) is taken as that: its first read verifies it
+    /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
+    /// reason, when it cannot be done: a switch is under way, or `target` is rejected, or has not the segment
+    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on).
+    func requestAbandon(from: Int, to target: Int, sequence: Int) -> AbandonOutcome {
+        guard variantSwitch == nil, adaptiveBitrate.pendingAbandon == nil else {
+            return .refused("a switch is under way")
+        }
+        guard input.variantDescription(id: target) != .rejected else { return .refused("the variant is rejected") }
+        if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(refusal.rawValue) }
+        adaptiveBitrate.pendingAbandon = PendingAbandon(from: from, target: target, sequence: sequence)
+        input.abandonDownload(ofVariant: from)
+        adaptiveBitrate.logic.noteAbandoned(at: adaptiveTime)
+        return .requested
     }
 }

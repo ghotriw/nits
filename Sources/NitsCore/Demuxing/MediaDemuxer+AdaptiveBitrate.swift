@@ -6,7 +6,9 @@ import Foundation
 /// (`MediaDemuxer+Variants.swift`), at the read position.
 extension MediaDemuxer {
     /// What the read-ahead thread measures and decides with: the read-ahead thread's alone from its start on (behind
-    /// `lock` and `queueLock` there).
+    /// `lock` and `queueLock` there). The check of a download (`noteSegmentInFlight`, `requestAbandon`) runs inside the
+    /// input's read, behind `lock` with `queueLock` released, and writes `abandonmentLog`, `trace`, `pendingAbandon` and
+    /// the logic: all of it on that one thread, so `queueLock` is not needed for them.
     struct AdaptiveBitrateState {
         /// Set up by `startReadAhead` for its limit.
         var logic = AdaptiveBitrateLogic()
@@ -20,6 +22,8 @@ extension MediaDemuxer {
         var nextInFlightPoll = 0.0
         /// What the checks saw (`trace`), when `NITS_ABR_TRACE` asks.
         var trace = AbandonTrace()
+        /// A download given up for a lower variant's of the same segment, taken by the next read (`requestAbandon`).
+        var pendingAbandon: PendingAbandon?
         let epoch = ContinuousClock.now
     }
 
@@ -123,7 +127,9 @@ extension MediaDemuxer {
     /// Asks for the variant `AdaptiveBitrateLogic` chooses, every `decisionInterval`. Behind `lock` and `queueLock`.
     func adaptBitrateIfDue() {
         let now = adaptiveTime
-        guard now >= adaptiveBitrate.nextDecision, variants.count > 1, variantSwitch == nil, !readAheadEnded else {
+        guard now >= adaptiveBitrate.nextDecision, variants.count > 1, variantSwitch == nil, !readAheadEnded,
+            adaptiveBitrate.pendingAbandon == nil
+        else {
             return
         }
         adaptiveBitrate.nextDecision = now + Self.decisionInterval

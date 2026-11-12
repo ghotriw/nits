@@ -68,6 +68,16 @@ protocol DemuxerInput: StreamDescriptions {
     /// Tells `observer` how far the segment being downloaded has got, now: for a check made while the read-ahead is full
     /// and the thread that reads does not wait for the download (on that thread, with `lock` held).
     func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void)
+    /// Gives up the download in flight of variant `id`'s picture, for a lower variant's of the same segment (HLS): a read of
+    /// it is interrupted (`averrorExit`), now or later. Called from the thread that reads.
+    func abandonDownload(ofVariant id: Int)
+    /// Reads variant `id` again from where the picture is, after its download was given up for a switch that did not come.
+    func restartDownload(ofVariant id: Int)
+    /// Why variant `id` cannot read segment `sequence` from its start as the one a download given up leaves (nil: it can): it lists it,
+    /// and the segment is not at a discontinuity (timestamps that restart).
+    func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal?
+    /// The variant switched to next joins at segment `sequence` (nil: behind the picture, as a switch does).
+    func joinNext(atSequence sequence: Int?)
 
     // MARK: Reading
 
@@ -129,6 +139,10 @@ protocol NetworkReadAccount: AnyObject {
 extension DemuxerInput {
     func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {}
     func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void) {}
+    func abandonDownload(ofVariant id: Int) {}
+    func restartDownload(ofVariant id: Int) {}
+    func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal? { .unsupported }
+    func joinNext(atSequence sequence: Int?) {}
     func variantDescription(id: Int) -> MediaDemuxer.VariantDescription { .described }
     func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription { .described }
 }
@@ -149,5 +163,19 @@ extension MediaDemuxer {
         let id: Int
         let bandwidth: Int
         let streams: VariantStreams
+    }
+}
+
+extension MediaDemuxer {
+    /// Why a variant cannot take over a segment whose download was given up (`DemuxerInput.canJoin`).
+    enum JoinRefusal: String, Sendable {
+        /// The input does not switch variants this way.
+        case unsupported = "the input cannot join a segment"
+        /// The variant lists no such segment (a live playlist that moved on) or it is a gap.
+        case noSegment = "the variant lists no such segment"
+        /// The segment starts at an `EXT-X-DISCONTINUITY`: its timestamps restart.
+        case atDiscontinuity = "the segment is at a discontinuity"
+        /// The next segment is at one: the segment itself is continuous, so this is cautious (kept apart to count it).
+        case beforeDiscontinuity = "the segment is just before a discontinuity"
     }
 }

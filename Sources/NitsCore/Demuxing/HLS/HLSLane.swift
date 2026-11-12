@@ -342,7 +342,10 @@ final class HLSLane: @unchecked Sendable {
         let was = self.isRead
         self.isRead = streams.contains { $0.isRead }
         // Nothing is downloaded for a lane nothing reads; one read again starts afresh where the picture is read (`reposition`).
-        if !self.isRead || !was { dropRun() }
+        if !self.isRead || !was {
+            dropRun()
+            isAbandoned = false
+        }
         if !self.isRead { releaseStart() }
     }
 
@@ -363,12 +366,16 @@ final class HLSLane: @unchecked Sendable {
         case containing(Double)
         /// The segment after the one that holds the time: where a variant switched to catches up (`catchUp`).
         case following(Double)
+        /// The segment with this media sequence number: where a variant switched to joins one given up (`join`), the time of
+        /// whose start would fall on the end of the segment before it as well.
+        case sequence(Int)
     }
     private var start: Start?
 
     /// Starts the next run at the segment that holds `time`, dropping what comes before `landing`.
     func reposition(at time: Double, landing: Landing? = nil) {
         dropRun()
+        isAbandoned = false
         skipped = 0
         start = .containing(time)
         nextRunReason = .reposition
@@ -435,6 +442,7 @@ final class HLSLane: @unchecked Sendable {
     /// be downloaded to be dropped.
     func catchUp(after time: Double) {
         dropRun()
+        isAbandoned = false
         skipped = 0
         start = .following(time)
         nextRunReason = .switch
@@ -443,6 +451,34 @@ final class HLSLane: @unchecked Sendable {
         current = nil
         landing = nil
     }
+
+    /// Starts the next run at the segment with media sequence number `sequence`, which another variant's lane was
+    /// downloading and has given up (`abandonDownload`): the picture is not behind the segment (as at `catchUp`), the
+    /// segment is the one the lane before it left half read.
+    func join(sequence: Int) {
+        dropRun()
+        skipped = 0
+        isAbandoned = false
+        start = .sequence(sequence)
+        nextRunReason = .switch
+        seekTarget = nil
+        resume = nil
+        current = nil
+        landing = nil
+    }
+
+    /// The download of the segment being read is given up, for a lower variant's of the same segment: a read of it is
+    /// interrupted (`HTTPSessionInput.abandon`), and the lane reads no more until it is read again (`setReading`, which
+    /// drops its run). Never an error of the lane's: the demuxer takes the interrupt for what it is
+    /// (`MediaDemuxer.readPacket`).
+    func abandonDownload() {
+        isAbandoned = true
+        reader?.abandonDownload()
+        startBody?.abandon()
+    }
+
+    /// `abandonDownload` was called and the lane has not been read again: its reads are interrupted.
+    private(set) var isAbandoned = false
 
     /// Reloads a live playlist the server has moved on from (not loaded for a target duration). Nil to go on; else the
     /// error to stop with.
@@ -466,6 +502,8 @@ final class HLSLane: @unchecked Sendable {
             // A time before the window (a rewind after it slid) is the window's first segment, not its edge.
             resume =
                 time < timeline.start ? timeline.entries.first : (timeline.entry(at: time) ?? timeline.entries.last)
+        case .sequence(let sequence):
+            resume = timeline.entry(sequence: sequence) ?? timeline.entries.last
         case .following(let time):
             if time < timeline.start {
                 resume = timeline.entries.first
@@ -527,6 +565,8 @@ final class HLSLane: @unchecked Sendable {
     func fill(before limit: Double? = nil, picture: Double? = nil) -> Int32 {
         guard isRead else { return MediaDemuxer.averrorEOF }
         if hasPending { return 0 }
+        // Given up for another's: nothing more is read of it (an interrupt, as a seek's, until the demuxer has switched).
+        if isAbandoned { return HTTPSessionInput.averrorExit }
         if isRejected { return Self.rejected }
         if let code = resolveStart() { return code }
         readLimit = limit

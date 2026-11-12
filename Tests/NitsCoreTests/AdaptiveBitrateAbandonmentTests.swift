@@ -208,3 +208,42 @@ struct AdaptiveBitrateAbandonmentMarginTests {
         #expect(decision.target == 1)
     }
 }
+
+@Suite("Abandoning a segment download: what the logic does with it")
+struct AdaptiveBitrateAbandonedStepTests {
+    private static let ladder: [AdaptiveBitrateLogic.Variant] = [
+        .init(id: 0, bandwidth: 500_000), .init(id: 1, bandwidth: 1_500_000), .init(id: 2, bandwidth: 5_000_000),
+    ]
+
+    private static func logic() -> AdaptiveBitrateLogic {
+        var logic = AdaptiveBitrateLogic()
+        for second in 0..<6 { logic.addSample(bytes: 500_000, seconds: 1, media: 1, at: Double(second)) }  // 4 Mbit/s
+        return logic
+    }
+
+    @Test("A download given up counts as a step down: no step back up until the wait is over")
+    func holdsOffAStepUp() {
+        var fresh = Self.logic()
+        // Standing on the lowest variant with a full read-ahead at 4 Mbit/s: it steps up.
+        #expect(fresh.choose(current: 0, among: Self.ladder, readAhead: 25, at: 12) != nil)
+
+        var abandoned = Self.logic()
+        abandoned.noteAbandoned(at: 11)
+        #expect(abandoned.choose(current: 0, among: Self.ladder, readAhead: 25, at: 12) == nil)
+        // The wait is `upSwitchInterval` from the switch (10 s), and longer when it undid a recent step up.
+        #expect(abandoned.choose(current: 0, among: Self.ladder, readAhead: 25, at: 22) != nil)
+    }
+
+    @Test("One that undoes a step up not yet held doubles the wait before the next")
+    func doublesTheWaitAfterAFailedProbe() {
+        var logic = Self.logic()
+        // Stepped up, and given up at once: a failed probe (the step up is inside `failedProbeWindow`). The estimate is no
+        // longer recent by then (it lives 20 s), so only the wait of a probe at a full read-ahead is left.
+        _ = logic.choose(current: 0, among: Self.ladder, readAhead: 25, at: 12)
+        logic.noteAbandoned(at: 13)
+        #expect(
+            logic.choose(current: 0, among: Self.ladder, readAhead: 25, at: 30) == nil, "17 s is not enough now: 20 are"
+        )
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 25, at: 40) != nil)
+    }
+}

@@ -388,6 +388,13 @@ final class HLSSegmentBody {
         return body
     }
 
+    /// Gives the download up for another's, so that a read of it is interrupted (`HTTPSessionInput.abandon`); not for a body
+    /// held in memory.
+    func abandon() {
+        guard case .input(let input, _) = source else { return }
+        input.abandon()
+    }
+
     /// Gives the download up (the segment is not read to its end).
     func close() {
         guard case .input(let input, _) = source, !isFinished else { return }

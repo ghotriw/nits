@@ -155,6 +155,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     var adaptiveBitrate = AdaptiveBitrateState()
     /// Replaces the configuration `startReadAhead` scales to its limit (tests). Set before it.
     var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
+    /// Whether a download that will not arrive in time is given up for a lower variant's (`requestAbandon`).
+    var abandonsDownloads = MediaDemuxer.abandonsEnabled
     /// What the input's reads transferred over the network (behind `lock`); nil for local media.
     var network: (any NetworkReadAccount)? { input.network }
     /// Decode timestamp of the latest picture `readPacket` handed on (video time base), behind `lock`.
@@ -776,6 +778,14 @@ public final class MediaDemuxer: @unchecked Sendable {
             // A seek waiting for the input interrupted the read (`lockIO(yielding:)`): FFmpeg may report it as the end of the
             // input, which is none, so nothing below (the end of the input's bookkeeping) is done for it.
             if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
+            // A download given up for another's interrupted the read (`requestAbandon`): it is no end, nor an error, nor a
+            // measure of the network. The switch is made, between packets, and the read goes on in the variant it joins.
+            if ret == HTTPSessionInput.averrorExit, adaptiveBitrate.pendingAbandon != nil, !interruptContext.shouldAbort
+            {
+                _ = network?.transferMeter?.take()
+                beginRequestedVariantSwitch()
+                continue
+            }
             // The playlist is reloaded inside the read: the window it tells moved.
             if isLive, liveHistory == nil { publishLiveWindow() }
             // The variant switched to was described by its first read, inside this one.

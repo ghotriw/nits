@@ -384,6 +384,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var requestedAt: ContinuousClock.Instant?
         var answeredAt: ContinuousClock.Instant?
         var lastObserved: ContinuousClock.Instant?
+        /// The download was given up for another's (`abandon`): a read waiting for it is interrupted, as a seek's would.
+        var isAbandoned = false
     }
 
     static let highWater = 32 << 20
@@ -739,7 +741,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// Waits for `condition` on the state, checking `shouldAbort` every 50 ms: false when interrupted.
     private func wait(until condition: (State) -> Bool) -> Bool {
         while !state.withLockUnchecked({ condition($0) }) {
-            if shouldAbort() { return false }
+            if shouldAbort() || state.withLock({ $0.isAbandoned }) { return false }
             observeIfDue()
             _ = changed.wait(timeout: .now() + .milliseconds(50))
         }
@@ -878,6 +880,15 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     func seek(_ offset: Int64, _ whence: Int32) -> Int64 {
         guard whence & AVSEEK_SIZE != 0, let size = state.withLock({ $0.fileSize }) else { return Int64(-ENOSYS) }
         return size
+    }
+
+    /// Gives the download up for another's: the task is cancelled, and a read waiting for it, now or later, is interrupted
+    /// (`averrorExit`, as a seek interrupts it) instead of reading what is left of the body as the end of a segment.
+    /// What it received stays reported as a transfer (`reportTransfer`): the link did carry it.
+    func abandon() {
+        state.withLockUnchecked { $0.isAbandoned = true }
+        close()
+        changed.signal()
     }
 
     func close() {

@@ -448,6 +448,41 @@ struct HLSInputTests {
         #expect(cues.contains { abs($0.pts - 3.0) < 0.15 }, "\(cues.map(\.pts))")
     }
 
+    @Test("A lane that takes over a segment given up starts at it, whichever stream is switched first")
+    func joinsAtTheSegmentGivenUp() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        // Segments of 2 s: sequence 6 starts at 12 s. The picture is read to about 5 s, the lane given up is in segment 6.
+        for oldFirst in [true, false] {
+            let input = try #require(Self.open(stand, "master.m3u8"))
+            let candidates = try #require(input.variantCandidates())
+            let top = try #require(candidates.max { $0.bandwidth < $1.bandwidth })
+            let low = try #require(candidates.min { $0.bandwidth < $1.bandwidth })
+            while let packet = Self.drain(input, limit: 1).packets.first, !(packet.isVideo && packet.dts > 5) {}
+            let old = Set(top.streams.all).subtracting(low.streams.all)
+            let new = Set(low.streams.all)
+            // As `applyStreamSelection` does, in an order that a `Set` leaves to chance.
+            input.joinNext(atSequence: 6)
+            if oldFirst {
+                for index in old { input.setReading(false, stream: index) }
+                for index in new { input.setReading(true, stream: index) }
+            } else {
+                for index in new { input.setReading(true, stream: index) }
+                for index in old { input.setReading(false, stream: index) }
+            }
+            input.joinNext(atSequence: nil)
+            let lowVideo = try #require(low.streams.video)
+            var first: Packet?
+            while first == nil, let packet = Self.drain(input, limit: 1).packets.first {
+                if packet.stream == lowVideo { first = packet }
+            }
+            let start = try #require(first)
+            #expect(
+                start.pts >= 11.5, "Started at \(start.pts) s, not in segment 6 (12 s); old stream first: \(oldFirst)")
+            input.close()
+        }
+    }
+
     @Test("A subtitle rendition without cues for a stretch is read no further ahead than the picture")
     func sparseSubtitlesDoNotHoldTheRead() throws {
         guard let stand = try Self.stand(.hlsRenditions) else { return }

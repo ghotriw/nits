@@ -138,6 +138,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     private var lastTime = 0.0
     /// The variant being caught up for a switch: its pictures are not where the picture is.
     private var catchingUp: HLSLane?
+    /// The segment the variant read next joins at (`joinNext(atSequence:)`), instead of behind the picture.
+    private var joinSequence: Int?
     /// The variants described from another rung's probe (`redescribe`): pending until their first read, then described
     /// or rejected. A variant not in it is described by a probe of its own.
     private let descriptions = OSAllocatedUnfairLock<[Int: MediaDemuxer.VariantDescription]>(initialState: [:])
@@ -850,6 +852,39 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
     }
 
+    func abandonDownload(ofVariant id: Int) {
+        guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane) else { return }
+        lanes[variant.lane].abandonDownload()
+    }
+
+    func restartDownload(ofVariant id: Int) {
+        guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane),
+            lanes[variant.lane].isRead
+        else { return }
+        lanes[variant.lane].reposition(at: lastTime)
+    }
+
+    func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal? {
+        guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane) else {
+            return .noSegment
+        }
+        let lane = lanes[variant.lane]
+        guard lane.kind == .primary, let entry = lane.timeline.entry(sequence: sequence), !entry.segment.isGap else {
+            return .noSegment
+        }
+        // A segment at a discontinuity has timestamps that restart; one just before it is continuous, but the variants'
+        // keyframes are not known to line up at the break the new lane reads on to.
+        if entry.segment.isDiscontinuity { return .atDiscontinuity }
+        if let next = lane.timeline.entry(sequence: sequence + 1), next.segment.isDiscontinuity {
+            return .beforeDiscontinuity
+        }
+        return nil
+    }
+
+    func joinNext(atSequence sequence: Int?) {
+        joinSequence = sequence
+    }
+
     // MARK: Reading
 
     /// Hands out the packet that decodes first of the lanes'. Each lane read holds its next packet, but a subtitle
@@ -946,9 +981,14 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let wasRead = lane.isRead
         lane.setReading(isRead, slot: info.slot)
         guard lane.isRead, !wasRead else { return }
-        // A variant read while another is (a switch): it joins at a segment ahead of the picture. Else a rendition read
-        // again starts where the picture is read, not where it was left.
-        if lane.kind == .primary, lanes.contains(where: { $0 !== lane && $0.kind == .primary && $0.isRead }) {
+        // A variant that takes over a segment given up (`joinNext`) starts at it, whether the lane it replaces is still read or
+        // not: the demuxer switches the streams in an order that a `Set` leaves to chance (the old ones off before the new
+        // are on leaves no other variant read). Else a variant read while another is (a switch) joins at a segment ahead of
+        // the picture; else a rendition read again starts where the picture is read, not where it was left.
+        if lane.kind == .primary, let joinSequence {
+            catchingUp = lane
+            lane.join(sequence: joinSequence)
+        } else if lane.kind == .primary, lanes.contains(where: { $0 !== lane && $0.kind == .primary && $0.isRead }) {
             catchingUp = lane
             lane.catchUp(after: lastTime)
         } else {

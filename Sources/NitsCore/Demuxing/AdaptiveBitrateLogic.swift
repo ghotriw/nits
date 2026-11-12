@@ -152,6 +152,18 @@ struct AdaptiveBitrateLogic: Sendable {
         measuredWeight += weight
     }
 
+    /// A download was given up for a lower variant's (`MediaDemuxer.requestAbandon`): a step down as far as `choose` is
+    /// concerned, which holds off a step back up for `downSwitchInterval`, and doubles the wait before the next when it undoes
+    /// a step up that has not stood for `failedProbeWindow`.
+    mutating func noteAbandoned(at time: Double) {
+        lastSwitchTime = time
+        lastStepDownTime = time
+        if time - lastStepUpTime <= config.failedProbeWindow {
+            probeBackoff = min(probeBackoff * 2, config.maxProbeBackoff)
+        }
+        misfitSince = nil
+    }
+
     /// The variant to switch to, or nil to stay. `variants` are the switchable ones; `current` is read now.
     /// `isReadAheadReal` is false when `readAhead` was raised to stand for a full one (a live stream at its edge, where
     /// only seconds are buffered): the estimate-based probe, which a drained buffer would not survive, waits.
