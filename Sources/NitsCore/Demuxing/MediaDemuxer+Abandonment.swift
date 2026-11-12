@@ -145,7 +145,7 @@ extension MediaDemuxer {
                 cut.map {
                     requestAbandon(
                         from: variant, to: decision.target, sequence: segment.sequence, start: segment.start,
-                        cut: place == .ahead ? nil : $0)
+                        cut: place == .ahead ? nil : $0, download: download)
                 } ?? .refused(.noKeyframeQueued)
         }
         guard adaptiveBitrate.abandonmentLog.record(outcome, variant: variant, sequence: segment.sequence) else {
@@ -383,8 +383,12 @@ extension MediaDemuxer {
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
     /// reason, when it cannot be done: a switch is under way, or `target` is rejected, or has not the segment
     /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on). `cut` is the queued
-    /// keyframe the cut is expected at when the position is inside the segment.
-    func requestAbandon(from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil) -> AbandonOutcome {
+    /// keyframe the cut is expected at when the position is inside the segment; `download` is what the rule judged, which
+    /// the estimate learns from (`AdaptiveBitrateLogic.noteAbandoned`).
+    func requestAbandon(
+        from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil,
+        download: AdaptiveBitrateLogic.Download? = nil
+    ) -> AbandonOutcome {
         guard variantSwitch == nil, adaptiveBitrate.pendingAbandon == nil else {
             return .refused(.switchUnderWay)
         }
@@ -393,7 +397,12 @@ extension MediaDemuxer {
         adaptiveBitrate.pendingAbandon = PendingAbandon(
             from: from, target: target, sequence: sequence, start: start, cut: cut)
         input.abandonDownload(ofVariant: from)
-        adaptiveBitrate.logic.noteAbandoned(at: adaptiveTime)
+        let before = adaptiveBitrate.logic.estimate
+        adaptiveBitrate.logic.noteAbandoned(
+            at: adaptiveTime, download: download, targetBandwidth: variants.first { $0.id == target }?.bandwidth)
+        let kbps = { (value: Double?) in value.map { "\(Int($0 / 1000)) kbit/s" } ?? "none" }
+        let (was, now) = (kbps(before), kbps(adaptiveBitrate.logic.estimate))
+        if was != now { AppLog.info(.demuxer, "ABR abandon estimate: \(was) -> \(now) for variant \(target)") }
         return .requested
     }
 }

@@ -155,13 +155,38 @@ struct AdaptiveBitrateLogic: Sendable {
     /// A download was given up for a lower variant's (`MediaDemuxer.requestAbandon`): a step down as far as `choose` is
     /// concerned, which holds off a step back up for `downSwitchInterval`, and doubles the wait before the next when it undoes
     /// a step up that has not stood for `failedProbeWindow`.
-    mutating func noteAbandoned(at time: Double) {
+    ///
+    /// As hls.js's `_abandonRulesCheck` does, the estimate learns of it: what the download brought since its first answer
+    /// is a sample (weighed by its seconds: it is the slow link's), and an estimate on which the target fits `upSafety`
+    /// (hls.js's `abrBandWidthUpFactor`; its test, not whether a variant above the target would) is set to what keeps the
+    /// target and no more (`resetEstimator(nextLoadLevelBitrate)`). Nothing is set with no estimate (nothing measured), nor
+    /// while the latency alone takes `safety` (`choose` goes by that then). Else the estimate of the fast link before the drop, which a few seconds of
+    /// a slow one hardly move, took the stream back up to the variant given up (measured: 1920p chosen again 2 to 20 s
+    /// after its download was given up on a 2 Mbit/s link, and its next segment ran the buffer from 40 s down to 9.5 s).
+    mutating func noteAbandoned(at time: Double, download: Download? = nil, targetBandwidth: Int? = nil) {
+        if let download, download.measuredBytes > 0, download.transferring > 0 {
+            addSample(bytes: download.measuredBytes, seconds: download.transferring, media: 0, at: time)
+        }
+        // The target fits `safety` with the latency's share, as `choose` reckons, and nothing higher fits `upSafety`.
+        let share = config.safety - (latencyShare ?? 0)
+        if let targetBandwidth, targetBandwidth > 0, share > 0,
+            estimate.map({ $0 * config.upSafety > Double(targetBandwidth) }) ?? false
+        {
+            setEstimate(Double(targetBandwidth) / share, at: time)
+        }
         lastSwitchTime = time
         lastStepDownTime = time
         if time - lastStepUpTime <= config.failedProbeWindow {
             probeBackoff = min(probeBackoff * 2, config.maxProbeBackoff)
         }
         misfitSince = nil
+    }
+
+    /// Both averages to `value` bits a second, as if measured now; the samples after it move them as any.
+    private mutating func setEstimate(_ value: Double, at time: Double) {
+        averages = [(value, 1), (value, 1)]
+        measuredWeight = max(measuredWeight, config.minimumMeasurement)
+        lastSampleTime = time
     }
 
     /// The variant to switch to, or nil to stay. `variants` are the switchable ones; `current` is read now.

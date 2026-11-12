@@ -246,4 +246,52 @@ struct AdaptiveBitrateAbandonedStepTests {
         )
         #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 25, at: 40) != nil)
     }
+
+    /// What the top variant's download brought before it was given up: 1.2 Mbit/s for 4 s after the first answer.
+    private static let slowDownload = AdaptiveBitrateLogic.Download(
+        variant: 2, duration: 6, bytes: 600_000, length: 3_750_000, elapsed: 4.2, firstAnswer: 0.2, transferring: 4,
+        measuredBytes: 600_000)
+
+    @Test("An estimate of the link before the drop is set to what keeps the target, so it does not step back up")
+    func estimateKeepsTheTarget() throws {
+        // 40 Mbit/s measured before the drop: it would step up from the lowest variant at once, past what was given up.
+        var logic = AdaptiveBitrateLogic()
+        for second in 0..<6 { logic.addSample(bytes: 5_000_000, seconds: 1, media: 1, at: Double(second)) }
+        logic.noteAbandoned(at: 10, download: Self.slowDownload, targetBandwidth: 500_000)
+        let estimate = try #require(logic.estimate)
+        // The target fits `safety`, no more than it `upSafety`.
+        #expect(500_000 <= estimate * logic.config.safety + 1)
+        #expect(1_500_000 > estimate * logic.config.upSafety)
+        // Long past every wait, on the estimate alone it stays and does not come down further either.
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 15, at: 25) == nil)
+    }
+
+    @Test("An estimate that already holds the target is only given the download's sample")
+    func lowEstimateIsKept() throws {
+        // 0.6 Mbit/s, and the download given up brought 0.4: 0.7 of the estimate does not reach 0.5 Mbit/s, so nothing is
+        // set; the slow sample lowers it.
+        var logic = AdaptiveBitrateLogic()
+        for second in 0..<6 { logic.addSample(bytes: 75_000, seconds: 1, media: 1, at: Double(second)) }
+        let before = try #require(logic.estimate)
+        let slower = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 200_000, length: 3_750_000, elapsed: 4.2, firstAnswer: 0.2,
+            transferring: 4, measuredBytes: 200_000)
+        logic.noteAbandoned(at: 10, download: slower, targetBandwidth: 500_000)
+        let after = try #require(logic.estimate)
+        #expect(after < before)
+        #expect(abs(after - 500_000 / logic.config.safety) > 1_000, "Not set to the target's")
+    }
+
+    @Test("Nothing measured, no estimate is made up")
+    func noEstimateIsMadeUp() {
+        // No sample before, and the download brought nothing past its opening: still nothing measured.
+        var logic = AdaptiveBitrateLogic()
+        let nothing = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 0, length: 3_750_000, elapsed: 4.2, firstAnswer: nil, transferring: 0,
+            measuredBytes: 0)
+        logic.noteAbandoned(at: 10, download: nothing, targetBandwidth: 500_000)
+        #expect(logic.estimate == nil)
+        logic.noteAbandoned(at: 11, download: nil, targetBandwidth: 500_000)
+        #expect(logic.estimate == nil)
+    }
 }
