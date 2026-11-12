@@ -83,6 +83,13 @@ final class HLSSegmentReader {
     private(set) var timelineOffset: Double?
     private var unwrappers: [Int: TimestampUnwrapper] = [:]
     private var shifts: [Int: Int64] = [:]
+    /// Where each sound stream's last packet ended (its time plus its duration, the context's ticks, within the stream's
+    /// wrap): the frames after the first of an MPEG-TS sound PES read during an analysis cut short (`openContext`: its
+    /// frame count with a picture, `max_analyze_duration` for a sound rendition alone) come with no time and no duration,
+    /// and follow it, as FFmpeg's own analysis would have timed them (`compute_pkt_fields`). Without, the sound of a
+    /// rendition lost 0.3 s at every opening. The codec's frame stands for a missing duration: right for AAC-LC, AC-3 and
+    /// MP3; HE-AAC, whose frame an analysis cut short may not have doubled, would place those first frames too close.
+    private var soundEnds: [Int: Int64] = [:]
     /// Where each segment's bytes start in what the context has read (init section and segments as one stream), for the
     /// segments whose packets may still come: a packet's `pos` says which it is from (`noteSegmentStart`).
     private var segmentStarts: [(offset: Int64, segment: HLSSegment, number: Int)] = []
@@ -433,7 +440,8 @@ final class HLSSegmentReader {
             // MPEG-TS, which may add streams as it reads (`AVFMTCTX_NOHEADER`), reads up to `max_analyze_duration`
             // whatever it found, and a frame count cut short there left its sound without decode times after the first
             // packet: it keeps FFmpeg's count, and the limit is a second, so that the picture's first frames are among
-            // what it reads where the sound comes ahead of them.
+            // what it reads where the sound comes ahead of them. What a limit still leaves untimed (a sound rendition
+            // alone, at `max_analyze_duration`), `place` times (`soundEnds`).
             if ctx.pointee.ctx_flags & AVFMTCTX_NOHEADER == 0 {
                 ctx.pointee.fps_probe_size = Int32(knownVideoDelay)
             }
@@ -451,6 +459,7 @@ final class HLSSegmentReader {
         context = ctx
         unwrappers = [:]
         shifts = [:]
+        soundEnds = [:]
         for stream in streams {
             let index = Int(stream.pointee.index)
             if let unwrapper = TimestampUnwrapper(bits: stream.pointee.pts_wrap_bits) {
@@ -540,6 +549,29 @@ final class HLSSegmentReader {
             let stream = context.pointee.streams[Int(packet.stream_index)]
         else { return }
         let index = Int(packet.stream_index)
+        // Sound has no reordering: a frame without a time follows the one before it (`soundEnds`).
+        if stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
+            if packet.pts == Int64.min, packet.dts == Int64.min, let end = soundEnds[index] {
+                packet.pts = end
+                packet.dts = end
+            }
+            var duration = packet.duration
+            let frameSize = stream.pointee.codecpar.pointee.frame_size
+            let sampleRate = stream.pointee.codecpar.pointee.sample_rate
+            if duration <= 0, frameSize > 0, sampleRate > 0 {
+                duration = av_rescale_q(
+                    Int64(frameSize), AVRational(num: 1, den: sampleRate), stream.pointee.time_base)
+            }
+            let start = packet.pts != Int64.min ? packet.pts : packet.dts
+            if start != Int64.min, duration > 0 {
+                // Within the wrap, as the container could have carried it: the unwrapping places it then.
+                let bits = stream.pointee.pts_wrap_bits
+                let end = start &+ duration
+                soundEnds[index] = bits > 0 && bits < 63 ? end & ((Int64(1) << Int64(bits)) - 1) : end
+            } else {
+                soundEnds[index] = nil
+            }
+        }
         if timelineOffset == nil, !isSegmentwise {
             // Nothing told a start time: the first packet's (before the unwrapping, which the offset starts).
             if let ticks = packet.pts != Int64.min ? packet.pts : (packet.dts != Int64.min ? packet.dts : nil) {

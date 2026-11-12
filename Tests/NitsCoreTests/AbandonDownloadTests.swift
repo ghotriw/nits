@@ -11,10 +11,9 @@ import Testing
 @Suite("Giving a download up", .serialized, .hostDependent, .networkServer, .realtimePlayback, .backstopTimeLimit)
 struct AbandonDownloadTests {
     /// The pictures and the sound taken run on without a hole or a repeat: each picture a frame after the one before (30 fps),
-    /// the sound's packets in order with no gap of more than a tenth of a second (from `soundFrom` seconds on).
+    /// the sound's packets in order with no gap of more than a tenth of a second.
     private func expectContinuous(
-        _ consumer: AdaptiveBitrateTests.RealtimeConsumer, soundFrom: Double = -.infinity,
-        sourceLocation: SourceLocation = #_sourceLocation
+        _ consumer: AdaptiveBitrateTests.RealtimeConsumer, sourceLocation: SourceLocation = #_sourceLocation
     ) {
         let pictures = consumer.pictures.map(\.pts)
         for (before, after) in zip(pictures, pictures.dropFirst()) {
@@ -25,7 +24,7 @@ struct AbandonDownloadTests {
                 after - before < 0.1, "A hole of \(after - before) s in the pictures after \(before)",
                 sourceLocation: sourceLocation)
         }
-        let audio = consumer.audio.filter { $0 >= soundFrom }
+        let audio = consumer.audio
         for (before, after) in zip(audio, audio.dropFirst()) {
             #expect(after >= before, "Sound out of order: \(before) then \(after)", sourceLocation: sourceLocation)
             #expect(
@@ -394,9 +393,7 @@ struct AbandonDownloadTests {
             (setup.consumer.pictures.last?.pts ?? 0) > 13.5
         }
         #expect(past, "Playback did not get past segment 1: \(String(describing: setup.consumer.pictures.last?.pts))")
-        // From 1 s on: the opening of an MPEG-TS rendition loses its first PES's later frames (0.0-0.28 s), whatever ABR
-        // does (`hlsRenditions` too); the cut is at 8 s.
-        expectContinuous(setup.consumer, soundFrom: 1)
+        expectContinuous(setup.consumer)
         // The sound went on from its own lane: none of its segments was asked for again.
         let sound = setup.server.requests.map(\.path).filter { $0.hasPrefix("rEnglish_") }
         #expect(Set(sound).count == sound.count, "\(sound)")

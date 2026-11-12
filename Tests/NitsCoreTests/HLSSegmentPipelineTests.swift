@@ -286,6 +286,21 @@ struct HLSSegmentPipelineTests {
         #expect(packets.filter(\.isVideo).count >= 100, "The segments before it were read")
     }
 
+    @Test("Every frame of an MPEG-TS sound rendition has a time, the first PES's after its first too")
+    func soundRenditionFramesAreTimed() throws {
+        guard let stand = try Self.stand(.hlsRenditions) else { return }
+        defer { stand.server.stop() }
+        let media = try stand.playlist("vEnglish.m3u8")
+        let (packets, _) = Self.drain(try Self.reader(stand, media, start: 0))
+        let times = packets.map(\.pts)
+        // FFmpeg's analysis, cut short at the open, gave the frames after a PES's first no time: 0.3 s of sound lost.
+        #expect(times.count > 100)
+        #expect(times.allSatisfy(\.isFinite) && times.allSatisfy { abs($0) < 1e6 }, "\(times.prefix(16))")
+        for (before, after) in zip(times, times.dropFirst()) {
+            #expect(after > before && after - before < 0.03, "\(before) then \(after)")
+        }
+    }
+
     @Test("A download given up is an interrupt to its reader, also once its cancelled task has ended")
     func abandonedBodyIsInterrupted() throws {
         guard let stand = try Self.stand(.hlsVariants) else { return }
