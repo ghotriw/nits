@@ -136,6 +136,11 @@ public enum SyntheticTestMediaFactory {
         /// HLS master playlist (40s, 2s segments, MPEG-TS) with three constant-bitrate H.264 + AAC variants, so a
         /// segment's size matches its `BANDWIDTH`: 320x180 at ~0.43 Mbit/s, 480x270 at ~0.97, 640x360 at ~2.66
         case hlsLadder
+        /// `hlsLadder` in 6 s segments of three 2 s GOPs each (30 s, keyframes at every even second in every rung), so a
+        /// segment's later keyframes can be queued while the position is inside it. `filename` (`master.m3u8`) lists the
+        /// rungs with their sound muxed (`v0`…`v2`, MPEG-TS); `rendition.m3u8` lists the same pictures without sound
+        /// (`r0`…`r2`) and one AAC rendition (`rEnglish`) every rung shares
+        case hlsLadderShortGOP
         /// A media playlist (12s, MPEG-TS) of a 4s and an 8s segment with `EXT-X-DISCONTINUITY` between them, each made on its own
         /// and starting at the same timestamps: the second segment's go back. Made as a directory; `filename` is the playlist
         case hlsDiscontinuity
@@ -213,6 +218,7 @@ public enum SyntheticTestMediaFactory {
         var isHLS: Bool {
             [
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
+                .hlsLadderShortGOP,
                 .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsMixedSoundLadder, .hlsDiscontinuityResize,
                 .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
                 .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
@@ -340,6 +346,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_hls_variants_single_file/master.m3u8"
             case .hlsLadder:
                 return "synth_hls_ladder/master.m3u8"
+            case .hlsLadderShortGOP:
+                return "synth_hls_ladder_short_gop/master.m3u8"
             case .hlsDiscontinuity:
                 return "synth_hls_discontinuity/media.m3u8"
             case .hlsMixedSoundLadder:
@@ -568,6 +576,8 @@ public enum SyntheticTestMediaFactory {
                 guard makeHLSLiveAds(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsMixedSoundLadder {
                 guard makeHLSMixedSoundLadder(ffmpeg, in: directory, preset: preset) else { return nil }
+            } else if preset == .hlsLadderShortGOP {
+                guard makeHLSLadderShortGOP(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityLadder {
                 guard makeHLSDiscontinuityLadder(ffmpeg, in: directory, preset: preset) else { return nil }
             } else if preset == .hlsDiscontinuityFMP4 || preset == .hlsDiscontinuityFMP4AudioRendition
@@ -705,6 +715,47 @@ public enum SyntheticTestMediaFactory {
             """
         return FileManager.default.createFile(
             atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+    }
+
+    /// `hlsLadderShortGOP`: the ladder of `hlsLadder` (constant bitrate, the same picture scaled) in 6 s segments with a
+    /// keyframe every 2 s, forced at the same times in every rung; made twice, with the sound muxed (`master.m3u8`) and as
+    /// a rendition the rungs share (`rendition.m3u8`).
+    private static func makeHLSLadderShortGOP(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        let file = { (name: String) in directory.appendingPathComponent(name).path }
+        let rates = ["300k", "800k", "2500k"].enumerated().flatMap { index, rate in
+            [
+                "-b:v:\(index)", rate, "-minrate:v:\(index)", rate, "-maxrate:v:\(index)", rate,
+                "-bufsize:v:\(index)", rate,
+            ]
+        }
+        let input = [
+            "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=30",
+            "-filter_complex", "[0:v]split=3[a][b][high];[a]scale=320:180[low];[b]scale=480:270[mid]",
+        ]
+        let encode =
+            [
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60",
+                "-sc_threshold", "0", "-force_key_frames", "expr:gte(t,n_forced*2)", "-x264-params", "nal-hrd=cbr",
+                "-c:a", "aac", "-b:a", "64k",
+            ] + rates
+        let hls = { (prefix: String, master: String) in
+            [
+                "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod", "-master_pl_name", master,
+                "-hls_segment_filename", file("\(prefix)%v_%03d.ts"),
+            ]
+        }
+        let muxed =
+            input + [
+                "-map", "[low]", "-map", "1:a", "-map", "[mid]", "-map", "1:a", "-map", "[high]", "-map", "1:a",
+            ] + encode + ["-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2"] + hls("v", "master.m3u8") + [file("v%v.m3u8")]
+        let rendition =
+            input + ["-map", "[low]", "-map", "[mid]", "-map", "[high]", "-map", "1:a"] + encode + [
+                "-var_stream_map",
+                "v:0,agroup:aud v:1,agroup:aud v:2,agroup:aud a:0,agroup:aud,language:eng,name:English,default:yes",
+            ] + hls("r", "rendition.m3u8") + [file("r%v.m3u8")]
+        return runFFmpeg(ffmpeg, arguments: muxed, preset: preset)
+            && runFFmpeg(ffmpeg, arguments: rendition, preset: preset)
     }
 
     /// `hlsMixedSoundLadder`: each rung encoded on its own (the same picture, scaled; the same timestamps), as an HLS media
@@ -1185,7 +1236,8 @@ public enum SyntheticTestMediaFactory {
         switch preset {
         case .captionsH264TS, .captionsH264TSLastStep, .captionsH264MKV, .hlsVariants, .hlsVariantsFMP4,
             .hlsVariantsAV1, .hlsVariantsSingleFile,
-            .hlsRenditions, .hlsLadder, .hlsDiscontinuity, .hlsDiscontinuityLadder, .hlsMixedSoundLadder,
+            .hlsRenditions, .hlsLadder, .hlsLadderShortGOP, .hlsDiscontinuity, .hlsDiscontinuityLadder,
+            .hlsMixedSoundLadder,
             .hlsDiscontinuityResize,
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
             .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,

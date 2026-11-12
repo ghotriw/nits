@@ -27,15 +27,28 @@ struct AdaptiveBitrateTests {
         private let state = OSAllocatedUnfairLock(initialState: State())
         private let task: Task<Void, Never>
 
-        init(_ demuxer: MediaDemuxer, startAhead: Double = 2) {
+        /// `audioAhead`: seconds of sound taken ahead of the last picture shown, as a renderer's queue holds; all that is
+        /// queued when nil.
+        init(_ demuxer: MediaDemuxer, startAhead: Double = 2, audioAhead: Double? = nil) {
             let state = self.state
             task = Task.detached {
                 while demuxer.readAheadSeconds < startAhead, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(20))
                 }
                 var clock: (start: ContinuousClock.Instant, pts: Double)?
+                // Whether the next queued sound is within `audioAhead` of the picture shown.
+                let isAudioDue = { () -> Bool in
+                    guard let audioAhead else { return true }
+                    let limit = (state.withLock { $0.pictures.last?.pts } ?? 0) + audioAhead
+                    demuxer.queueLock.lock()
+                    defer { demuxer.queueLock.unlock() }
+                    guard let next = demuxer.audioQueue.peek(), demuxer.audioTimebase.den > 0 else { return false }
+                    let pts = next.pts != Int64.min ? next.pts : next.dts
+                    let base = demuxer.audioTimebase
+                    return pts == Int64.min || Double(pts) * Double(base.num) / Double(base.den) <= limit
+                }
                 while !Task.isCancelled {
-                    while let packet = demuxer.nextAudioPacket() {
+                    while isAudioDue(), let packet = demuxer.nextAudioPacket() {
                         let base = demuxer.audioTimebase
                         let pts = packet.pts != Int64.min ? packet.pts : packet.dts
                         if pts != Int64.min, base.den > 0 {

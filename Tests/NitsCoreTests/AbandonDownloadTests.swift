@@ -5,15 +5,16 @@ import Testing
 @testable import NitsCore
 
 /// A segment download given up for a lower variant's of the same segment (`MediaDemuxer.requestAbandon`), against
-/// `TestHTTPServer` throttled. Only the mechanics of 5b-2: the old variant's bytes stop, the demuxer takes the interrupt as
-/// none, the new variant reads the segment from its start, and playback goes on. The cut that makes the switch invisible is
-/// not made yet: the splice is the ordinary one.
+/// `TestHTTPServer` throttled: the old variant's bytes stop, the demuxer takes the interrupt as none, the new variant reads
+/// the segment from its start and is spliced in where the old one's queued tail is cut, ahead of the position or inside the
+/// segment (`hlsLadderShortGOP`), and a download given up and read again is spliced into what was queued of it.
 @Suite("Giving a download up", .serialized, .hostDependent, .networkServer, .realtimePlayback, .backstopTimeLimit)
 struct AbandonDownloadTests {
     /// The pictures and the sound taken run on without a hole or a repeat: each picture a frame after the one before (30 fps),
-    /// the sound's packets in order with no gap of more than a tenth of a second.
+    /// the sound's packets in order with no gap of more than a tenth of a second (from `soundFrom` seconds on).
     private func expectContinuous(
-        _ consumer: AdaptiveBitrateTests.RealtimeConsumer, sourceLocation: SourceLocation = #_sourceLocation
+        _ consumer: AdaptiveBitrateTests.RealtimeConsumer, soundFrom: Double = -.infinity,
+        sourceLocation: SourceLocation = #_sourceLocation
     ) {
         let pictures = consumer.pictures.map(\.pts)
         for (before, after) in zip(pictures, pictures.dropFirst()) {
@@ -24,7 +25,7 @@ struct AbandonDownloadTests {
                 after - before < 0.1, "A hole of \(after - before) s in the pictures after \(before)",
                 sourceLocation: sourceLocation)
         }
-        let audio = consumer.audio
+        let audio = consumer.audio.filter { $0 >= soundFrom }
         for (before, after) in zip(audio, audio.dropFirst()) {
             #expect(after >= before, "Sound out of order: \(before) then \(after)", sourceLocation: sourceLocation)
             #expect(
@@ -238,13 +239,155 @@ struct AbandonDownloadTests {
         #expect(prefixes.filter { $0 == prefixes.first }.count >= 2, "Asked for: \(again.map(\.path))")
     }
 
+    // MARK: Inside the segment (`hlsLadderShortGOP`: 6 s segments, a keyframe every 2 s)
+
+    /// A playback of `hlsLadderShortGOP`'s `playlist` with the top rung's segment 1 ([6..12] s) served as fast as it plays
+    /// (its bytes over its six seconds), everything else at once. The read-ahead keeps 2 s, so that segment is asked for
+    /// with the position at 4 s, and the rule, which waits half the segment's duration (3 s), first looks at it with the
+    /// position inside it at ~7 s and its keyframe at 8 s queued, not handed out.
+    private struct InsideSetup {
+        let server: TestHTTPServer
+        let demuxer: MediaDemuxer
+        let consumer: AdaptiveBitrateTests.RealtimeConsumer
+        let since: Date
+        /// The top rung's segment 1, as the server names it.
+        let segment: String
+
+        func stop() {
+            consumer.stop()
+            server.stop()
+        }
+    }
+
+    private func playInside(_ playlist: String, rung prefix: String, audioAhead: Double?) throws -> InsideSetup? {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadderShortGOP) else { return nil }
+        let root = URL(fileURLWithPath: master).deletingLastPathComponent()
+        let server = try TestHTTPServer(root: root)
+        let demuxer = try #require(MediaDemuxer(url: server.url(playlist)))
+        #expect(demuxer.variants.map(\.width) == [640, 480, 320])
+        demuxer.abandonsDownloads = true
+        demuxer.adaptiveBitrateConfig = Self.config()
+        let segment = "\(prefix)2_001.ts"
+        let size = try #require(
+            try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(segment).path)[.size] as? Int)
+        var realTime = TestHTTPServer.Behavior()
+        realTime.bytesPerSecond = size / 6
+        server.setBehavior(realTime) { $0 == segment }
+        let since = Date()
+        demuxer.startReadAhead(limits: .init(seconds: 2))
+        let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer, startAhead: 1, audioAhead: audioAhead)
+        return InsideSetup(server: server, demuxer: demuxer, consumer: consumer, since: since, segment: segment)
+    }
+
+    /// The first number after `label` in `line`.
+    private func number(after label: String, in line: String) -> Double? {
+        guard let range = line.range(of: label + #"\d+(\.\d+)?"#, options: .regularExpression) else { return nil }
+        return Double(line[range].dropFirst(label.count))
+    }
+
+    /// The line of the download given up (not one only logged), waited for; it must say the position was inside segment 1.
+    private func expectGivenUpInside(_ setup: InsideSetup) async throws -> String {
+        let message = await waitForMessage(timeout: .seconds(20), since: setup.since) {
+            $0.hasPrefix("ABR abandon:") && !$0.contains("not acted on")
+        }
+        let line = try #require(
+            message, "No download was given up: \(messages(containing: "ABR abandon").suffix(3))")
+        #expect(line.contains("segment 1 "), "\(line)")
+        #expect(line.contains("position inside the segment, queued keyframe at"), "\(line)")
+        return line
+    }
+
+    @Test(
+        "A download given up with the position inside its segment is cut at a keyframe of it queued, its sound with it")
+    func givesUpInsideTheSegment() async throws {
+        guard let setup = try playInside("master.m3u8", rung: "v", audioAhead: 0.3) else { return }
+        defer { setup.stop() }
+        let line = try await expectGivenUpInside(setup)
+        let expected = try #require(number(after: "queued keyframe at ", in: line))
+        #expect(expected > 6.5 && expected < 12, "\(line)")
+
+        let splice = await waitForMessage(timeout: .seconds(15), since: setup.since) {
+            $0.contains("given up was cut at")
+        }
+        let cut = try #require(splice, "The download given up was not spliced")
+        // Cut at the keyframe the check saw queued, the sound muxed into the old rung with it.
+        #expect(cut.contains("given up inside the segment, expected at"), "\(cut)")
+        #expect(number(after: "cut at ", in: cut) == expected, "\(cut)")
+        #expect(cut.contains("its own sound cut at"), "\(cut)")
+        let past = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) {
+            (setup.consumer.pictures.last?.pts ?? 0) > 13.5
+        }
+        #expect(past, "Playback did not get past segment 1: \(String(describing: setup.consumer.pictures.last?.pts))")
+        #expect(
+            setup.consumer.playedWidth.map { $0 < 640 } ?? false, "\(String(describing: setup.consumer.playedWidth))")
+        expectContinuous(setup.consumer)
+    }
+
+    @Test("A download given up inside its segment and read again is spliced at a later keyframe, its start handed out")
+    func restartsInsideTheSegment() async throws {
+        guard let setup = try playInside("master.m3u8", rung: "v", audioAhead: 0.3) else { return }
+        defer { setup.stop() }
+        // The lower rungs answer late: the switch has no keyframe for a while, and is given up meanwhile.
+        var late = TestHTTPServer.Behavior()
+        late.delay = .seconds(4)
+        setup.server.setBehavior(late) { $0.hasPrefix("v0_") || $0.hasPrefix("v1_") }
+        _ = try await expectGivenUpInside(setup)
+        let switching = await waitForMessage(timeout: .seconds(10), since: setup.since) {
+            $0.contains("read from its start")
+        }
+        let line = try #require(switching, "No download was taken over")
+        let isPending = cancelPendingSwitch(of: setup.demuxer)
+        try #require(isPending, "The switch had spliced before it was given up: \(line)")
+        setup.server.setBehavior(TestHTTPServer.Behavior()) {
+            $0.hasPrefix("v0_") || $0.hasPrefix("v1_") || $0 == setup.segment
+        }
+
+        let again = await waitForMessage(timeout: .seconds(10), since: setup.since) {
+            $0.contains("a download given up is read again from")
+        }
+        let restart = try #require(again, "The segment read again was not spliced in")
+        // The segment's start (6 s) is handed out: the splice is at a later keyframe of it.
+        let from = try #require(number(after: "read again from ", in: restart))
+        #expect(from > 7.5 && from < 12, "\(restart)")
+        let past = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) {
+            (setup.consumer.pictures.last?.pts ?? 0) > 13.5
+        }
+        #expect(past, "Playback did not get past segment 1: \(String(describing: setup.consumer.pictures.last?.pts))")
+        expectContinuous(setup.consumer)
+        // The top rung's segment 1 was asked for twice: given up, and again from its start.
+        #expect(setup.server.requests.filter { $0.path == setup.segment }.count == 2)
+    }
+
+    @Test("A sound rendition both rungs share is not cut when a download is given up inside its segment")
+    func keepsASharedRendition() async throws {
+        guard let setup = try playInside("rendition.m3u8", rung: "r", audioAhead: nil) else { return }
+        defer { setup.stop() }
+        _ = try await expectGivenUpInside(setup)
+        let splice = await waitForMessage(timeout: .seconds(15), since: setup.since) {
+            $0.contains("given up was cut at")
+        }
+        let cut = try #require(splice, "The download given up was not spliced")
+        #expect(cut.contains("given up inside the segment, expected at"), "\(cut)")
+        #expect(!cut.contains("sound cut"), "\(cut)")
+        let past = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) {
+            (setup.consumer.pictures.last?.pts ?? 0) > 13.5
+        }
+        #expect(past, "Playback did not get past segment 1: \(String(describing: setup.consumer.pictures.last?.pts))")
+        // From 1 s on: the opening of an MPEG-TS rendition loses its first PES's later frames (0.0-0.28 s), whatever ABR
+        // does (`hlsRenditions` too); the cut is at 8 s.
+        expectContinuous(setup.consumer, soundFrom: 1)
+        // The sound went on from its own lane: none of its segments was asked for again.
+        let sound = setup.server.requests.map(\.path).filter { $0.hasPrefix("rEnglish_") }
+        #expect(Set(sound).count == sound.count, "\(sound)")
+    }
+
     @Test("Nothing is given up unless asked for")
     func isOffByDefault() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
-        #expect(!demuxer.abandonsDownloads)
+        #expect(demuxer.abandonsDownloads == (ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] == "1"))
         demuxer.adaptiveBitrateConfig = AdaptiveBitrateTests.config()
         let since = Date()
         server.setLinkRate(700_000 / 8)

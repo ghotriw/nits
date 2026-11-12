@@ -2,9 +2,9 @@ import CFFmpeg
 import Foundation
 
 /// Whether the segment being downloaded should be given up for one of a lower variant
-/// (`AdaptiveBitrateLogic.abandonment(of:among:buffer:roundTrip:)`). Step 5a: the decision is logged only, with where
-/// the segment is against the playing position, to tell how often it could be undone by cutting the segment's queued
-/// packets and how often it would need a re-read.
+/// (`AdaptiveBitrateLogic.abandonment(of:among:buffer:roundTrip:)`), and the cut that splices the lower one in. Each
+/// decision is logged with where the segment is against the playing position. Background: "Adaptive bitrate" in
+/// `docs/ARCHITECTURE.md`.
 extension MediaDemuxer {
     /// A segment of a variant that is being downloaded, as the input tells it while the read waits for its bytes.
     struct InFlightSegment: Sendable, Equatable {
@@ -319,8 +319,8 @@ extension MediaDemuxer {
 }
 
 extension MediaDemuxer {
-    /// Whether the check gives a download up (`NITS_ABR_ABANDON=1`): off by default, until the cut that makes the switch
-    /// invisible is made (5b-3). A test sets `abandonsDownloads` on its demuxer.
+    /// Whether the check gives a download up (`NITS_ABR_ABANDON=1`): off by default until it is on in every suite of
+    /// adaptive bitrate; off, the decisions are logged only. A test sets `abandonsDownloads` on its demuxer.
     static let abandonsEnabled = ProcessInfo.processInfo.environment["NITS_ABR_ABANDON"] == "1"
 
     /// A download given up for a lower variant's of the same segment: the switch is made at the next read.

@@ -698,6 +698,20 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
     does), else the lowest; otherwise the best, as before. On 2 Mbit/s (NLC "DSL") a start on the top variant (39
     Mbit/s) stalled 62–70 s of 120, the first estimate coming after a 10 MB segment; on the variant the rate carries,
     0 s in two runs. A link between 3 Mbit/s and the best variant's bandwidth still starts on the best.
+  - *Giving a download up* (`MediaDemuxer+Abandonment.swift`, `AdaptiveBitrateLogic+Abandonment.swift`): `choose`
+    decides between segments, so a segment that will not arrive before the buffer runs out (a heavy start, a link that
+    drops with a full read-ahead) is checked while it downloads, by hls.js's `_abandonRulesCheck` (past half its
+    duration; a lower segment sooner by a margin). Given up, its bytes stop and a lower variant reads the same segment
+    from its start (`DemuxerInput.joinNext`); the old variant's queued tail is cut as ExoPlayer splices a chunk
+    (`attemptSplice`): from the first picture in decode order presented at or after the new keyframe, refused while one
+    at or after it is handed out, the old variant's own sound cut on its own (a rendition both share is not touched).
+    With the position inside the segment the cut is at a keyframe of it still queued. The estimate learns the download
+    given up (hls.js's `resetEstimator`), or `choose` climbs straight back. A switch given up before its splice reads the
+    old segment again, spliced in at its first keyframe past what is handed out (`RestartSplice`). Off by default for
+    now (`NITS_ABR_ABANDON=1` turns it on; off, the decisions are logged): on, the suites of `AdaptiveBitrateTests`
+    land on the lowest rung and stay there. Measured on Apple's HEVC example (2026-11-12): 3.5 Mbit/s and 207 ms,
+    the start on 10 Mbit/s given up at 4 s, no stall (5.5 s before); 2 Mbit/s after 45 s with 40 s buffered, the segment
+    given up 4 s after the drop, no picture hole, no step back up, no stall.
   - Measured on Apple's AV1 example (2026-10-24, Wi-Fi, three runs each, 45 s from the start, time below 3840 wide):
     - 34 ms round trip, warm cache: FFmpeg's HTTP and the transport alike 3840 throughout; the estimate's lowest
       17–20 Mbit/s through FFmpeg, 276–286 through the transport.
