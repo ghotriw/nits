@@ -284,7 +284,11 @@ struct DeinterlaceTests {
         #expect(engine.isLoaded)
         #expect(await engine.waitUntil { engine.isPlaying })
         engine.pause()
-        engine.seek(to: 0.5, exact: true)
+        // Between the fields of a frame inside a GOP (keyframes every 0.48 s): the landing frame has the one before
+        // it to tell its still stripes from motion. The keyframe a seek decodes from has none, and stripes a line
+        // apart read as combing on their own, wherever the seek starts decoding (a cache seek or an indexed
+        // container starts at 0.48; FFmpeg's MPEG-TS seek a GOP earlier).
+        engine.seek(to: 0.7, exact: true)
         #expect(await engine.waitUntil(timeout: .seconds(5)) { !engine.isSeeking && engine.pendingSeekTime == nil })
 
         for _ in 0..<3 {
