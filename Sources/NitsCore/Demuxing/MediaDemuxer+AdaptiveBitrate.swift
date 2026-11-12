@@ -15,7 +15,7 @@ extension MediaDemuxer {
         var nextDecision = 0.0
         /// `adaptiveTime` the read-ahead thread last waited at the live edge, for a playlist reload.
         var liveEdgeReachedAt: Double?
-        /// The segment a decision to give a download up was last logged for (`noteSegmentInFlight`).
+        /// The segments a decision to give a download up was made and logged for (`noteSegmentInFlight`).
         var abandonmentLog = AbandonmentLog()
         /// The ladder the check takes (`abandonmentLadder`), and `adaptiveTime` of the next check at idle.
         var abandonmentLadder: (builtAt: Double, rejected: Set<Int>, ladder: [AdaptiveBitrateLogic.Variant])?

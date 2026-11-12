@@ -19,9 +19,59 @@ extension MediaDemuxer {
         let hasMuxedAudio: Bool
     }
 
-    /// The last segment a decision was logged for (variant, sequence): once each.
-    struct AbandonmentLog {
-        var last: (variant: Int, sequence: Int)?
+    /// What came of the checks of the segments in flight, so each is acted on and logged once: a segment is decided when
+    /// its download was given up or refused for good (`AbandonRefusal.isFinal`); a passing refusal leaves it to the next
+    /// check, and is logged once while it lasts.
+    struct AbandonmentLog: Sendable {
+        private(set) var decided: (variant: Int, sequence: Int)?
+        private(set) var passing: (variant: Int, sequence: Int, refusal: AbandonRefusal)?
+
+        func isDecided(variant: Int, sequence: Int) -> Bool {
+            decided.map { $0 == (variant, sequence) } ?? false
+        }
+
+        /// Notes what came of a check of `variant`'s segment `sequence`; whether it is new to the log.
+        mutating func record(_ outcome: AbandonOutcome, variant: Int, sequence: Int) -> Bool {
+            if case .refused(let refusal) = outcome, !refusal.isFinal {
+                if let passing, passing == (variant, sequence, refusal) { return false }
+                passing = (variant, sequence, refusal)
+                return true
+            }
+            decided = (variant, sequence)
+            passing = nil
+            return true
+        }
+
+        /// The segment is checked again: its download given up is read again (the switch did not come), on the same link.
+        mutating func reopen(variant: Int, sequence: Int) {
+            if isDecided(variant: variant, sequence: sequence) { decided = nil }
+        }
+    }
+
+    /// Where the cut of a segment given up would be, against the position (`abandonPlace`).
+    enum AbandonPlace: Equatable {
+        /// The segment starts at or after the position: what is queued of it is cut at its start.
+        case ahead
+        /// The position is inside the segment and the old variant has a keyframe queued (not handed out) inside it, at
+        /// `keyframe` seconds: the new variant's keyframe of that time is the cut, if the variants' GOPs line up.
+        case inside(keyframe: Double)
+        /// The position is inside the segment and nothing queued of it can be cut at.
+        case insideWithoutKeyframe
+    }
+
+    /// Where a segment of `start` / `duration` seconds given up is cut, with the position at `cursor`. `keyframes` are the
+    /// times of the old variant's queued keyframes not handed out, in order; `muxedSoundHandedOut` is the time of the last
+    /// packet of the sound muxed into the old variant handed out, when it is muxed and one was: a keyframe at or before
+    /// it is no cut, as the sound would be cut there too (`spliceAbandoned` refuses it).
+    static func abandonPlace(
+        start: Double, duration: Double, cursor: Double, keyframes: [Double], muxedSoundHandedOut: Double?
+    ) -> AbandonPlace {
+        if start >= cursor { return .ahead }
+        let isCut = { (keyframe: Double) in
+            keyframe >= start && keyframe < start + duration && muxedSoundHandedOut.map { keyframe > $0 } ?? true
+        }
+        guard let keyframe = keyframes.first(where: isCut) else { return .insideWithoutKeyframe }
+        return .inside(keyframe: keyframe)
     }
 
     /// Called on the read-ahead thread: while it waits for the download inside the read (`lock` held, `queueLock` released:
@@ -48,9 +98,27 @@ extension MediaDemuxer {
         let cursor = consumedSeconds
         let readPoint = readAheadState.withLock { $0 }
         guard cursor.isFinite, readPoint.isFinite else { return trace(source, segment, "no position yet") }
-        // Before the segment starts what is queued of it can be dropped; inside it, only what is yet to be read.
-        let isAhead = segment.start >= cursor
-        let buffer = max((isAhead ? segment.start : readPoint) - cursor, 0)
+        // Where the cut would be (`abandonPlace`); the queue is looked at only with the position inside the segment. What
+        // plays before the new variant must bring the segment: up to its start when it is ahead, up to the cut inside it.
+        var queued: QueuedPosition?
+        let place: AbandonPlace
+        if segment.start >= cursor {
+            place = .ahead
+        } else {
+            let position = queuedPosition(queueLockHeld: queueLockHeld)
+            queued = position
+            place = Self.abandonPlace(
+                start: segment.start, duration: segment.duration, cursor: cursor, keyframes: position.keyframes,
+                muxedSoundHandedOut: segment.hasMuxedAudio ? position.soundHandedOut : nil)
+        }
+        let cut: Double?
+        let playable: Double
+        switch place {
+        case .ahead: (cut, playable) = (segment.start, segment.start)
+        case .inside(let keyframe): (cut, playable) = (keyframe, keyframe)
+        case .insideWithoutKeyframe: (cut, playable) = (nil, readPoint)
+        }
+        let buffer = max(playable - cursor, 0)
         let progress = segment.progress
         let roundTrip = progress.firstAnswer ?? 0
         let download = AdaptiveBitrateLogic.Download(
@@ -67,39 +135,46 @@ extension MediaDemuxer {
             return
         }
         trace(source, segment, "gives up")
-        if let last = adaptiveBitrate.abandonmentLog.last, last == (variant, segment.sequence) { return }
-        adaptiveBitrate.abandonmentLog.last = (variant, segment.sequence)
-        // Acted on only when asked for, and where the cut is the simple one: the segment is ahead of the position.
-        var outcome = AbandonOutcome.refused("not asked for")
+        if adaptiveBitrate.abandonmentLog.isDecided(variant: variant, sequence: segment.sequence) { return }
+        // The cut at the new variant's keyframe needs the old packets from there on not handed out yet: ahead of the
+        // position, the segment's start; inside it, a keyframe the old variant has queued inside the segment, if the new
+        // one has a keyframe of the same time (`spliceAbandoned`; else the ordinary splice, a gap).
+        var outcome = AbandonOutcome.refused(.notAskedFor)
         if abandonsDownloads {
             outcome =
-                isAhead
-                ? requestAbandon(from: variant, to: decision.target, sequence: segment.sequence, start: segment.start)
-                : .refused("the position is inside the segment")
+                cut.map {
+                    requestAbandon(
+                        from: variant, to: decision.target, sequence: segment.sequence, start: segment.start,
+                        cut: place == .ahead ? nil : $0)
+                } ?? .refused(.noKeyframeQueued)
         }
+        guard adaptiveBitrate.abandonmentLog.record(outcome, variant: variant, sequence: segment.sequence) else {
+            return
+        }
+        let queuedNow = queued ?? queuedPosition(queueLockHeld: queueLockHeld)
         let refusalText: String
-        if case .refused(let reason) = outcome { refusalText = " (not acted on: \(reason))" } else { refusalText = "" }
+        if case .refused(let refusal) = outcome {
+            refusalText = " (not acted on: \(refusal.text)\(refusal.isFinal ? "" : ", asked again"))"
+        } else {
+            refusalText = ""
+        }
         let format = { (value: Double) in String(format: "%.2f", value) }
         let rate = decision.loadRate.map { "\(Int($0 / 1000)) kbit/s" } ?? "estimate"
-        let queued = queuedPosition(queueLockHeld: queueLockHeld)
-        // What the cut at the new variant's first keyframe needs: the old packets from there on not handed out yet. Ahead of
-        // the position, the segment's start is that keyframe. Inside it, the next keyframe the old variant has queued
-        // is the nearest guess (a GOP of the new one is not known); none queued is a hole, which a re-read closes.
-        let cutTime = isAhead ? segment.start : queued.nextKeyframe
         var verdict: String
-        if isAhead {
+        switch place {
+        case .ahead:
             verdict = "segment ahead of the position (queued part can be cut)"
-        } else if let next = queued.nextKeyframe, next < readPoint {
-            verdict = "position inside the segment, next queued keyframe at \(format(next)) s (cut there)"
-        } else {
-            verdict = "position inside the segment, no keyframe queued ahead (re-read)"
+        case .inside(let keyframe):
+            verdict = "position inside the segment, queued keyframe at \(format(keyframe)) s (cut there)"
+        case .insideWithoutKeyframe:
+            verdict = "position inside the segment, no keyframe of it queued ahead of the sound handed out"
         }
         // Sound muxed into the variant (TS) is cut with the picture: handed out past the cut, that keyframe will not do.
         // A separate rendition is not touched, whatever its cursor.
-        if segment.hasMuxedAudio, let cursor = queued.audioCursor, let cutTime, cursor > cutTime {
-            verdict += ", audio muxed and already past the cut (+\(format(cursor - cutTime)) s)"
+        if segment.hasMuxedAudio, let handedOut = queuedNow.soundHandedOut, let cut, handedOut >= cut {
+            verdict += ", audio muxed and already handed out past the cut (+\(format(handedOut - cut)) s)"
         }
-        let audio = queued.audioCursor.map { cursor in
+        let audio = queuedNow.audioCursor.map { cursor in
             let ahead = cursor - self.consumedSeconds
             let kind = segment.hasMuxedAudio ? "muxed" : "separate"
             return "audio \(kind) \(format(cursor)) (\(ahead >= 0 ? "+" : "")\(format(ahead)) s of the video)"
@@ -111,18 +186,28 @@ extension MediaDemuxer {
                 + "\(progress.bytes >> 10)/\((progress.length ?? 0) >> 10) KB in \(format(progress.elapsed)) s at \(rate), "
                 + "remaining \(format(decision.remaining)) s, buffer \(format(buffer)) s, lower \(format(decision.lower)) s; "
                 + "video \(format(cursor)), \(audio ?? "no audio queued"), read to \(format(readPoint)), "
-                + "GOP \(queued.gop.map(format) ?? "-") s, \(verdict)")
+                + "GOP \(queuedNow.gop.map(format) ?? "-") s, \(verdict)")
     }
 
-    /// Where the queues stand, for the log: the audio packet next to be taken, the first video keyframe not handed out
-    /// yet, and the queued GOPs' average length. Takes `queueLock` (after `lock`) unless the caller holds it.
-    private func queuedPosition(queueLockHeld: Bool) -> (audioCursor: Double?, nextKeyframe: Double?, gop: Double?) {
-        let read = { (demuxer: MediaDemuxer) -> (audioCursor: Double?, nextKeyframe: Double?, gop: Double?) in
+    /// Where the queues stand (seconds): the audio packet next to be taken, the last one handed out (an empty queue has
+    /// no next packet, but the sound is handed out all the same), the video keyframes not handed out yet, in order, and
+    /// the queued GOPs' average length.
+    struct QueuedPosition {
+        let audioCursor: Double?
+        let soundHandedOut: Double?
+        let keyframes: [Double]
+        let gop: Double?
+    }
+
+    /// Takes `queueLock` (after `lock`) unless the caller holds it.
+    private func queuedPosition(queueLockHeld: Bool) -> QueuedPosition {
+        let read = { (demuxer: MediaDemuxer) -> QueuedPosition in
             func seconds(_ pts: Int64, _ dts: Int64, _ base: AVRational) -> Double? {
                 let time = pts != Int64.min ? pts : dts
                 return time != Int64.min && base.den > 0 ? Double(time) * Double(base.num) / Double(base.den) : nil
             }
             let audio = demuxer.audioQueue.peek().flatMap { seconds($0.pts, $0.dts, demuxer.audioTimebase) }
+            let handedOut = seconds(demuxer.audioQueue.lastHandedOutPTS, Int64.min, demuxer.audioTimebase)
             // A video packet is read with its own time base: a switch changes it while older packets still wait.
             let keyframes = demuxer.videoQueue.keyframeIndices.compactMap { index -> Double? in
                 guard index >= demuxer.videoQueue.readIndex, let packet = demuxer.videoQueue.peekAt(index) else {
@@ -133,7 +218,7 @@ extension MediaDemuxer {
             let gop =
                 keyframes.count > 1
                 ? (keyframes[keyframes.count - 1] - keyframes[0]) / Double(keyframes.count - 1) : nil
-            return (audio, keyframes.first, gop)
+            return QueuedPosition(audioCursor: audio, soundHandedOut: handedOut, keyframes: keyframes, gop: gop)
         }
         // The idle step holds `queueLock` already; inside the read it is released.
         return queueLockHeld ? read(self) : readingDescription(read)
@@ -246,13 +331,47 @@ extension MediaDemuxer {
         let sequence: Int
         /// Where the segment starts on the timeline (seconds).
         let start: Double
+        /// With the position inside the segment, the old variant's queued keyframe (seconds) the new one is to be cut in
+        /// at; nil when the segment is ahead of the position. For the log of the splice.
+        var cut: Double? = nil
+    }
+
+    /// Why a download the rule gives up is not.
+    enum AbandonRefusal: Equatable, Sendable {
+        /// `abandonsDownloads` is off: logged only.
+        case notAskedFor
+        /// A switch is under way or another download given up waits for its switch.
+        case switchUnderWay
+        /// The position is inside the segment and the old variant has no keyframe of it queued to cut at.
+        case noKeyframeQueued
+        case rejected
+        case join(JoinRefusal)
+
+        /// Whether it holds for the segment for good; a passing one (the switch made, a keyframe queued) is asked again.
+        var isFinal: Bool {
+            switch self {
+            case .switchUnderWay, .noKeyframeQueued: false
+            // A playlist of the target that lags a reload behind (live) lists the segment a moment later.
+            case .join(let refusal): refusal != .noSegment
+            case .notAskedFor, .rejected: true
+            }
+        }
+
+        var text: String {
+            switch self {
+            case .notAskedFor: "not asked for"
+            case .switchUnderWay: "a switch is under way"
+            case .noKeyframeQueued: "the position is inside the segment, no keyframe of it queued"
+            case .rejected: "the variant is rejected"
+            case .join(let refusal): refusal.rawValue
+            }
+        }
     }
 
     /// What came of a request to give a download up.
     enum AbandonOutcome: Equatable {
         case requested
-        /// Why not: said in the log.
-        case refused(String)
+        case refused(AbandonRefusal)
 
         var isRequested: Bool { self == .requested }
     }
@@ -263,14 +382,16 @@ extension MediaDemuxer {
     /// described as another variant (a rung of a ladder that was probed once) is taken as that: its first read verifies it
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
     /// reason, when it cannot be done: a switch is under way, or `target` is rejected, or has not the segment
-    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on).
-    func requestAbandon(from: Int, to target: Int, sequence: Int, start: Double) -> AbandonOutcome {
+    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on). `cut` is the queued
+    /// keyframe the cut is expected at when the position is inside the segment.
+    func requestAbandon(from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil) -> AbandonOutcome {
         guard variantSwitch == nil, adaptiveBitrate.pendingAbandon == nil else {
-            return .refused("a switch is under way")
+            return .refused(.switchUnderWay)
         }
-        guard input.variantDescription(id: target) != .rejected else { return .refused("the variant is rejected") }
-        if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(refusal.rawValue) }
-        adaptiveBitrate.pendingAbandon = PendingAbandon(from: from, target: target, sequence: sequence, start: start)
+        guard input.variantDescription(id: target) != .rejected else { return .refused(.rejected) }
+        if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(.join(refusal)) }
+        adaptiveBitrate.pendingAbandon = PendingAbandon(
+            from: from, target: target, sequence: sequence, start: start, cut: cut)
         input.abandonDownload(ofVariant: from)
         adaptiveBitrate.logic.noteAbandoned(at: adaptiveTime)
         return .requested
@@ -347,12 +468,24 @@ extension MediaDemuxer {
             return false
         }
         guard spliceVariantVideo(at: time, keyframe: keyframe) else { return false }
-        let seconds = Double(time) * Double(timebase.num) / Double(timebase.den)
+        let toSeconds = { (ticks: Int64) in Double(ticks) * Double(self.timebase.num) / Double(self.timebase.den) }
+        let seconds = toSeconds(time)
         cutQueuedTail(videoIndex: oldIndex, audioPTS: isMuxed ? audioTime : nil, atSeconds: seconds)
+        // Given up inside the segment, the cut was meant at a queued keyframe: say whether the new variant had one of its
+        // time (the cut) or not (the old pictures play out and the new ones follow from their next keyframe: a gap).
+        var how = oldIndex == nil ? " (nothing queued of it past that)" : ""
+        if let expected = pending.abandoned?.cut {
+            let format = { (value: Double) in String(format: "%.2f", value) }
+            how =
+                oldIndex != nil
+                ? " (inside the segment, at a queued keyframe; expected at \(format(expected)) s)"
+                : " (inside the segment, no keyframe of the new variant's times queued, expected at \(format(expected)) s: "
+                    + "the old pictures end at \(format(toSeconds(pending.previousVideoTime))) s, a gap)"
+        }
         AppLog.info(
             .demuxer,
             "\(streamingName): the download of variant \(pending.abandoned?.from ?? -1) given up was cut at \(String(format: "%.2f", seconds)) s"
-                + (oldIndex == nil ? " (nothing queued of it past that)" : ""))
+                + how)
         // The old variant's sound is read no more: the new one's, held until now, takes over, not a second on.
         if variantSwitch != nil { spliceVariantAudio(releasingHeld: true) }
         return true
@@ -397,6 +530,8 @@ extension MediaDemuxer {
     /// given up before its splice): the old variant reads the segment again. What it had queued of it is cut first, so the
     /// decoder does not get the same times twice (`restartPlan`).
     func restartAbandonedDownload(_ abandoned: PendingAbandon) {
+        // Read again over the same link, it may be as slow: the check may give it up again.
+        adaptiveBitrate.abandonmentLog.reopen(variant: abandoned.from, sequence: abandoned.sequence)
         let perSecond = Double(timebase.den) / Double(max(timebase.num, 1))
         let start = Int64((abandoned.start * perSecond).rounded())
         // The timeline's start of a segment is summed from durations, and the media's may differ a little.

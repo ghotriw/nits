@@ -57,7 +57,7 @@ extension MediaDemuxer {
         readAheadControl.withLock { $0.isHeld = false }
         let handedOut = consumedSeconds
         consumedSeconds = seconds
-        adaptiveBitrate.abandonmentLog.last = nil
+        adaptiveBitrate.abandonmentLog = AbandonmentLog()
         // A download given up and not yet switched from is read again by the seek, which moves every lane.
         adaptiveBitrate.pendingAbandon = nil
         defer { readAheadWake.signal() }
