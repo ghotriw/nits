@@ -24,6 +24,9 @@ extension MediaDemuxer {
         var trace = AbandonTrace()
         /// A download given up for a lower variant's of the same segment, taken by the next read (`requestAbandon`).
         var pendingAbandon: PendingAbandon?
+        /// `adaptiveTime` when a keyframe of a switch that took a download over was last refused for the sound (the log says it
+        /// every half second at most).
+        var lastSpliceRefusal = -Double.infinity
         let epoch = ContinuousClock.now
     }
 

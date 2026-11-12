@@ -72,7 +72,8 @@ extension MediaDemuxer {
         var isTargetVerified = false
         /// The old variant's download of the segment the new one joins was given up (`MediaDemuxer+Abandonment`): its streams
         /// are not read while the switch is under way, and are again if it is given up.
-        var isPreviousAbandoned = false
+        var abandoned: PendingAbandon?
+        var isPreviousAbandoned: Bool { abandoned != nil }
     }
 
     /// Switches to variant `id` without a seek; see the type's description. Takes effect from the next read, and
@@ -296,7 +297,7 @@ extension MediaDemuxer {
             let streams = variantStreams[requested], let previous = variantStreams[selected]
         else {
             // The old download was given up for a switch that does not come: it is read again.
-            if let abandonment { input.restartDownload(ofVariant: abandonment.from) }
+            if let abandonment { restartAbandonedDownload(abandonment) }
             return
         }
 
@@ -309,7 +310,7 @@ extension MediaDemuxer {
         newSwitch.isTargetVerified = input.variantDescription(id: requested) == .described
         if let abandonment {
             // The new variant reads the segment from its start, and the old one's streams are not read meanwhile.
-            newSwitch.isPreviousAbandoned = true
+            newSwitch.abandoned = abandonment
             input.joinNext(atSequence: abandonment.sequence)
         }
         variantSwitch = newSwitch
@@ -351,11 +352,15 @@ extension MediaDemuxer {
             if index == pending.streams.video {
                 // A variant read before hands out the packet it held when it was discarded first, from back then
                 // (FFmpeg's catch-up seek skips only what it reads after).
-                guard pkt.flags & AV_PKT_FLAG_KEY != 0, time != Int64.min, time >= pending.previousVideoTime else {
-                    return false
+                guard pkt.flags & AV_PKT_FLAG_KEY != 0, time != Int64.min else { return false }
+                let keyframe = pkt.data.map { Data(bytes: $0, count: Int(pkt.size)) }
+                // The old variant's download was given up: it has queued pictures (and muxed sound) past this keyframe, which
+                // are cut from the keyframe of the very time (`spliceAbandoned`), and its sound is not read on.
+                if pending.isPreviousAbandoned {
+                    return spliceAbandoned(at: time, keyframe: keyframe, pending: pending)
                 }
-                return spliceVariantVideo(
-                    at: time, keyframe: pkt.data.map { Data(bytes: $0, count: Int(pkt.size)) })
+                guard time >= pending.previousVideoTime else { return false }
+                return spliceVariantVideo(at: time, keyframe: keyframe)
             }
             let decodeTime = pkt.dts != Int64.min ? pkt.dts : pkt.pts
             if index == pending.previous.video, decodeTime != Int64.min {
@@ -568,16 +573,15 @@ extension MediaDemuxer {
             input.setReading(false, stream: index)
         }
         variantSwitch = nil
-        // Its download was given up for the new variant's: it is read again from the segment it was in, and the packets it had
-        // queued of that segment are read again over the ones queued: the decoder gets the same times twice. Not rare: a
-        // target still described as another variant (almost every rung at a start) is verified only by this switch's
-        // first read, and one that does not match ends here. The cut of the old variant's queued tail before the re-read
-        // (`DemuxerPacketBuffer.truncate`, 5b-3) is what makes this safe; until then it is a condition of turning the
-        // switch on (`abandonsDownloads`).
-        if pending.isPreviousAbandoned {
+        // Its download was given up for the new variant's: it is read again, from the segment it was in, after what it had
+        // queued of that segment is cut (`restartAbandonedDownload`), so the decoder does not get the same times twice. Not
+        // rare: a target still described as another variant (almost every rung at a start) is verified only by this
+        // switch's first read, and one that does not match ends here.
+        if let abandoned = pending.abandoned {
             AppLog.warning(
                 .demuxer, "\(streamingName): a switch that took a download over was given up; reading it again")
             applyStreamSelection()
+            restartAbandonedDownload(abandoned)
         }
         // The variant asked for never played: report the one still read, from where reading is.
         if reporting {

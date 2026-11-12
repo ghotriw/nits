@@ -19,6 +19,8 @@ struct AdaptiveBitrateTests {
 
         private struct State {
             var pictures: [Picture] = []
+            /// Presentation times (seconds) of the audio packets taken, in order.
+            var audio: [Double] = []
             var stalled = 0.0
         }
 
@@ -33,7 +35,13 @@ struct AdaptiveBitrateTests {
                 }
                 var clock: (start: ContinuousClock.Instant, pts: Double)?
                 while !Task.isCancelled {
-                    while demuxer.nextAudioPacket() != nil {}
+                    while let packet = demuxer.nextAudioPacket() {
+                        let base = demuxer.audioTimebase
+                        let pts = packet.pts != Int64.min ? packet.pts : packet.dts
+                        if pts != Int64.min, base.den > 0 {
+                            state.withLock { $0.audio.append(Double(pts) * Double(base.num) / Double(base.den)) }
+                        }
+                    }
                     guard let sample = demuxer.nextVideoSample(waitingForReadAhead: false) else {
                         if demuxer.isEOF { return }
                         let wait = ContinuousClock.now
@@ -61,6 +69,7 @@ struct AdaptiveBitrateTests {
         deinit { task.cancel() }
 
         var pictures: [Picture] { state.withLock { $0.pictures } }
+        var audio: [Double] { state.withLock { $0.audio } }
         /// Seconds playback waited for data after it started.
         var stalled: Double { state.withLock { $0.stalled } }
         var playedWidth: Int32? { pictures.last?.width }

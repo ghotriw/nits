@@ -504,6 +504,29 @@ extension MediaDemuxer {
             return nil
         }
 
+        /// The index of the first keyframe at or after the cursor presented at or after `pts`: where a segment that was
+        /// queued from its start begins, its start on the timeline known only to within a little.
+        package func keyframeIndex(atOrAfterPTS pts: Int64) -> Int? {
+            guard indexesKeyframes else { return nil }
+            var position = keyframePosition(atOrAfter: readIndex)
+            while position < keyframeIndices.count {
+                let index = keyframeIndices[position]
+                if let packet = elements[index], packet.effectivePTS >= pts { return index }
+                position += 1
+            }
+            return nil
+        }
+
+        /// The last packet held (the newest read), if any.
+        package var lastElement: T? {
+            var index = elements.count
+            while index > headIndex {
+                index -= 1
+                if let packet = elements[index] { return packet }
+            }
+            return nil
+        }
+
         /// The index of the first packet at or after the cursor that is presented at or after `pts`, for a stream whose
         /// packets come in presentation order (audio): where the sound of a variant given up is cut.
         package func firstIndex(atOrAfterPTS pts: Int64) -> Int? {

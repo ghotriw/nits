@@ -857,11 +857,13 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         lanes[variant.lane].abandonDownload()
     }
 
-    func restartDownload(ofVariant id: Int) {
+    func restartDownload(ofVariant id: Int, atSequence sequence: Int, landingSeconds: Double?) {
         guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane),
             lanes[variant.lane].isRead
         else { return }
-        lanes[variant.lane].reposition(at: lastTime)
+        lanes[variant.lane].join(
+            sequence: sequence,
+            landing: landingSeconds.map { HLSLane.Landing(time: $0, keyframeOf: AVMEDIA_TYPE_VIDEO) })
     }
 
     func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal? {

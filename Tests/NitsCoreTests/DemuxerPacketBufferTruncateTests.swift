@@ -123,6 +123,32 @@ struct DemuxerPacketBufferTruncateTests {
         #expect(buffer.keyframeIndex(withPTS: 240) == 6)
     }
 
+    @Test("The first keyframe at or after a time is found from the cursor on, with the time known to within a little")
+    func findsTheKeyframeAtOrAfter() {
+        var buffer = buffer(gops: 3)  // keyframes at 0, 120, 240 (index 0, 3, 6)
+        #expect(buffer.keyframeIndex(atOrAfterPTS: 110) == 3)
+        #expect(buffer.keyframeIndex(atOrAfterPTS: 120) == 3)
+        #expect(buffer.keyframeIndex(atOrAfterPTS: 121) == 6)
+        #expect(buffer.keyframeIndex(atOrAfterPTS: 241) == nil)
+        for _ in 0..<4 { _ = buffer.popFirst() }
+        #expect(buffer.keyframeIndex(atOrAfterPTS: 110) == 6, "The keyframe at 120 is handed out")
+    }
+
+    @Test("The last packet held is the newest, history or not")
+    func lastElementIsTheNewest() {
+        var buffer = buffer(gops: 2, maxBackBytes: 1000)
+        #expect(buffer.lastElement?.pts == 200)
+        buffer.truncate(from: 3)
+        #expect(buffer.lastElement?.pts == 80)
+        for _ in 0..<3 { _ = buffer.popFirst() }
+        #expect(buffer.lastElement?.pts == 80, "History is kept")
+        var none = Buffer(maxBackBytes: 0)
+        #expect(none.lastElement == nil)
+        none.append(TestPacket(pts: 0, isKeyFrame: true))
+        _ = none.popFirst()
+        #expect(none.lastElement == nil, "Without history what is handed out is gone")
+    }
+
     @Test("Sound is cut by presentation time, from the first packet at or after it")
     func cutsSoundByTime() {
         var audio = MediaDemuxer.DemuxerPacketBuffer<TestPacket>(maxBackBytes: 0, indexesKeyframes: false)

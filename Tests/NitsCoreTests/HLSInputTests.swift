@@ -483,6 +483,27 @@ struct HLSInputTests {
         }
     }
 
+    @Test("A lane read again from a segment's start with a landing drops what comes before the keyframe it lands on")
+    func restartsAtAKeyframeInsideTheSegment() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        let input = try #require(Self.open(stand, "master.m3u8"))
+        let candidates = try #require(input.variantCandidates())
+        let top = try #require(candidates.max { $0.bandwidth < $1.bandwidth })
+        while let packet = Self.drain(input, limit: 1).packets.first, !(packet.isVideo && packet.dts > 3) {}
+        // Segments of 2 s, a keyframe each second: segment 3 is 6…8 s and has keyframes at 6 and 7. What is queued of it,
+        // from 6 to 7 s, is not read again.
+        input.restartDownload(ofVariant: top.id, atSequence: 3, landingSeconds: 7.0)
+        let first = try #require(Self.drain(input, limit: 40).packets.first { $0.isVideo })
+        #expect(abs(first.pts - 7.0) < 0.01 && first.isKey, "Landed at \(first.pts) s")
+        // Without a landing it starts at the segment's start.
+        let again = try #require(Self.open(stand, "master.m3u8"))
+        while let packet = Self.drain(again, limit: 1).packets.first, !(packet.isVideo && packet.dts > 3) {}
+        again.restartDownload(ofVariant: top.id, atSequence: 3, landingSeconds: nil)
+        let start = try #require(Self.drain(again, limit: 40).packets.first { $0.isVideo })
+        #expect(abs(start.pts - 6.0) < 0.01, "Started at \(start.pts) s")
+    }
+
     @Test("A subtitle rendition without cues for a stretch is read no further ahead than the picture")
     func sparseSubtitlesDoNotHoldTheRead() throws {
         guard let stand = try Self.stand(.hlsRenditions) else { return }

@@ -74,7 +74,7 @@ extension MediaDemuxer {
         if abandonsDownloads {
             outcome =
                 isAhead
-                ? requestAbandon(from: variant, to: decision.target, sequence: segment.sequence)
+                ? requestAbandon(from: variant, to: decision.target, sequence: segment.sequence, start: segment.start)
                 : .refused("the position is inside the segment")
         }
         let refusalText: String
@@ -244,6 +244,8 @@ extension MediaDemuxer {
         let from: Int
         let target: Int
         let sequence: Int
+        /// Where the segment starts on the timeline (seconds).
+        let start: Double
     }
 
     /// What came of a request to give a download up.
@@ -262,15 +264,185 @@ extension MediaDemuxer {
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
     /// reason, when it cannot be done: a switch is under way, or `target` is rejected, or has not the segment
     /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on).
-    func requestAbandon(from: Int, to target: Int, sequence: Int) -> AbandonOutcome {
+    func requestAbandon(from: Int, to target: Int, sequence: Int, start: Double) -> AbandonOutcome {
         guard variantSwitch == nil, adaptiveBitrate.pendingAbandon == nil else {
             return .refused("a switch is under way")
         }
         guard input.variantDescription(id: target) != .rejected else { return .refused("the variant is rejected") }
         if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(refusal.rawValue) }
-        adaptiveBitrate.pendingAbandon = PendingAbandon(from: from, target: target, sequence: sequence)
+        adaptiveBitrate.pendingAbandon = PendingAbandon(from: from, target: target, sequence: sequence, start: start)
         input.abandonDownload(ofVariant: from)
         adaptiveBitrate.logic.noteAbandoned(at: adaptiveTime)
         return .requested
+    }
+}
+
+// MARK: - The cut
+
+extension MediaDemuxer {
+    /// The sound the demuxer plays is the old variant's own, muxed into its segments (MPEG-TS), not a rendition both have.
+    private func isOldAudioMuxed(_ pending: VariantSwitch) -> Bool {
+        isAudioMuxed(oldStreams: pending.previous, newStreams: pending.streams)
+    }
+
+    private func isAudioMuxed(oldStreams: VariantStreams, newStreams: VariantStreams) -> Bool {
+        audioStreamIndex >= 0 && Set(oldStreams.audio).subtracting(newStreams.audio).contains(audioStreamIndex)
+    }
+
+    /// `ticks` of the video time base in the audio's.
+    private func audioTicks(fromVideo ticks: Int64) -> Int64 {
+        av_rescale_q(ticks, timebase, audioTimebase)
+    }
+
+    private func videoTicks(fromAudio ticks: Int64) -> Int64 {
+        av_rescale_q(ticks, audioTimebase, timebase)
+    }
+
+    /// Takes the tail of the queues out, from the picture at queue index `videoIndex` (nil: no picture is cut) and the
+    /// sound muxed into the old variant from `audioPTS` (nil: it is not): what the new variant reads again from its
+    /// keyframe. The account of what was read follows: the last picture's decode time (a tick before the cut when nothing is
+    /// left, so the next switch does not wait for a keyframe that is behind it), and the point the read-ahead has reached,
+    /// which a read of the new variant sets up again (`recordReadAhead` only goes forward). False when the sound was
+    /// handed out past `audioPTS` and could not be cut (nothing of it is taken, the pictures' tail is).
+    @discardableResult
+    private func cutQueuedTail(videoIndex: Int?, audioPTS: Int64?, atSeconds seconds: Double) -> Bool {
+        let firstCut = videoIndex.flatMap { videoQueue.peekAt($0) }
+        if let videoIndex { videoQueue.truncate(from: videoIndex) }
+        var isSoundCut = true
+        if let audioPTS { isSoundCut = audioQueue.truncate(fromPTS: audioPTS) }
+        if let last = videoQueue.lastElement {
+            lastVideoReadTime = last.dts != Int64.min ? last.dts : last.pts
+        } else if let firstCut {
+            let time = firstCut.dts != Int64.min ? firstCut.dts : firstCut.pts
+            if time != Int64.min { lastVideoReadTime = time - 1 }
+        }
+        readAheadState.withLock { $0 = min($0, seconds) }
+        return isSoundCut
+    }
+
+    /// The new variant's keyframe at `time`, with the old variant's download given up: the old variant's pictures from the
+    /// keyframe of the same presentation time are cut, and its sound (muxed into it) from the time in the audio's time
+    /// base, and the new variant's take over at once. Only when nothing at or after the cut is handed out: the old
+    /// keyframe is ahead of the cursor, and the sound's cursor is before the cut; else false, and the next keyframe of the
+    /// new variant is tried (each refusal for the sound is logged, as the cost of a cursor that runs ahead of the picture
+    /// is for the measurement to show). With no old keyframe of that time and the old pictures ending before this one,
+    /// there is nothing to cut: the ordinary splice (the old variant's partial segment ended earlier, which leaves a hole).
+    func spliceAbandoned(at time: Int64, keyframe: Data?, pending: VariantSwitch) -> Bool {
+        let oldIndex = videoQueue.keyframeIndex(withPTS: time)
+        if oldIndex == nil, time < pending.previousVideoTime { return false }
+        let isMuxed = isOldAudioMuxed(pending)
+        let audioTime = audioTicks(fromVideo: time)
+        // The sound is past the cut: this keyframe will not do.
+        if isMuxed, audioQueue.lastHandedOutPTS >= audioTime {
+            let now = adaptiveTime
+            if now - adaptiveBitrate.lastSpliceRefusal >= 0.5 {
+                adaptiveBitrate.lastSpliceRefusal = now
+                let seconds = { (ticks: Int64, base: AVRational) in Double(ticks) * Double(base.num) / Double(base.den)
+                }
+                AppLog.info(
+                    .demuxer,
+                    "\(streamingName): keyframe at \(String(format: "%.2f", seconds(time, timebase))) s is not cut at: the sound is handed out to "
+                        + "\(String(format: "%.2f", seconds(audioQueue.lastHandedOutPTS, audioTimebase))) s")
+            }
+            return false
+        }
+        guard spliceVariantVideo(at: time, keyframe: keyframe) else { return false }
+        let seconds = Double(time) * Double(timebase.num) / Double(timebase.den)
+        cutQueuedTail(videoIndex: oldIndex, audioPTS: isMuxed ? audioTime : nil, atSeconds: seconds)
+        AppLog.info(
+            .demuxer,
+            "\(streamingName): the download of variant \(pending.abandoned?.from ?? -1) given up was cut at \(String(format: "%.2f", seconds)) s"
+                + (oldIndex == nil ? " (nothing queued of it past that)" : ""))
+        // The old variant's sound is read no more: the new one's, held until now, takes over, not a second on.
+        if variantSwitch != nil { spliceVariantAudio(releasingHeld: true) }
+        return true
+    }
+
+    /// What reading a download given up again does with what is queued of it.
+    enum AbandonedRestart: Equatable {
+        /// Cut the pictures at the queued keyframe at `index` (and the sound muxed into the variant at its time): `atStart`
+        /// is the keyframe the segment starts with, read again from its start; else a later one, inside the segment, and
+        /// the segment is read again with what comes before that keyframe dropped (a landing), the start being handed out.
+        case cut(index: Int, atStart: Bool)
+        /// Nothing of the segment is queued, but playback has got to its start: what was not read is lost, and the
+        /// variant reads on from the segment after.
+        case nextSegment
+        /// Nothing of it is queued, and nothing handed out: from its start.
+        case fromStart
+    }
+
+    /// Chooses what to do with the queued part of a segment whose download was given up and is read again. `keyframes` are
+    /// the old variant's queued keyframes not handed out, in order (queue index, presentation time); `start` is the
+    /// segment's start and `slack` how far the media's may be from the timeline's, in the video time base. `soundHandedOut` is
+    /// where the sound muxed into the old variant is handed out to (video time base), when it is and has been.
+    ///
+    /// The first keyframe at or after the segment's start (less `slack`), and after the sound handed out (a cut behind
+    /// the sound would leave its read again over what is handed out), is the cut. It is the segment's own start only when
+    /// within `slack` of it: a later one is inside the segment, whose start is handed out already, and cutting there while
+    /// reading the segment from its start would queue what is before it twice.
+    static func restartPlan(
+        start: Int64, slack: Int64, keyframes: [(index: Int, pts: Int64)], isStartHandedOut: Bool,
+        soundHandedOut: Int64?
+    ) -> AbandonedRestart {
+        var minimum = start - slack
+        if let soundHandedOut { minimum = max(minimum, soundHandedOut + 1) }
+        if let key = keyframes.first(where: { $0.pts >= minimum }) {
+            return .cut(index: key.index, atStart: abs(key.pts - start) <= slack)
+        }
+        let isSoundIn = soundHandedOut.map { $0 >= start - slack } ?? false
+        return isStartHandedOut || isSoundIn ? .nextSegment : .fromStart
+    }
+
+    /// A download given up for a switch that did not come (`beginRequestedVariantSwitch` could not make it, or the switch was
+    /// given up before its splice): the old variant reads the segment again. What it had queued of it is cut first, so the
+    /// decoder does not get the same times twice (`restartPlan`).
+    func restartAbandonedDownload(_ abandoned: PendingAbandon) {
+        let perSecond = Double(timebase.den) / Double(max(timebase.num, 1))
+        let start = Int64((abandoned.start * perSecond).rounded())
+        // The timeline's start of a segment is summed from durations, and the media's may differ a little.
+        let slack = Int64(0.1 * perSecond)
+        let keyframes = videoQueue.keyframeIndices.compactMap { index -> (index: Int, pts: Int64)? in
+            guard index >= videoQueue.readIndex, let packet = videoQueue.peekAt(index) else { return nil }
+            return (index, packet.effectivePTS)
+        }
+        let isMuxed =
+            variantStreams[abandoned.from].flatMap { old in
+                variantStreams[abandoned.target].map { isAudioMuxed(oldStreams: old, newStreams: $0) }
+            } ?? false
+        let sound =
+            isMuxed && audioQueue.lastHandedOutPTS != Int64.min
+            ? videoTicks(fromAudio: audioQueue.lastHandedOutPTS) : nil
+        let plan = Self.restartPlan(
+            start: start, slack: slack, keyframes: keyframes,
+            isStartHandedOut: consumedSeconds >= abandoned.start - 0.1,
+            soundHandedOut: sound)
+        switch plan {
+        case .cut(let index, let atStart):
+            let key = videoQueue.peekAt(index)?.effectivePTS ?? start
+            // The lane lands on the first keyframe at or after the time given: a hair before this one is the same landing, and
+            // a time rounded up past it would miss the keyframe and land on the next, a GOP on.
+            let seconds = Double(key) / perSecond
+            let isSoundCut = cutQueuedTail(
+                videoIndex: index, audioPTS: isMuxed ? audioTicks(fromVideo: key) : nil, atSeconds: seconds)
+            if isSoundCut {
+                input.restartDownload(
+                    ofVariant: abandoned.from, atSequence: abandoned.sequence,
+                    landingSeconds: atStart ? nil : seconds - 0.005)
+            } else {
+                // Cannot happen (the plan keeps behind the sound handed out): read on after the segment, with no repeat.
+                AppLog.warning(
+                    .demuxer, "\(streamingName): the sound could not be cut; the rest of a segment given up is lost")
+                input.restartDownload(
+                    ofVariant: abandoned.from, atSequence: abandoned.sequence + 1, landingSeconds: nil)
+            }
+        case .nextSegment:
+            AppLog.warning(
+                .demuxer,
+                "\(streamingName): a download given up is read again after playback reached its segment: the rest of it is lost"
+            )
+            input.restartDownload(ofVariant: abandoned.from, atSequence: abandoned.sequence + 1, landingSeconds: nil)
+        case .fromStart:
+            input.restartDownload(ofVariant: abandoned.from, atSequence: abandoned.sequence, landingSeconds: nil)
+        }
     }
 }
