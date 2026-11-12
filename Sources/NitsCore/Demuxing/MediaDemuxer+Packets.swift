@@ -142,6 +142,12 @@ extension MediaDemuxer {
         /// themselves no longer tell when history is off.
         package private(set) var lastHandedOutPTS: Int64 = Int64.min
 
+        /// The largest presentation timestamp handed out since the last keyframe handed out (ExoPlayer's
+        /// `getLargestReadTimestampUs`): with B-frames the last packet handed out is not the latest picture, and a cut of
+        /// the tail at a time at or before this one would put a picture of the tail behind one already decoded. Where the
+        /// cursor was put (`seekTo`), or kept by a compaction, it starts from `lastHandedOutPTS`.
+        package private(set) var largestHandedOutPTS: Int64 = Int64.min
+
         /// Configured limit for retained history bytes. When 0 (default for local files),
         /// history is immediately pruned as packets are consumed.
         package var maxBackBytes: Int = 0
@@ -249,7 +255,12 @@ extension MediaDemuxer {
                     continue
                 }
                 readIndex += 1
-                if element.effectivePTS != Int64.min { lastHandedOutPTS = element.effectivePTS }
+                if element.effectivePTS != Int64.min {
+                    lastHandedOutPTS = element.effectivePTS
+                    largestHandedOutPTS =
+                        indexesKeyframes && element.isKeyFrame
+                        ? element.effectivePTS : max(largestHandedOutPTS, element.effectivePTS)
+                }
                 let size = element.data.count
                 forwardBytes -= size
                 backBytes += size
@@ -315,6 +326,7 @@ extension MediaDemuxer {
                 lastHandedOutPTS = elements[before]?.effectivePTS ?? Int64.min
                 before -= 1
             }
+            largestHandedOutPTS = lastHandedOutPTS
         }
 
         /// Finds the element index of the keyframe covering `targetPTS`.
@@ -490,20 +502,6 @@ extension MediaDemuxer {
             }
         }
 
-        /// The index of the first keyframe at or after the cursor whose presentation timestamp is `pts`: the cut of a tail
-        /// that a new variant's keyframe of the same time replaces (keyframes share their presentation times across
-        /// variants, not their decode times).
-        package func keyframeIndex(withPTS pts: Int64) -> Int? {
-            guard indexesKeyframes else { return nil }
-            var position = keyframePosition(atOrAfter: readIndex)
-            while position < keyframeIndices.count {
-                let index = keyframeIndices[position]
-                if let packet = elements[index], packet.effectivePTS == pts { return index }
-                position += 1
-            }
-            return nil
-        }
-
         /// The index of the first keyframe at or after the cursor presented at or after `pts`: where a segment that was
         /// queued from its start begins, its start on the timeline known only to within a little.
         package func keyframeIndex(atOrAfterPTS pts: Int64) -> Int? {
@@ -527,8 +525,10 @@ extension MediaDemuxer {
             return nil
         }
 
-        /// The index of the first packet at or after the cursor that is presented at or after `pts`, for a stream whose
-        /// packets come in presentation order (audio): where the sound of a variant given up is cut.
+        /// The index of the first packet at or after the cursor, in decode order, that is presented at or after `pts`: where
+        /// the tail of a variant given up is cut. Sound comes in presentation order; for pictures what is before it is a
+        /// prefix in decode order, all of it decodable and presented before `pts` (B-frames presented before it that come
+        /// after it in decode order are cut too).
         package func firstIndex(atOrAfterPTS pts: Int64) -> Int? {
             var index = readIndex
             while index < elements.count {
@@ -604,6 +604,7 @@ extension MediaDemuxer {
             headIndex = 0
             readIndex = 0
             lastHandedOutPTS = Int64.min
+            largestHandedOutPTS = Int64.min
             keyframeIndices.removeAll(keepingCapacity: keepingCapacity)
             forwardBytes = 0
             backBytes = 0
@@ -658,7 +659,10 @@ extension MediaDemuxer {
             headIndex = 0
             readIndex = newReadIndex
             // Removing packets does not undo their hand-out: the record changes only when a packet before the cursor is kept.
-            if newReadIndex > 0, let before = active[newReadIndex - 1] { lastHandedOutPTS = before.effectivePTS }
+            if newReadIndex > 0, let before = active[newReadIndex - 1] {
+                lastHandedOutPTS = before.effectivePTS
+                largestHandedOutPTS = max(largestHandedOutPTS, lastHandedOutPTS)
+            }
             keyframeIndices = newKeyframes
             forwardBytes = newForwardBytes
             backBytes = newBackBytes

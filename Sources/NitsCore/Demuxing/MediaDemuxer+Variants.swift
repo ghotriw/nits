@@ -74,6 +74,9 @@ extension MediaDemuxer {
         /// are not read while the switch is under way, and are again if it is given up.
         var abandoned: PendingAbandon?
         var isPreviousAbandoned: Bool { abandoned != nil }
+        /// With the pictures spliced, where the old variant's own sound was cut (`spliceAbandoned`, the audio's time base):
+        /// the new one's takes over at its first packet there or after, and what it has before is dropped.
+        var abandonedAudioCut: Int64?
     }
 
     /// Switches to variant `id` without a seek; see the type's description. Takes effect from the next read, and
@@ -383,7 +386,7 @@ extension MediaDemuxer {
             return true
         }
         let audioTimebase = stream.pointee.time_base
-        let audioSpliceTime = av_rescale_q(spliceTime, timebase, audioTimebase)
+        let audioSpliceTime = pending.abandonedAudioCut ?? av_rescale_q(spliceTime, timebase, audioTimebase)
         if index == audioStreamIndex {
             guard time >= audioSpliceTime else { return true }
             spliceVariantAudio(releasingHeld: true)
@@ -391,6 +394,11 @@ extension MediaDemuxer {
         }
         if time >= audioSpliceTime {
             variantSwitch?.heldAudio.append(DemuxedAudioPacket(pkt))
+            // A download given up: the old variant's sound is cut there and read no more; the new one's takes over now.
+            if pending.abandonedAudioCut != nil {
+                spliceVariantAudio(releasingHeld: true, fromAudioPTS: audioSpliceTime)
+                return false
+            }
             // The old audio ended before the splice (its playlist was stopped): the new one takes over a second on.
             if time - audioSpliceTime > av_rescale_q(1, AVRational(num: 1, den: 1), audioTimebase) {
                 spliceVariantAudio(releasingHeld: true)
@@ -458,14 +466,15 @@ extension MediaDemuxer {
 
     /// Audio comes from the new variant: the tracks point at its streams, and the held packets are queued (when
     /// `releasingHeld`; a seek drops them).
-    func spliceVariantAudio(releasingHeld: Bool) {
+    func spliceVariantAudio(releasingHeld: Bool, fromAudioPTS: Int64? = nil) {
         guard let pending = variantSwitch else { return }
         if pending.audioStream >= 0, let stream = input.stream(pending.audioStream) {
             audioStreamIndex = pending.audioStream
             audioTimebase = stream.pointee.time_base
             if !hasVideo { timebase = audioTimebase }
             if releasingHeld, let spliceTime = pending.spliceTime {
-                let audioSpliceTime = av_rescale_q(spliceTime, timebase, audioTimebase)
+                // From the picture's splice, or from where the old variant's own sound was cut (`spliceAbandoned`).
+                let audioSpliceTime = fromAudioPTS ?? av_rescale_q(spliceTime, timebase, audioTimebase)
                 for packet in pending.heldAudio where packet.pts >= audioSpliceTime {
                     audioQueue.append(packet)
                 }

@@ -110,17 +110,46 @@ struct DemuxerPacketBufferTruncateTests {
         #expect(buffer.maxPacketEndPTS == 5 * 40 + 40)
     }
 
-    @Test("The keyframe with a presentation time is found at or after the cursor only")
-    func findsTheKeyframeByPTS() {
-        var buffer = buffer(gops: 3)
-        #expect(buffer.keyframeIndex(withPTS: 120) == 3)
-        #expect(buffer.keyframeIndex(withPTS: 80) == nil, "A picture that is no keyframe")
-        _ = buffer.popFirst()
-        _ = buffer.popFirst()
-        _ = buffer.popFirst()
-        _ = buffer.popFirst()
-        #expect(buffer.keyframeIndex(withPTS: 120) == nil, "Handed out already")
-        #expect(buffer.keyframeIndex(withPTS: 240) == 6)
+    /// Decode order I0 P3 B1 B2 P6 B4 B5 I9, pictures 40 apart (B-frames come after the picture they are presented
+    /// before).
+    private func bFrames() -> Buffer {
+        var buffer = Buffer(maxBackBytes: 0)
+        for (picture, isKey) in [
+            (0, true), (3, false), (1, false), (2, false), (6, false), (4, false), (5, false), (9, true),
+        ] {
+            buffer.append(TestPacket(pts: Int64(picture) * 40, isKeyFrame: isKey, size: 100))
+        }
+        return buffer
+    }
+
+    @Test("A new keyframe's time cuts from the first picture in decode order presented at or after it")
+    func cutsInDecodeOrderAtATime() {
+        // The new keyframe at 4.5 pictures: walking back from the end while presented at or after it (ExoPlayer) would stop
+        // at B4 and keep P6 among the new variant's pictures. From P6 on in decode order nothing kept is presented after it.
+        var buffer = bFrames()
+        let index = buffer.firstIndex(atOrAfterPTS: 180)
+        #expect(index == 4)
+        let isCut = buffer.truncate(from: 4)
+        #expect(isCut)
+        var kept: [Int64] = []
+        while let packet = buffer.popFirst() { kept.append(packet.pts) }
+        #expect(kept == [0, 120, 40, 80], "B4 is lost: a picture repeated, not a hole")
+        #expect(kept.allSatisfy { $0 < 180 })
+    }
+
+    @Test("The latest picture handed out is the largest time since the keyframe, not the last packet's")
+    func largestHandedOut() {
+        var buffer = bFrames()
+        #expect(buffer.largestHandedOutPTS == Int64.min)
+        _ = buffer.popFirst()  // I0
+        _ = buffer.popFirst()  // P3
+        _ = buffer.popFirst()  // B1
+        #expect(buffer.lastHandedOutPTS == 40)
+        #expect(buffer.largestHandedOutPTS == 120, "P3 is decoded: a cut at 100 would put a picture behind it")
+        for _ in 0..<4 { _ = buffer.popFirst() }  // B2 P6 B4 B5
+        #expect(buffer.largestHandedOutPTS == 240)
+        _ = buffer.popFirst()  // I9
+        #expect(buffer.largestHandedOutPTS == 360, "A keyframe starts it again")
     }
 
     @Test("The first keyframe at or after a time is found from the cursor on, with the time known to within a little")

@@ -124,7 +124,13 @@ struct ABRStartRealMeasurement {
         }
         consumer.stop()
         demuxer.stopReadAhead()
-        for entry in LogStore.shared.snapshot() where entry.message.hasPrefix("ABR abandon") {
+        // The decisions, and what the splice made of them: the cut, a keyframe refused for the sound, a re-read, a loss.
+        let splice = [
+            "given up was cut at", "is not cut at", "took a download over was given up", "rest of it is lost",
+            "the sound could not be cut",
+        ]
+        for entry in LogStore.shared.snapshot()
+        where entry.message.hasPrefix("ABR abandon") || splice.contains(where: entry.message.contains) {
             print("MEASURE-REAL   [abandon] \(entry.message)")
         }
         print(

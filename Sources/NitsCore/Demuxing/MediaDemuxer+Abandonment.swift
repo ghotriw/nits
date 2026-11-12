@@ -441,54 +441,95 @@ extension MediaDemuxer {
         return isSoundCut
     }
 
-    /// The new variant's keyframe at `time`, with the old variant's download given up: the old variant's pictures from the
-    /// keyframe of the same presentation time are cut, and its sound (muxed into it) from the time in the audio's time
-    /// base, and the new variant's take over at once. Only when nothing at or after the cut is handed out: the old
-    /// keyframe is ahead of the cursor, and the sound's cursor is before the cut; else false, and the next keyframe of the
-    /// new variant is tried (each refusal for the sound is logged, as the cost of a cursor that runs ahead of the picture
-    /// is for the measurement to show). With no old keyframe of that time and the old pictures ending before this one,
-    /// there is nothing to cut: the ordinary splice (the old variant's partial segment ended earlier, which leaves a hole).
+    /// The new variant's keyframe at `time` (its own time base), with the old variant's download given up, spliced in as
+    /// ExoPlayer splices a chunk (`SampleQueue.attemptSplice`): the old pictures not handed out are cut from the first one in
+    /// decode order presented at or after the keyframe, whatever the old variant's keyframes (the variants' segments need
+    /// not start on keyframes of the same time); what is kept is a prefix in decode order, all of it decodable and presented
+    /// before the keyframe, so the variants never mix (a B-frame presented just before it may be lost: a picture repeated,
+    /// not a hole). Refused, and the next keyframe of the new variant tried, when a picture presented at or after it is
+    /// handed out already (`largestHandedOutPTS`, not the last one: with B-frames that one is not the latest).
+    ///
+    /// The sound the old variant has of its own (muxed into it, or a rendition the new one does not share) is cut on its
+    /// own: from the keyframe's time or, handed out past it, from just after what is handed out; the new variant's, held
+    /// until now, takes over from the same time, at its first packet there or after (ExoPlayer splices each queue at its
+    /// own first sample past the cut); what it has before is dropped.
     func spliceAbandoned(at time: Int64, keyframe: Data?, pending: VariantSwitch) -> Bool {
-        let oldIndex = videoQueue.keyframeIndex(withPTS: time)
-        if oldIndex == nil, time < pending.previousVideoTime { return false }
-        let isMuxed = isOldAudioMuxed(pending)
-        let audioTime = audioTicks(fromVideo: time)
-        // The sound is past the cut: this keyframe will not do.
-        if isMuxed, audioQueue.lastHandedOutPTS >= audioTime {
-            let now = adaptiveTime
-            if now - adaptiveBitrate.lastSpliceRefusal >= 0.5 {
-                adaptiveBitrate.lastSpliceRefusal = now
-                let seconds = { (ticks: Int64, base: AVRational) in Double(ticks) * Double(base.num) / Double(base.den)
-                }
-                AppLog.info(
-                    .demuxer,
-                    "\(streamingName): keyframe at \(String(format: "%.2f", seconds(time, timebase))) s is not cut at: the sound is handed out to "
-                        + "\(String(format: "%.2f", seconds(audioQueue.lastHandedOutPTS, audioTimebase))) s")
-            }
+        let newBase = pending.streams.video.flatMap { input.stream($0)?.pointee.time_base } ?? timebase
+        // The old pictures are in the old time base, which is the demuxer's until the splice.
+        let cut = av_rescale_q(time, newBase, timebase)
+        let toSeconds = { (ticks: Int64, base: AVRational) in
+            Double(ticks) * Double(base.num) / Double(max(base.den, 1))
+        }
+        let format = { (value: Double) in String(format: "%.3f", value) }
+        let handedOut = videoQueue.largestHandedOutPTS
+        if handedOut != Int64.min, handedOut >= cut {
+            logSpliceRefusal(
+                "keyframe at \(format(toSeconds(cut, timebase))) s is not cut at: a picture at "
+                    + "\(format(toSeconds(handedOut, timebase))) s is handed out")
             return false
         }
+        let isOwnAudio = isOldAudioMuxed(pending)
+        // The old sound's cut (its time base), and the same time in the new sound's.
+        var audioCut: Int64?
+        var newAudioCut: Int64?
+        if isOwnAudio {
+            var from = av_rescale_q(time, newBase, audioTimebase)
+            if audioQueue.lastHandedOutPTS != Int64.min { from = max(from, audioQueue.lastHandedOutPTS + 1) }
+            audioCut = from
+            let newAudioBase = input.stream(pending.audioStream)?.pointee.time_base ?? audioTimebase
+            newAudioCut = av_rescale_q(from, audioTimebase, newAudioBase)
+        }
+        let index = videoQueue.firstIndex(atOrAfterPTS: cut)
+        // For the log: what of the old variant is cut, and the pictures presented before the keyframe among it (lost).
+        var cutCount = 0
+        var lost = 0
+        if let index {
+            var position = index
+            while let packet = videoQueue.peekAt(position) {
+                cutCount += 1
+                if packet.effectivePTS < cut { lost += 1 }
+                position += 1
+            }
+        }
+        let lastOld = videoQueue.lastElement?.effectivePTS
         guard spliceVariantVideo(at: time, keyframe: keyframe) else { return false }
-        let toSeconds = { (ticks: Int64) in Double(ticks) * Double(self.timebase.num) / Double(self.timebase.den) }
-        let seconds = toSeconds(time)
-        cutQueuedTail(videoIndex: oldIndex, audioPTS: isMuxed ? audioTime : nil, atSeconds: seconds)
-        // Given up inside the segment, the cut was meant at a queued keyframe: say whether the new variant had one of its
-        // time (the cut) or not (the old pictures play out and the new ones follow from their next keyframe: a gap).
-        var how = oldIndex == nil ? " (nothing queued of it past that)" : ""
+        let seconds = toSeconds(time, newBase)
+        cutQueuedTail(videoIndex: index, audioPTS: audioCut, atSeconds: seconds)
+        var how: String
+        if index != nil {
+            how = " (\(cutCount) old pictures cut, \(lost) of them presented before it)"
+        } else if let lastOld, lastOld != Int64.min {
+            // The old pictures end before the keyframe: what is between is a hole.
+            how = " (nothing queued of it past that; the old pictures end at \(format(toSeconds(lastOld, timebase))) s)"
+        } else {
+            how = " (nothing of the old variant queued)"
+        }
         if let expected = pending.abandoned?.cut {
-            let format = { (value: Double) in String(format: "%.2f", value) }
-            how =
-                oldIndex != nil
-                ? " (inside the segment, at a queued keyframe; expected at \(format(expected)) s)"
-                : " (inside the segment, no keyframe of the new variant's times queued, expected at \(format(expected)) s: "
-                    + "the old pictures end at \(format(toSeconds(pending.previousVideoTime))) s, a gap)"
+            how += ", given up inside the segment, expected at \(format(expected)) s"
+        }
+        if let audioCut {
+            how += "; its own sound cut at \(format(toSeconds(audioCut, audioTimebase))) s"
         }
         AppLog.info(
             .demuxer,
-            "\(streamingName): the download of variant \(pending.abandoned?.from ?? -1) given up was cut at \(String(format: "%.2f", seconds)) s"
+            "\(streamingName): the download of variant \(pending.abandoned?.from ?? -1) given up was cut at \(format(seconds)) s"
                 + how)
-        // The old variant's sound is read no more: the new one's, held until now, takes over, not a second on.
-        if variantSwitch != nil { spliceVariantAudio(releasingHeld: true) }
+        // The old variant's sound is read no more: the new one's takes over from the cut, from what is held of it now, or
+        // at its first packet there read later (`admitDuringVariantSwitch`).
+        if let newAudioCut, (pending.heldAudio.last?.pts ?? Int64.min) < newAudioCut {
+            variantSwitch?.abandonedAudioCut = newAudioCut
+        } else if variantSwitch != nil {
+            spliceVariantAudio(releasingHeld: true, fromAudioPTS: newAudioCut)
+        }
         return true
+    }
+
+    /// A keyframe of a switch that took a download over refused: said at most twice a second, for the measurement.
+    private func logSpliceRefusal(_ text: String) {
+        let now = adaptiveTime
+        guard now - adaptiveBitrate.lastSpliceRefusal >= 0.5 else { return }
+        adaptiveBitrate.lastSpliceRefusal = now
+        AppLog.info(.demuxer, "\(streamingName): \(text)")
     }
 
     /// What reading a download given up again does with what is queued of it.
