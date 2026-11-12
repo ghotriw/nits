@@ -399,7 +399,8 @@ extension MediaDemuxer {
         input.abandonDownload(ofVariant: from)
         let before = adaptiveBitrate.logic.estimate
         adaptiveBitrate.logic.noteAbandoned(
-            at: adaptiveTime, download: download, targetBandwidth: variants.first { $0.id == target }?.bandwidth)
+            at: adaptiveTime, download: download, targetBandwidth: variants.first { $0.id == target }?.bandwidth,
+            abandonedBandwidth: variants.first { $0.id == from }?.bandwidth)
         let kbps = { (value: Double?) in value.map { "\(Int($0 / 1000)) kbit/s" } ?? "none" }
         let (was, now) = (kbps(before), kbps(adaptiveBitrate.logic.estimate))
         if was != now { AppLog.info(.demuxer, "ABR abandon estimate: \(was) -> \(now) for variant \(target)") }

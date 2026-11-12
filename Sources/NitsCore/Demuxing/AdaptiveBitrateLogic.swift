@@ -27,6 +27,13 @@ import Foundation
 ///   what the socket buffered while it idled and measures nothing, however fast the network, so it probes: a step
 ///   too high drains the read-ahead and comes down long before that runs out. A step up that comes down within
 ///   `failedProbeWindow` doubles the wait before the next (up to `maxProbeBackoff` times).
+/// - **Back up after a download given up** (`noteAbandoned`): a give-up takes the variant that comes within the buffer,
+///   the lowest when none does, to save one segment from a stall, not as a measure of the link. From `estimateUpBuffer` of
+///   real read-ahead and `downSwitchInterval` (and the backoff) after it, on an estimate measured since (`halfLives.slow`
+///   of media, not the one the give-up set) and within `failedProbeWindow` of it, the logic steps up to the highest
+///   variant below the one given up that `probeSafety` of the estimate fits (no fewer pixels): a step up, held and backed
+///   off as one. Else a link in the band between `upSafety` and `safety` of a variant (1.5 Mbit/s and 480 at
+///   1.08) never stepped up to it but by the probe at a full read-ahead, and played the lowest for some 40 s.
 struct AdaptiveBitrateLogic: Sendable {
     struct Config: Sendable {
         /// Read-ahead seconds from which the logic steps up, and below which it steps down.
@@ -103,9 +110,25 @@ struct AdaptiveBitrateLogic: Sendable {
     private var probeBackoff = 1.0
     /// Since when the current variant didn't fit `probeHoldSafety`, while it does not.
     private var misfitSince: Double?
+    /// A give-up the logic may step back up from (`noteAbandoned`), to a variant below `ceiling` (the bandwidth of the one
+    /// given up): until a step up, a seek or a variant chosen by hand (`endDetour`), and for `failedProbeWindow` after
+    /// `time` at most. `measured` is the weight of the samples taken since: the estimate is the link's after the give-up,
+    /// not the one `noteAbandoned` set, once it reaches `halfLives.slow`.
+    struct Detour: Sendable, Equatable {
+        let ceiling: Int
+        let time: Double
+        var measured = 0.0
+    }
+
+    private(set) var detour: Detour?
 
     init(config: Config = Config()) {
         self.config = config
+    }
+
+    /// A seek, or a variant chosen by hand: the give-up is no reason to step up any more.
+    mutating func endDetour() {
+        detour = nil
     }
 
     /// Bits a second, once `minimumMeasurement` was measured.
@@ -150,6 +173,7 @@ struct AdaptiveBitrateLogic: Sendable {
         }
         lastSampleTime = time
         measuredWeight += weight
+        detour?.measured += weight
     }
 
     /// A download was given up for a lower variant's (`MediaDemuxer.requestAbandon`): a step down as far as `choose` is
@@ -163,10 +187,14 @@ struct AdaptiveBitrateLogic: Sendable {
     /// while the latency alone takes `safety` (`choose` goes by that then). Else the estimate of the fast link before the drop, which a few seconds of
     /// a slow one hardly move, took the stream back up to the variant given up (measured: 1920p chosen again 2 to 20 s
     /// after its download was given up on a 2 Mbit/s link, and its next segment ran the buffer from 40 s down to 9.5 s).
-    mutating func noteAbandoned(at time: Double, download: Download? = nil, targetBandwidth: Int? = nil) {
+    mutating func noteAbandoned(
+        at time: Double, download: Download? = nil, targetBandwidth: Int? = nil, abandonedBandwidth: Int? = nil
+    ) {
         if let download, download.measuredBytes > 0, download.transferring > 0 {
             addSample(bytes: download.measuredBytes, seconds: download.transferring, media: 0, at: time)
         }
+        // Replaces an earlier one: the variant given up last is the ceiling. None known, none.
+        detour = abandonedBandwidth.map { Detour(ceiling: $0, time: time) }
         // The target fits `safety` with the latency's share, as `choose` reckons, and nothing higher fits `upSafety`.
         let share = config.safety - (latencyShare ?? 0)
         if let targetBandwidth, targetBandwidth > 0, share > 0,
@@ -252,12 +280,9 @@ struct AdaptiveBitrateLogic: Sendable {
                     // alone never lets a stream stand on 0.7 to 0.85 of the link climb to it. A variant of fewer
                     // pixels isn't a step up whatever its bandwidth; one whose size is unknown is taken for no fewer.
                     if target == position, isReadAheadReal {
-                        let current = ladder[position]
                         let budget = estimate * (config.probeSafety - latencyShare)
                         if let next = ladder.indices.dropFirst(position + 1).first(where: {
-                            ladder[$0].bandwidth > current.bandwidth
-                                && (ladder[$0].pixels == 0 || current.pixels == 0
-                                    || ladder[$0].pixels >= current.pixels)
+                            Self.isStepUp(ladder[$0], from: ladder[position])
                         }), Double(ladder[next].bandwidth) <= budget, !isLatencyBound {
                             target = next
                         }
@@ -266,11 +291,36 @@ struct AdaptiveBitrateLogic: Sendable {
                     target = position + 1
                 }
             }
-            if target > position { lastStepUpTime = time }
+            // Back up after a give-up: below the variant given up, within `probeSafety` of an estimate of the link since,
+            // on a real read-ahead.
+            if detour.map({ time - $0.time > config.failedProbeWindow }) == true { detour = nil }
+            if target == position, let detour, detour.measured >= config.halfLives.slow, isRecent, isReadAheadReal,
+                !isLatencyBound, let estimate, readAhead >= config.estimateUpBuffer,
+                sinceSwitch >= config.downSwitchInterval * probeBackoff
+            {
+                let budget = estimate * (config.probeSafety - latencyShare)
+                if let best = ladder.indices.last(where: {
+                    ladder[$0].bandwidth < detour.ceiling && Double(ladder[$0].bandwidth) <= budget
+                        && Self.isStepUp(ladder[$0], from: ladder[position])
+                }) {
+                    target = best
+                }
+            }
+            if target > position {
+                lastStepUpTime = time
+                detour = nil
+            }
         }
         guard target != position else { return nil }
         lastSwitchTime = time
         misfitSince = nil
         return ladder[target].id
+    }
+
+    /// Whether `candidate` is a step up from `current` for a probe: more bandwidth, and no fewer pixels (a variant whose
+    /// size is unknown is taken for no fewer).
+    private static func isStepUp(_ candidate: Variant, from current: Variant) -> Bool {
+        candidate.bandwidth > current.bandwidth
+            && (candidate.pixels == 0 || current.pixels == 0 || candidate.pixels >= current.pixels)
     }
 }

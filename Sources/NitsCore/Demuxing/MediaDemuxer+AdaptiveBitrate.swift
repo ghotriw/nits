@@ -29,6 +29,8 @@ extension MediaDemuxer {
         /// `adaptiveTime` when a keyframe of a switch that took a download over was last refused for the sound (the log says it
         /// every half second at most).
         var lastSpliceRefusal = -Double.infinity
+        /// `VariantSelection.handPicks` as last seen (`adaptBitrateIfDue`).
+        var handPicksSeen = 0
         let epoch = ContinuousClock.now
     }
 
@@ -132,6 +134,13 @@ extension MediaDemuxer {
     /// Asks for the variant `AdaptiveBitrateLogic` chooses, every `decisionInterval`. Behind `lock` and `queueLock`.
     func adaptBitrateIfDue() {
         let now = adaptiveTime
+        // A variant chosen by hand ends what a give-up allowed (`AdaptiveBitrateLogic.endDetour`), even when automatic
+        // choice is back before a decision ran.
+        let handPicks = variantSelection.withLock { $0.handPicks }
+        if handPicks != adaptiveBitrate.handPicksSeen {
+            adaptiveBitrate.handPicksSeen = handPicks
+            adaptiveBitrate.logic.endDetour()
+        }
         guard now >= adaptiveBitrate.nextDecision, variants.count > 1, variantSwitch == nil, !readAheadEnded,
             adaptiveBitrate.pendingAbandon == nil
         else {

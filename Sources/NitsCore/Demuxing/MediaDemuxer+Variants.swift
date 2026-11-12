@@ -31,6 +31,9 @@ extension MediaDemuxer {
         var requested: Int?
         /// Adaptive bitrate chooses (`isAdaptiveBitrateEnabled`).
         var isAutomatic = true
+        /// How many variants were chosen by hand (`selectVariant(id:)`): the read-ahead thread ends a give-up's step back
+        /// up when it changed (`AdaptiveBitrateLogic.endDetour`), however soon automatic choice came back.
+        var handPicks = 0
         /// Variants whose first read found other streams than described, or ones that don't switch
         /// (`verifyVariantSwitchTarget`): neither asked for nor chosen again.
         var rejected: Set<Int> = []
@@ -88,6 +91,7 @@ extension MediaDemuxer {
             guard !selection.rejected.contains(id) else { return }
             selection.requested = id
             selection.isAutomatic = false
+            selection.handPicks += 1
         }
     }
 

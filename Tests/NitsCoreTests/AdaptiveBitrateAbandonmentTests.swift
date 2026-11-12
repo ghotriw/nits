@@ -295,3 +295,78 @@ struct AdaptiveBitrateAbandonedStepTests {
         #expect(logic.estimate == nil)
     }
 }
+
+@Suite("Abandoning a segment download: back up after it")
+struct AdaptiveBitrateDetourTests {
+    /// `hlsLadder`'s rungs: 320x180 at 0.46 Mbit/s, 480x270 at 1.08, 640x360 at 2.86.
+    private static let ladder: [AdaptiveBitrateLogic.Variant] = [
+        .init(id: 0, bandwidth: 460_000, pixels: 320 * 180), .init(id: 1, bandwidth: 1_079_000, pixels: 480 * 270),
+        .init(id: 2, bandwidth: 2_862_000, pixels: 640 * 360),
+    ]
+
+    /// The top variant's download given up at 1 s for `target` (the lowest unless told), then `rate` bits a second measured
+    /// each second to `until`, three seconds of media a second (the lowest reads so fast on 1.5 Mbit/s).
+    private static func givenUp(
+        rate: Int, until: Int, target: Int = 460_000, from abandoned: Int = 2_862_000
+    ) -> AdaptiveBitrateLogic {
+        var logic = AdaptiveBitrateLogic()
+        logic.addSample(bytes: rate / 8, seconds: 1, media: 1, at: 0)
+        logic.noteAbandoned(at: 1, targetBandwidth: target, abandonedBandwidth: abandoned)
+        for second in 2...until { logic.addSample(bytes: rate / 8, seconds: 1, media: 3, at: Double(second)) }
+        return logic
+    }
+
+    @Test("A link in the band between keeping and stepping up to a variant goes back to it once the read-ahead holds")
+    func stepsBackToWhatTheLinkCarries() throws {
+        var logic = Self.givenUp(rate: 1_500_000, until: 8)
+        let estimate = try #require(logic.estimate)
+        // 480 is kept on 1.5 Mbit/s (0.95) but not stepped up to (0.7): the ordinary rules leave it on 320.
+        #expect(1_079_000 > estimate * logic.config.upSafety)
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 6, at: 8) == nil, "Not before 10 s read ahead")
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 12, at: 8) == 1)
+        #expect(logic.detour == nil, "A step up ends it")
+    }
+
+    @Test("Never back to the variant given up, however fast the link looks")
+    func staysBelowTheVariantGivenUp() throws {
+        // 640 given up for 480; then 3.7 Mbit/s, which `probeSafety` takes for enough for 640 and `upSafety` not.
+        var logic = Self.givenUp(rate: 3_700_000, until: 14, target: 1_079_000)
+        let estimate = try #require(logic.estimate)
+        #expect(2_862_000 <= estimate * logic.config.probeSafety)
+        #expect(2_862_000 > estimate * logic.config.upSafety)
+        #expect(logic.choose(current: 1, among: Self.ladder, readAhead: 12, at: 14) == nil)
+    }
+
+    @Test("Not at a live edge, whose read-ahead is raised to stand for a full one, nor after a seek")
+    func needsARealReadAhead() {
+        var live = Self.givenUp(rate: 1_500_000, until: 8)
+        #expect(live.choose(current: 0, among: Self.ladder, readAhead: 20, isReadAheadReal: false, at: 8) == nil)
+        var sought = Self.givenUp(rate: 1_500_000, until: 8)
+        sought.endDetour()
+        #expect(sought.choose(current: 0, among: Self.ladder, readAhead: 12, at: 8) == nil)
+    }
+
+    @Test("Only on an estimate measured since the give-up, and not long after it")
+    func needsAFreshEstimateSoon() {
+        // An estimate from before the give-up (recent, and here left as it was) is no measure since: nothing done.
+        var unmeasured = AdaptiveBitrateLogic()
+        for second in 0..<6 { unmeasured.addSample(bytes: 1_500_000 / 8, seconds: 1, media: 1, at: Double(second)) }
+        unmeasured.noteAbandoned(at: 6, abandonedBandwidth: 2_862_000)
+        #expect(unmeasured.choose(current: 0, among: Self.ladder, readAhead: 12, at: 9) == nil)
+        // Past `failedProbeWindow` (60 s) the give-up is history: the ordinary rules (here the probe at 20 s) decide.
+        var late = Self.givenUp(rate: 1_500_000, until: 70)
+        #expect(late.choose(current: 0, among: Self.ladder, readAhead: 12, at: 70) == nil)
+        #expect(late.detour == nil)
+    }
+
+    @Test("Back up is a step up: given up again soon after, the next wait doubles")
+    func isAStepUp() {
+        var logic = Self.givenUp(rate: 1_500_000, until: 8)
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 12, at: 8) == 1)
+        logic.noteAbandoned(at: 9, targetBandwidth: 460_000, abandonedBandwidth: 1_079_000)
+        for second in 10...14 { logic.addSample(bytes: 1_500_000 / 8, seconds: 1, media: 1, at: Double(second)) }
+        // Below 480 now, and 4 s (twice `downSwitchInterval`) after the give-up.
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 12, at: 12) == nil, "3 s is not enough now")
+        #expect(logic.choose(current: 0, among: Self.ladder, readAhead: 12, at: 14) == nil, "Not 480: it was given up")
+    }
+}
