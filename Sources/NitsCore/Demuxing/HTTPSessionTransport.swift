@@ -738,14 +738,18 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         if isDue { onProgress(progress) }
     }
 
-    /// Waits for `condition` on the state, checking `shouldAbort` every 50 ms: false when interrupted.
+    /// Waits for `condition` on the state, checking `shouldAbort` every 50 ms: false when interrupted. A download given up
+    /// (`abandon`) is interrupted whatever the state, first: the condition holds at once on bytes buffered or on the
+    /// cancelled task's end (cut short, a failure), which read so made the rest of the body the segment's end, or -EIO.
     private func wait(until condition: (State) -> Bool) -> Bool {
-        while !state.withLockUnchecked({ condition($0) }) {
-            if shouldAbort() || state.withLock({ $0.isAbandoned }) { return false }
+        while true {
+            let (isAbandoned, isMet) = state.withLockUnchecked { ($0.isAbandoned, condition($0)) }
+            if isAbandoned { return false }
+            if isMet { return true }
+            if shouldAbort() { return false }
             observeIfDue()
             _ = changed.wait(timeout: .now() + .milliseconds(50))
         }
-        return true
     }
 
     fileprivate func waitForAnswer() -> HTTPSessionTransport.Opened {

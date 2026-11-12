@@ -625,6 +625,10 @@ final class HLSLane: @unchecked Sendable {
             // The run ended, or failed.
             reader?.close()
             reader = nil
+            // Given up meanwhile: however the reader put the interrupt (FFmpeg's MPEG-TS demuxer makes a short read the
+            // end of its stream), it is one, never a failed segment to skip nor an end to go on from, to the next segment
+            // of this variant.
+            if isAbandoned { return HTTPSessionInput.averrorExit }
             if code == MediaDemuxer.averrorEOF {
                 if let stop = stopCode {
                     stopCode = nil

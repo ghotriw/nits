@@ -286,6 +286,23 @@ struct HLSSegmentPipelineTests {
         #expect(packets.filter(\.isVideo).count >= 100, "The segments before it were read")
     }
 
+    @Test("A download given up is an interrupt to its reader, also once its cancelled task has ended")
+    func abandonedBodyIsInterrupted() throws {
+        guard let stand = try Self.stand(.hlsVariants) else { return }
+        defer { stand.server.stop() }
+        var slow = TestHTTPServer.Behavior()
+        slow.bytesPerSecond = 32 << 10
+        stand.server.setDefaultBehavior(slow)
+        let media = try stand.playlist("v0.m3u8")
+        let body = try stand.loader.segmentBody(media.segments[0])
+        #expect(try body.next(1024)?.count == 1024)
+        body.abandon()
+        // The task's cancellation ends it (cut short: a failure) before the reader comes back, as a reader busy elsewhere
+        // finds it. Bytes it buffered are not read either: the segment is read again by another variant.
+        _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .milliseconds(300))
+        #expect(throws: HLSSegmentLoadError.interrupted) { try body.next(1024) }
+    }
+
     @Test("A first segment that doesn't load fails the opening")
     func failedOpening() throws {
         guard let stand = try Self.stand(.hlsVariants) else { return }
