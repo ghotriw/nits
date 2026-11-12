@@ -34,6 +34,14 @@ struct AbandonDownloadTests {
         }
     }
 
+    /// Turns `abandonsDownloads` on while reading ahead: the read thread reads it behind `lock`, taken without asking the
+    /// read to step aside (that would interrupt the segment in flight, as a seek does).
+    private func turnAbandonsOn(_ demuxer: MediaDemuxer) {
+        demuxer.lockIO()
+        demuxer.abandonsDownloads = true
+        demuxer.lock.unlock()
+    }
+
     /// Gives up the switch under way when it is one that took a download over and has not spliced; false when it is not.
     private func cancelPendingSwitch(of demuxer: MediaDemuxer) -> Bool {
         // The read thread waits for the lower variant's late answer holding the lock: ask it to step aside, as a seek does.
@@ -135,9 +143,10 @@ struct AbandonDownloadTests {
         let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
-        demuxer.abandonsDownloads = true
+        // Off until the link slows: a start on a loaded machine (the HTTP suites together on a pool of one thread) can be
+        // slow enough to give a segment up, and the stream is then on a variant with nothing below it to give up.
+        demuxer.abandonsDownloads = false
         demuxer.adaptiveBitrateConfig = Self.config()
-        let since = Date()
         // A fast link: the read-ahead fills and playback runs on the top variant, then the link slows with segments ahead.
         demuxer.startReadAhead(limits: .init(seconds: 6))
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer)
@@ -145,6 +154,9 @@ struct AbandonDownloadTests {
         #expect(
             await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) { (consumer.pictures.last?.pts ?? 0) > 5 },
             "Playback did not reach 5 s")
+        turnAbandonsOn(demuxer)
+        let since = Date()
+        let slowedAt = ContinuousClock.now
         server.setLinkRate(500_000 / 8)
 
         let message = await waitForMessage(timeout: .seconds(25), since: since) {
@@ -163,11 +175,13 @@ struct AbandonDownloadTests {
         let topPrefix = try #require(
             segments.first { numbers($0.path) == String(format: "%03d", sequence) }?.path.split(separator: "_").first)
         // The switch is made at the next read: the other variant's request comes a moment after the log line.
-        let isAsked = { () -> Bool in
-            server.requests.contains { $0.path.hasSuffix(".ts") && !$0.path.hasPrefix(topPrefix + "_") }
+        let otherRequests = {
+            server.requests.filter {
+                $0.time >= slowedAt && $0.path.hasSuffix(".ts") && !$0.path.hasPrefix(topPrefix + "_")
+            }
         }
-        _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(8), isAsked)
-        let others = server.requests.filter { $0.path.hasSuffix(".ts") && !$0.path.hasPrefix(topPrefix + "_") }
+        _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(8)) { !otherRequests().isEmpty }
+        let others = otherRequests()
         let first = try #require(others.first, "No other variant's segment was asked for")
         #expect(numbers(first.path) == String(format: "%03d", sequence), "Read \(first.path), not segment \(sequence)")
         let cut = await waitForMessage(timeout: .seconds(20), since: since) { $0.contains("given up was cut at") }
@@ -242,9 +256,10 @@ struct AbandonDownloadTests {
     // MARK: Inside the segment (`hlsLadderShortGOP`: 6 s segments, a keyframe every 2 s)
 
     /// A playback of `hlsLadderShortGOP`'s `playlist` with the top rung's segment 1 ([6..12] s) served as fast as it plays
-    /// (its bytes over its six seconds), everything else at once. The read-ahead keeps 2 s, so that segment is asked for
-    /// with the position at 4 s, and the rule, which waits half the segment's duration (3 s), first looks at it with the
-    /// position inside it at ~7 s and its keyframe at 8 s queued, not handed out.
+    /// (its bytes over its six seconds), everything else at once. The read-ahead keeps 2.4 s, so that segment is asked for
+    /// with the position at 3.6 s, and the rule, which waits half the segment's duration (3 s), first looks at it with the
+    /// position inside it at ~6.6 s and its keyframe at 8 s queued, not handed out: 1.4 s for the lower variant to reach
+    /// it (the rule asks that it does: `cutOffset`), which a starved pool of one thread too needs (1 s was too short).
     private struct InsideSetup {
         let server: TestHTTPServer
         let demuxer: MediaDemuxer
@@ -274,7 +289,7 @@ struct AbandonDownloadTests {
         realTime.bytesPerSecond = size / 6
         server.setBehavior(realTime) { $0 == segment }
         let since = Date()
-        demuxer.startReadAhead(limits: .init(seconds: 2))
+        demuxer.startReadAhead(limits: .init(seconds: 2.4))
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer, startAhead: 1, audioAhead: audioAhead)
         return InsideSetup(server: server, demuxer: demuxer, consumer: consumer, since: since, segment: segment)
     }

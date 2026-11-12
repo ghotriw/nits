@@ -207,6 +207,46 @@ struct AdaptiveBitrateAbandonmentMarginTests {
             logic.abandonment(of: Self.download(length: 3_187_500), among: Self.ladder, buffer: 5, roundTrip: 0.2))
         #expect(decision.target == 1)
     }
+
+    @Test("Inside the segment the lower variant must reach the cut within the buffer, with no fallback to the lowest")
+    func insideNeedsTheCut() throws {
+        let logic = AdaptiveBitrateLogic()
+        let download = Self.download(length: 3_187_500)
+        // The cut 2 s into the segment, 1 s ahead of the position: the lowest reaches it in 0.2 + 2 x 0.5 / 2.5 = 0.6 s.
+        let decision = try #require(
+            logic.abandonment(of: download, among: Self.ladder, buffer: 1, roundTrip: 0.2, cutOffset: 2))
+        #expect(decision.target == 0)
+        // 0.3 s ahead of it: none does. Ahead of the position the lowest would be taken (a stall); here it is a hole.
+        #expect(
+            logic.evaluation(of: download, among: Self.ladder, buffer: 0.3, roundTrip: 0.2, cutOffset: 2)
+                == .keep(.cutOutOfReach))
+        #expect(logic.abandonment(of: download, among: Self.ladder, buffer: 0.3, roundTrip: 0.2)?.target == 0)
+    }
+
+    @Test(
+        "Inside the segment a lower variant that reaches the cut but not the rest of its segment in time is not taken")
+    func insideNeedsTheRestToo() throws {
+        let logic = AdaptiveBitrateLogic()
+        // 1 Mbit/s; the cut 0.5 s in, 1.2 s ahead. 1.5 Mbit/s reaches it in 0.95 s, but its segment takes 9.2 s against
+        // the 6.7 s before playback gets to its end: a stall in the middle. The lowest: 0.45 s, and 3.2 s whole.
+        let slow = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 475_000, length: 3_187_500, elapsed: 4, firstAnswer: 0.2, transferring: 3.8,
+            measuredBytes: 475_000)
+        let decision = try #require(
+            logic.abandonment(of: slow, among: Self.ladder, buffer: 1.2, roundTrip: 0.2, cutOffset: 0.5))
+        #expect(decision.target == 0)
+        #expect(abs(decision.lower - 3.2) < 0.01, "The whole segment's time, as `remaining` is")
+    }
+
+    @Test("Inside the segment a lower variant in time but no sooner than finishing by the margin is no gain")
+    func insideNoGainIsNoGain() {
+        let logic = AdaptiveBitrateLogic()
+        // 1.2 s left at 2.5 Mbit/s, the cut 1 s ahead: the lowest reaches it in 0.6 s, but its segment takes 1.4 s.
+        let nearlyDone = Self.download(length: 1_562_500)
+        #expect(
+            logic.evaluation(of: nearlyDone, among: Self.ladder, buffer: 1, roundTrip: 0.2, cutOffset: 2)
+                == .keep(.noGain))
+    }
 }
 
 @Suite("Abandoning a segment download: what the logic does with it")

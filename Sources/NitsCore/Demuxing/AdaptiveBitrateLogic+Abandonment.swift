@@ -40,12 +40,17 @@ extension AdaptiveBitrateLogic {
     /// done, suspended or of the lowest variant. `buffer` is the seconds of media left to play before the buffer runs
     /// out; `roundTrip` the answer's wait to expect of a new request (seconds, the download's own when it has none).
     /// `playlistLoad`: seconds a lower variant's playlist takes to load first, when it is not loaded or is live (a live
-    /// one is reloaded at a switch); hls.js counts it so.
+    /// one is reloaded at a switch); hls.js counts it so. `cutOffset`: with the position inside the segment, the seconds
+    /// from its start to the queued keyframe the lower variant is cut in at (`buffer` ends there): the lower variant must
+    /// read up to it within the buffer, and no lower one is taken when none does (its keyframe would come after the
+    /// position passed it: a hole in the picture, where ahead of the position it is a stall).
     func abandonment(
-        of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0
+        of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
+        cutOffset: Double? = nil
     ) -> Abandonment? {
         if case .abandon(let decision) = evaluation(
-            of: download, among: variants, buffer: buffer, roundTrip: roundTrip, playlistLoad: playlistLoad)
+            of: download, among: variants, buffer: buffer, roundTrip: roundTrip, playlistLoad: playlistLoad,
+            cutOffset: cutOffset)
         {
             return decision
         }
@@ -61,6 +66,7 @@ extension AdaptiveBitrateLogic {
         case noRate = "no rate to decide with"
         case fitsBuffer = "rest fits the buffer"
         case noGain = "no lower segment sooner by the margin"
+        case cutOutOfReach = "no lower variant reaches the cut inside the segment in time"
     }
 
     enum Evaluation: Sendable, Equatable {
@@ -69,7 +75,8 @@ extension AdaptiveBitrateLogic {
     }
 
     func evaluation(
-        of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0
+        of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
+        cutOffset: Double? = nil
     ) -> Evaluation {
         let ladder = variants.sorted { $0.bandwidth < $1.bandwidth }
         guard let position = ladder.firstIndex(where: { $0.id == download.variant }), position > 0,
@@ -109,17 +116,33 @@ extension AdaptiveBitrateLogic {
         // A lower segment must come sooner than finishing by a margin, or giving up buys nothing and costs the bytes
         // loaded (hls.js has none: 930 KB thrown away for 0.5 s, and the stall not avoided).
         let margin = max(Self.abandonMargin, download.duration * Self.abandonMarginShare)
+        // Seconds each lower variant's segment takes, whole: what the margin compares with finishing.
         let times = ladder[..<position].map {
             roundTrip + playlistLoad + download.duration * Double($0.bandwidth) / rate
         }
-        // The highest lower variant that arrives within the buffer (or a segment's duration and the round trip); when none
-        // does, the lowest, as hls.js does. With nothing buffered each second the lower segment loads is a second of
-        // stall, so a higher rung that merely beats the download under way stalls longer (2.9 Mbit/s, 8 s segments: the
-        // 2.7 Mbit/s rung 7.8 s against the lowest's 1.8 s) and, over the link, goes down again at the next segment.
-        // Either must also come sooner than finishing by the margin.
         let deadline = min(buffer, download.duration + roundTrip)
         let sooner = remaining - margin
-        let reachable = (0..<position).last { times[$0] < min(deadline, sooner) } ?? (times[0] < sooner ? 0 : nil)
+        let reachable: Int?
+        if let cutOffset {
+            // Inside the segment the old variant is read no more past its queued keyframe: a lower variant late to it
+            // leaves a hole, not a stall, so none is taken that misses it (no fallback to the lowest). It must read up to
+            // the cut before the position gets there, and the rest of its segment before playback does (one whose bitrate
+            // the link does not carry would stall in the middle of the segment).
+            let reach = min(max(cutOffset, 0), download.duration)
+            let rest = buffer + download.duration - reach
+            let carrying = (0..<position).filter {
+                roundTrip + playlistLoad + reach * Double(ladder[$0].bandwidth) / rate < deadline && times[$0] <= rest
+            }
+            guard !carrying.isEmpty else { return .keep(.cutOutOfReach) }
+            reachable = carrying.last { times[$0] < sooner }
+        } else {
+            // The highest lower variant that arrives within the buffer (or a segment's duration and the round trip); when
+            // none does, the lowest, as hls.js does. With nothing buffered each second the lower segment loads is a second
+            // of stall, so a higher rung that merely beats the download under way stalls longer (2.9 Mbit/s, 8 s segments:
+            // the 2.7 Mbit/s rung 7.8 s against the lowest's 1.8 s) and, over the link, goes down again at the next
+            // segment. Either must also come sooner than finishing by the margin.
+            reachable = (0..<position).last { times[$0] < min(deadline, sooner) } ?? (times[0] < sooner ? 0 : nil)
+        }
         guard let index = reachable, times[index] <= download.duration * 10 else { return .keep(.noGain) }
         let target = ladder[index]
         let lower = times[index]

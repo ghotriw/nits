@@ -111,11 +111,15 @@ extension MediaDemuxer {
                 start: segment.start, duration: segment.duration, cursor: cursor, keyframes: position.keyframes,
                 muxedSoundHandedOut: segment.hasMuxedAudio ? position.soundHandedOut : nil)
         }
+        // Inside the segment the lower variant must reach the keyframe it is cut in at (`cutOffset`: no hole).
         let cut: Double?
         let playable: Double
+        var cutOffset: Double?
         switch place {
         case .ahead: (cut, playable) = (segment.start, segment.start)
-        case .inside(let keyframe): (cut, playable) = (keyframe, keyframe)
+        case .inside(let keyframe):
+            (cut, playable) = (keyframe, keyframe)
+            cutOffset = keyframe - segment.start
         case .insideWithoutKeyframe: (cut, playable) = (nil, readPoint)
         }
         let buffer = max(playable - cursor, 0)
@@ -127,7 +131,8 @@ extension MediaDemuxer {
             measuredBytes: progress.measuredBytes,
             isSuspended: progress.isSuspended)
         let evaluation = adaptiveBitrate.logic.evaluation(
-            of: download, among: ladder, buffer: buffer, roundTrip: roundTrip, playlistLoad: isLive ? roundTrip : 0)
+            of: download, among: ladder, buffer: buffer, roundTrip: roundTrip, playlistLoad: isLive ? roundTrip : 0,
+            cutOffset: cutOffset)
         guard case .abandon(let decision) = evaluation else {
             if case .keep(let refusal) = evaluation {
                 return trace(source, segment, "kept: \(refusal.rawValue), buffer \(String(format: "%.1f", buffer)) s")
