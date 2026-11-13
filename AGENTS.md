@@ -2,7 +2,8 @@
 
 Nits is an HDR / Dolby Vision video player for macOS: custom Metal tone-mapping on SDR displays,
 native `AVSampleBufferDisplayLayer` presentation on XDR displays. Design background and the
-reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the HLS client and adaptive
+bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`](docs/HLS.md).
 
 ## Environment
 
@@ -211,7 +212,7 @@ pattern for other code.
   the next segment only when the one read is through): over HTTP/1.1 the next segment's body comes with its answer and
   halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
-  in `docs/ARCHITECTURE.md`.
+  in `docs/ARCHITECTURE.md`; the HLS requests and adaptive bitrate: "Adaptive bitrate" in `docs/HLS.md`.
 - **A read-ahead demuxer keeps the packets it handed out** (`DemuxerPacketBuffer`, `backBytes`) so a seek inside them
   needs no input (`seekWithinCache`, tried by `seek` first; the engine learns whether it served a seek from
   `seekReportingCache`, not from state). It refuses live streams, a ladder's seek across a variant splice (the packets'
@@ -227,7 +228,7 @@ pattern for other code.
   another thread, never by parsing playlists in the demuxer. Seeks of a live stream go through `LiveStream.clamp` (`clampedSeekTarget`) and `seek` yields the input to
   itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
-  `docs/ARCHITECTURE.md`.
+  `docs/ARCHITECTURE.md` and "Live playlists" in `docs/HLS.md`.
 - **A live stream's history as numbered segments** (`ResolvedMedia.liveHistory`, YouTube's `&sq=N`; `AppSettings.liveHistory`) is
   told to the demuxer (`LiveHistory`), never read from the format context: the window is the resolver's, the timeline is
   rebased to zero, and `MediaInfo.timelineOrigin` is the stream's time at that zero, so a position is saved as its time
@@ -244,8 +245,8 @@ pattern for other code.
   `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
   the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
-  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). Background: "Discontinuities
-  in HLS" in `docs/ARCHITECTURE.md`.
+  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). Background: "Timeline and
+  discontinuities" in `docs/HLS.md`.
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
   selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
   selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only

@@ -257,6 +257,11 @@ flowchart TD
     (`probeHoldSafety`, `holdDebounce`). A start under a prefetch rate that proves the link slow (`provenSlowRate`,
     under 3 Mbit/s): on 2 Mbit/s 0 s stalled in both runs (was 62–70 s), a fast link still starts on the top variant.
     See "Network read-ahead" in `docs/ARCHITECTURE.md`.
+  - [x] Giving a segment download up for a lower variant's (2026-11-13, on by default; hls.js's abandon rule, the queued
+    tail cut at the new variant's keyframe): a heavy start and a link that drops with a full read-ahead. On Apple's HEVC
+    example a drop to 2 Mbit/s with 40 s buffered no longer stalls (the throttled-server tests' drop stalled 1.4–2.3 s before), a 10 Mbit/s
+    start on 3.5 Mbit/s no stall (was 5.5 s); no stall either for it or for hls.js behind the same shaped link, with
+    a full buffer. See "Adaptive bitrate" in `docs/HLS.md`.
   - [ ] Check adaptive bitrate by hand on real networks (Network Link Conditioner, a real HLS ladder, Emby), VOD
     and live; and the Quality picker in the app bundle (UI is judged from the bundle only). Streams that worked on
     2026-10-22: 3cat Canal 324, live, 0.85–4 Mbit/s
