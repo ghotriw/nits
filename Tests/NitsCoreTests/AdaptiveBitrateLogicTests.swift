@@ -173,6 +173,17 @@ struct AdaptiveBitrateLogicTests {
         #expect(fallen < 60_000_000, "\(fallen)")
     }
 
+    @Test("A small body read faster than a round trip after its answer is the link's: no floor on its seconds")
+    func fastSmallBodyIsTheLinks() throws {
+        // A warm connection at 184 ms and 90 Mbit/s: an audio segment of 384 KB 34 ms after its answer. Floored at the
+        // round trip it read 16.7 Mbit/s, and every such segment took a few Mbit/s off the fast average.
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        logic.addSample(bytes: 384 << 10, seconds: 0.034, media: 0.3, roundTrip: 0.184, at: 41)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate > 88_000_000, "\(estimate)")
+    }
+
     @Test("Transfers side by side weigh their share of the link's seconds: the seconds count once")
     func sideBySideCountTheSecondsOnce() throws {
         // 2 Mbit/s for 4 s after ~90: the old and the new variant's segments of a switch, half a megabyte each, or one

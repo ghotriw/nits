@@ -390,9 +390,11 @@ struct AdaptiveBitrateTests {
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
 
-        // Behind the edge, reads transfer all the time: the estimate is the link's.
+        // Behind the edge, reads transfer all the time: the estimate is the link's. 2 Mbit/s: 0.7 of it (`upSafety`) is
+        // above 480's 1082k and below 640's 2838k, with room both ways. At 1.5 Mbit/s 480 took 72 % of the link, more
+        // than the step up allows: the test passed only on an estimate the body's first deliveries raised (1610 kbit/s).
         let since = Date()
-        server.setLinkRate(1_500_000 / 8)
+        server.setLinkRate(2_000_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 9))
         let consumer = RealtimeConsumer(demuxer)
         defer { consumer.stop() }

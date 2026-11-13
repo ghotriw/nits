@@ -59,10 +59,40 @@ struct NetworkTransferMeterTests {
         shortInput.close()
         longInput.close()
 
+        // Each leaves out its first delivery, which came in no time of its own; so does the link's count from then on.
         let transfers = transport.meter.take()
-        let longTransfer = try #require(transfers.first { $0.bytes == long })
-        let shortTransfer = try #require(transfers.first { $0.bytes == short })
-        #expect(longTransfer.linkBytes == long + short, "The long one's window held \(longTransfer.linkBytes) bytes")
+        let longTransfer = try #require(transfers.max { $0.bytes < $1.bytes })
+        let shortTransfer = try #require(transfers.min { $0.bytes < $1.bytes })
+        #expect(longTransfer.bytes < long && longTransfer.bytes > long - (64 << 10), "\(longTransfer.bytes)")
+        #expect(shortTransfer.bytes < short && shortTransfer.bytes > short - (64 << 10), "\(shortTransfer.bytes)")
+        // The short one came whole inside the long one's window, its first delivery too.
+        let others = longTransfer.linkBytes - longTransfer.bytes
+        #expect(others == short, "The long one's window held \(others) bytes of others, of \(short)")
         #expect(shortTransfer.linkBytes <= long + short)
+    }
+
+    /// The stand of 2026-11-13: a request cut after its first piece of 16 KB, which came with the answer, read 97–167
+    /// Mbit/s on a 2 Mbit/s link, and took the estimate up two rungs.
+    @Test("A body that came in one delivery, with its answer, is no sample: it took no time of its own")
+    func oneDeliveryIsNoSample() throws {
+        let size = Int(HTTPSessionTransport.oneTimeRequestBytes)
+        let directory = try Self.files(["piece": size])
+        let server = try TestHTTPServer(root: directory)
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let transport = HTTPSessionTransport(source: server.url("piece"), headers: [:]) { false }
+        guard
+            case .input(let input) = transport.open(
+                server.url("piece"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+        else {
+            Issue.record("not served")
+            return
+        }
+        #expect(Self.read(input, size) == size)
+        input.close()
+        let transfers = transport.meter.take()
+        #expect(transfers.isEmpty, "Sampled: \(transfers.map { "\($0.bytes) B in \($0.seconds) s" })")
     }
 }

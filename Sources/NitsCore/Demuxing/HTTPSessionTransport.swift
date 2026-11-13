@@ -363,10 +363,16 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var received = 0
         /// Where the first answer came from, after the redirects a request that follows them went through.
         var servedFrom: URL?
-        /// Of them, those that came while the transfer didn't run (still under way when suspended): in no time.
+        /// Of them, those that came while the transfer didn't run (still under way when suspended), and the first delivery
+        /// of each spell: in no time.
         var untimed = 0
         var retries = 0
-        /// Since when the transfer runs, while it does, and for how long it ran before.
+        /// The transfer runs (answered, or resumed), while it does.
+        var isRunning = false
+        /// Since when the spell is timed, while it is, and for how long the spells ran before: from the spell's first
+        /// delivery, not from its start. That delivery's bytes came in the time before (over HTTP/1.1 the body's first
+        /// piece comes with the answer; resumed, what the socket's buffer held), so they have no time of their own: a
+        /// request cut after its first 16 KB read 97–167 Mbit/s on a 2 Mbit/s link, and took the estimate up two rungs.
         var transferringSince: ContinuousClock.Instant?
         var transferSeconds = 0.0
         /// The meter's count of bytes received (by every transfer) when this one began its spell, and the sum over its
@@ -698,7 +704,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var firstAnswer: Double?
         /// Seconds the transfer ran (not suspended by a full buffer) since the first answer, and the bytes it brought in
         /// them: what came while the demuxer opened is left out of both (the ladder's rungs read side by side, a share
-        /// of the link, not its rate); none while that goes on.
+        /// of the link, not its rate); none while that goes on. Timed from each spell's first delivery, whose bytes are
+        /// left out (`State.transferringSince`).
         var transferring: Double
         var measuredBytes: Int
         /// The task is suspended: the reader is behind, so a slow download is not the link's doing.
@@ -724,7 +731,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 },
                 transferring: max(
                     state.transferSeconds + spell - state.limitedSeconds - (state.isOpeningTask ? spell : 0), 0),
-                measuredBytes: state.isOpeningTask ? 0 : max(state.received - state.limitedBytes, 0),
+                measuredBytes: state.isOpeningTask ? 0 : max(state.received - state.limitedBytes - state.untimed, 0),
                 isSuspended: state.isSuspended, isFinished: state.isFinished || state.isClosed)
         }
     }
@@ -785,24 +792,34 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// The transfer runs, or not (suspended, ended, closed). Behind `state`'s lock.
+    /// The spell is timed from its first delivery on (`didReceive`, `transferringSince`).
     private func setTransferring(_ transferring: Bool, in state: inout State) {
         if transferring {
-            if state.transferringSince == nil {
-                state.transferringSince = .now
-                state.meterBytesAtStart = meter.receivedBytes
+            if !state.isRunning {
+                state.isRunning = true
                 openingLimit?.transferBegan()
             }
-        } else if let since = state.transferringSince {
-            let seconds = (ContinuousClock.now - since) / .seconds(1)
-            state.transferSeconds += seconds
-            if state.isOpeningTask {
-                state.limitedSeconds += seconds
-            } else {
-                state.meterBytes += meter.receivedBytes - state.meterBytesAtStart
+        } else if state.isRunning {
+            if let since = state.transferringSince {
+                let seconds = (ContinuousClock.now - since) / .seconds(1)
+                state.transferSeconds += seconds
+                if state.isOpeningTask {
+                    state.limitedSeconds += seconds
+                } else {
+                    state.meterBytes += meter.receivedBytes - state.meterBytesAtStart
+                }
+                state.transferringSince = nil
             }
-            state.transferringSince = nil
+            state.isRunning = false
             openingLimit?.transferEnded()
         }
+    }
+
+    /// A delivery came: the first of a running spell starts its time, the link's bytes counted past it.
+    private func startTimingIfFirst(in state: inout State) {
+        guard state.isRunning, state.transferringSince == nil else { return }
+        state.transferringSince = .now
+        state.meterBytesAtStart = meter.receivedBytes
     }
 
     /// The opening ended while a start's task (`Opening.start`) goes on: what it brought so far is the opening's, what it
@@ -810,7 +827,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     private func openingEnded() {
         state.withLockUnchecked { state in
             guard state.isOpeningTask else { return }
-            let isTransferring = state.transferringSince != nil
+            let isTransferring = state.isRunning
             setTransferring(false, in: &state)
             state.isOpeningTask = false
             if isTransferring { setTransferring(true, in: &state) }
@@ -826,10 +843,12 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         // What came while opening is the ladder's share of the link, not this input's: not a sample.
         let bytes = state.received - state.limitedBytes
         let seconds = state.transferSeconds - state.limitedSeconds
-        guard bytes >= HTTPSessionTransport.oneTimeRequestBytes, seconds > 0 else { return }
+        // A body that came in its spells' first deliveries alone took no time it can be measured by: no sample.
+        let timed = bytes - state.untimed
+        guard bytes >= HTTPSessionTransport.oneTimeRequestBytes, timed > 0, seconds > 0 else { return }
         meter.add(
             .init(
-                bytes: bytes - state.untimed, seconds: seconds, linkBytes: state.meterBytes,
+                bytes: timed, seconds: seconds, linkBytes: state.meterBytes,
                 roundTrip: request.url?.host.flatMap { meter.roundTrip(host: $0) }))
     }
 
@@ -983,7 +1002,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
                 openingLimit?.received(data.count)  // Ignored once lifted: the rate is the opening's alone.
                 state.limitedBytes += data.count
             }
+            // Not running, or the spell's first delivery: in no time of its own (`transferringSince`).
             if !isOpening, state.transferringSince == nil { state.untimed += data.count }
+            startTimingIfFirst(in: &state)
             // A piece asked for with a `Range` ends at its bound, whatever is unread.
             if !state.isSuspended, !state.isChunked, state.buffered >= highWater {
                 state.isSuspended = true
