@@ -126,8 +126,9 @@ extension MediaDemuxer {
         for transfer in transfers {
             // The rate is the link's (the transfers side by side at a switch share it); the media is the bytes' own.
             adaptiveBitrate.logic.addSample(
-                bytes: transfer.linkBytes, seconds: transfer.seconds,
-                media: bandwidth > 0 ? Double(transfer.bytes) * 8 / bandwidth : 0, at: adaptiveTime)
+                bytes: transfer.linkBytes, ownBytes: transfer.bytes, seconds: transfer.seconds,
+                media: bandwidth > 0 ? Double(transfer.bytes) * 8 / bandwidth : 0, roundTrip: transfer.roundTrip,
+                at: adaptiveTime)
         }
     }
 

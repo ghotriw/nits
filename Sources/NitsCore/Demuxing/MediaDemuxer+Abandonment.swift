@@ -146,11 +146,21 @@ extension MediaDemuxer {
         // position, the segment's start; inside it, a keyframe the old variant has queued inside the segment, if the new
         // one has a keyframe of the same time (`spliceAbandoned`; else the ordinary splice, a gap).
         var outcome = AbandonOutcome.refused(.notAskedFor)
+        // The give-up replaces a switch not spliced yet: it goes no higher than where that one was going (a target since
+        // rejected is no bound).
+        let target =
+            replaceableSwitch.flatMap { pending -> Int? in
+                guard !selection.rejected.contains(pending.target.id),
+                    let chosen = variants.first(where: { $0.id == decision.target }),
+                    chosen.bandwidth > pending.target.bandwidth
+                else { return nil }
+                return pending.target.id
+            } ?? decision.target
         if abandonsDownloads {
             outcome =
                 cut.map {
                     requestAbandon(
-                        from: variant, to: decision.target, sequence: segment.sequence, start: segment.start,
+                        from: variant, to: target, sequence: segment.sequence, start: segment.start,
                         cut: place == .ahead ? nil : $0, download: download)
                 } ?? .refused(.noKeyframeQueued)
         }
@@ -188,7 +198,7 @@ extension MediaDemuxer {
         AppLog.info(
             .demuxer,
             "ABR abandon\(refusalText): \(streamingName): variant \(variant) (\(bandwidth(of: variant)) kbit/s) segment \(segment.sequence) "
-                + "[\(format(segment.start))..\(format(segment.start + segment.duration)) s] to variant \(decision.target) (\(bandwidth(of: decision.target)) kbit/s): "
+                + "[\(format(segment.start))..\(format(segment.start + segment.duration)) s] to variant \(target) (\(bandwidth(of: target)) kbit/s): "
                 + "\(progress.bytes >> 10)/\((progress.length ?? 0) >> 10) KB in \(format(progress.elapsed)) s at \(rate), "
                 + "remaining \(format(decision.remaining)) s, buffer \(format(buffer)) s, lower \(format(decision.lower)) s; "
                 + "video \(format(cursor)), \(audio ?? "no audio queued"), read to \(format(readPoint)), "
@@ -346,7 +356,7 @@ extension MediaDemuxer {
     enum AbandonRefusal: Equatable, Sendable {
         /// `abandonsDownloads` is off: logged only.
         case notAskedFor
-        /// A switch is under way or another download given up waits for its switch.
+        /// A switch is spliced or took a download over itself, or another download given up waits for its switch.
         case switchUnderWay
         /// The position is inside the segment and the old variant has no keyframe of it queued to cut at.
         case noKeyframeQueued
@@ -382,12 +392,19 @@ extension MediaDemuxer {
         var isRequested: Bool { self == .requested }
     }
 
+    /// The switch under way a give-up replaces: one not spliced yet that did not take a download over itself. The one
+    /// place that says which (`requestAbandon`, and the bound on the give-up's target in `noteSegmentInFlight`).
+    var replaceableSwitch: VariantSwitch? {
+        variantSwitch.flatMap { $0.spliceTime == nil && !$0.isPreviousAbandoned ? $0 : nil }
+    }
+
     /// Gives up the download in flight of variant `from`'s segment `sequence` for `target`'s, which reads it from its start
     /// (`DemuxerInput.joinNext`): the bytes stop now (the read that waits for them is interrupted), the switch itself is
     /// made at the next read (`beginRequestedVariantSwitch`), between packets, never inside the input's read. A target still
     /// described as another variant (a rung of a ladder that was probed once) is taken as that: its first read verifies it
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
-    /// reason, when it cannot be done: a switch is under way, or `target` is rejected, or has not the segment
+    /// reason, when it cannot be done: a switch is spliced or took a download over itself (one not spliced yet is replaced),
+    /// or another download given up waits for its switch, or `target` is rejected, or has not the segment
     /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on). `cut` is the queued
     /// keyframe the cut is expected at when the position is inside the segment; `download` is what the rule judged, which
     /// the estimate learns from (`AdaptiveBitrateLogic.noteAbandoned`).
@@ -395,9 +412,15 @@ extension MediaDemuxer {
         from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil,
         download: AdaptiveBitrateLogic.Download? = nil
     ) -> AbandonOutcome {
-        guard variantSwitch == nil, adaptiveBitrate.pendingAbandon == nil else {
+        // A switch not spliced yet is replaced (`replaceableSwitch`; `beginRequestedVariantSwitch` gives it up): it joined
+        // the segment after this one, and would splice only once this download came whole, sharing the link with the new variant's (on the
+        // shaping proxy, 2 Mbit/s after ~90: 35 s for 8 s of the top variant, a stall of 7.3 s). hls.js checks a fragment
+        // of another level than the one chosen for the same reason (`fragBlockingSwitch`). A switch spliced, or one that
+        // took a download over itself, is left to finish.
+        if variantSwitch != nil, replaceableSwitch == nil {
             return .refused(.switchUnderWay)
         }
+        guard adaptiveBitrate.pendingAbandon == nil else { return .refused(.switchUnderWay) }
         guard input.variantDescription(id: target) != .rejected else { return .refused(.rejected) }
         if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(.join(refusal)) }
         adaptiveBitrate.pendingAbandon = PendingAbandon(

@@ -202,10 +202,15 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
   1.4 s, on a link carrying 4K many times over.
 - *Throughput* is each request's transfer, from its answer to its last byte (`NetworkTransferMeter`), as VLC,
   hls.js and ExoPlayer measure their segments' downloads. A sample weighs the media its bytes are at the variant's
-  `BANDWIDTH`: an audio segment a twentieth of a 4K video one's. Taken over every transfer together, or weighed by
-  its seconds when slower than real time, half a megabyte of audio on a connection idle since its last (TCP starts
-  it slowly again: 5.7 Mbit/s of 90 at 184 ms) weighed more than a 4K segment, and took the variant down to 864 wide
-  two seconds in. The first estimate waits for a second of the variant's media: after the first video segment.
+  `BANDWIDTH` (an audio segment a twentieth of a 4K video one's), or its seconds past TCP's slow start when more
+  (`slowStartSeconds`, 2 s, or 10 round trips to the host: 6 s at 600 ms), its share of them by its bytes among the
+  transfers side by side (each samples the link over the same seconds): a segment read slower than in real time for
+  long is the link's. Taken over every transfer together, or weighed by all its seconds when slower than real time,
+  half a megabyte of audio in 0.8 s on a connection idle since its last (TCP starts it slowly again: 5.7 Mbit/s of 90 at 184 ms) weighed more than a 4K
+  segment, and took the variant down to 864 wide two seconds in; its bytes do not tell it from a segment, its time
+  does. Weighed by its media alone, a segment of
+  8 s read in 29 s weighed 5.7 s, and the estimate fell from ~90 only to 12.6–14.1 Mbit/s (2026-11-13). The first
+  estimate waits for a second of the variant's media: after the first video segment.
   A sample comes once a request ends: a link collapsing in the middle of a segment shows in the estimate only after
   it (the download under way is watched by *Giving a download up*, below).
   Transfers that run side by side share the link, each at a part of it: at a switch the old variant's segment is
@@ -270,7 +275,11 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
   lower variant is taken only when it reaches the cut and carries the rest of its segment in time (a late one leaves a
   hole, not a stall). A give-up that took the lowest is stepped back up from once the link since carries more
   (`AdaptiveBitrateLogic.Detour`): 1.5 Mbit/s held 480 at 1.08 between keeping and stepping up, and played 320 for some
-  40 s. On by default (`NITS_ABR_ABANDON=0` only logs the decisions). Measured on Apple's HEVC example (2026-11-12): 3.5 Mbit/s and 207 ms,
+  40 s. A step down not spliced yet gives way to the give-up of the old variant's segment it waits for (it joined the
+  one after, as a switch does), as hls.js checks a fragment that blocks a level switch (`fragBlockingSwitch`): the
+  give-up replaces the switch, to no higher a rung than its target. A step up gives way the same, as the rule decides
+  by the link alone. A switch spliced, or one that took a download over itself, is left to finish.
+  On by default (`NITS_ABR_ABANDON=0` only logs the decisions). Measured on Apple's HEVC example (2026-11-12): 3.5 Mbit/s and 207 ms,
   the start on 10 Mbit/s given up at 4 s, no stall (5.5 s before); 2 Mbit/s after 45 s with 40 s buffered, the segment
   given up 4 s after the drop, no picture hole, no step back up, no stall. Against hls.js 1.7.3 behind one shaping
   proxy (2026-11-13; three scenarios, each the same in its three runs, as the shaper is deterministic: from ~100 to
@@ -374,9 +383,11 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   read from the socket's buffer counted at memory speed, a kept connection's answer wait counted as transfer, and a
   live edge looked like a stalled link; Apple's AV1 example came down from 4K within seconds on a link carrying it many
   times over.
-- **A sample weighs its media, not its seconds**: weighed by seconds when slow, half a megabyte of audio on an idle
-  connection (TCP's slow start again) outweighed a 4K segment and took the picture down to 864 wide two seconds in. The
-  price, found 2026-11-13: a whole segment downloaded slowly moves the estimate little (see "State").
+- **A sample weighs its media, or its seconds past TCP's slow start** (`slowStartSeconds`, `slowStartRoundTrips`; a
+  round trip of the host's, not the first answer, which holds the server's work too): weighed by all its seconds
+  when slow, half a megabyte of audio in 0.8 s on an idle connection (TCP's slow start again) outweighed a 4K segment
+  and took the picture down to 864 wide two seconds in. Weighed by its media alone (2026-10-24 to 2026-11-13), a whole
+  segment downloaded slowly moved the estimate little.
 - **Transfers side by side count the link's bytes** (`Transfer.linkBytes`, ef9d174): taken as each one's own, 1.5 Mbit/s
   read as 0.8–0.9 during a switch and collapsed to the lowest rung.
 - **The up-step's dead zone: a probe at 0.85 on a recent estimate**, no fewer pixels, not at a live edge, with a hold of
@@ -410,6 +421,11 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   up for 0.5 s of gain.
 - **Inside the segment, a lower rung only if it reaches the cut and carries the rest of its segment in time**, with no
   fallback to the lowest: there a late rung leaves a hole, not a stall.
+- **A switch not spliced yet gives way to a give-up** (2026-11-13, second opinion merged; hls.js's `fragBlockingSwitch`):
+  it joins the segment after the one the old variant downloads and splices only once that came whole. Refused while a
+  switch ran, a step down by the estimate right after a slow segment left the old variant's next 7.3 MB downloading for
+  35 s beside the new variant's on 2 Mbit/s: a stall of 7.3 s on the stand. *Turned down:* giving the old segment up
+  at every step down, whatever the rule: a segment almost through is better kept.
 - *Not wanted:* a margin on "the rest does not fit the buffer" (proposed and withdrawn 2026-11-13): of the two outcomes at
   the edge, keeping the download was the riskier one (the next segment on the top again, the lower rung arriving with
   ~7 s left), which is the estimate's problem, not the rule's.
@@ -473,6 +489,7 @@ its HLS master.
 | 2026-11-12 | Giving a heavy start up | HEVC, 3.5 Mbit/s + RTT +150 | given up ~4 s in, first picture 3.2–4.1 s, 0 s stalled (5.5 s before) |
 | 2026-11-12 | A drop with a full buffer | HEVC, NLC off then 2 Mbit/s at 45 s | given up 4.1 s after the drop, clean cut, no step back up, 0 s stalled |
 | 2026-11-13 | Against hls.js, drop with a full buffer | HEVC, proxy: ~100 → 2 / 1 Mbit/s at 45 s, → 2 at 12 s | 0 s stalled for both in all three; see *Giving a download up* in "Adaptive bitrate" for the rungs and the estimate |
+| 2026-11-13 | A slow segment's weight and a give-up during a switch | HEVC, proxy: ~100 → 2 Mbit/s at 45 s, 150 s | weighing alone: estimate 80 → 2 Mbit/s, step down at once, but the old segment kept beside the new: 7.3 s stalled; with the give-up: 0 s, 805k then 1240k on an estimate of ~2 Mbit/s (was 12.6–14.1 Mbit/s and the top again) |
 
 Raw data, kept out of git: `.agents/hls-stand/` (the proxy stand), `.agents/hls-client/measurements/` (opening and give-up
 series), `.agents/abr-measurements/` (2026-11-07). Not measured yet: a drop with a partly built buffer, a stream with 2–6
@@ -486,7 +503,9 @@ The client is HLS's only path (FFmpeg's HLS demuxer is not built), merged into `
 (Apple's examples, Mux and Google DAI, JW AES, YouTube live). Giving a download up is on by default, and with a full
 buffer a drop of the link stalls neither Nits nor hls.js behind the same shaped link. Open, in this order:
 
-1. **The estimate after a slow segment** (first entry below): the next fix of adaptive bitrate.
+1. **The estimate after a slow segment** (first entry below): fixed in the tree (uncommitted): the weighing and the
+   give-up during a switch not spliced (see *Giving a download up*). On the stand (~100 → 2 Mbit/s, 150 s): 0 s
+   stalled, the estimate ~2 Mbit/s after the slow segment; the weighing alone stalled 7.3 s.
 2. **A drop with a partly built buffer**, measured on the shaping proxy (a first link of ~15 Mbit/s, then 1.5): until
    then "no stall" is shown for a full buffer only.
 3. A live-stream test of `isReadAheadReal` (the probe up must not take a live edge's raised read-ahead for a full one).
@@ -502,14 +521,20 @@ its audio group).
 
 ### Known limitations
 
-- **The estimate hardly falls after a segment downloaded slowly in full.** A sample weighs its media, not its seconds
-  (see *Throughput* in "Adaptive bitrate"): behind a shaping proxy (2026-11-13, ~100 then 2 Mbit/s with a full buffer) a
-  segment of 8 s took 29 s, and the estimate went from ~90 only to 12.6–14.1 Mbit/s, which keeps the 10 Mbit/s top;
-  the next segment was asked for on it again and given up 4 s in, with 15 s buffered, the lower rung arriving with
-  ~7 s left. hls.js, weighing by seconds, went down after one such segment. No stall, but the margin came from giving
-  up, not from the estimate. Whether a segment is kept or given up turns on fractions of a second (given up at
-  29.4 s of rest against 29.2 s buffered, kept at 29 against 38); with a sound estimate the kept path would be safe
-  too. Cause as the code reads (`AdaptiveBitrateLogic.addSample`), not checked by a test; nothing changed yet.
+- **The estimate hardly falls after a segment downloaded slowly in full.** *Fixed in the tree (2026-11-13), uncommitted:*
+  past `slowStartSeconds` a slow sample weighs its seconds (see *Throughput* in "Adaptive bitrate"; test
+  `slowSegmentWeighsItsSeconds`). Before it a sample weighed its media alone: behind a shaping proxy (2026-11-13,
+  ~100 then 2 Mbit/s with a full buffer) a segment of 8 s took 29 s, and the estimate went from ~90 only to 12.6–14.1
+  Mbit/s, which keeps the 10 Mbit/s top; the next segment was asked for on it again and given up 4 s in, with 15 s
+  buffered, the lower rung arriving with ~7 s left. hls.js, weighing by seconds, went down after one such segment. No
+  stall, but the margin came from giving up, not from the estimate. Whether a segment is kept or given up turns on
+  fractions of a second (given up at 29.4 s of rest against 29.2 s buffered, kept at 29 against 38); with a sound
+  estimate the kept path would be safe too.
+- **A give-up too late for its keyframe leaves a hole.** Once the picture at the segment's start (or at the queued
+  keyframe inside it) is handed out, the cut goes to the new variant's next keyframe, and what is between is skipped
+  (a test that gave up with 1.7 s buffered and the lower rung 3.1 s away: 12.1 → 13.0 s). With the position inside
+  the segment and no keyframe of it queued, nothing is given up (`noKeyframeQueued`): the download plays out, a stall
+  where the link cannot carry it.
 - **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only an opening rate under
   3 Mbit/s starts lower (`HLSInput.openingLinkRate`, `slowLinkLimit`): the rate follows the CDN's answers as much as the
   link (4.8 Mbit/s on a fast one, before the opening skipped TCP's slow start), so a higher limit would start low on fast links. A start segment that will not arrive in time is given up

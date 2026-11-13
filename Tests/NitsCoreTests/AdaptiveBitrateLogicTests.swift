@@ -126,6 +126,69 @@ struct AdaptiveBitrateLogicTests {
         #expect(estimate > 60_000_000, "\(estimate)")
     }
 
+    @Test("A segment read slower than in real time weighs its seconds: the estimate falls to the link it was read on")
+    func slowSegmentWeighsItsSeconds() throws {
+        // The shaping proxy of 2026-11-13: ~90 Mbit/s with a full buffer, then 2 Mbit/s. A segment of 8 s of the
+        // 10 Mbit/s top (7.2 MB) took 29 s. Weighed by its media (5.7 s at the variant's bandwidth), the estimate fell
+        // only to 12.6-14.1 Mbit/s, which the top still fits: its next segment was asked for, and given up.
+        var logic = AdaptiveBitrateLogic()
+        let bandwidth = 10_095_000.0
+        Self.measure(&logic, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        let bytes = 7_171 * 1024
+        logic.addSample(bytes: bytes, seconds: 29, media: Double(bytes) * 8 / bandwidth, at: 69)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate < 4_000_000, "\(estimate)")
+        let ladder: [AdaptiveBitrateLogic.Variant] = [
+            .init(id: 2, bandwidth: Int(bandwidth)), .init(id: 6, bandwidth: 1_698_000),
+            .init(id: 8, bandwidth: 805_000),
+        ]
+        let chosen = logic.choose(current: 2, among: ladder, readAhead: 15, at: 69)
+        #expect(chosen == 6 || chosen == 8, "\(String(describing: chosen))")
+    }
+
+    @Test("A transfer slow for its size within TCP's slow start weighs its media: it does not drag the estimate down")
+    func slowStartWeighsItsMedia() throws {
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        // Half a megabyte of audio of a 39 Mbit/s variant (0.1 s of it) in 1.5 s: inside `slowStartSeconds`. Weighed by
+        // those 1.5 s, the fast average fell to ~55 Mbit/s.
+        logic.addSample(bytes: 500_000, seconds: 1.5, media: 0.1, at: 41)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate > 80_000_000, "\(estimate)")
+    }
+
+    @Test("TCP's slow start lasts longer on a longer round trip: `slowStartRoundTrips` of it")
+    func slowStartFollowsTheRoundTrip() throws {
+        // The same half megabyte in 4 s at 600 ms of round trip (a satellite link): slow start still, six seconds of it.
+        var logic = AdaptiveBitrateLogic()
+        Self.measure(&logic, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        logic.addSample(bytes: 500_000, seconds: 4, media: 0.1, roundTrip: 0.6, at: 41)
+        let estimate = try #require(logic.estimate)
+        #expect(estimate > 80_000_000, "\(estimate)")
+        // With no round trip known, past the 2 s it weighs its seconds.
+        var unknown = AdaptiveBitrateLogic()
+        Self.measure(&unknown, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        unknown.addSample(bytes: 500_000, seconds: 4, media: 0.1, at: 41)
+        let fallen = try #require(unknown.estimate)
+        #expect(fallen < 60_000_000, "\(fallen)")
+    }
+
+    @Test("Transfers side by side weigh their share of the link's seconds: the seconds count once")
+    func sideBySideCountTheSecondsOnce() throws {
+        // 2 Mbit/s for 4 s after ~90: the old and the new variant's segments of a switch, half a megabyte each, or one
+        // transfer of the whole megabyte. Each weighed by the 4 s (less the slow start's 2), they counted them twice.
+        let link = 1_000_000
+        var pair = AdaptiveBitrateLogic()
+        Self.measure(&pair, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        pair.addSample(bytes: link, ownBytes: link / 2, seconds: 4, media: 0.4, at: 44)
+        pair.addSample(bytes: link, ownBytes: link / 2, seconds: 4, media: 0.4, at: 44)
+        var single = AdaptiveBitrateLogic()
+        Self.measure(&single, bitsPerSecond: 90_000_000, seconds: 40, at: 0)
+        single.addSample(bytes: link, seconds: 4, media: 0.8, at: 44)
+        let (both, one) = (try #require(pair.estimate), try #require(single.estimate))
+        #expect(abs(both - one) < one * 0.01, "\(both) against \(one)")
+    }
+
     @Test("A probe that comes down soon doubles the wait before the next")
     func backsOffFailedProbes() {
         var config = AdaptiveBitrateLogic.Config()

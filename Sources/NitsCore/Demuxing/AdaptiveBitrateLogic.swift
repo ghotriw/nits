@@ -68,6 +68,12 @@ struct AdaptiveBitrateLogic: Sendable {
         var estimateLifetime = 20.0
         /// Half-lives (samples' weight: seconds of media) of the two averages.
         var halfLives = (fast: 2.0, slow: 8.0)
+        /// Seconds of a transfer that TCP's slow start may take, at least, and in round trips to its host: past them, a
+        /// transfer slower than in real time weighs its seconds (less these), not its media. Ten round trips take the
+        /// window from its first to a thousand times that (a link's bytes in flight over the first window's ~14 KB): 1.8 s
+        /// at 184 ms, 6 s at 600 ms.
+        var slowStartSeconds = 2.0
+        var slowStartRoundTrips = 10.0
         /// Seconds after a step up within which coming down makes it a failed probe.
         var failedProbeWindow = 60.0
         var maxProbeBackoff = 8.0
@@ -157,15 +163,26 @@ struct AdaptiveBitrateLogic: Sendable {
     /// meanwhile included (`NetworkTransferMeter.Transfer.linkBytes`); `media` is the request's own bytes at the
     /// variant's bandwidth.
     ///
-    /// The sample weighs its media alone, slow or not (its seconds without media). Weighed by its seconds when slower
-    /// than in real time, one slow for its size (half a megabyte of audio on a connection TCP starts slowly, 5.7 Mbit/s
-    /// of 90 at 184 ms of round trip) weighed more than a 4K segment's whole, and brought playback down to 864 wide two
-    /// seconds in. Weighed by its seconds alone, a sample read fast weighed little for its media, and an estimate
-    /// measured low (a slow start) held for minutes after the network got faster.
-    mutating func addSample(bytes: Int, seconds: Double, media: Double, at time: Double) {
+    /// The sample weighs its media (its seconds without media), or its seconds past TCP's slow start when more
+    /// (`slowStartSeconds`, or `slowStartRoundTrips` of `roundTrip`): a transfer slower than in real time for longer than
+    /// that is the link's. Of those seconds it takes its share of the link, `ownBytes` of `bytes`: transfers side by side
+    /// (a switch's old and new variant) each sample the link's rate over the same seconds, which would count twice.
+    /// Weighed by all its seconds when
+    /// slower than in real time, one slow for its size (half a megabyte of audio in 0.8 s on a connection TCP starts
+    /// slowly, 5.7 Mbit/s of 90 at 184 ms of round trip) weighed more than a 4K segment's whole, and brought playback
+    /// down to 864 wide two seconds in; its bytes do not tell it from a segment (more than two round trips of a slow
+    /// link), its time does. Weighed by its seconds alone, a sample read fast weighed little for its media, and an
+    /// estimate measured low (a slow start) held for minutes after the network got faster. Weighed by its media alone,
+    /// a segment of 8 s read in 29 s (2 Mbit/s after ~90, behind a shaping proxy) weighed 5.7 s, and the estimate fell
+    /// only to 12.6–14.1 Mbit/s: the 10 Mbit/s variant was asked for again and given up.
+    mutating func addSample(
+        bytes: Int, ownBytes: Int? = nil, seconds: Double, media: Double, roundTrip: Double? = nil, at time: Double
+    ) {
         guard bytes > 0, seconds > 0 else { return }
         let sample = Double(bytes) * 8 / seconds
-        let weight = media > 0 ? media : seconds
+        let slowStart = max(config.slowStartSeconds, config.slowStartRoundTrips * (roundTrip ?? 0))
+        let share = Double(min(ownBytes ?? bytes, bytes)) / Double(bytes)
+        let weight = media > 0 ? max(media, (seconds - slowStart) * share) : seconds
         for (index, halfLife) in [config.halfLives.fast, config.halfLives.slow].enumerated() {
             let keep = pow(0.5, weight / halfLife)
             averages[index].value = keep * averages[index].value + (1 - keep) * sample

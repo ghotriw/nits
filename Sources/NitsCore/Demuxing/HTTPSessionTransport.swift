@@ -215,11 +215,15 @@ final class NetworkTransferMeter: Sendable {
         /// and new variant, side by side, share the link, and the rate of the link is what all of them carried, however
         /// they divided it. Never below `bytes`.
         let linkBytes: Int
+        /// The shortest round trip measured to the request's host (`roundTrip(host:)`), when one was: how long TCP's slow
+        /// start may hold the transfer back (`AdaptiveBitrateLogic.addSample`).
+        let roundTrip: Double?
 
-        init(bytes: Int, seconds: Double, linkBytes: Int? = nil) {
+        init(bytes: Int, seconds: Double, linkBytes: Int? = nil, roundTrip: Double? = nil) {
             self.bytes = bytes
             self.seconds = seconds
             self.linkBytes = max(linkBytes ?? bytes, bytes)
+            self.roundTrip = roundTrip
         }
     }
 
@@ -823,7 +827,10 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         let bytes = state.received - state.limitedBytes
         let seconds = state.transferSeconds - state.limitedSeconds
         guard bytes >= HTTPSessionTransport.oneTimeRequestBytes, seconds > 0 else { return }
-        meter.add(.init(bytes: bytes - state.untimed, seconds: seconds, linkBytes: state.meterBytes))
+        meter.add(
+            .init(
+                bytes: bytes - state.untimed, seconds: seconds, linkBytes: state.meterBytes,
+                roundTrip: request.url?.host.flatMap { meter.roundTrip(host: $0) }))
     }
 
     // MARK: FFmpegInputSource

@@ -205,6 +205,119 @@ struct AbandonDownloadTests {
         expectContinuous(consumer)
     }
 
+    /// The name the segments of `hlsLadder`'s rung `width` wide start with ("v2" for `v2_005.ts`), from its master playlist.
+    private func segmentPrefix(ofWidth width: Int, master: String) throws -> String {
+        let lines = try String(contentsOfFile: master, encoding: .utf8).split(separator: "\n").map(String.init)
+        let index = try #require(lines.firstIndex { $0.contains("RESOLUTION=\(width)x") })
+        let uri = try #require(lines[(index + 1)...].first { !$0.isEmpty && !$0.hasPrefix("#") })
+        return String(uri.prefix { $0 != "." })
+    }
+
+    /// A switch from the rung `from` wide to the one `to` wide asked for while `from`'s segment downloads on a slow link,
+    /// the switch joining the segment after it: the rule's first verdict on that segment once the switch began gives it up,
+    /// for a rung no higher than `to`, which reads it from its start, and playback runs on past the cut.
+    private func expectSwitchGivesWay(from fromWidth: Int, to toWidth: Int, linkRate: Int) async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.abandonsDownloads = false
+        // Adaptive bitrate's own choice stays out of the way, a step up too: the test asks for the switches.
+        var config = Self.config()
+        config.upSwitchInterval = 1000
+        config.estimateUpBuffer = 1000
+        demuxer.adaptiveBitrateConfig = config
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+        #expect(
+            await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) { (consumer.pictures.last?.pts ?? 0) > 5 },
+            "Playback did not reach 5 s")
+        let from = try #require(demuxer.variants.first { $0.width == fromWidth })
+        let to = try #require(demuxer.variants.first { $0.width == toWidth })
+        if demuxer.selectedVariantId != from.id {
+            // On a fast link still: the rung the test starts from.
+            demuxer.variantSelection.withLock { $0.requested = from.id }
+            _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(10)) { demuxer.selectedVariantId == from.id }
+        }
+        try #require(demuxer.selectedVariantId == from.id, "Not on the \(fromWidth) wide rung")
+        let fromPrefix = try segmentPrefix(ofWidth: fromWidth, master: master)
+        let since = Date()
+        let slowedAt = ContinuousClock.now
+        server.setLinkRate(linkRate / 8)
+        // On before the rule first looks at the segment (half its duration into it): a check made while off is final.
+        turnAbandonsOn(demuxer)
+        _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(10)) {
+            server.requests.contains { $0.time >= slowedAt && $0.path.hasPrefix(fromPrefix + "_") }
+        }
+        // As adaptive bitrate asks for a variant (`adaptBitrateIfDue`), with `from`'s segment on its way.
+        demuxer.variantSelection.withLock { $0.requested = to.id }
+        let switching = await waitForMessage(timeout: .seconds(10), of: demuxer, since: since) {
+            $0.contains("switching to") && !$0.contains("read from its start")
+        }
+        try #require(switching != nil, "The switch did not begin")
+
+        let message = await waitForMessage(timeout: .seconds(25), of: demuxer, since: since) {
+            $0.hasPrefix("ABR abandon:") && !$0.contains("not acted on")
+        }
+        let line = try #require(
+            message, "Not given up: \(messages(of: demuxer, containing: "ABR abandon").suffix(3))")
+        // The rule's first verdict on `from`'s segment once the switch began gives it up: no refusal for the switch under
+        // way (which held it until the segment came whole), and not given up before the switch began.
+        let entries = logs(of: demuxer, since: since).map(\.message)
+        let began = try #require(entries.firstIndex { $0.contains("switching to") })
+        let verdicts = entries.enumerated().filter {
+            $0.element.hasPrefix("ABR abandon") && $0.element.contains("variant \(from.id) (")
+                && !$0.element.hasPrefix("ABR abandon estimate") && !$0.element.hasPrefix("ABR abandon trace")
+        }
+        let first = try #require(verdicts.first, "No verdict on the segment of the rung switched from")
+        #expect(first.offset > began, "Given up before the switch began: \(first.element)")
+        #expect(first.element == line, "The first verdict was not the give-up: \(first.element)")
+        let sequence = try #require(
+            line.range(of: #"segment (\d+)"#, options: .regularExpression).flatMap {
+                Int(line[$0].dropFirst("segment ".count))
+            })
+        // Lower than `from`, and no higher than the switch's target.
+        let targetId = try #require(
+            line.range(of: #"to variant (\d+)"#, options: .regularExpression).flatMap {
+                Int(line[$0].dropFirst("to variant ".count))
+            })
+        let target = try #require(demuxer.variants.first { $0.id == targetId })
+        #expect(target.bandwidth < from.bandwidth && target.bandwidth <= to.bandwidth, "Given up for: \(line)")
+        // The segment given up is read from its start by the rung given up for.
+        let targetPrefix = try segmentPrefix(ofWidth: target.width, master: master)
+        let given = String(format: "_%03d.ts", sequence)
+        let byTarget = { server.requests.filter { $0.time >= slowedAt && $0.path.hasPrefix(targetPrefix + "_") } }
+        _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(8)) {
+            byTarget().contains { $0.path.hasSuffix(given) }
+        }
+        let asked = byTarget().map(\.path)
+        #expect(asked.contains { $0.hasSuffix(given) }, "Segment \(sequence) not read by \(targetPrefix): \(asked)")
+        let cut = await waitForMessage(timeout: .seconds(20), of: demuxer, since: since) {
+            $0.contains("given up was cut at")
+        }
+        let cutAt = try #require(
+            cut?.range(of: #"cut at (\d+\.\d+)"#, options: .regularExpression).flatMap {
+                Double(cut![$0].dropFirst("cut at ".count))
+            }, "The old variant's queued tail was not cut")
+        // Past the cut the link is fast again: what is left to see is playback running on across it.
+        server.setLinkRate(nil)
+        let past = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(40)) {
+            (consumer.pictures.last?.pts ?? 0) > cutAt + 1.5
+        }
+        #expect(
+            past, "Playback did not get past the cut at \(cutAt) s: \(String(describing: consumer.pictures.last?.pts))")
+        expectContinuous(consumer)
+    }
+
+    /// The shaping proxy of 2026-11-13: adaptive bitrate stepped down right after a slow segment, with the top variant's next
+    /// one already asked for. The switch joined the segment after it and could splice only once it came whole, beside the
+    /// new variant's on the same slow link, and its give-up was refused while the switch ran: a stall of 7.3 s.
+    @Test("A step down under way while the old variant's segment downloads gives way to giving that segment up")
+    func givesUpTheSegmentASwitchWaitsFor() async throws {
+        try await expectSwitchGivesWay(from: 640, to: 480, linkRate: 500_000)
+    }
+
     @Test("A switch that took a download over and is given up reads it again without repeating what it had queued")
     func restartsWhatTheCancelledSwitchTookOver() async throws {
         guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
