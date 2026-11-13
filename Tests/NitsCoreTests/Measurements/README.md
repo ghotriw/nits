@@ -3,7 +3,7 @@
 Tests that measure instead of assert: each is skipped (`.enabled(if:)` on an environment variable) unless asked for, so
 a normal `swift test` only compiles them. They use `@testable` internals, which is why they live in the test target.
 Run with the bundled FFmpeg: `PKG_CONFIG_PATH=$PWD/.build/dependencies/lib/pkgconfig swift test --filter <type>`, the suite's type name (`HLSOpeningMeasurement`; the display names in the table below do not match a filter).
-Every output line starts with `MEASURE`; keep results in `docs/` (ROADMAP / OPEN_ISSUES), not here.
+Every output line starts with `MEASURE`; keep results in `docs/` (HLS and adaptive bitrate: "Measuring" in `docs/HLS.md`; the rest: ROADMAP / OPEN_ISSUES), not here. The shaping-proxy stand that runs `ABRStartRealMeasurement` beside hls.js is in `scripts/hls-stand/`.
 
 **The environment is part of the result.** Network Link Conditioner (NLC) can't be scripted: agree the profile with the
 person at the machine before each series, write the RTT (`ping -c 3 -q devstreaming-cdn.apple.com`) next to it, and

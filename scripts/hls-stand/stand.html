@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>hls.js stand</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
+<style>body { background: #111; color: #ccc; font: 12px monospace; } video { width: 640px; }</style>
+</head>
+<body>
+<video id="video" muted playsinline></video>
+<pre id="out"></pre>
+<script>
+// ?src=/videos/...m3u8&seconds=90&maxBuf=30&label=x
+// Times are epoch ms; the proxy aligns them with its schedule's clock.
+const params = new URLSearchParams(location.search);
+const seconds = Number(params.get('seconds') ?? 90);
+const config = { startLevel: -1 };
+// maxBufferLength alone is a floor: hls.js reads on to maxBufferSize (60 MB) up to maxMaxBufferLength (600 s), so cap both.
+if (params.get('maxBuf')) config.maxBufferLength = config.maxMaxBufferLength = Number(params.get('maxBuf'));
+const video = document.getElementById('video');
+const out = document.getElementById('out');
+const result = {
+  label: params.get('label'), src: params.get('src'), hlsVersion: Hls.version, config, pageStart: Date.now(),
+  levels: [], events: [], stalls: [], samples: [], firstPicture: null, stalled: 0,
+};
+const event = (type, data) => result.events.push({ t: Date.now(), type, ...data });
+const levelName = (i) => { const l = hls.levels[i]; return l ? `${l.height}p@${Math.round(l.bitrate / 1000)}k` : String(i); };
+
+const hls = new Hls(config);
+hls.on(Hls.Events.MANIFEST_PARSED, (_, d) => {
+  result.levels = d.levels.map((l) => ({ height: l.height, width: l.width, bitrate: l.bitrate, codecs: l.codecSet }));
+  event('manifest', { levels: result.levels.length, firstLevel: d.firstLevel });
+  video.play().catch((e) => event('playError', { error: String(e) }));
+});
+hls.on(Hls.Events.LEVEL_SWITCHING, (_, d) => event('decided', { level: levelName(d.level) }));
+hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => event('switched', { level: levelName(d.level) }));
+hls.on(Hls.Events.FRAG_CHANGED, (_, d) => event('shown', { level: levelName(d.frag.level), sn: d.frag.sn }));
+hls.on(Hls.Events.FRAG_LOADED, (_, d) => {
+  if (d.frag.type !== 'main') return;
+  const s = d.frag.stats;
+  event('fragLoaded', { level: levelName(d.frag.level), sn: d.frag.sn, bytes: s.total, start: s.loading.start, end: s.loading.end });
+});
+hls.on(Hls.Events.FRAG_LOAD_EMERGENCY_ABORTED, (_, d) =>
+  event('abandoned', { level: levelName(d.frag.level), sn: d.frag.sn, loaded: d.frag.stats.loaded, total: d.frag.stats.total }));
+hls.on(Hls.Events.ERROR, (_, d) => event('error', { type: d.type, details: d.details, fatal: d.fatal }));
+
+// Stall: playback started, not paused or ended, and the position did not move over a tick.
+let last = null, stallStart = null, lastTick = performance.now();
+const tick = () => {
+  const now = performance.now();
+  const dt = (now - lastTick) / 1000;
+  lastTick = now;
+  if (result.firstPicture === null && video.currentTime > 0) result.firstPicture = Date.now();
+  if (result.firstPicture !== null && !video.paused && !video.ended) {
+    if (video.currentTime === last) {
+      result.stalled += dt;
+      if (stallStart === null) stallStart = Date.now() - dt * 1000;
+    } else if (stallStart !== null) {
+      result.stalls.push({ start: stallStart, end: Date.now(), position: video.currentTime });
+      stallStart = null;
+    }
+  }
+  last = video.currentTime;
+};
+setInterval(tick, 50);
+setInterval(() => {
+  const b = video.buffered;
+  const ahead = b.length ? b.end(b.length - 1) - video.currentTime : 0;
+  result.samples.push({ t: Date.now(), position: video.currentTime, buffer: ahead, estimate: Math.round(hls.bandwidthEstimate / 1000), level: hls.currentLevel });
+  out.textContent = `t=${((Date.now() - result.pageStart) / 1000).toFixed(0)} s level=${levelName(hls.currentLevel)} buffer=${ahead.toFixed(1)} s stalled=${result.stalled.toFixed(1)} s estimate=${Math.round(hls.bandwidthEstimate / 1000)}k`;
+}, 1000);
+video.addEventListener('waiting', () => event('waiting', { position: video.currentTime }));
+video.addEventListener('playing', () => event('playing', { position: video.currentTime }));
+
+hls.loadSource(params.get('src'));
+hls.attachMedia(video);
+
+setTimeout(async () => {
+  if (stallStart !== null) result.stalls.push({ start: stallStart, end: Date.now(), position: video.currentTime, open: true });
+  await fetch('/control/result', { method: 'POST', body: JSON.stringify(result) });
+  document.title = 'done';
+}, seconds * 1000);
+</script>
+</body>
+</html>
