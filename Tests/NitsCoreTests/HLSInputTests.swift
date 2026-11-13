@@ -370,7 +370,12 @@ struct HLSInputTests {
         }
         let input = try #require(Self.open(stand, "master.m3u8"))
         let candidates = try #require(input.variantCandidates())
-        #expect(candidates.map(\.bandwidth).sorted() == [393_296, 988_128])
+        // The muxer measures `BANDWIDTH` from the segments it made, which differ between FFmpeg builds: the AVC
+        // variants' are the generated master's own.
+        // Read from the text, not by the parser under test; both above the variants added, which the ladder is to drop.
+        let generated = master.matches(of: /#EXT-X-STREAM-INF:BANDWIDTH=(\d+)/).compactMap { Int($0.1) }
+        try #require(generated.count == 2 && generated.allSatisfy { $0 > 300_000 })
+        #expect(candidates.map(\.bandwidth).sorted() == generated.sorted())
         let paths = stand.server.requests.map(\.path)
         #expect(!paths.contains("hevc.m3u8") && !paths.contains("other_audio.m3u8"), "\(paths)")
         #expect(Self.drain(input, limit: 30).packets.contains { $0.isVideo })
