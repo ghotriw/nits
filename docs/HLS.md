@@ -510,9 +510,9 @@ its audio group).
   up, not from the estimate. Whether a segment is kept or given up turns on fractions of a second (given up at
   29.4 s of rest against 29.2 s buffered, kept at 29 against 38); with a sound estimate the kept path would be safe
   too. Cause as the code reads (`AdaptiveBitrateLogic.addSample`), not checked by a test; nothing changed yet.
-- **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only a prefetch rate under
-  3 Mbit/s starts lower (`provenSlowRate`): the rate follows the CDN's answers as much as the link (4.8 Mbit/s on a
-  fast one), so a higher limit would start low on fast links. A start segment that will not arrive in time is given up
+- **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only an opening rate under
+  3 Mbit/s starts lower (`HLSInput.openingLinkRate`, `slowLinkLimit`): the rate follows the CDN's answers as much as the
+  link (4.8 Mbit/s on a fast one, before the opening skipped TCP's slow start), so a higher limit would start low on fast links. A start segment that will not arrive in time is given up
   past half its duration for a lower variant's (see *Giving a download up* in "Adaptive bitrate"): on 3.5 Mbit/s
   with 207 ms the start on 10 Mbit/s was given up at 4 s with no stall (5.5 s before). What is left is that half a
   segment of waiting at the start (4 s for Apple's 8 s segments); a lower start by default (hls.js, VLC, ExoPlayer)
@@ -532,66 +532,72 @@ its audio group).
   segment (6 probes at 2 Mbit/s took 20 s of the opening) and the opening measures no link rate (decision (b) above).
 - **Subtitle renditions outside playback** (`EmbeddedSubtitleReader`): VOD only, and only the stretches whose breaks the
   picture anchored (waits up to 2 s); live renditions are read by playback alone.
-- **What the breaks leave.** The entry below was written over two periods: until 2026-11-11 the timeline at a break
-  was a patch of FFmpeg's HLS demuxer ("the patch", `has_discont`, `first_timestamp`), since then it is the client's.
-  Items that name the patch describe code that is gone; each is to be checked against the client before it is
-  trusted or fixed.
-- **HLS `EXT-X-DISCONTINUITY`: what the client leaves.** The client (until 2026-11-11 a patch of FFmpeg's HLS demuxer)
-  moves the timestamps of the segments after a discontinuity onto the playlist's timeline ("Timeline and discontinuities" above). Before it, on
-  the engine (2026-11-06, also on `424a8ac`): the second segment of `hlsDiscontinuity` dropped ~89 frames and the
-  picture stood at 7.99 s for the last four of 12 s; PlayOn's test stream (`s3.amazonaws.com/playon-test-videos/
-  discont_test_new/discont_test.m3u8`) dropped 697 frames and stood at 8.0 s for a minute; a seek past the first break
-  landed at the start of the file. After: the picture follows the clock to the end in both, a seek lands in the right
-  segment. Left:
+- **What the breaks leave.** Until 2026-11-11 the timeline at a break was a patch of FFmpeg's HLS demuxer (`has_discont`,
+  `first_timestamp`, thresholds of half a target duration and 2 s / 1 s on a jump, a guard on late pictures, an estimate
+  for expired segments); the patch is gone, and so are those limits. The client does not look for jumps in timestamps:
+  it learns of a break from the playlist, from the tag (`EXT-X-DISCONTINUITY`, `EXT-X-DISCONTINUITY-SEQUENCE`) and from
+  its numbering, and starts a run of its own at each (a change of discontinuity sequence or of init section, a gap,
+  numbers that skip, `.expired`, a late reload that `startRun` counts as a break and numbers with
+  `discontinuityCorrection` when the server does not declare the sequence). The offset is the discontinuity sequence's,
+  not the run's: a run in a sequence already anchored takes it (a change of init section or a gap inside a sequence
+  moves nothing), and only a run whose first packet it puts further than the tolerance anchors anew. Read 2026-11-13;
+  what is run is said below.
+- **HLS `EXT-X-DISCONTINUITY`: what the client leaves.** The client moves the timestamps of the segments after a
+  discontinuity onto the playlist's timeline ("Timeline and discontinuities" above). Measured 2026-11-06, before the
+  client: on FFmpeg's HLS demuxer without the timeline patch (`424a8ac`) the second segment of `hlsDiscontinuity`
+  dropped ~89 frames and the picture stood at 7.99 s for the last four of 12 s; PlayOn's test stream
+  (`s3.amazonaws.com/playon-test-videos/discont_test_new/discont_test.m3u8`) dropped 697 frames and stood at 8.0 s for a
+  minute; a seek past the first break landed at the start of the file. With the patch (`23b51b9`) the picture followed
+  the clock to the end in both and a seek landed in the right segment. On the client `hlsDiscontinuity` is kept so by
+  `HLSDiscontinuityTests` (green in every full run); PlayOn's stream has not been run on it. Left:
   - Advertisements on streams of their own: played since the client (the advertisements entry below).
-  - A segment in another size is played now (the demuxer starts a new format description where the parameter sets in the
-    band change, `MediaDemuxer.videoPacket(from:)`; before, the picture stood at the last frame of the first size while
-    nothing came out of the decoder: on `hlsDiscontinuityResize` 4 s at 320x180 then 4 s at 640x360 it stood at 4.0 s).
-    Not covered: only H.264 and HEVC with the sets in band (MPEG-TS and the like; AV1 and VP9 have their sequence
-    headers in band too); the software decoder (FFmpeg follows an in-band change by itself; not run); a seek back
-    across a change in the packet cache (the size the player has is the later one while the earlier pictures play; a
-    slow seek reports the size at its landing, always: the first keyframe after it tells the size, so the player does
-    not keep the size of another stretch, an advertisement the reading has left).
+  - A segment in another size is played (the demuxer starts a new format description where the parameter sets in the
+    band change, `MediaDemuxer.videoPacket(from:)`; on `hlsDiscontinuityResize`, 4 s at 320x180 then 4 s at 640x360, the
+    picture stood at 4.0 s before that, 2026-11-06; the demuxer's, so the same with the client). Not covered: only H.264 and HEVC with the sets in band (MPEG-TS and the like; AV1 and VP9
+    have their sequence headers in band too); the software decoder (FFmpeg follows an in-band change by itself; not
+    run); a seek back across a change in the packet cache (the size the player has is the later one while the earlier
+    pictures play; a slow seek reports the size at its landing, always: the first keyframe after it tells the size, so
+    the player does not keep the size of another stretch, an advertisement the reading has left).
   - A keyframe seek (a held arrow key) that lands past its target across a change of size: the size comes with the
     picture it lands on (its second), and is applied when the clock gets to `chase.seconds + 0.1`; while scrubbing the
     clock stands, so the picture is of the new size and `media.video` is still the old one until the scrub ends.
   - A change of the picture's size, and of its parameter sets only, is followed by the decoder; the rest of an
-    advertisement's properties is not, and the pictures play with the old ones:
-    the frame rate (`nominalFrameDuration` and the display link's rate stay: a variant's change updates them,
-    `variantDidChange`; a size change does not), the pixel aspect ratio (the event carries the stream's old one), the
-    colour (the description is made from the codec parameters of the open), another codec after the change (the sets are
-    parsed as the first codec's), and HEVC with Dolby Vision. A format description with other parameter sets for the same pictures is taken by
-    VideoToolbox's session (`VTDecompressionSessionCanAcceptFormatDescription`): PlayOn's stream alternates its SPS
-    (timing in the VUI), and made a session each time before (3 in 40 s, 1 now).
-  - fMP4/CMAF with a new `EXT-X-MAP` at the break (2026-11-06): FFmpeg's mov sub-demuxer skips the later `moov`, so the
-    stream kept the first section's `avcC` and the second stretch (640x360 after 320x180) stood at the last picture;
-    the client (before it, `ffmpeg-hls-update-init-extradata.patch`) passes the new section's extradata on a key frame, and the size follows
-    (`HLSDiscontinuityFMP4Tests`, also after a seek back into the first stretch). Only H.264 and HEVC (the sets come from
-    `NEW_EXTRADATA` in `refreshVideoFormat`); AV1 and VP9 keep the open's `av1C` / `vpcC`; audio extradata that changes
-    with the section (another AAC configuration) is passed on by the patch but not taken by the audio path. Streams
-    are matched by position, type and codec: a stretch with other streams is not followed. Not run on a real stream.
-  - Not checked for fMP4 with a new `EXT-X-MAP` (read from the code, 2026-11-06): a ladder of variants. Going back to a
-    variant in the same stretch leaves `cur_init_section` as it is, so no side data comes, and `spliceVariantVideo`
-    builds the description from `codecpar` (the first init section's), so the picture may stand: to settle with ladders.
-    A seek back into the first stretch that the packet cache serves reports no size (`seekReportingCache`), so
-    `media.video` keeps the later stretch's; the engine tests start at 5 s so that the seek back is a slow one (the
-    read-ahead is held until the first seek), and the cached case is not tested.
-    The timeline thumbnails (`ThumbnailGenerator`, a context of its own, also on network sources) do not read
-    `NEW_EXTRADATA`: past such a break they are probably missing or broken.
-  - A separate audio rendition with its own playlist and breaks (2026-11-06, synthetic: video-only variant plus an
-    `EXT-X-MEDIA` playlist, fMP4, init sections renewed in both): the first packets of the second stretch, sound and
-    picture, keep the lead the first stretch has (the picture 67 ms after its sound) within 20 ms, and the sound starts at the 4 s the playlists put it at (30 ms), and the sound has no gap over
-    100 ms (`audioRenditionMeetsThePicture`). The offsets were per playlist then, so they met because the `EXTINF`s of
-    both playlists agreed. Since 2026-11-11 the client shares one offset per discontinuity sequence across its lanes
-    (`HLSTimestampAnchors`): the picture is at the 4 s of the break and the sound keeps the lead its timestamps give it
-    (the AAC priming, 21 ms; the preset's sound is now moved by the picture's reordering, as a packager's would be), and a
-    rendition whose durations differ from the picture's keeps its place (`audioRenditionSharesThePicturesOffset`).
+    advertisement's properties is not, and the pictures play with the old ones: the frame rate (`nominalFrameDuration`
+    and the display link's rate stay: a variant's change updates them, `variantDidChange`; a size change does not), the
+    pixel aspect ratio (the event carries the stream's old one), the colour (the description is made from the codec
+    parameters of the open), another codec after the change (the sets are parsed as the first codec's), and HEVC with
+    Dolby Vision. A format description with other parameter sets for the same pictures is taken by VideoToolbox's session
+    (`VTDecompressionSessionCanAcceptFormatDescription`): PlayOn's stream alternates its SPS (timing in the VUI), and
+    made a session each time (3 in 40 s before, 1 after; 2026-11-06, on the patch, not rerun on the client).
+  - fMP4/CMAF with a new `EXT-X-MAP` at the break: FFmpeg's mov sub-demuxer skipped the later `moov`, so the stream kept
+    the first section's `avcC` (until 2026-11-11 a patch passed the new one on). The client's `HLSLane.attachNewExtradata`
+    puts the extradata of a run whose init section differs from the lane's last (`lastExtradata`) on its first video key
+    frame as `NEW_EXTRADATA`, and the size follows (`HLSDiscontinuityFMP4Tests`, also after a seek back into the first
+    stretch). Only H.264 and HEVC (the sets come from `NEW_EXTRADATA` in `refreshVideoFormat`); AV1 and VP9 keep the
+    open's `av1C` / `vpcC`; audio extradata that changes with the section (another AAC configuration) is not taken by the
+    audio path. A run's streams are matched to the table by kind and by order among the streams of that kind
+    (`HLSLane.slotIndex`), not by codec: a stream of another codec in the same place is handed to the decoder made for
+    the first, and a stream more than the first run had is dropped. Not run on a real stream.
+  - Not checked for fMP4 with a new `EXT-X-MAP`: a ladder of variants. Going back to a variant whose init section the lane
+    read last compares equal to `lastExtradata`, so no side data comes; whether `spliceVariantVideo` then builds the
+    description right is to settle with ladders. A seek back into the first stretch that the packet cache serves reports
+    no size (`seekReportingCache`), so `media.video` keeps the later stretch's; the engine tests start at 5 s so that the
+    seek back is a slow one (the read-ahead is held until the first seek), and the cached case is not tested. The timeline
+    thumbnails (`ThumbnailGenerator`, a context of its own, also on network sources) do not read `NEW_EXTRADATA`: past
+    such a break they are probably missing or broken.
+  - A separate audio rendition with its own playlist and breaks (synthetic: video-only variant plus an `EXT-X-MEDIA`
+    playlist, fMP4, init sections renewed in both): the sound starts at the 4 s the playlists put it at, has no gap over
+    100 ms, and the second stretch keeps the first's lead within 20 ms (`audioRenditionMeetsThePicture`). The client
+    shares one offset per discontinuity sequence across its lanes (`HLSTimestampAnchors`): the picture is at the 4 s of
+    the break and the sound keeps the lead its timestamps give it (the AAC priming, 21 ms; the preset's sound is moved
+    by the picture's reordering, as a packager's would be), and a rendition whose durations differ from the picture's
+    keeps its place (`audioRenditionSharesThePicturesOffset`).
   - Limits of the shared offset (read from the code, 2026-11-11, not seen on a stream):
-    - A run anchored anew (its first packet further than a target duration from where the offset puts it: a variant
-      with timestamps of another base) changes the offset for the runs after it only. A variant switched to that is
-      anchored anew plays against an audio rendition still on the old offset, apart by the difference, until the next
-      seek opens both again; the log says "anchored anew". hls.c and the client before kept an offset per playlist,
-      with the same effect whenever the playlists' durations disagreed.
+    - A run anchored anew (its first packet further than a target duration (1 s at least) from where the offset puts it:
+      a variant with timestamps of another base) changes the offset for the runs after it only. A variant switched to that
+      is anchored anew plays against an audio rendition still on the old offset, apart by the difference, until the next
+      seek opens both again; the log says "anchored anew". hls.c and the client before kept an offset per playlist, with
+      the same effect whenever the playlists' durations disagreed.
     - A seek chooses the segment by the timeline's places and lands by the timestamps. The places are corrected from the
       media (`HLSTimeline.measure`, hls.js's `updateFragPTSDTS`): the reader tells where the first picture of each segment
       is (`HLSSegmentReader.Anchoring.onSegmentStart`: the first packet of the reference stream whose `pos` falls in the
@@ -617,118 +623,63 @@ its audio group).
       the segments after it in the same run are not read (a run drifts only as much as its samples do).
     - A subtitle run in a container (IMSC, MPEG-TS) is now cut at each segment by `fill(before:)`, and each opens
       FFmpeg's analysis anew (`avformat_find_stream_info`): small segments, but one context each.
-  - Audio and frame rate across a break (2026-11-06): Google's `ima-vod-skippable-test` has no audio and 25 fps in the
-    content and the advertisement, so it says nothing of either. On the 16 + 6 + 4 s synthetic (three timestamp
-    domains, packets read with the patched `ffprobe`) the audio has no gap or overlap over 100 ms through both breaks and
-    ends 50 ms after the pictures (27.52 against 27.47 s); the pictures step 67 ms (two frames) more than usual at each
-    break (17.37 to 17.43 s, 23.40 to 23.47 s); the first audio and picture packets after a break are 30 and 67 ms
-    apart (17.40 / 17.43, 23.40 / 23.47). `HLSDiscontinuityTests` keeps the audio timeline of the 4 + 8 s preset
-    (no gap over 100 ms, ends past 11.5 s; it fails when the audio is left out of the patch's offset, checked by taking
-    it out). Audio and picture of a playlist are moved by one offset, so their positions to each other stay (a separate
-    audio rendition with its own playlist has an offset of its own: see the entry above). Not done:
-    a change of frame rate at a break (a variant's change sets `nominalFrameDuration`
-    and the display link's rate; a break does not, and the pictures are paced by their timestamps meanwhile).
-    The 67 ms step was a bug of the timeline patch, found with the fMP4 audio rendition (2026-11-06): the offset was taken
-    from the first packet's DTS while `first_timestamp` is its PTS, so every segment after a break sat a reordering delay
-    (67 ms here; 125 ms at 24 fps with three B-frames) later than the playlist puts it, against audio that has no delay
-    (an audio rendition has an offset of its own, so the picture trailed its sound by that much). Now both use the PTS:
-    the step at a break is one frame (muxed fMP4, rendition and TS, `HLSDiscontinuityTests` / `...FMP4Tests`). The
-    numbers above are from before. A/V sync through a break by the `flashClick` method is measured (`SyncPatternTests.acrossAnHLSBreak`, fMP4 with the sound in a rendition of its own, the picture keeping its 2 frames of reordering in both stretches; it fails with the offset taken from the DTS, checked by putting that back).
-    The test also needs the second stretch's first whole second (7 s) seen in picture and sound at its absolute place, as the
-    seconds repeat; it fails with the audio playlist's offset left out (checked by taking it out). FLAC, so that the
-    clicks are exact: the trimming of AAC's priming samples after a break (about 21 ms) is not covered.
-    On the final patch (PTS, thresholds, audio/video-only jump), real streams (2026-11-06): Google DAI
-    (`ima-vod-skippable-test`) plays its 90 s with no frame dropped, PlayOn's with the 240 dropped frames of the
-    segment without a tag (97.5 to 105.6 s), Mux's (rerun on this patch) as before, 2150 packets; a real fMP4 stream with a new `EXT-X-MAP` was not found.
-    The 67 ms lead of picture over sound at the start is of these synthetic streams (tracks encoded apart, only the
-    video shifted); the tests hold the second stretch to the first's lead: positions to each other, not absolute sync.
-  - An early break is placed differently when reading and after a seek (read from the code, not run). The first packet
-    after a seek takes its offset only if the playlist's place for the segment differs from its timestamp by half a
-    target duration or more. A 4 s pre-roll before content in a playlist with `TARGETDURATION:10`, restarting at zero,
-    is 4 s against 5 s: reading on takes the offset (a jump of 2 s or more needs 1 s of difference, the jump itself
-    shows the restart), a seek into the content does not, and the same content lands 4 s apart (with segments of 10 s, a seek to 20 s lands
-    on raw 10 s and shows the picture that reading on puts at 24 s). Reading is right now; the landing is not.
-    The preset `hlsDiscontinuity` (4 s then 8 s, target 8) sits exactly on the boundary for `seekPastTheBreak` (4.000
-    against 4.000, taken since the comparison is `>=`): a first segment one frame shorter would fail it.
-  - The jump that finds a break is looked for in audio and video only (read from the code, no test): data streams such as timed ID3
-    come seconds apart, and a jump of 2 s in one would put the offset of a mid-segment timestamp on the playlist when
-    a server keeps its timestamps. Mux's Deltatre DAI was rerun after the 1 s change: the same 2150 packets, the same
-    jump from 36.2 to 216.3 s.
-  - A segment whose timestamps restart with no `EXT-X-DISCONTINUITY` before it is not seen: PlayOn's stream has one (the
-    8 s segment before its last tag), which lands at -6.4 to 1.6 s and leaves a hole at 97.5 to 105.6 s in the timeline.
-    The tag is what tells where to take the offset; guessing from a jump alone is what the patch avoids.
-  - The last pictures of a segment that the h264 parser lets out after the next segment's offset was taken (read from
-    the code, a review of 2026-11-09; not seen in a test). The offset is the playlist's, not the stream's: the first
-    packet that jumps takes it, an audio one as often as not, and pictures of the segment before that come out after it
-    get the new segment's offset. The guard leaves a packet its own timestamps only when that puts it beyond the window's
-    ends by twice the threshold (4 s with 4 s segments); one of a restart (raw 3.9 s, the new segment's offset placing
-    0 s at its start) lands about 4 s before the new segment's start, inside the margin, so it is moved: a picture out of
-    order, behind the ones before it. It was so before the skip of expired segments too, at any break. Seen only
-    before the offset (`expiredSegmentsKeepTheTimeline`: two pictures of the expired segment came out first and keep its
-    offset). An offset per stream until each has jumped would place them; the patch keeps one per playlist so that audio
-    and video of a segment stay together.
-  - The skip of segments that expired while the read was behind (read from the code, a review of 2026-11-09; left on
-    purpose, each needs the read behind by more than the whole window, or a case not seen):
-    - Where the playlist puts the segment a skip goes on with is estimated: `first_timestamp` counts segments the
-      playlist never listed (it slid past the whole window between two loads) as a target duration each, or follows the
-      time. A server that keeps its timestamps whose segments are shorter than the target (6 s target, 5.005 s segments)
-      is more than half a target duration off after 3 such segments, and takes that as an offset.
-    - A break whose tag only expired segments had, none of FFmpeg's loads listed (`has_discont` still 0), is not seen:
-      the segment after the skip keeps its timestamps, as one that restarts without a tag does.
-    - While the skip's offset is still to be taken, the guard leaves every packet before the window its offset, not only
-      the late ones of the expired segment: a packet of another kind there (a stream with no packet before it) would
-      be moved off the window instead of keeping its own timestamps. Not seen.
-    - The way to all three is `EXT-X-DISCONTINUITY-SEQUENCE`, which FFmpeg skips now: with each segment's number of
-      breaks, a skip tells whether a break lies between the segment read last and the one after (none: the offset stays,
-      no estimate), and sees breaks whose tags no load listed. A server without the tag keeps the present behaviour.
-    - `expiredSegmentsKeepTheTimeline` slides its playlist a segment a second up to the advertisement preset's last
-      segment (number 29), where the window stops: a read slow enough to still run 17 s after the open then finds no
-      skip and the test fails as such, not on segments the server does not have.
-  - A live stream with breaks (`HLSLiveDiscontinuityTests`, synthetic, 2026-11-06), in two kinds: every 4 s segment
-    restarting its timestamps at 0, and server-side ad insertion (`hlsLiveAds`: content on a running timeline from 1000 s,
-    two advertisement segments from 0 after every three of content, so the content after the advertisement is already on
-    the stream's time, as Mux's is). A window of 10 segments sliding, opened after it had slid. FFmpeg opens a live
-    playlist at the third segment before its end (the timestamp probed there is the origin: negative where that segment
-    restarts its timestamps, 1012 s on content), and the demuxer then rewinds to the first segment listed, so a plain read
-    goes through the window as it was at the open and never waits for the playlist. The read from the edge, where the
-    engine plays, is `edgeThroughAnAdvertisement`: content (number 10), the advertisement (13, 14), content again (15 on,
-    already 8 s on): the steps stay under 0.2 s and the sound has no gaps. That does not tell whether the offset the
-    advertisement took is dropped or the timeline patch's guard keeps the packets' own timestamps (either way the stream
-    plays right), so it was looked at once in the patch's debug log (`av_log_set_level(AV_LOG_DEBUG)`, 2026-11-06):
-    segment 13 `offset 1051933333`, segment 14 `offset 1055933333` (the advertisement), segment 15 `expected at
-    1060000000, packet at 1060000000: offset 0`: dropped, by the comparison with the playlist. Not a check the tests
-    make. The content is made up to segment 29, and a test's playlist must not reach past it. Picture
-    and sound go on across the breaks (steps under 0.2 s, gaps under 0.15 s), keyframe seeks within the window land
-    within a segment of the target, and the engine plays and seeks to the oldest place allowed (the clock goes on, the
-    picture follows it, under 20 dropped). A single run of 30 s through about eight breaks (the 4 s segments restarting)
-    dropped nothing; the engine test watches 5 s). `engineCrossesAnAdvertisement` takes the engine across both borders
-    of the advertisement (seeks to 18 and 26 s on the window's timeline, 2 s short of the entry at 20 s and the return
-    at 28 s): the clock and the picture go on past each, under 20 dropped. The lag check of the engine tests failed twice,
-    in the first run after a build each time; the message of the second said 35 s at 0 s from the start, a first sample
-    before the first picture (`currentFramePTS` is -1 until one is shown), which the check skips now. The first
-    failure's message was not kept: it may have been the same. One thing was wrong and is fixed: the window of a stream opened after it
-    had slid started before 0 (the segments listed before the one reading begins at are placed earlier than its first
-    timestamp, which is small when timestamps restart), and a seek into that part stood the clock (`currentFramePTS >= 0`
-    means "a picture is there" throughout the engine). `FFmpegInput.timelineOrigin(of:)` now takes the start of an
-    HLS stream for the origin, negative or not (other formats flagged `AVFMT_TS_DISCONT` keep a positive one or none), so it starts at 0 as it opens and everything after is positive.
-    An EVENT playlist (`isLive` is false and it has a duration) had the same fault, its first
-    picture at -2.5 s; it starts at 0 now (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks (single
-    variant only; see Ladders), a stream whose timestamps jump on without a break, an advertisement on a timeline of its
-    own at a splice shorter than the 1 s threshold, audio of a rendition with its own live playlist, a live stream of
-    fMP4 (the origin applies to it too: `AVFMT_TS_DISCONT` is on HLS, read from the code), and a real stream (only
-    synthetic ones). A break close to the reading point, as after a seek, is moved only when the jump is over half a target
-    duration: with a target duration of 10 s a 4 s segment near the point is not (early break, above). Not looked at:
-    subtitles (their playlists are not moved).
-  - A restart of timestamps by less than 2 s is not seen (the error is that small).
-  - Mux's Deltatre DAI (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`) puts the later main content on
-    timestamps already jumped by the length of the ads: the patch takes no offset there (the difference is under half a
-    target duration), as it should.
-  - A real ad server, Google DAI (`ima-vod-skippable-test`, `POST https://dai.google.com/ondemand/hls/content/2483977/vid/
-    ima-vod-skippable-test/streams`; the address expires; six segments of content, a break, three of advertisement,
-    timestamps back from 51.40 to 0.00 s), 640x360 throughout: before the patch the picture stood at 60.0 s with 750
-    frames dropped for the last 30 of 90 s; with it the picture follows the clock to the end, nothing dropped (engine,
-    2026-11-06; audio not looked at). The content ids are in `.ref/exoplayer/demos/main/src/main/assets/media.exolist.json`;
-    the `tears-of-steel` example is out of date (its content segments answer 404).
+  - Audio and frame rate across a break (2026-11-06, on the patch; the numbers are not re-measured on the client):
+    Google's `ima-vod-skippable-test` has no audio and 25 fps in the content and the advertisement. On the 16 + 6 + 4 s
+    synthetic (three timestamp domains) the audio had no gap or overlap over 100 ms through both breaks, and the
+    pictures stepped one frame at each break after a bug of the patch (an offset from the DTS where the PTS belonged, a
+    reordering delay of 67 ms) was fixed. `HLSDiscontinuityTests` keeps the audio timeline of the 4 + 8 s preset (no gap
+    over 100 ms, ends past 11.5 s). A/V sync through a break by the `flashClick` method:
+    `SyncPatternTests.acrossAnHLSBreak` (fMP4 with the sound in a rendition of its own, FLAC so that the clicks are
+    exact, the second stretch's first whole second seen in picture and sound at its absolute place, as the seconds
+    repeat). The trimming of AAC's priming samples after a break (about 21 ms) is not covered. The tests fail on the
+    faults they were made for (checked on the patch by bringing each fault back): the audio left out of the offset
+    (`HLSDiscontinuityTests`), the offset taken from the DTS instead of the PTS and the audio playlist's offset left out
+    (`acrossAnHLSBreak`); the client anchors by the first PTS (`start_time`, else the first packet's `pts`), so the DTS
+    one is the fault to guard against. Not done: a change of frame rate at a break (a variant's change sets
+    `nominalFrameDuration` and the display link's rate; a break does not, and the pictures are paced by their timestamps
+    meanwhile). The 67 ms lead of picture over sound at the start is of the synthetic streams (tracks encoded apart,
+    only the video shifted); the tests hold the second stretch to the first's lead: positions to each other, not
+    absolute sync.
+  - Real streams. On the patch (2026-11-06): Google DAI (`ima-vod-skippable-test`, `POST
+    https://dai.google.com/ondemand/hls/content/2483977/vid/ima-vod-skippable-test/streams`; the address expires; six
+    segments of content, a break, three of advertisement, timestamps back from 51.40 to 0.00 s, 640x360) played its 90 s
+    with no frame dropped (before: the picture stood at 60.0 s with 750 frames dropped); PlayOn's dropped the 240 frames
+    of its segment without a tag (97.5 to 105.6 s). On the client (2026-11-13, `RealStreamMeasurement`, 20 s of play
+    and seeks to 40 % and 10 %, so not through every break): Google DAI and Mux's Deltatre DAI played at the wall
+    clock's pace with nothing dropped; PlayOn's was not run. Mux's
+    (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`) puts the later main content on timestamps already
+    jumped by the length of the ads, so the offset its sequence anchors comes out as the content's before the ads, as it
+    should (read from the code; Mux's whole 266 s played through the client on 2026-11-11, see the advertisements
+    entry below). The content ids are in `.ref/exoplayer/demos/main/src/main/assets/media.exolist.json`; the
+    `tears-of-steel` example is out of date (its content segments answer 404).
+  - A segment whose timestamps restart with no `EXT-X-DISCONTINUITY` before it is not seen: PlayOn's stream has one (the 8 s
+    segment before its last tag), which on the patch landed at -6.4 to 1.6 s and left a hole at 97.5 to 105.6 s. The client
+    does not guess breaks from a jump: the segment stays in its run and takes the run's offset like the segments before
+    it, so it lands where its restarted timestamps put it (probably the same hole); not run on the client.
+  - A live stream with breaks (`HLSLiveDiscontinuityTests`, synthetic), in two kinds: every 4 s segment restarting its
+    timestamps at 0, and server-side ad insertion (`hlsLiveAds`: content on a running timeline from 1000 s, two
+    advertisement segments from 0 after every three of content, so the content after the advertisement is already on the
+    stream's time, as Mux's is). A window of 10 segments sliding, opened after it had slid. The read from the edge,
+    where the engine plays, is `edgeThroughAnAdvertisement`: content (number 10), the advertisement (13, 14), content
+    again (15 on, already 8 s on): the steps stay under 0.2 s and the sound has no gaps. Picture and sound go on across
+    the breaks (steps under 0.2 s, gaps under 0.15 s), keyframe seeks within the window land within a segment of the
+    target, and the engine plays and seeks to the oldest place allowed (the clock goes on, the picture follows it, under
+    20 dropped). `engineCrossesAnAdvertisement` takes the engine across both borders of the advertisement (seeks to 18
+    and 26 s on the window's timeline, 2 s short of the entry at 20 s and the return at 28 s): the clock and the picture
+    go on past each, under 20 dropped. The content is made up to segment 29, and a test's playlist must not reach past
+    it. `expiredSegmentsKeepTheTimeline` slides its playlist a segment a second up to the advertisement preset's last
+    segment (number 29), where the window stops: a read slow enough to still run 17 s after the open then finds no skip
+    and the test fails as such, not on segments the server does not have. The lag check of the engine tests failed
+    twice, in the first run after a build each time; the second message said 35 s at 0 s from the start, a first sample
+    before the first picture (`currentFramePTS` is -1 until one is shown), which the check skips now; the first message
+    was not kept. A live stream's window starts at 0 as it opens and everything after is positive (the engine reads
+    `currentFramePTS >= 0` as "a picture is there": a seek into a negative part of the window once stood the clock):
+    `HLSInput`'s `timelineOrigin` is 0 and its zero is the first segment listed at the first load (a negative start is
+    not the origin: the `FFmpegInput.timelineOrigin(of:)` of MPEG-TS/PS and `EmbeddedSubtitleReader` is a different
+    path); an EVENT playlist starts at 0 too (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks
+    (single variant only; see Ladders), a stream whose timestamps jump on without a break, audio of a rendition with its
+    own live playlist, a live stream of fMP4, and a real stream (only synthetic ones).
+  - Not read from the client in this review: how the playlists' breaks reach `EmbeddedSubtitleReader` (the entry below).
 - **HLS subtitle renditions: a window past a break the pictures have not anchored waits for playback.** The window read
   (`EmbeddedSubtitleReader.readSubtitles(hls:…)`) reads only the stretch whose discontinuity sequences the pictures
   anchored (from the first such segment to the first that isn't), and waits up to 2 s for any: cues elsewhere would be
