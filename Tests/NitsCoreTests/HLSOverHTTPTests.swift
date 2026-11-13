@@ -231,7 +231,7 @@ struct HLSRenditionTests {
 
     @Test("A subtitle rendition is read outside playback through the client: a window and the whole track")
     func subtitleRenditionReadOutsidePlayback() throws {
-        guard let (server, demuxer, opened) = try Self.open() else { return }
+        guard let (server, demuxer, _) = try Self.open() else { return }
         defer { server.stop() }
         let track = try #require(demuxer.subtitleTracks.first)
         let source = try #require(demuxer.hlsSubtitleSource(streamIndex: track.streamIndex))

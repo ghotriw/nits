@@ -75,7 +75,7 @@ struct RealStreamMeasurement {
                 "\(opened)", open, engine.loadError ?? "none", media.duration, "\(media.isLive)", media.video.width,
                 media.video.height, media.video.codecName, media.video.transferFunction, engine.variants.count))
         report.append(
-            "audio tracks: \(engine.audioTracks.map { "\($0.id):\($0.language ?? "-")" }), subtitles: \(engine.subtitles.tracks.map { "\($0.id):\($0.language ?? "-")/\($0.format)" })"
+            "audio tracks: \(engine.audioTracks.map { "\($0.id):\($0.language)" }), subtitles: \(engine.subtitles.tracks.map { "\($0.id):\($0.language)/\($0.format)" })"
         )
         if engine.loadError == nil && opened {
             report.append(await play(engine, "play", seconds: seconds))
