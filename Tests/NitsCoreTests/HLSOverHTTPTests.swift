@@ -140,6 +140,36 @@ struct HLSOverHTTPTests {
         #expect(Set(Self.segments(of: 1, in: server.requests)) == ["v1_000.ts", "v1_001.ts", "v1_002.ts"])
 
     }
+
+    @Test("A saved master whose saved media playlist lists segments on the network is a network source")
+    func savedMasterOfSavedPlaylistOfNetworkSegments() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        let root = try #require(SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants))
+        let playlist = try String(
+            contentsOf: URL(fileURLWithPath: root).deletingLastPathComponent().appendingPathComponent("v1.m3u8"),
+            encoding: .utf8)
+        let saved = playlist.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line.hasSuffix(".ts") ? server.url(String(line)) : String(line)
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try saved.joined(separator: "\n").write(
+            to: directory.appendingPathComponent("v1.m3u8"), atomically: true, encoding: .utf8)
+        // The master names no address on the network: only its media playlist's segments are.
+        let master = directory.appendingPathComponent("master.m3u8").path
+        try "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nv1.m3u8\n".write(
+            toFile: master, atomically: true, encoding: .utf8)
+        #expect(!MediaURL.isNetworkSource(master))
+
+        let demuxer = try #require(MediaDemuxer(url: master))
+        #expect(demuxer.isNetworkSource)
+        demuxer.startReadAhead()
+        var pictures = 0
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        #expect(pictures == 180)
+    }
 }
 
 /// Audio and subtitle renditions (`EXT-X-MEDIA`): each a playlist of its own, downloaded only while selected.

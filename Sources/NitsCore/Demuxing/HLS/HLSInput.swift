@@ -166,6 +166,22 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         return rate
     }
 
+    /// Whether the stream is read over the network: any address it loads is HTTP(S), a playlist, an init section, a key
+    /// or a segment. A saved master's text alone (`MediaURL.isNetworkSource`) misses saved media playlists that list
+    /// segments on the network.
+    static func readsOverNetwork(playlists: [URL], loaded: [HLSMediaPlaylist]) -> Bool {
+        func isNetwork(_ url: URL?) -> Bool {
+            url?.scheme.map { ["http", "https"].contains($0.lowercased()) } ?? false
+        }
+        return playlists.contains(where: isNetwork)
+            || loaded.contains { playlist in
+                playlist.segments.contains {
+                    isNetwork($0.url) || isNetwork($0.initSection?.url) || isNetwork($0.key?.url)
+                        || isNetwork($0.initSection?.key?.url)
+                }
+            }
+    }
+
     // MARK: Opening
 
     /// What a playlist the opening loads is for.
@@ -188,7 +204,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url), let table = AVStreamTable() else {
             return nil
         }
-        isNetworkSource = MediaURL.isNetworkSource(url)
         self.table = table
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         self.transport = transport
@@ -289,6 +304,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
 
         let playlistsLoaded = ContinuousClock.now
+        isNetworkSource = Self.readsOverNetwork(
+            playlists: [masterURL] + requests.map(\.url), loaded: slots.compactMap(\.value))
 
         // The reference the others are aligned to, and where reading starts: the top of the ladder that loaded.
         let referenceIndex: Int

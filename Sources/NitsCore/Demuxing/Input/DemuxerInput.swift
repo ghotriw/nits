@@ -56,7 +56,8 @@ protocol DemuxerInput: StreamDescriptions {
 
     // MARK: Network
 
-    /// Read over the network (`MediaURL.isNetworkSource`): a URL, or a saved HLS manifest of network media.
+    /// Read over the network: a URL, or a saved manifest of network media (`MediaURL.isNetworkSource`; HLS from every
+    /// address the stream loads, `HLSInput.readsOverNetwork`).
     var isNetworkSource: Bool { get }
     /// What the input's reads transferred, for adaptive bitrate; nil for local media.
     var network: (any NetworkReadAccount)? { get }
