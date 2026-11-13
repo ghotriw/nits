@@ -98,6 +98,7 @@ extension MediaDemuxer {
         let cursor = consumedSeconds
         let readPoint = readAheadState.withLock { $0 }
         guard cursor.isFinite, readPoint.isFinite else { return trace(source, segment, "no position yet") }
+        if let gate = abandonCheckGate, !gate(segment, cursor) { return trace(source, segment, "held by the test") }
         // Where the cut would be (`abandonPlace`); the queue is looked at only with the position inside the segment. What
         // plays before the new variant must bring the segment: up to its start when it is ahead, up to the cut inside it.
         var queued: QueuedPosition?

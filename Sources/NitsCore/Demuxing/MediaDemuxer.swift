@@ -157,6 +157,10 @@ public final class MediaDemuxer: @unchecked Sendable {
     var adaptiveBitrateConfig: AdaptiveBitrateLogic.Config?
     /// Whether a download that will not arrive in time is given up for a lower variant's (`requestAbandon`).
     var abandonsDownloads = MediaDemuxer.abandonsEnabled
+    /// Tests only: a segment in flight is checked for giving up once this allows it, given the position (seconds handed
+    /// out), so that a test's premise (the position inside the segment) does not depend on how late playback runs on a
+    /// busy machine. Set before `startReadAhead`.
+    var abandonCheckGate: (@Sendable (_ segment: InFlightSegment, _ position: Double) -> Bool)?
     /// This demuxer's number in the log (`streamingName`): one log holds the lines of every stream open (windows,
     /// thumbnails), and tests running side by side.
     let logID = MediaDemuxer.logIDs.withLock { counter in

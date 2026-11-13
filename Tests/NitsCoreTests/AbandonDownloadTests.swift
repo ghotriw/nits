@@ -265,6 +265,9 @@ struct AbandonDownloadTests {
     /// with the position at 3.6 s, and the rule, which waits half the segment's duration (3 s), first looks at it with the
     /// position inside it at ~6.6 s and its keyframe at 8 s queued, not handed out: 1.4 s for the lower variant to reach
     /// it (the rule asks that it does: `cutOffset`), which a starved pool of one thread too needs (1 s was too short).
+    /// Playback running late on such a pool put the position before the segment at the rule's first look (5.7 s): the
+    /// check of segment 1 waits for the position inside it (`abandonCheckGate`). One that comes too late for the lower
+    /// variant to reach the queued keyframe is refused, and a later check takes the next keyframe queued.
     private struct InsideSetup {
         let server: TestHTTPServer
         let demuxer: MediaDemuxer
@@ -287,6 +290,7 @@ struct AbandonDownloadTests {
         #expect(demuxer.variants.map(\.width) == [640, 480, 320])
         demuxer.abandonsDownloads = true
         demuxer.adaptiveBitrateConfig = Self.config()
+        demuxer.abandonCheckGate = { segment, position in segment.sequence != 1 || position >= segment.start + 0.2 }
         let segment = "\(prefix)2_001.ts"
         let size = try #require(
             try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(segment).path)[.size] as? Int)
@@ -338,8 +342,11 @@ struct AbandonDownloadTests {
             (setup.consumer.pictures.last?.pts ?? 0) > 13.5
         }
         #expect(past, "Playback did not get past segment 1: \(String(describing: setup.consumer.pictures.last?.pts))")
-        #expect(
-            setup.consumer.playedWidth.map { $0 < 640 } ?? false, "\(String(describing: setup.consumer.playedWidth))")
+        // From the cut on, the rung below plays: its first second. Not the picture played last, nor all of segment 1:
+        // only segment 1 of the top rung is slow, and ABR steps back up to it at a keyframe past the cut (every 2 s),
+        // sooner on a busy pool.
+        let rest = setup.consumer.pictures.filter { $0.pts >= expected && $0.pts < expected + 1 }
+        #expect(!rest.isEmpty && rest.allSatisfy { $0.width < 640 }, "\(rest.map { "\($0.pts):\($0.width)" })")
         expectContinuous(setup.consumer)
     }
 

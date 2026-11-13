@@ -199,7 +199,12 @@ struct HTTPSessionHolderTests {
         }
         defer { input.close() }
         let total = HTTPSessionOpeningLimitTests.read(input, HTTPSessionOpeningLimitTests.size)
-        #expect(total == HTTPSessionOpeningLimitTests.size, "\(total) of \(HTTPSessionOpeningLimitTests.size) bytes")
+        // Failed once in a full run (0 bytes after 16.5 s, the session kept) and never since: the requests the server
+        // saw tell whether the answer came and the retry was asked.
+        #expect(
+            total == HTTPSessionOpeningLimitTests.size,
+            "\(total) of \(HTTPSessionOpeningLimitTests.size) bytes; requests: \(server.requests.map { "\($0.path) \($0.range ?? "whole")" })"
+        )
         #expect(transport.holder.session !== before, "the session that lost its connection is still the one asked")
     }
 
