@@ -402,6 +402,12 @@ flowchart TD
     (the sound was then read from its first segment to the target: 32 s of buffering at 373 s in).
     Not done: a ladder of such pictures (a switch to one still reads from its start until
     measured otherwise: `isSegmented` stays false).
+  - [x] Single MP4 files on the own DASH client (2026-11-14, step 3 of `.agents/dash-client/PLAN.md`): the client's
+    source reads each file's `sidx` when its playlist is asked for (chains, hierarchies past the index range, an index
+    in a file of its own, a late start), once for every caller, and tells its segments as byte ranges; the resolver no
+    longer reads indexes, and a ladder of such pictures is a ladder (numbered by time, a rung of other boundaries left
+    out). WebM files (`Cues`) are not the client's: refused, so FFmpeg's demuxer plays them as before, until the resolver
+    routes them as a file with its sound added. Not measured on a real stream yet (Shaka's tos-ttml).
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
     crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.

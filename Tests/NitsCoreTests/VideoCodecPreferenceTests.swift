@@ -165,21 +165,29 @@ extension VideoCodecPreferenceTests {
 
 extension VideoCodecPreferenceTests {
     @Test(
-        "Pictures that are single files are no ladder: FFmpeg reads a file from its start to seek in it or switch to it"
+        "MP4 files with an index are a ladder (the client reads their segments); WebM ones are none: read from their start"
     )
-    func singleFilesAreNoLadder() throws {
-        let manifest = try #require(
-            DASHManifest(
-                data: DASHManifestTests.mpd(
-                    period: """
-                        <AdaptationSet contentType="video">
-                        \(DASHManifestTests.video("hi", 1920, 1080, bandwidth: 4_000_000, inside: #"<BaseURL>hi.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#))
-                        \(DASHManifestTests.video("lo", 1280, 720, bandwidth: 2_000_000, inside: #"<BaseURL>lo.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#))
-                        </AdaptationSet>
-                        """), url: DASHManifestTests.url))
-        #expect(manifest.videos.map(\.isSegmented) == [false, false])
-        #expect(manifest.ladder.isEmpty && manifest.ladderText() == nil)
+    func singleFiles() throws {
+        func manifest(_ type: String) throws -> DASHManifest {
+            let base = #"<SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+            return try #require(
+                DASHManifest(
+                    data: DASHManifestTests.mpd(
+                        period: """
+                            <AdaptationSet contentType="video">
+                            \(DASHManifestTests.video("hi", 1920, 1080, bandwidth: 4_000_000, inside: "<BaseURL>hi.\(type)</BaseURL>" + base))
+                            \(DASHManifestTests.video("lo", 1280, 720, bandwidth: 2_000_000, inside: "<BaseURL>lo.\(type)</BaseURL>" + base))
+                            </AdaptationSet>
+                            """.replacingOccurrences(of: "video/mp4", with: "video/\(type)")),
+                    url: DASHManifestTests.url))
+        }
+        let mp4 = try manifest("mp4")
+        #expect(mp4.videos.map(\.isSegmented) == [true, true])
+        #expect(mp4.ladder.map(\.id) == ["hi", "lo"])
+        let webm = try manifest("webm")
+        #expect(webm.videos.map(\.isSegmented) == [false, false])
+        #expect(webm.ladder.isEmpty && webm.ladderText() == nil)
         // Each is still a picture to play.
-        #expect(manifest.text(videoID: "hi") != nil)
+        #expect(webm.text(videoID: "hi") != nil)
     }
 }

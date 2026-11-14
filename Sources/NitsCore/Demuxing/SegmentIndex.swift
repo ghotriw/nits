@@ -1,117 +1,211 @@
 import Foundation
 
-/// The segment index (`sidx`) of a representation that is one file (DASH's `SegmentBase` with an `indexRange`): where
-/// each segment of the file is, which a manifest of the file's segments (`SegmentList`, `mediaRange`) says in place
-/// of it. FFmpeg's DASH demuxer does not read `SegmentBase`: it reads such a file from its start, to seek in it as
-/// well. FFmpeg seeks a `SegmentList` by one length for all its segments, or by a `SegmentTimeline` that only the
-/// adaptation set's list (not the representation's) may hold: the lengths are said that way when they are not one.
+/// The segment index (`sidx`, ISO/IEC 14496-12 8.16.3) of a representation that is one file (DASH's `SegmentBase`):
+/// where each segment of the file is and when it plays. Read by the client's source (`DASHPlaylists`) to tell the file's
+/// segments as a playlist's byte ranges.
+///
+/// An index may be several boxes: a chain (each box's last reference is the next box, with the rest of the file) or a
+/// hierarchy (a box whose references are boxes, each followed by its media). Those inside the bytes read are read from
+/// them; one a reference points to outside them is asked for (`Reading.needs`), as few times as `requestLimit` allows.
+/// shaka-player reads one box only and refuses a hierarchy; dash.js asks for each box a reference points to.
 package struct SegmentIndex: Equatable, Sendable {
     package struct Segment: Equatable, Sendable {
         /// Bytes, from the start of the file.
         package var offset: Int64
         package var size: Int64
+        /// When it starts, in `timescale` units (from the index's earliest presentation time on).
+        package var time: Int64
+        package var duration: Int64
     }
 
-    /// Every segment is as long as the first, but for the last, which may be shorter: the demuxer seeks by one length
-    /// for all (`SegmentList`'s `duration`). Else it is told them (`SegmentTimeline`).
-    package var isRegular: Bool {
-        durations.dropLast().allSatisfy { $0 == durations[0] } && (durations.last ?? 0) <= durations[0]
-    }
-
-    /// The lengths as a `SegmentTimeline` has them: a run of equal ones is one `S` with its repeats.
-    package var runs: [(duration: UInt32, repeats: Int)] {
-        var result: [(duration: UInt32, repeats: Int)] = []
-        for duration in durations {
-            if let last = result.last, last.duration == duration {
-                result[result.count - 1].repeats += 1
-            } else {
-                result.append((duration, 0))
-            }
-        }
-        return result
-    }
-
-    package var timescale: UInt32
-    /// Every segment starts with a stream access point (a keyframe): a seek to one decodes from its start. Said by
-    /// the index, which a sound's may leave unsaid (every frame of it is one).
-    package var startsWithSAP = true
-    /// The length of each segment in `timescale` units.
-    package var durations: [UInt32]
+    package var timescale: Int64
+    /// Every segment starts with a stream access point (a keyframe): a switch or a seek to one decodes from its start.
+    /// Said by the index, which a sound's may leave unsaid (every frame of it is one).
+    package var startsWithSAP: Bool
     package var segments: [Segment]
 
-    /// The index in `data`, which came from byte `start` of the file (the `indexRange`). Nil for an index the demuxer
-    /// could not be given as a list: more than one `sidx`, an index of indexes, or a presentation that starts well
-    /// after zero (a tenth of the first segment): the demuxer seeks by the lengths of the segments from zero.
-    package static func parse(_ data: Data, at start: Int64) -> SegmentIndex? {
-        let bytes = [UInt8](data)
-        var position = 0
-        var index: SegmentIndex?
-        while position + 8 <= bytes.count {
-            let size = Int(readUInt32(bytes, position))
-            let type = String(decoding: bytes[(position + 4)..<(position + 8)], as: UTF8.self)
-            // A box of 64-bit size, or one that runs to the end of the file: not what an index range holds.
-            guard size >= 8, position + size <= bytes.count else { return nil }
-            if type == "sidx" {
-                // The offsets count from the first byte after the box.
-                guard index == nil,
-                    let parsed = parseBox(
-                        bytes, from: position + 8, to: position + size, boxEnd: start + Int64(position + size))
-                else { return nil }
-                index = parsed
+    /// The most an index's bytes may be, all its boxes together: a file of hours has one of a few dozen kilobytes.
+    package static let sizeLimit: Int64 = 1 << 20
+    /// The most requests a hierarchy may take past the index range.
+    package static let requestLimit = 16
+    /// How much is asked for a box a reference points to, whose size is not known before: the box, if it is not larger.
+    package static let boxProbeSize: Int64 = 16 << 10
+
+    /// What a read of an index has come to.
+    package enum Reading: Equatable, Sendable {
+        case index(SegmentIndex)
+        /// A box a reference points to is not among the bytes read: these bytes of the file hold it (at least its start).
+        case needs(offset: Int64, length: Int64)
+    }
+
+    package enum Failure: Error, Equatable, Sendable {
+        /// Not an index it reads: the reason.
+        case unreadable(String)
+    }
+
+    /// The index from `chunks` (the bytes read, each from its offset in the file; the first is the index range).
+    /// - Parameter external: The index is a file of its own (`RepresentationIndex@sourceURL`): its offsets count from
+    ///   the start of the media file (shaka-player reads it so), not from the end of the box.
+    package static func read(
+        _ chunks: [(offset: Int64, data: Data)], external: Bool = false
+    ) throws(Failure) -> Reading {
+        guard !chunks.isEmpty else { throw .unreadable("no index") }
+        var boxes: [Int64: Box] = [:]
+        var rootOffset: Int64?
+        for (chunkIndex, chunk) in chunks.enumerated() {
+            for (offset, box) in try Self.boxes(in: chunk.data, at: chunk.offset, isIndexRange: chunkIndex == 0) {
+                boxes[offset] = box
+                if chunkIndex == 0, rootOffset == nil { rootOffset = offset }
             }
-            position += size
         }
+        guard let rootOffset, let root = boxes[rootOffset] else { throw .unreadable("no sidx in the index range") }
+
+        var segments: [Segment] = []
+        var startsWithSAP = true
+        /// The boxes being read, the deepest last, each with where its next reference is: walked without recursion, as
+        /// a chain of a range's boxes is thousands deep.
+        var path: [(box: Box, next: Int, offset: Int64, time: Int64)] = []
+        var visited: Set<Int64> = []
+        func enter(_ box: Box, at offset: Int64, time: Int64) throws(Failure) {
+            guard box.timescale == root.timescale else { throw .unreadable("boxes of different timescales") }
+            // A box two references point to would tell its segments twice.
+            guard visited.insert(offset).inserted else { throw .unreadable("a sidx referenced twice") }
+            path.append((box, 0, (external ? 0 : box.end) + box.firstOffset, time))
+        }
+        try enter(root, at: rootOffset, time: root.earliest)
+        while let top = path.last {
+            guard top.next < top.box.references.count else {
+                path.removeLast()
+                continue
+            }
+            let reference = top.box.references[top.next]
+            path[path.count - 1].next += 1
+            path[path.count - 1].offset += reference.size
+            path[path.count - 1].time += reference.duration
+            if reference.isIndex {
+                guard !external else { throw .unreadable("an index of indexes in a file of its own") }
+                guard let child = boxes[top.offset] else {
+                    return .needs(offset: top.offset, length: min(reference.size, boxProbeSize))
+                }
+                try enter(child, at: top.offset, time: top.time)
+            } else {
+                segments.append(
+                    Segment(offset: top.offset, size: reference.size, time: top.time, duration: reference.duration))
+                startsWithSAP = startsWithSAP && reference.startsWithSAP
+            }
+        }
+        guard !segments.isEmpty else { throw .unreadable("an index of no segments") }
+        return .index(SegmentIndex(timescale: root.timescale, startsWithSAP: startsWithSAP, segments: segments))
+    }
+
+    /// The index in `data`, from byte `start` of the file, when it needs no more bytes (tests, and an index range that
+    /// holds every box).
+    package static func parse(_ data: Data, at start: Int64) -> SegmentIndex? {
+        guard case .index(let index) = try? read([(start, data)]) else { return nil }
         return index
     }
 
-    private static func parseBox(_ bytes: [UInt8], from begin: Int, to end: Int, boxEnd: Int64) -> SegmentIndex? {
+    /// The bytes a `needs` asks for are a box larger than asked: its size, read from its header, or nil when the bytes
+    /// held are the whole box (or no box).
+    package static func boxSize(in data: Data) -> Int64? {
+        let bytes = [UInt8](data.prefix(8))
+        guard bytes.count == 8 else { return nil }
+        let size = Int64(readUInt32(bytes, 0))
+        return size > Int64(data.count) ? size : nil
+    }
+
+    // MARK: - Boxes
+
+    private struct Reference {
+        var isIndex: Bool
+        var size: Int64
+        var duration: Int64
+        var startsWithSAP: Bool
+    }
+
+    private struct Box {
+        var timescale: Int64
+        var earliest: Int64
+        var firstOffset: Int64
+        /// The offset in the file of the first byte after it.
+        var end: Int64
+        var references: [Reference]
+    }
+
+    /// The `sidx` boxes of `data` (from `start` of the file), by their offset. Reading stops at a box that runs past the
+    /// bytes held (the media after a box asked for) or that is no box; in the index range a `sidx` cut short is an error.
+    private static func boxes(in data: Data, at start: Int64, isIndexRange: Bool) throws(Failure) -> [(Int64, Box)] {
+        let bytes = [UInt8](data)
+        var position = 0
+        var found: [(Int64, Box)] = []
+        while position + 8 <= bytes.count {
+            let size = Int(readUInt32(bytes, position))
+            let type = String(decoding: bytes[(position + 4)..<(position + 8)], as: UTF8.self)
+            // A box of 64-bit size (1), or one that runs to the end of the file (0): not what an index is.
+            guard size >= 8 else { break }
+            guard position + size <= bytes.count else {
+                if type == "sidx" && (isIndexRange || found.isEmpty) { throw .unreadable("a sidx cut short") }
+                break
+            }
+            if type == "sidx" {
+                let box = try parseBox(
+                    bytes, from: position + 8, to: position + size, end: start + Int64(position + size))
+                found.append((start + Int64(position), box))
+            }
+            position += size
+        }
+        return found
+    }
+
+    private static func parseBox(_ bytes: [UInt8], from begin: Int, to end: Int, end fileEnd: Int64) throws(Failure)
+        -> Box
+    {
         var position = begin
-        func take(_ count: Int) -> Int? {
-            guard position + count <= end else { return nil }
+        func take(_ count: Int) throws(Failure) -> Int {
+            guard position + count <= end else { throw .unreadable("a sidx cut short") }
             defer { position += count }
             return position
         }
-        guard let versionAt = take(4) else { return nil }
-        let version = bytes[versionAt]
-        guard version <= 1, take(4) != nil, let timescaleAt = take(4) else { return nil }
-        let timescale = readUInt32(bytes, timescaleAt)
+        let version = bytes[try take(4)]
+        guard version <= 1 else { throw .unreadable("a sidx of version \(version)") }
+        _ = try take(4)  // reference_ID
+        let timescale = Int64(readUInt32(bytes, try take(4)))
         let earliest: UInt64
         let firstOffset: UInt64
         if version == 0 {
-            guard let at = take(8) else { return nil }
+            let at = try take(8)
             earliest = UInt64(readUInt32(bytes, at))
             firstOffset = UInt64(readUInt32(bytes, at + 4))
         } else {
-            guard let at = take(16) else { return nil }
+            let at = try take(16)
             earliest = readUInt64(bytes, at)
             firstOffset = readUInt64(bytes, at + 8)
         }
-        guard timescale > 0, firstOffset < UInt64(Int32.max), let countAt = take(4) else { return nil }
-        let count = Int(bytes[countAt + 2]) << 8 | Int(bytes[countAt + 3])
-        guard count > 0, take(count * 12) != nil else { return nil }
-        var offset = boxEnd + Int64(firstOffset)
-        var segments: [Segment] = []
-        var startsWithSAP = true
-        var durations: [UInt32] = []
-        for n in 0..<count {
-            let at = position - count * 12 + n * 12
-            let reference = readUInt32(bytes, at)
-            startsWithSAP = startsWithSAP && readUInt32(bytes, at + 8) & 0x8000_0000 != 0
-            let isIndex = reference & 0x8000_0000 != 0
-            let size = Int64(reference & 0x7fff_ffff)
-            let duration = readUInt32(bytes, at + 4)
-            guard !isIndex, size > 0, duration > 0 else { return nil }
-            segments.append(Segment(offset: offset, size: size))
-            durations.append(duration)
-            offset += size
+        guard timescale > 0 else { throw .unreadable("a sidx of timescale 0") }
+        // Past these, sums of them could not be counted; no file is that large or that long.
+        guard earliest < UInt64(Int64.max / 4), firstOffset < UInt64(Int64(Int32.max)) else {
+            throw .unreadable("a sidx of times or offsets out of range")
         }
-        let regular = durations[0]
-
-        // The presentation may start a little late (the delay of B-frames: a tenth of a segment at most), as the
-        // demuxer seeks by the length of a segment from zero: a seek just past a boundary lands that late.
-        guard earliest <= UInt64(regular / 10) else { return nil }
-        return SegmentIndex(
-            timescale: timescale, startsWithSAP: startsWithSAP, durations: durations, segments: segments)
+        let countAt = try take(4)
+        let count = Int(bytes[countAt + 2]) << 8 | Int(bytes[countAt + 3])
+        guard count > 0 else { throw .unreadable("a sidx of no references") }
+        let referencesAt = try take(count * 12)
+        var references: [Reference] = []
+        references.reserveCapacity(count)
+        for n in 0..<count {
+            let at = referencesAt + n * 12
+            let reference = readUInt32(bytes, at)
+            let size = Int64(reference & 0x7fff_ffff)
+            let duration = Int64(readUInt32(bytes, at + 4))
+            guard size > 0, duration > 0 else { throw .unreadable("a sidx reference of no size or length") }
+            references.append(
+                Reference(
+                    isIndex: reference & 0x8000_0000 != 0, size: size, duration: duration,
+                    startsWithSAP: readUInt32(bytes, at + 8) & 0x8000_0000 != 0))
+        }
+        return Box(
+            timescale: timescale, earliest: Int64(earliest), firstOffset: Int64(firstOffset), end: fileEnd,
+            references: references)
     }
 
     private static func readUInt32(_ bytes: [UInt8], _ at: Int) -> UInt32 {

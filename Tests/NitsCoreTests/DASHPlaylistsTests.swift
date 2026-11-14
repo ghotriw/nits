@@ -48,7 +48,7 @@ struct DASHPlaylistsTests {
     }
 
     static func master(_ built: DASHPlaylists.Built) throws -> HLSMasterPlaylist {
-        guard case .master(let master) = built.master else { throw HLSPlaylistError.mixedTypes }
+        guard let master = built.master else { throw HLSPlaylistError.mixedTypes }
         return master
     }
 
@@ -167,7 +167,7 @@ struct DASHPlaylistsTests {
 
     // MARK: - Refusals
 
-    @Test("What is not played yet is refused with its reason: live, periods, one file, offsets that differ")
+    @Test("What is not played yet is refused with its reason: live, periods, one WebM file, offsets that differ")
     func refusals() throws {
         let video =
             #"<AdaptationSet contentType="video">\#(Self.template)\#(Self.video("v", 640, 360, bandwidth: 1))</AdaptationSet>"#
@@ -192,8 +192,10 @@ struct DASHPlaylistsTests {
         #expect(
             reason(
                 Self.mpd(
-                    #"<AdaptationSet contentType="video">\#(Self.video("v", 640, 360, bandwidth: 1, inside: #"<BaseURL>v.mp4</BaseURL><SegmentBase indexRange="800-999"/>"#))</AdaptationSet>"#
-                ))?.contains("SegmentBase") == true)
+                    #"<AdaptationSet contentType="video">\#(Self.video("v", 640, 360, bandwidth: 1, inside: #"<BaseURL>v.webm</BaseURL><SegmentBase indexRange="800-999"/>"#, attributes: #"mimeType="video/webm""#))</AdaptationSet>"#
+                        // A sound it plays does not make it a stream of sound alone.
+                        + #"<AdaptationSet contentType="audio"><SegmentTemplate media="a$Number$.m4s" duration="4"/><Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>"#
+                ))?.contains("WebM") == true)
         let offsets = Self.mpd(
             video + """
                 <AdaptationSet contentType="audio"><SegmentTemplate timescale="1000" presentationTimeOffset="500" \
@@ -232,9 +234,9 @@ struct DASHPlaylistsTests {
         #expect(master.variants.map(\.bandwidth) == [5_000_000, 800_000])
         #expect(master.variants.allSatisfy { $0.audioGroup == nil })
         // Both numbered as the best one's: the lower rung's own numbers (1, 2, 3) would join a switch at another time.
-        #expect(built.media.map { $0.segments.map(\.sequence) } == [[100, 101, 102], [100, 101, 102]])
-        #expect(built.media[1].segments[0].url.absoluteString == "https://cdn.example/show/dash/lo/1.m4s")
-        #expect(built.media[1].mediaSequence == 100 && built.media[1].hasEnded && built.media[1].type == .vod)
+        #expect(built.told.map { $0.segments.map(\.sequence) } == [[100, 101, 102], [100, 101, 102]])
+        #expect(built.told[1].segments[0].url.absoluteString == "https://cdn.example/show/dash/lo/1.m4s")
+        #expect(built.told[1].mediaSequence == 100 && built.told[1].hasEnded && built.told[1].type == .vod)
         #expect(master.variants[1].resolution == HLSResolution(width: 640, height: 360))
     }
 
@@ -248,7 +250,7 @@ struct DASHPlaylistsTests {
                 \(Self.video("hevc", 1920, 1080, bandwidth: 3_000_000, codecs: "hvc1.2.4.L120", attributes: "")) \
                 </AdaptationSet>
                 """))
-        #expect(built.media.map { $0.segments.map(\.sequence) } == [[5, 6, 7], [5, 6, 7]])
+        #expect(built.told.map { $0.segments.map(\.sequence) } == [[5, 6, 7], [5, 6, 7]])
         #expect(try Self.master(built).variants.map(\.codecs) == ["avc1.4d401f", "hvc1.2.4.L120"])
     }
 
@@ -279,8 +281,8 @@ struct DASHPlaylistsTests {
         #expect(master.renditions.map(\.isDefault) == [true, false])
         #expect(master.renditions.allSatisfy { $0.type == .audio && $0.groupID == "a" })
         #expect(master.variants.map(\.audioGroup) == ["a"])
-        #expect(built.media[1].segments[0].url.lastPathComponent == "1.m4s")
-        #expect(built.media[1].segments[0].url.deletingLastPathComponent().lastPathComponent == "en-high")
+        #expect(built.told[1].segments[0].url.lastPathComponent == "1.m4s")
+        #expect(built.told[1].segments[0].url.deletingLastPathComponent().lastPathComponent == "en-high")
     }
 
     @Test("Sound alone is the stream's media playlist")
@@ -289,11 +291,8 @@ struct DASHPlaylistsTests {
             Self.mpd(
                 #"<AdaptationSet contentType="audio"><SegmentTemplate media="$Number$.m4s" duration="4"/><Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>"#
             ))
-        guard case .media(let media) = built.master else {
-            Issue.record("a master")
-            return
-        }
-        #expect(media.segments.count == 3)
+        #expect(built.master == nil, "A master")
+        #expect(built.media.first??.segments.count == 3)
     }
 
     // MARK: - The source
@@ -428,7 +427,7 @@ struct DASHPlaylistsTests {
                 <SegmentTimeline><S t="0" d="4000" r="-1"/></SegmentTimeline></SegmentTemplate>\
                 \(Self.video("unknown", 640, 360, bandwidth: 800_000, codecs: "xyz1"))</AdaptationSet>
                 """))
-        #expect(built.media.map { $0.segments.map(\.sequence) } == [[5, 6, 7], [5, 6, 7]])
+        #expect(built.told.map { $0.segments.map(\.sequence) } == [[5, 6, 7], [5, 6, 7]])
     }
 
     @Test("A timeline that lists segments past the period's end ends with the period")
@@ -512,4 +511,9 @@ extension DASHPlaylistsTests {
         #expect(DASHPlaylists(media: "https://cdn.example/a/master.m3u8") == nil)
         #expect(DASHPlaylists(media: "data:text/plain;base64,AAAA") == nil)
     }
+}
+
+extension DASHPlaylists.Built {
+    /// The playlists the manifest tells (none here is one file, told by its index).
+    var told: [HLSMediaPlaylist] { media.compactMap { $0 } }
 }

@@ -175,8 +175,9 @@ struct DASHClientTests {
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let server = try TestHTTPServer(root: made.directory)
         defer { server.stop() }
-        // One file per representation (`SegmentBase`), not read by the client yet.
-        let manifest = SingleFileDASHTests.manifest(made)
+        // One file per representation (`SegmentBase`) whose index range holds no index: the client refuses the picture,
+        // which the others depend on. FFmpeg's demuxer reads the file from its start.
+        let manifest = SingleFileDASHTests.manifest(made, brokenIndex: true)
         server.setResponder(forPath: "dash.mpd") { Data(manifest.utf8) }
         let demuxer = try #require(MediaDemuxer(url: server.url("dash.mpd")))
         #expect(demuxer.input is FFmpegInput)

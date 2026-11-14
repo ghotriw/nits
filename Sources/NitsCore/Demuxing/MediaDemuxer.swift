@@ -665,14 +665,22 @@ public final class MediaDemuxer: @unchecked Sendable {
         // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play yet (the source's
         // refusal, with its reason) is left to FFmpeg's DASH demuxer; any other failure is the opening's.
         if liveHistory == nil, Self.dashInput != .ffmpeg, let playlists = DASHPlaylists(media: url) {
-            if let input = HLSInput(
+            let input = HLSInput(
                 master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
                 allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
-            {
+            // An opening that went on without what the stream is not played without (the default sound, whose index the
+            // source refused) is refused too: not played silent.
+            if let input, playlists.refusal == nil {
                 self.init(
                     input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
                     audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
                 return
+            }
+            if let input, let refusal = playlists.refusal {
+                input.close()
+                interrupt.recordError(
+                    code: HLSPlaylistSourceError.unsupported(refusal).code,
+                    message: "DASH: not played by the client: \(refusal)")
             }
             // Asked of the source itself, not read off the interrupt's last error, which another failure (or an earlier
             // attempt on the same context) may have written.

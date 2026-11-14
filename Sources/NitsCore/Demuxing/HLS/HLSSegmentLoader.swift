@@ -100,6 +100,11 @@ final class HLSSegmentLoader: Sendable {
         return data
     }
 
+    /// The bytes of `range` of `url`: a part of a file that is not a segment (a DASH file's index).
+    func bytes(of url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
+        try download(url, range: range)
+    }
+
     /// A playlist's text and where it was served from, after redirects (its relative URIs are read against that).
     func playlist(_ url: URL) throws(HLSSegmentLoadError) -> (data: Data, servedFrom: URL) {
         if url.isFileURL {

@@ -79,8 +79,8 @@ inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` 
 thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). The opening of an HLS stream waits
 the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in steps of 50 ms, then the probes' threads) and for the link's rate (`HTTPSessionTransport.waitForOpeningRate`, steps of 20 ms; `skipSlowStart` for a round trip's metrics, 100 ms at most), as
 it already blocks its thread on the playlists and the probes side by side; its requests give way to an abort too. A DASH
-manifest's playlists (`DASHPlaylists`) are read once for every caller: those that ask while it is read wait for it
-(`DASHPlaylists.Store`, a `DispatchSemaphore` in steps of 50 ms, each giving way to its own loader's abort), on the
+manifest's playlists (`DASHPlaylists`) and the index of each of its single files are read once for every caller: those that
+ask while one is read wait for it (`DASHPlaylists.Store`, a `DispatchSemaphore` in steps of 50 ms, each giving way to its own loader's abort), on the
 opening's and the lanes' threads, which block on a playlist's load anyway. Not a pattern for other code.
 
 ## Layer boundaries

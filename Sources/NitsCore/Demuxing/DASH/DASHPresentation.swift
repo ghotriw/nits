@@ -5,8 +5,9 @@ import Foundation
 /// which lets the demuxer open the manifest otherwise while FFmpeg's DASH demuxer is still there.
 ///
 /// Read (ISO/IEC 23009-1): one `static` period; `SegmentTemplate` (`$Number$` / `$Time$`, with a `SegmentTimeline` or
-/// a `@duration`) and `SegmentList` (`SegmentURL`, `mediaRange`), inherited from the period and the adaptation set and
-/// overridden below; `BaseURL` at every level; `Initialization` and the template's `initialization`. Protected
+/// a `@duration`), `SegmentList` (`SegmentURL`, `mediaRange`) and `SegmentBase` (one MP4 file whose `sidx` tells its
+/// segments: `IndexLocation`), inherited from the period and the adaptation set and overridden below; `BaseURL` at every
+/// level; `Initialization` and the template's `initialization`. Protected
 /// (`ContentProtection`), trick-play, text and image sets are left out.
 struct DASHPresentation: Sendable {
     struct Segment: Sendable, Equatable {
@@ -45,11 +46,29 @@ struct DASHPresentation: Sendable {
         var initSection: HLSInitSection?
         /// The `presentationTimeOffset` in seconds: what its media's timestamps are ahead of the period's time.
         var presentationTimeOffset: Double
+        /// Empty for one file (`index`) until its index is read (`segments(from:of:)`).
         var segments: [Segment]
+        /// Where the index of a representation that is one file is (`SegmentBase`); nil for one of segments.
+        var index: IndexLocation?
+    }
+
+    /// The index of a representation that is one MP4 file (`SegmentBase`): its `indexRange` (or `RepresentationIndex`),
+    /// read by the source when the representation's playlist is asked for (dash.js and shaka-player read it then, not
+    /// with the manifest).
+    struct IndexLocation: Sendable, Equatable {
+        /// The file.
+        var media: URL
+        /// Where the index is: the file, or a file of its own (`RepresentationIndex@sourceURL`).
+        var url: URL
+        var range: HLSByteRange
+        /// The index is a file of its own: its offsets count from the start of the media file.
+        var isExternal: Bool { url != media }
     }
 
     /// The pictures and sounds, in the manifest's order.
     var representations: [Representation]
+    /// The period's length, when told: the segments an index lists end with it.
+    var periodDuration: Double?
 }
 
 enum DASHPresentationError: Error, Equatable {
@@ -87,6 +106,8 @@ extension DASHPresentation {
         var representations: [Representation] = []
         /// The representations left out, with the reason.
         var skipped: [String] = []
+        /// Those of them that are pictures: a manifest of pictures, none played, is not played as its sound alone.
+        var skippedPictures: [String] = []
         var hasProtected = false
         for (setIndex, node) in period.children.enumerated() {
             guard case .element(let set) = node, set.localName == "AdaptationSet" else { continue }
@@ -110,18 +131,21 @@ extension DASHPresentation {
                 let levels = [period, set, element]
                 // One the client does not play is left out, not the manifest: it may be one that would never be
                 // played (a sound with no decoder, a lesser one of its language).
-                let initSection: HLSInitSection?
-                let offset: Double
-                let segments: [Segment]
+                let told: Told
                 do throws(DASHPresentationError) {
-                    (initSection, offset, segments) = try segmentsOf(
-                        levels: levels, base: base, id: id, bandwidth: bandwidth, periodDuration: duration)
+                    told = try segmentsOf(
+                        levels: levels, base: base, id: id, bandwidth: bandwidth, mimeType: value("mimeType"),
+                        periodDuration: duration)
                 } catch {
-                    if case .unsupported(let reason) = error { skipped.append("\(id): \(reason)") }
+                    if case .unsupported(let reason) = error {
+                        skipped.append("\(id): \(reason)")
+                        if kind == "video" { skippedPictures.append("\(id): \(reason)") }
+                    }
                     continue
                 }
-                guard !segments.isEmpty else {
+                guard !told.segments.isEmpty || told.index != nil else {
                     skipped.append("\(id): no segments")
+                    if kind == "video" { skippedPictures.append("\(id): no segments") }
                     continue
                 }
                 representations.append(
@@ -133,8 +157,12 @@ extension DASHPresentation {
                         videoRange: DASHElements.hdrTransfer(of: element) ?? DASHElements.hdrTransfer(of: set),
                         language: value("lang"),
                         roleRank: DASHElements.roleRank(of: element, in: set), set: setIndex,
-                        initSection: initSection, presentationTimeOffset: offset, segments: segments))
+                        initSection: told.initSection, presentationTimeOffset: told.presentationTimeOffset,
+                        segments: told.segments, index: told.index))
             }
+        }
+        if let reason = skippedPictures.first, !representations.contains(where: { $0.kind == .video }) {
+            throw .unsupported(reason)
         }
         if representations.isEmpty {
             if hasProtected { throw .unsupported("its streams are protected (DRM)") }
@@ -142,7 +170,38 @@ extension DASHPresentation {
         } else if !skipped.isEmpty {
             AppLog.warning(.demuxer, "DASH: left out \(skipped.joined(separator: "; "))")
         }
-        return DASHPresentation(representations: representations)
+        return DASHPresentation(representations: representations, periodDuration: duration)
+    }
+
+    /// The segments of a representation that is one file (`Representation.index`), from its index: each a byte range of
+    /// the file, numbered from 1, on the period's time (the index's times less the `presentationTimeOffset`). Those that
+    /// start at the period's end or past it are left out and the last ends with it, as for a timeline (shaka-player fits
+    /// an index to its period too).
+    static func segments(
+        from index: SegmentIndex, of representation: Representation, periodDuration: Double?
+    ) -> [Segment] {
+        guard let location = representation.index else { return [] }
+        let timescale = Double(index.timescale)
+        var segments: [Segment] = []
+        segments.reserveCapacity(index.segments.count)
+        for (position, entry) in index.segments.enumerated() {
+            var start = Double(entry.time) / timescale - representation.presentationTimeOffset
+            if let periodDuration, start >= periodDuration - 0.001 { break }
+            var duration = Double(entry.duration) / timescale
+            // Before the period (a `presentationTimeOffset` past the index's start): a segment that ends by its start is
+            // left out, one across it is told from it, so that the lengths add up to the period's time.
+            if start < 0 {
+                guard start + duration > 0.001 else { continue }
+                duration += start
+                start = 0
+            }
+            if let periodDuration { duration = min(duration, periodDuration - start) }
+            segments.append(
+                Segment(
+                    url: location.media, byteRange: HLSByteRange(offset: entry.offset, length: entry.size),
+                    start: start, duration: duration, number: position + 1))
+        }
+        return segments
     }
 
     // MARK: - Addresses
@@ -226,6 +285,8 @@ extension DASHPresentation {
         var attributes: [String: String] = [:]
         var timeline: XMLTreeElement?
         var initialization: XMLTreeElement?
+        /// `SegmentBase`'s `RepresentationIndex`.
+        var representationIndex: XMLTreeElement?
         var segmentURLs: [XMLTreeElement] = []
         /// The levels (0 the period) that told the template's `initialization` and the `Initialization` element: the
         /// lower one is the representation's.
@@ -244,6 +305,7 @@ extension DASHPresentation {
                     self.initialization = initialization
                     initializationElementLevel = depth
                 }
+                if let index = element.elements(named: "RepresentationIndex").first { representationIndex = index }
                 let urls = element.elements(named: "SegmentURL")
                 if !urls.isEmpty { segmentURLs = urls }
             }
@@ -274,22 +336,75 @@ extension DASHPresentation {
         return nil
     }
 
+    /// What a representation's segment information tells: its segments, or for one file where its index is.
+    private struct Told {
+        var initSection: HLSInitSection?
+        /// Seconds.
+        var presentationTimeOffset: Double
+        var segments: [Segment] = []
+        var index: IndexLocation?
+    }
+
     private static func segmentsOf(
-        levels: [XMLTreeElement], base: URL, id: String, bandwidth: Int, periodDuration: Double?
-    ) throws(DASHPresentationError) -> (HLSInitSection?, Double, [Segment]) {
+        levels: [XMLTreeElement], base: URL, id: String, bandwidth: Int, mimeType: String?, periodDuration: Double?
+    ) throws(DASHPresentationError) -> Told {
         switch kindOfInformation(levels: levels) {
         case "SegmentTemplate":
             guard let information = Information("SegmentTemplate", levels: levels) else { break }
-            return try templateSegments(
+            let (initSection, offset, segments) = try templateSegments(
                 information, base: base, id: id, bandwidth: bandwidth, periodDuration: periodDuration)
+            return Told(initSection: initSection, presentationTimeOffset: offset, segments: segments)
         case "SegmentList":
             guard let information = Information("SegmentList", levels: levels) else { break }
-            return try listSegments(information, base: base, periodDuration: periodDuration)
+            let (initSection, offset, segments) = try listSegments(
+                information, base: base, periodDuration: periodDuration)
+            return Told(initSection: initSection, presentationTimeOffset: offset, segments: segments)
         case "SegmentBase":
-            throw .unsupported("a representation of one file (SegmentBase)")
+            guard let information = Information("SegmentBase", levels: levels) else { break }
+            return try oneFile(information, base: base, mimeType: mimeType)
         default: break
         }
         throw .unsupported("no segments")
+    }
+
+    /// A representation that is one file (`SegmentBase`): where its index is, its `indexRange` or a
+    /// `RepresentationIndex` (its `range`, and a `sourceURL` for an index in a file of its own, as shaka-player reads
+    /// it). Its initialization is its `Initialization`, else the bytes before the index (the `ftyp` and `moov` an MP4
+    /// file of this profile starts with; dash.js looks for the `moov` in them). An MP4 file only: a WebM one's index is
+    /// its `Cues`, which the client does not read.
+    private static func oneFile(
+        _ information: Information, base: URL, mimeType: String?
+    ) throws(DASHPresentationError) -> Told {
+        if let mimeType, mimeType.lowercased().hasSuffix("/webm") {
+            throw .unsupported("a WebM file (its index, Cues, is not read)")
+        }
+        var indexURL = base
+        var rangeText = information.attributes["indexRange"]
+        if let element = information.representationIndex {
+            rangeText = element.attribute("range") ?? rangeText
+            if let source = element.attribute("sourceURL") {
+                guard let url = URL(string: source, relativeTo: base)?.absoluteURL else {
+                    throw .unsupported("an index address it cannot read (\(source))")
+                }
+                indexURL = url
+            }
+        }
+        guard let rangeText else { throw .unsupported("one file without an index range") }
+        guard let range = DASHElements.byteRange(of: rangeText) else {
+            throw .unsupported("an index range it cannot read (\(rangeText))")
+        }
+        guard Int64(range.length) <= SegmentIndex.sizeLimit else {
+            throw .unsupported("an index of \(range.length) bytes")
+        }
+        var initSection = try initSection(information.initialization, base: base)
+        if initSection == nil {
+            guard indexURL == base, range.offset > 0 else { throw .unsupported("one file without its initialization") }
+            initSection = HLSInitSection(url: base, byteRange: HLSByteRange(offset: 0, length: range.offset))
+        }
+        return Told(
+            initSection: initSection,
+            presentationTimeOffset: Double(information.presentationTimeOffset) / Double(information.timescale),
+            index: IndexLocation(media: base, url: indexURL, range: range))
     }
 
     // MARK: - Times
