@@ -552,8 +552,9 @@ where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
      (`noSegment`) is passing, so the download plays out, a stall as before; on live, until the next segment is listed.
    - Flake: `AdaptiveBitrateTests.switchOverlapIsNoCollapse` fails 2 of 3 runs alone on 4407ff7 (before this work):
      cause not looked for yet.
-2. A live-stream test of `isReadAheadReal` (the probe up must not take a live edge's raised read-ahead for a full one).
-   *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
+2. *Done 2026-11-14:* a live-stream test of `isReadAheadReal` (`AdaptiveBitrateTests.liveEdgeDoesNotProbe`): 480 at
+   the edge of a live stream on 4 Mbit/s (estimate 3.66–3.69, 640 within the probe's 0.85 and over `upSafety`'s 0.7)
+   stays on 480; without the check it probes up to 640. *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
    rung twice) was seen through FFmpeg's HLS demuxer, before the client; never reproduced, and the client's nine
    switches of 2026-11-13 peaked at 25–54 ms/s. Look again only if a step up is left right after it on a steady link.
 3. Then the client as a target of its own (`NitsHLS`, see "Decisions").

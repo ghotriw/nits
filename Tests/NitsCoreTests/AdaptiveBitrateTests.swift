@@ -447,6 +447,51 @@ struct AdaptiveBitrateTests {
         #expect(demuxer.readingDescription { $0.adaptiveBitrate.liveEdgeReachedAt } == nil)
     }
 
+    /// At the edge the read-ahead is raised to `highBuffer` (`adaptBitrateIfDue`) while a few seconds are buffered: the
+    /// step up on the estimate may take it, a probe past the estimate's reach may not (`isReadAheadReal`).
+    @Test("At a live stream's edge, the raised read-ahead is no full one to probe a step up from")
+    func liveEdgeDoesNotProbe() async throws {
+        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        defer { server.stop() }
+        Self.serveLive(server)
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.adaptiveBitrateConfig = Self.config()
+        let mid = try #require(demuxer.variants.first { $0.width == 480 })
+        let top = try #require(demuxer.variants.first { $0.width == 640 })
+        demuxer.selectVariant(id: mid.id)
+        demuxer.setAdaptiveBitrate(true)
+
+        // 4 Mbit/s, measured ~8 % lower (3.66–3.69): 640's 2838k is over 0.7 of that (`upSafety`) and within 0.85
+        // (`probeSafety`) less the latency share. At 3.7 Mbit/s the estimate (3385k) stood at the band's lower edge. 480
+        // reads up to the edge and waits there; a probe on the raised read-ahead would step up to 640.
+        server.setLinkRate(4_000_000 / 8)
+        demuxer.startReadAhead(limits: .init(seconds: 9))
+        let consumer = RealtimeConsumer(demuxer)
+        defer { consumer.stop() }
+        try #require(await Self.waitUntil(timeout: .seconds(10)) { consumer.playedWidth == 480 })
+        try await Task.sleep(for: .seconds(12))
+
+        // The case the test is for: the edge reached recently, an estimate of the link in the probe's band.
+        let (edge, now, estimate, share) = demuxer.readingDescription {
+            (
+                $0.adaptiveBitrate.liveEdgeReachedAt, $0.adaptiveTime, $0.adaptiveBitrate.logic.estimate,
+                $0.adaptiveBitrate.logic.latencyShare ?? 0
+            )
+        }
+        let reached = try #require(edge, "Never waited at the live edge")
+        #expect(now - reached <= MediaDemuxer.liveEdgeMemory)
+        let rate = try #require(estimate)
+        let bandwidth = Double(top.bandwidth)
+        #expect(
+            bandwidth > rate * (0.7 - share) && bandwidth <= rate * (0.85 - share),
+            "Estimate \(Int(rate / 1000)) kbit/s, latency \(Int(share * 1000)) ms/s: 640 is out of the probe's band")
+
+        let first = try #require(consumer.pictures.firstIndex { $0.width == 480 })
+        #expect(!consumer.pictures[first...].contains { $0.width == 640 }, "Probed up to 640 at the live edge")
+        #expect(demuxer.selectedVariantId == mid.id)
+    }
+
     @Test("Only a long read of a live stream without data is a wait at its edge")
     func liveEdgeWaits() {
         #expect(MediaDemuxer.isLiveEdgeWait(bytes: 600, seconds: 1.9))
