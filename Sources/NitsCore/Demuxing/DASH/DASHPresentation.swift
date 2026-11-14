@@ -18,6 +18,11 @@ struct DASHPresentation: Sendable {
         var duration: Double
         /// Its `$Number$`: `startNumber` and its place in the representation.
         var number: Int
+        /// The period it belongs to (a manifest of several: each is a discontinuity of the timeline).
+        var period = 0
+        /// Its period's initialization, in a representation of several periods (their inits differ); else the
+        /// representation's.
+        var initSection: HLSInitSection?
     }
 
     struct Representation: Sendable, Equatable {
@@ -131,8 +136,9 @@ extension DASHPresentation {
         let type = root.attribute("type") ?? "static"
         guard type == "static" || type == "dynamic" else { throw .unsupported("a \(type) manifest") }
         let periods = root.elements(named: "Period")
-        guard periods.count == 1, let period = periods.first else {
-            throw .unsupported(periods.isEmpty ? "no period" : "\(periods.count) periods")
+        guard let period = periods.first else { throw .unsupported("no period") }
+        guard periods.count == 1 || type == "static" else {
+            throw .unsupported("\(periods.count) periods in a live manifest")
         }
         let start = period.attribute("start").flatMap(DASHElements.duration(of:)) ?? 0
         var live: Live?
@@ -156,18 +162,95 @@ extension DASHPresentation {
                     .absoluteURL,
                 edge: now.timeIntervalSince(availabilityStart) - start, depth: max(depth, 0))
         }
-        let duration =
-            period.attribute("duration").flatMap(DASHElements.duration(of:))
-            ?? root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:)).map { $0 - start }
         let mpdBase = baseURL(of: root, relativeTo: url)
-        let periodBase = baseURL(of: period, relativeTo: mpdBase)
+        let presentationDuration = root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:))
+        var times = try periodTimes(of: periods, presentationDuration: presentationDuration)
+        var kept = periods
+        if periods.count > 1 {
+            // A period of no length, or with no set of its own (an ad slot that came out empty), is not played.
+            let keep = periods.indices.filter { (times[$0].duration ?? 1) > 0 && hasSets(periods[$0]) }
+            kept = keep.map { periods[$0] }
+            times = keep.map { times[$0] }
+            guard !kept.isEmpty else { throw .unsupported("no period with streams") }
+        }
+        let reads = kept.enumerated().map { number, period in
+            read(
+                period: period, base: baseURL(of: period, relativeTo: mpdBase), duration: times[number].duration,
+                live: live, isOfSeveral: kept.count > 1)
+        }
+        let result: PeriodRead = kept.count == 1 ? reads[0] : try merge(reads, starts: times.map(\.start))
+        if let reason = result.skippedPictures.first, !result.representations.contains(where: { $0.kind == .video }) {
+            throw .unsupported(reason)
+        }
+        if result.representations.isEmpty {
+            if result.hasProtected { throw .unsupported("its streams are protected (DRM)") }
+            if let reason = result.skipped.first { throw .unsupported(reason) }
+        } else if !result.skipped.isEmpty {
+            AppLog.warning(.demuxer, "DASH: left out \(result.skipped.joined(separator: "; "))")
+        }
+        return DASHPresentation(
+            representations: result.representations, periodDuration: kept.count == 1 ? times[0].duration : nil,
+            live: live)
+    }
 
+    /// What one period gave: its representations played, and those left out with the reason.
+    private struct PeriodRead {
         var representations: [Representation] = []
         /// The representations left out, with the reason.
         var skipped: [String] = []
         /// Those of them that are pictures: a manifest of pictures, none played, is not played as its sound alone.
         var skippedPictures: [String] = []
         var hasProtected = false
+    }
+
+    private static func hasSets(_ period: XMLTreeElement) -> Bool {
+        period.children.contains {
+            if case .element(let element) = $0 { return element.localName == "AdaptationSet" }
+            return false
+        }
+    }
+
+    /// Where each period starts on the presentation's time and how long it is (nil for the last of a manifest that does
+    /// not tell: its segments end it). A start not told follows the period before. A period lasts up to the next one's
+    /// start when that is told (as shaka-player has it: no gap and no overlap between periods, whatever `@duration`
+    /// says), else its `@duration`; the last, its `@duration`, else to the manifest's end.
+    private static func periodTimes(
+        of periods: [XMLTreeElement], presentationDuration: Double?
+    ) throws(DASHPresentationError) -> [(start: Double, duration: Double?)] {
+        var times: [(start: Double, duration: Double?)] = []
+        var next: Double = 0
+        for (number, period) in periods.enumerated() {
+            let start = period.attribute("start").flatMap(DASHElements.duration(of:)) ?? next
+            var duration = period.attribute("duration").flatMap(DASHElements.duration(of:))
+            if number + 1 < periods.count {
+                if let following = periods[number + 1].attribute("start").flatMap(DASHElements.duration(of:)) {
+                    // A period that is followed by one that starts before it is a manifest out of order, not an empty slot.
+                    guard following >= start - 0.001 || !hasSets(period) else {
+                        throw .unsupported("periods out of order")
+                    }
+                    duration = following - start
+                } else if duration == nil {
+                    // An empty period (no set: an ad slot that came out of nothing) takes no time; any other needs its
+                    // length.
+                    guard !hasSets(period) else { throw .unsupported("a period whose length is not told") }
+                    duration = 0
+                }
+            } else if duration == nil {
+                duration = presentationDuration.map { $0 - start }
+            }
+            times.append((start, duration))
+            next = start + (duration ?? 0)
+        }
+        return times
+    }
+
+    /// The representations of one period. In a manifest of several, one that is a file (`SegmentBase`) is left out: its
+    /// index is read apart from the manifest and numbered on the period's own.
+    private static func read(
+        period: XMLTreeElement, base periodBase: URL, duration: Double?, live: Live?, isOfSeveral: Bool
+    ) -> PeriodRead {
+        var read = PeriodRead()
+        var representations: [Representation] = []
         for (setIndex, node) in period.children.enumerated() {
             guard case .element(let set) = node, set.localName == "AdaptationSet" else { continue }
             guard !DASHElements.isTrickMode(set) else { continue }
@@ -179,7 +262,7 @@ extension DASHPresentation {
                 guard set.elements(named: "ContentProtection").isEmpty,
                     element.elements(named: "ContentProtection").isEmpty
                 else {
-                    hasProtected = true
+                    read.hasProtected = true
                     continue
                 }
                 let value = { (name: String) in element.attribute(name) ?? set.attribute(name) }
@@ -190,23 +273,26 @@ extension DASHPresentation {
                 let levels = [period, set, element]
                 // One the client does not play is left out, not the manifest: it may be one that would never be
                 // played (a sound with no decoder, a lesser one of its language).
-                let told: Told
+                var told: Told
                 do throws(DASHPresentationError) {
                     told = try segmentsOf(
                         levels: levels, base: base, id: id, bandwidth: bandwidth, mimeType: value("mimeType"),
                         periodDuration: duration, live: live)
+                    if isOfSeveral && told.index != nil {
+                        throw .unsupported("one file (SegmentBase) in a manifest of several periods")
+                    }
                 } catch {
                     if case .unsupported(let reason) = error {
-                        skipped.append("\(id): \(reason)")
-                        if kind == "video" { skippedPictures.append("\(id): \(reason)") }
+                        read.skipped.append("\(id): \(reason)")
+                        if kind == "video" { read.skippedPictures.append("\(id): \(reason)") }
                     }
                     continue
                 }
                 // A live one may have none yet (the stream has not made its first segment, or the clock the manifest is read
                 // at is not the server's yet): it lists none until it has.
                 guard !told.segments.isEmpty || told.index != nil || live != nil else {
-                    skipped.append("\(id): no segments")
-                    if kind == "video" { skippedPictures.append("\(id): no segments") }
+                    read.skipped.append("\(id): no segments")
+                    if kind == "video" { read.skippedPictures.append("\(id): no segments") }
                     continue
                 }
                 representations.append(
@@ -222,16 +308,107 @@ extension DASHPresentation {
                         segments: told.segments, index: told.index, numbersByTime: told.numbersByTime))
             }
         }
-        if let reason = skippedPictures.first, !representations.contains(where: { $0.kind == .video }) {
-            throw .unsupported(reason)
+        read.representations = representations
+        return read
+    }
+
+    /// The codec's family of a representation: a picture's by `CodecFamily`, a sound's the first entry's name. Nil when
+    /// it tells none.
+    private static func codecFamily(of representation: Representation) -> String? {
+        guard let codecs = representation.codecs else { return nil }
+        if representation.kind == .video { return CodecFamily.video(in: codecs) }
+        return codecs.split(separator: ",").first.map {
+            String($0.split(separator: ".").first ?? $0).trimmingCharacters(in: .whitespaces).lowercased()
         }
-        if representations.isEmpty {
-            if hasProtected { throw .unsupported("its streams are protected (DRM)") }
-            if let reason = skipped.first { throw .unsupported(reason) }
-        } else if !skipped.isEmpty {
-            AppLog.warning(.demuxer, "DASH: left out \(skipped.joined(separator: "; "))")
+    }
+
+    /// How near two languages are: 0 the same, 1 the same language (`uk` and `uk-UA`), 2 one tells none, 3 apart.
+    private static func languageDistance(_ a: String?, _ b: String?) -> Int {
+        guard let a = a?.lowercased(), let b = b?.lowercased() else { return a == b ? 0 : 2 }
+        if a == b { return 0 }
+        return a.split(separator: "-").first == b.split(separator: "-").first ? 1 : 3
+    }
+
+    /// The representation of `others` that continues `first` in another period. Of its kind and codec family, as the
+    /// client describes a stream by its first run (a decoder made for one codec is not given another's): the one of the
+    /// same id (and size, for a picture) if there is; else, as shaka-player does, the nearest: for a sound its language,
+    /// then bitrate; for a picture its height, then bitrate. One representation may continue several (an ad's ladder is
+    /// shorter than the content's).
+    private static func continuation(of first: Representation, in others: [Representation]) -> Representation? {
+        let family = codecFamily(of: first)
+        let candidates = others.filter { other in
+            guard other.kind == first.kind else { return false }
+            let otherFamily = codecFamily(of: other)
+            return family == nil || otherFamily == nil || family == otherFamily
         }
-        return DASHPresentation(representations: representations, periodDuration: duration, live: live)
+        let sameSize = { (other: Representation) in
+            first.kind == .audio || first.width == nil || other.width == nil
+                || (first.width == other.width && first.height == other.height)
+        }
+        if let same = candidates.first(where: { $0.id == first.id && sameSize($0) }) { return same }
+        func distance(_ other: Representation) -> [Int] {
+            let rate = abs(other.bandwidth - first.bandwidth)
+            if first.kind == .audio { return [languageDistance(first.language, other.language), rate] }
+            return [abs((other.height ?? 0) - (first.height ?? 0)), rate]
+        }
+        return candidates.min { distance($0).lexicographicallyPrecedes(distance($1)) }
+    }
+
+    /// The representations that every period has, each as one whose segments run on through the periods: placed on the
+    /// presentation's time (`starts`), numbered from 1 across them, each marked with its period (a discontinuity: the
+    /// media's timestamps restart there) and its period's initialization. One that a period lacks is left out. The
+    /// pictures and sounds of a period must tell one `presentationTimeOffset`, as a manifest's of one period.
+    private static func merge(_ reads: [PeriodRead], starts: [Double]) throws(DASHPresentationError) -> PeriodRead {
+        var merged = PeriodRead()
+        for (number, read) in reads.enumerated() {
+            merged.skipped += read.skipped.map { "period \(number + 1), \($0)" }
+            merged.skippedPictures += read.skippedPictures.map { "period \(number + 1), \($0)" }
+            merged.hasProtected = merged.hasProtected || read.hasProtected
+        }
+        var members: [[Representation]] = []
+        for first in reads[0].representations {
+            var found = [first]
+            for other in reads.dropFirst() {
+                guard let member = continuation(of: first, in: other.representations) else { break }
+                found.append(member)
+            }
+            guard found.count == reads.count else {
+                let reason = "\(first.id): not in every period"
+                merged.skipped.append(reason)
+                if first.kind == .video { merged.skippedPictures.append(reason) }
+                continue
+            }
+            members.append(found)
+        }
+        for number in reads.indices {
+            let offsets = members.map { $0[number].presentationTimeOffset }
+            if let first = offsets.first, let other = offsets.first(where: { abs($0 - first) > 0.001 }) {
+                throw .unsupported(
+                    "presentation time offsets that differ in period \(number + 1) (\(first) s, \(other) s)")
+            }
+        }
+        // A film that had sound in its first period is not played silent because later periods' sound found no match.
+        if reads[0].representations.contains(where: { $0.kind == .audio })
+            && !members.contains(where: { $0[0].kind == .audio })
+        {
+            throw .unsupported("sound that does not continue through every period")
+        }
+        for found in members {
+            var representation = found[0]
+            representation.initSection = nil
+            representation.segments = []
+            for (number, member) in found.enumerated() {
+                for var segment in member.segments {
+                    segment.number = representation.segments.count + 1
+                    segment.start += starts[number]
+                    segment.period = number
+                    segment.initSection = member.initSection
+                    representation.segments.append(segment)
+                }
+            }
+            merged.representations.append(representation)
+        }
+        return merged
     }
 
     /// The segments of a representation that is one file (`Representation.index`), from its index: each a byte range of

@@ -165,6 +165,96 @@ struct DASHPlaylistsTests {
         #expect(DASHPresentation.expand("$RepresentationID%05d$", id: "r", bandwidth: 1) == nil)
     }
 
+    // MARK: - Periods
+
+    /// A manifest of periods, each (start, duration, directory, picture's id): a picture of 4 s segments and a sound in each.
+    static func periods(_ periods: [(start: String?, duration: String, directory: String, videoID: String)]) -> Data {
+        let body = periods.map { period in
+            let start = period.start.map { " start=\"\($0)\"" } ?? ""
+            return """
+                <Period duration="\(period.duration)"\(start)>\
+                <AdaptationSet contentType="video"><SegmentTemplate timescale="1000" \
+                initialization="\(period.directory)/$RepresentationID$/init.mp4" \
+                media="\(period.directory)/$RepresentationID$/$Number$.m4s" startNumber="1">\
+                <SegmentTimeline><S t="0" d="4000" r="-1"/></SegmentTimeline></SegmentTemplate>\
+                \(video(period.videoID, 1280, 720, bandwidth: 2_000_000))</AdaptationSet>\
+                <AdaptationSet contentType="audio" lang="uk"><SegmentTemplate timescale="1000" \
+                initialization="\(period.directory)/a/init.mp4" media="\(period.directory)/a/$Number$.m4s" \
+                duration="4000"/><Representation id="a" codecs="mp4a.40.2" bandwidth="128000"/></AdaptationSet></Period>
+                """
+        }.joined()
+        return Data(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT20S">\(body)</MPD>
+            """.utf8)
+    }
+
+    @Test("Periods run on as one timeline: numbered across them, placed by their starts, each a discontinuity")
+    func severalPeriods() throws {
+        let built = try Self.playlists(
+            Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT6S", "p1", "v"), ("PT20S", "PT4S", "p2", "v")]))
+        let picture = try #require(built.entries.first { $0.representation.kind == .video })
+        // 10 s: 4 + 4 + 2; the second lasts up to the third's start (10 s: 4 + 4 + 2, its 6 s extended); 4 s: one.
+        #expect(picture.representation.segments.map(\.number) == [1, 2, 3, 4, 5, 6, 7])
+        #expect(picture.representation.segments.map(\.period) == [0, 0, 0, 1, 1, 1, 2])
+        #expect(picture.representation.segments.map(\.start) == [0, 4, 8, 10, 14, 18, 20])
+        let playlist = try #require(picture.playlist)
+        #expect(playlist.segments.map(\.sequence) == [1, 2, 3, 4, 5, 6, 7])
+        #expect(playlist.segments.map(\.discontinuitySequence) == [0, 0, 0, 1, 1, 1, 2])
+        #expect(playlist.segments[0].initSection?.url.absoluteString.hasSuffix("p0/v/init.mp4") == true)
+        #expect(playlist.segments[3].initSection?.url.absoluteString.hasSuffix("p1/v/init.mp4") == true)
+        #expect(playlist.segments[6].url.absoluteString.hasSuffix("p2/v/1.m4s"))
+        #expect(built.entries.contains { $0.representation.kind == .audio })
+    }
+
+    /// `of` replaced by `with` in the periods' text from the second period's first address on.
+    static func changedInSecond(_ data: Data, _ of: String, _ with: String) throws -> Data {
+        let text = try #require(String(data: data, encoding: .utf8))
+        let second = try #require(text.range(of: "p1/"))
+        return Data(text.replacingOccurrences(of: of, with: with, range: second.upperBound..<text.endIndex).utf8)
+    }
+
+    @Test("A representation continues by its id, else by the nearest of its kind and codec: an ad's ladder is its own")
+    func continuation() throws {
+        let same = Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT10S", "p1", "v")])
+        // Named its own way: the same picture continues it.
+        let named = try Self.playlists(Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT10S", "p1", "other")]))
+        #expect(named.entries.filter { $0.representation.kind == .video }.map(\.representation.segments.count) == [6])
+        // Another size and bitrate, the same codec: the nearest, so it continues.
+        let smaller = try Self.changedInSecond(same, "width=\"1280\" height=\"720\"", "width=\"640\" height=\"360\"")
+        let built = try Self.playlists(smaller)
+        #expect(built.entries.filter { $0.representation.kind == .video }.map(\.representation.segments.count) == [6])
+        // Two entries only: the sound and the one picture, which the other period's smaller one continues.
+        #expect(built.entries.count == 2)
+    }
+
+    @Test(
+        "A codec's family is never crossed: another codec in a period leaves the picture out, and a sound that does not continue refuses"
+    )
+    func continuationKeepsTheCodec() throws {
+        let same = Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT10S", "p1", "v")])
+        let otherPicture = try Self.changedInSecond(same, "avc1.4d401f", "hvc1.1.6.L93.B0")
+        #expect(Self.refusal(otherPicture)?.contains("not in every period") == true)
+        // The picture plays; the film's one sound found no continuation: refused, not played silent.
+        let otherSound = try Self.changedInSecond(same, "mp4a.40.2", "ec-3")
+        #expect(Self.refusal(otherSound) == "sound that does not continue through every period")
+    }
+
+    @Test("A period lasts up to the next one's start, not its own @duration; one of no length is not played")
+    func periodLengths() throws {
+        // The first says 10 s, the second starts at 8 s: no overlap.
+        let built = try Self.playlists(Self.periods([(nil, "PT10S", "p0", "v"), ("PT8S", "PT10S", "p1", "v")]))
+        let picture = try #require(built.entries.first { $0.representation.kind == .video }).representation
+        #expect(picture.segments.map(\.start) == [0, 4, 8, 12, 16])
+        #expect(picture.segments.map(\.duration) == [4, 4, 4, 4, 2])
+
+        let skipped = try Self.playlists(
+            Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT0S", "p1", "v"), (nil, "PT10S", "p2", "v")]))
+        let kept = try #require(skipped.entries.first { $0.representation.kind == .video }).representation
+        #expect(kept.segments.map(\.period) == [0, 0, 0, 1, 1, 1])
+    }
+
     // MARK: - Refusals
 
     @Test("What is not played yet is refused with its reason: live, periods, one WebM file, offsets that differ")
@@ -188,7 +278,12 @@ struct DASHPlaylistsTests {
             }
         }
         #expect(reason(Self.mpd(video, type: "dynamic"))?.contains("dynamic") == true)
-        #expect(reason(Self.mpd(video, periods: 2)) == "2 periods")
+        #expect(reason(Self.mpd(video, periods: 2)) == "a period whose length is not told")
+        // The second starts before the first does: refused, not the first dropped as one of negative length.
+        #expect(
+            reason(Self.periods([("PT10S", "PT10S", "p0", "v"), ("PT5S", "PT10S", "p1", "v")]))
+                == "periods out of order")
+        #expect(reason(Self.mpd(video, type: "dynamic", periods: 2))?.contains("periods") == true)
         #expect(
             reason(
                 Self.mpd(

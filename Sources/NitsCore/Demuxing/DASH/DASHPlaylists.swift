@@ -21,7 +21,7 @@ import os
 /// one's do (within half a frame) is left out, as a switch to it could not land on a segment boundary. For one file
 /// that is known once both indexes are read: its playlist is then refused, and the opening leaves its variant out.
 ///
-/// One `static` period only, for now; what is not played yet is refused (`HLSPlaylistSourceError.unsupported`) with
+/// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`HLSPlaylistSourceError.unsupported`) with
 /// the reason.
 struct DASHPlaylists: HLSPlaylistSource {
     /// The scheme of the keys.
@@ -316,7 +316,8 @@ struct DASHPlaylists: HLSPlaylistSource {
         playlist.segments = segments.enumerated().map { index, segment in
             HLSSegment(
                 url: segment.url, duration: segment.duration, sequence: numbers?[index] ?? segment.number,
-                discontinuitySequence: 0, byteRange: segment.byteRange, initSection: representation.initSection)
+                discontinuitySequence: segment.period, byteRange: segment.byteRange,
+                initSection: segment.initSection ?? representation.initSection)
         }
         playlist.mediaSequence = playlist.segments.first?.sequence ?? 0
         return playlist

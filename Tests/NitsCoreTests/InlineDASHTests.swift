@@ -80,6 +80,49 @@ struct InlineDASHTests {
         #expect(!server.requests.map(\.path).contains("video/1"), "The segments before the target are not read")
     }
 
+    @Test(
+        "Two periods of segments whose timestamps restart play as one timeline, and a seek into the second lands there")
+    func playsSeveralPeriods() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        // Both periods list the first two segments (0 s to 2 s of media each): the media restarts at the second's start.
+        let period = { (start: Int) -> String in
+            let sets = [("video", "v", "video/mp4"), ("audio", "a", "audio/mp4")].map { kind, id, mime in
+                let media = LiveHistory.segmentAddress(server.url(kind), number: "$Number$")
+                return """
+                    <AdaptationSet mimeType="\(mime)" segmentAlignment="true"><Representation id="\(id)" bandwidth="1">\
+                    <SegmentTemplate timescale="1000" startNumber="0" media="\(media)">\
+                    <SegmentTimeline><S t="0" d="1000" r="1"/></SegmentTimeline></SegmentTemplate>\
+                    </Representation></AdaptationSet>
+                    """
+            }.joined()
+            return #"<Period start="PT\#(start)S" duration="PT2S">\#(sets)</Period>"#
+        }
+        let text = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S">\
+            \(period(0))\(period(2))</MPD>
+            """
+        let demuxer = try #require(MediaDemuxer(url: MediaURL.inlineDASHManifest(text)))
+        #expect(abs(demuxer.durationSeconds - 4) < 0.1)
+        demuxer.startReadAhead()
+        var times: [Double] = []
+        while let sample = demuxer.nextVideoSample() {
+            times.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)))
+        }
+        #expect(times.count == 100, "\(times.count) pictures; asked for \(server.requests.map(\.path))")
+        #expect(
+            // Decode order has B-frames; sorted, the second period's pictures follow the first's at 40 ms steps.
+            zip(times.sorted(), times.sorted().dropFirst()).allSatisfy { abs($1 - $0 - 0.04) < 0.005 },
+            "Presentation times run on through the period: \(times.sorted().map { String(format: "%.2f", $0) })")
+        #expect((3.8...4.0).contains(times.last ?? 0), "The second period ends at 4 s, not \(times.last ?? 0)")
+
+        demuxer.seek(to: 2.5, exact: false)
+        let first = try #require(demuxer.nextVideoSample())
+        let start = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(first))
+        #expect((2.0...2.6).contains(start), "A keyframe of the second period, not \(start)")
+    }
+
     @Test("After the end was read, a seek back plays the picture and the audio again")
     func seeksBackAfterTheEnd() throws {
         guard let server = try Self.server() else { return }

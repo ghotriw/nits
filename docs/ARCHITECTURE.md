@@ -112,7 +112,7 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   address it came from after redirects (`MediaURL.inlineDASHManifest(_:source:)`, a `source` parameter of the `data:`
   URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, or one at a `.mpd` address, with
   the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
-  refuses with a reason (`HLSPlaylistSourceError.unsupported`: one file per representation, live, several periods, …)
+  refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods, one file (`SegmentBase`) in a manifest of several, DRM, …)
   goes on to FFmpeg's DASH demuxer, any other failure is the opening's (`NITS_DASH_INPUT=client` / `ffmpeg` forces
   either, for tests). The rewriting is for FFmpeg's DASH demuxer, which
   opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,

@@ -362,7 +362,7 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   2026-11-14: the input's variant types and `FFmpegErrorCode` stand on their own, one opening-rung rule in
   `AdaptiveBitrateLogic`); where playlists come from apart from the client (done 2026-11-14: `HLSPlaylistSource`, the
   opening's and a live lane's reloads; `HLSServedPlaylists` for HLS); the DASH client as such a source
-  (`DASHPlaylists`, a static MPD of one period: done 2026-11-14, routed by its own refusal, what it does not play yet
+  (`DASHPlaylists`, a static MPD of one period or several, each a discontinuity: done 2026-11-14, routed by its own refusal, what it does not play yet
   going to FFmpeg's DASH demuxer), extending the model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
   and its patch gone; the target last, around both, with the model's names made neutral.
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
