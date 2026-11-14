@@ -347,7 +347,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         // Where reading starts: the beginning, or for a live stream a few target durations behind its edge.
         let isLive = referencePlaylist.isLive
         let startTime =
-            isLive ? max(reference.start, reference.end - Self.edgeMargin * reference.targetDuration) : reference.start
+            isLive
+            ? max(reference.start, reference.end - (reference.holdBack ?? Self.edgeMargin * reference.targetDuration))
+            : reference.start
         isLivePlaylist = isLive
         durationSeconds = isLive ? 0 : reference.end - reference.start
 

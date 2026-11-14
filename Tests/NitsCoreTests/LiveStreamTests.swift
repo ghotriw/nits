@@ -163,6 +163,18 @@ struct LiveStreamTests {
     }
 
     @MainActor
+    @Test("A stream that tells its hold-back is played that far behind the edge, and is at it there")
+    func holdBack() {
+        let live = LiveStream()
+        live.begin(isLive: true, window: LiveWindow(start: 100, end: 260, hasSlid: true, holdBack: 20))
+        let now = ContinuousClock.now
+        #expect(abs((live.edgeTarget(now: now) ?? 0) - 240) < 1)
+        #expect(abs(live.clamp(1000, now: now) - 240) < 1)
+        #expect(live.isAtEdge(240, now: now))
+        #expect(!live.isAtEdge(200, now: now))
+    }
+
+    @MainActor
     @Test("A new media and a reset leave nothing of the last window")
     func resets() {
         let live = LiveStream()

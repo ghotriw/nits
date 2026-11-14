@@ -87,6 +87,20 @@ enum DASHElements {
         return number.isEmpty ? seconds : nil
     }
 
+    /// An `xs:dateTime` ("2024-05-01T12:00:00.123Z", the zone optional: UTC then), as `availabilityStartTime`, `UTCTiming`
+    /// and the `direct` scheme tell it.
+    static func dateTime(of text: String) -> Date? {
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tIndex = text.firstIndex(of: "T") else { return nil }
+        let time = text[tIndex...]
+        if !time.contains("Z") && !time.contains("+") && !time.dropFirst().contains("-") { text += "Z" }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
     /// "828-3067": the bytes from the first to the last, both included.
     static func byteRange(of text: String) -> HLSByteRange? {
         let parts = text.split(separator: "-").compactMap { Int64($0) }

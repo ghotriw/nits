@@ -50,7 +50,43 @@ struct DASHPresentation: Sendable {
         var segments: [Segment]
         /// Where the index of a representation that is one file is (`SegmentBase`); nil for one of segments.
         var index: IndexLocation?
+        /// Its segments are told by a timeline of a live manifest: the manifest moves the timeline's first entry as it
+        /// slides without telling the number it now has, so the source numbers the segments by their times (`LiveNumbers`).
+        var numbersByTime = false
     }
+
+    /// What a dynamic manifest tells besides its segments (ISO/IEC 23009-1 5.3.1.2).
+    struct Live: Sendable, Equatable {
+        /// A `UTCTiming` descriptor: how the client learns the server's clock.
+        struct Timing: Sendable, Equatable {
+            var scheme: String
+            var value: String
+        }
+
+        /// `availabilityStartTime`: the zero of the media's availability times.
+        var availabilityStart: Date
+        /// The period's start, seconds after `availabilityStart`.
+        var periodStart: Double
+        /// `minimumUpdatePeriod`: how often the manifest may change; nil, never (a timeline counted by the clock).
+        var minimumUpdatePeriod: Double?
+        /// `suggestedPresentationDelay`: how far behind the edge the stream is meant to be played.
+        var suggestedPresentationDelay: Double?
+        var timings: [Timing]
+        /// `Location`: where the next manifest is fetched from.
+        var location: URL?
+        /// The period's time at the live edge, when read: the server's clock less `availabilityStart` and `periodStart`.
+        var edge: Double
+        /// The window the segments were listed for, seconds: the manifest's depth, bounded by `maxHistory`.
+        var depth: Double
+
+        /// The date of a segment that starts `seconds` into the period.
+        func date(at seconds: Double) -> Date {
+            availabilityStart.addingTimeInterval(periodStart + seconds)
+        }
+    }
+
+    /// How far back a live window reaches at most, seconds (the history a stream may be given, as a day of YouTube's).
+    static let maxHistory = 24.0 * 3600
 
     /// The index of a representation that is one MP4 file (`SegmentBase`): its `indexRange` (or `RepresentationIndex`),
     /// read by the source when the representation's playlist is asked for (dash.js and shaka-player read it then, not
@@ -69,6 +105,8 @@ struct DASHPresentation: Sendable {
     var representations: [Representation]
     /// The period's length, when told: the segments an index lists end with it.
     var periodDuration: Double?
+    /// A dynamic manifest's clock and window; nil for a static one.
+    var live: Live?
 }
 
 enum DASHPresentationError: Error, Equatable {
@@ -86,17 +124,38 @@ extension DASHPresentation {
     static let segmentLimit = 200_000
 
     /// The presentation `data` holds; `url` is where it came from (after redirects), what its addresses are relative to.
-    static func parse(_ data: Data, url: URL) throws(DASHPresentationError) -> DASHPresentation {
+    static func parse(_ data: Data, url: URL, now: Date? = nil) throws(DASHPresentationError) -> DASHPresentation {
         guard let root = XMLTreeElement.parse(data, limit: sizeLimit), root.localName == "MPD" else {
             throw .unreadable
         }
         let type = root.attribute("type") ?? "static"
-        guard type == "static" else { throw .unsupported("a \(type) manifest (live)") }
+        guard type == "static" || type == "dynamic" else { throw .unsupported("a \(type) manifest") }
         let periods = root.elements(named: "Period")
         guard periods.count == 1, let period = periods.first else {
             throw .unsupported(periods.isEmpty ? "no period" : "\(periods.count) periods")
         }
         let start = period.attribute("start").flatMap(DASHElements.duration(of:)) ?? 0
+        var live: Live?
+        if type == "dynamic" {
+            guard let now else { throw .unsupported("a dynamic manifest (live)") }
+            guard let availabilityStart = root.attribute("availabilityStartTime").flatMap(DASHElements.dateTime(of:))
+            else { throw .unsupported("a dynamic manifest without its availabilityStartTime") }
+            let depth = min(
+                root.attribute("timeShiftBufferDepth").flatMap(DASHElements.duration(of:)) ?? maxHistory, maxHistory)
+            live = Live(
+                availabilityStart: availabilityStart, periodStart: start,
+                minimumUpdatePeriod: root.attribute("minimumUpdatePeriod").flatMap(DASHElements.duration(of:)),
+                suggestedPresentationDelay: root.attribute("suggestedPresentationDelay")
+                    .flatMap(DASHElements.duration(of:)),
+                timings: root.elements(named: "UTCTiming").compactMap { element in
+                    guard let scheme = element.attribute("schemeIdUri"), let value = element.attribute("value")
+                    else { return nil }
+                    return Live.Timing(scheme: scheme, value: value)
+                },
+                location: root.elements(named: "Location").first.flatMap { URL(string: $0.text, relativeTo: url) }?
+                    .absoluteURL,
+                edge: now.timeIntervalSince(availabilityStart) - start, depth: max(depth, 0))
+        }
         let duration =
             period.attribute("duration").flatMap(DASHElements.duration(of:))
             ?? root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:)).map { $0 - start }
@@ -135,7 +194,7 @@ extension DASHPresentation {
                 do throws(DASHPresentationError) {
                     told = try segmentsOf(
                         levels: levels, base: base, id: id, bandwidth: bandwidth, mimeType: value("mimeType"),
-                        periodDuration: duration)
+                        periodDuration: duration, live: live)
                 } catch {
                     if case .unsupported(let reason) = error {
                         skipped.append("\(id): \(reason)")
@@ -143,7 +202,9 @@ extension DASHPresentation {
                     }
                     continue
                 }
-                guard !told.segments.isEmpty || told.index != nil else {
+                // A live one may have none yet (the stream has not made its first segment, or the clock the manifest is read
+                // at is not the server's yet): it lists none until it has.
+                guard !told.segments.isEmpty || told.index != nil || live != nil else {
                     skipped.append("\(id): no segments")
                     if kind == "video" { skippedPictures.append("\(id): no segments") }
                     continue
@@ -158,7 +219,7 @@ extension DASHPresentation {
                         language: value("lang"),
                         roleRank: DASHElements.roleRank(of: element, in: set), set: setIndex,
                         initSection: told.initSection, presentationTimeOffset: told.presentationTimeOffset,
-                        segments: told.segments, index: told.index))
+                        segments: told.segments, index: told.index, numbersByTime: told.numbersByTime))
             }
         }
         if let reason = skippedPictures.first, !representations.contains(where: { $0.kind == .video }) {
@@ -170,7 +231,7 @@ extension DASHPresentation {
         } else if !skipped.isEmpty {
             AppLog.warning(.demuxer, "DASH: left out \(skipped.joined(separator: "; "))")
         }
-        return DASHPresentation(representations: representations, periodDuration: duration)
+        return DASHPresentation(representations: representations, periodDuration: duration, live: live)
     }
 
     /// The segments of a representation that is one file (`Representation.index`), from its index: each a byte range of
@@ -343,23 +404,29 @@ extension DASHPresentation {
         var presentationTimeOffset: Double
         var segments: [Segment] = []
         var index: IndexLocation?
+        var numbersByTime = false
     }
 
     private static func segmentsOf(
-        levels: [XMLTreeElement], base: URL, id: String, bandwidth: Int, mimeType: String?, periodDuration: Double?
+        levels: [XMLTreeElement], base: URL, id: String, bandwidth: Int, mimeType: String?, periodDuration: Double?,
+        live: Live?
     ) throws(DASHPresentationError) -> Told {
         switch kindOfInformation(levels: levels) {
         case "SegmentTemplate":
             guard let information = Information("SegmentTemplate", levels: levels) else { break }
             let (initSection, offset, segments) = try templateSegments(
-                information, base: base, id: id, bandwidth: bandwidth, periodDuration: periodDuration)
-            return Told(initSection: initSection, presentationTimeOffset: offset, segments: segments)
+                information, base: base, id: id, bandwidth: bandwidth, periodDuration: periodDuration, live: live)
+            return Told(
+                initSection: initSection, presentationTimeOffset: offset, segments: segments,
+                numbersByTime: live != nil && information.timeline != nil)
         case "SegmentList":
+            guard live == nil else { throw .unsupported("a live manifest of a segment list") }
             guard let information = Information("SegmentList", levels: levels) else { break }
             let (initSection, offset, segments) = try listSegments(
                 information, base: base, periodDuration: periodDuration)
             return Told(initSection: initSection, presentationTimeOffset: offset, segments: segments)
         case "SegmentBase":
+            guard live == nil else { throw .unsupported("a live manifest of one file (SegmentBase)") }
             guard let information = Information("SegmentBase", levels: levels) else { break }
             return try oneFile(information, base: base, mimeType: mimeType)
         default: break
@@ -460,7 +527,7 @@ extension DASHPresentation {
     ///   `S` says no start, or one not after its own, or the period's end is not told or already past) ends the timeline
     ///   there.
     private static func timelineTimes(
-        _ timeline: XMLTreeElement, timescale: Int64, end: Int64?
+        _ timeline: XMLTreeElement, timescale: Int64, end: Int64?, edge: Int64? = nil
     ) throws(DASHPresentationError) -> [(time: Int64, duration: Int64)] {
         let entries = timeline.elements(named: "S")
         var times: [(time: Int64, duration: Int64)] = []
@@ -490,11 +557,15 @@ extension DASHPresentation {
                 if index + 1 < entries.count {
                     limit = entries[index + 1].attribute("t").flatMap { Int64($0) }
                 } else {
-                    limit = end
+                    // A live timeline repeats to the edge: the segments that have come whole, not one still being made.
+                    limit = [end, edge].compactMap { $0 }.min()
                 }
                 guard let limit, limit > time else { break }
                 let span = try sum(limit, -time)
-                repeats = max(0, Int((Double(span) / Double(duration)).rounded(.up)) - 1)
+                let count = Int(
+                    (Double(span) / Double(duration)).rounded(edge != nil && index + 1 == entries.count ? .down : .up))
+                guard count >= 1 else { break }
+                repeats = count - 1
             }
             guard repeats < segmentLimit, times.count + repeats < segmentLimit else {
                 throw .unsupported("more than \(segmentLimit) segments")
@@ -523,7 +594,7 @@ extension DASHPresentation {
     // MARK: - Templates and lists
 
     private static func templateSegments(
-        _ information: Information, base: URL, id: String, bandwidth: Int, periodDuration: Double?
+        _ information: Information, base: URL, id: String, bandwidth: Int, periodDuration: Double?, live: Live?
     ) throws(DASHPresentationError) -> (HLSInitSection?, Double, [Segment]) {
         let timescale = information.timescale
         let offset = information.presentationTimeOffset
@@ -544,9 +615,25 @@ extension DASHPresentation {
             initialization = try initSection(information.initialization, base: base)
         }
 
-        let times: [(time: Int64, duration: Int64)]
+        var times: [(time: Int64, duration: Int64)]
+        /// The segments the manifest's list (or the clock's count) starts after: a live window slid past them.
+        var skipped = 0
+        let availabilityOffset = try availabilityOffset(information)
         if let timeline = information.timeline {
-            times = try timelineTimes(timeline, timescale: timescale, end: periodEnd)
+            var edge: Int64?
+            if let live {
+                let ticks = ((live.edge + availabilityOffset) * Double(timescale)).rounded(.down)
+                guard ticks.isFinite, abs(ticks) < 9.0e18 else {
+                    throw .unsupported("a clock too far from the manifest's")
+                }
+                edge = try sum(offset, Int64(ticks))
+            }
+            times = try timelineTimes(timeline, timescale: timescale, end: periodEnd, edge: edge)
+            if let live { skipped = trim(&times, timescale: timescale, depth: live.depth) }
+        } else if let duration = information.duration, let live {
+            (times, skipped) = try liveEvenTimes(
+                information, duration: duration, live: live, availabilityOffset: availabilityOffset,
+                periodDuration: periodDuration)
         } else if let duration = information.duration {
             guard let periodEnd else { throw .unsupported("a template counted over a period of no length told") }
             var count = Int((Double(try sum(periodEnd, -offset)) / Double(duration)).rounded(.up))
@@ -563,7 +650,7 @@ extension DASHPresentation {
         var segments: [Segment] = []
         segments.reserveCapacity(times.count)
         for (index, entry) in times.enumerated() {
-            let number = information.startNumber + index
+            let number = information.startNumber + skipped + index
             guard let address = expand(media, id: id, bandwidth: bandwidth, number: number, time: entry.time),
                 let url = URL(string: address, relativeTo: base)?.absoluteURL
             else { throw .unsupported("a media address it cannot read (\(media))") }
@@ -573,6 +660,63 @@ extension DASHPresentation {
                     duration: Double(entry.duration) / Double(timescale), number: number))
         }
         return (initialization, Double(offset) / Double(timescale), segments)
+    }
+
+    /// `availabilityTimeOffset`: seconds a segment is available before its end (low latency's chunked ones). Its
+    /// segments are asked for whole, which the server then serves as it makes them. `INF` (every segment always
+    /// available) leaves no edge to tell: refused.
+    private static func availabilityOffset(_ information: Information) throws(DASHPresentationError) -> Double {
+        guard let text = information.attributes["availabilityTimeOffset"] else { return 0 }
+        guard let value = Double(text), value.isFinite, value >= 0 else {
+            throw .unsupported("an availabilityTimeOffset of \(text)")
+        }
+        return value
+    }
+
+    /// A live template counted by `@duration`: the segments from the window's start to the newest one that has come whole
+    /// (its end by the edge, plus `availabilityTimeOffset`), numbered by the clock (`skipped`: those before the first).
+    private static func liveEvenTimes(
+        _ information: Information, duration: Int64, live: Live, availabilityOffset: Double, periodDuration: Double?
+    ) throws(DASHPresentationError) -> (times: [(time: Int64, duration: Int64)], skipped: Int) {
+        let length = Double(duration) / Double(information.timescale)
+        var edge = live.edge + availabilityOffset
+        var last: Int
+        if let periodDuration, edge >= periodDuration {
+            edge = periodDuration
+            last = Int((periodDuration / length).rounded(.up)) - 1
+        } else {
+            guard edge.isFinite, abs(edge) < 9.0e12 else { throw .unsupported("a clock too far from the manifest's") }
+            last = Int((edge / length + 1e-6).rounded(.down)) - 1
+        }
+        if let endNumber = information.attributes["endNumber"].flatMap({ Int($0) }),
+            (0...numberLimit).contains(endNumber)
+        {
+            last = min(last, endNumber - information.startNumber)
+        }
+        var first = max(0, Int((max(0, edge - live.depth) / length).rounded(.down)))
+        first = max(first, last - segmentLimit + 1)
+        guard first <= last else { return ([], 0) }
+        let end = try periodEnd(information, periodDuration: periodDuration)
+        let offset = information.presentationTimeOffset
+        var times: [(time: Int64, duration: Int64)] = []
+        times.reserveCapacity(last - first + 1)
+        for position in first...last {
+            let time = try sum(offset, Int64(position) * duration)
+            var own = duration
+            if let end, time + own > end { own = max(1, end - time) }
+            times.append((time, own))
+        }
+        return (times, first)
+    }
+
+    /// Drops the timeline's segments that ended before its window: `depth` seconds back from the newest one's end.
+    /// Returns how many were dropped.
+    private static func trim(_ times: inout [(time: Int64, duration: Int64)], timescale: Int64, depth: Double) -> Int {
+        guard let last = times.last else { return 0 }
+        let threshold = last.time + last.duration - Int64(depth * Double(timescale))
+        let dropped = times.firstIndex { $0.time + $0.duration > threshold } ?? times.count - 1
+        times.removeFirst(dropped)
+        return dropped
     }
 
     private static func listSegments(

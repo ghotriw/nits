@@ -1001,7 +1001,8 @@ final class HLSLane: @unchecked Sendable {
             }
         }
         let still = (ContinuousClock.now - lastChange) / .seconds(1)
-        guard still > Self.stuckTargetDurations * timeline.targetDuration else { return nil }
+        guard still > Self.stuckTargetDurations * timeline.targetDuration, still > (timeline.updatePeriod ?? 0) * 1.5
+        else { return nil }
         AppLog.warning(.demuxer, "HLS: the playlist has not changed for \(Int(still)) s, taken as stuck")
         return -ETIMEDOUT
     }

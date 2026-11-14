@@ -56,6 +56,10 @@ public final class LiveStream {
         (instant - clockOrigin) / .seconds(1)
     }
 
+    /// How far behind the edge "go live", the start and a seek land: the stream's own hold-back when it tells one, else
+    /// `edgeMargin`.
+    private var margin: Double { reportedWindow?.holdBack ?? Self.edgeMargin }
+
     /// The playlist ended: the window is the last one, and standing.
     public var isEnded: Bool { reportedWindow?.hasEnded == true }
 
@@ -65,7 +69,8 @@ public final class LiveStream {
         if reportedWindow.hasEnded { return reportedWindow }
         let end = max(reportedWindow.end, clock(now) + edgeOffset)
         let start = isSliding ? reportedWindow.start + clock(now) - clock(reportedAt) : reportedWindow.start
-        return LiveWindow(start: min(start, end), end: end, hasSlid: reportedWindow.hasSlid)
+        return LiveWindow(
+            start: min(start, end), end: end, hasSlid: reportedWindow.hasSlid, holdBack: reportedWindow.holdBack)
     }
 
     /// A new media was loaded.
@@ -112,13 +117,13 @@ public final class LiveStream {
     /// Whether `time` is at the live edge, for the badge to be red. A stream that is not live, or has ended, is not.
     public func isAtEdge(_ time: Double, now: ContinuousClock.Instant = .now) -> Bool {
         guard !isEnded, let window = window(at: now) else { return false }
-        return window.end - time <= Self.edgeTolerance
+        return window.end - time <= max(Self.edgeTolerance, margin + Self.edgeTolerance - Self.edgeMargin)
     }
 
     /// Where "go live" seeks to; `nil` when not live, or ended: there is no edge.
     public func edgeTarget(now: ContinuousClock.Instant = .now) -> Double? {
         guard !isEnded, let window = window(at: now) else { return nil }
-        return max(window.start, window.end - Self.edgeMargin)
+        return max(window.start, window.end - margin)
     }
 
     /// Where a live stream's history opens when it was left at `streamTime` (the stream's own time, which the engine's is
@@ -142,8 +147,8 @@ public final class LiveStream {
         // The margin from the start is for a playlist that slides, whose oldest segments expire; one that grows from the
         // stream's beginning keeps them.
         let lower = min(
-            window.start + (isSliding ? Self.startMargin : 0), max(window.start, window.end - Self.edgeMargin))
-        return min(max(seconds, lower), max(window.start, window.end - Self.edgeMargin))
+            window.start + (isSliding ? Self.startMargin : 0), max(window.start, window.end - margin))
+        return min(max(seconds, lower), max(window.start, window.end - margin))
     }
 
     /// An end of the window `clamp` keeps seeks in.
@@ -158,7 +163,7 @@ public final class LiveStream {
     /// with the clock while a seek goes, and a seek that was not cut (a step to just short of the edge) is not one to the edge.
     func bound(of seconds: Double, now: ContinuousClock.Instant = .now) -> Bound? {
         guard let window = window(at: now) else { return nil }
-        let upper = window.hasEnded ? window.end : max(window.start, window.end - Self.edgeMargin)
+        let upper = window.hasEnded ? window.end : max(window.start, window.end - margin)
         let lower = window.hasEnded ? window.start : min(window.start + (isSliding ? Self.startMargin : 0), upper)
         if seconds >= upper { return .end }
         if seconds <= lower { return .start }

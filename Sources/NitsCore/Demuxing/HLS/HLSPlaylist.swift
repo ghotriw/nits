@@ -159,6 +159,12 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     var isIFramesOnly = false
     var hasIndependentSegments = false
     var start: HLSStart?
+    /// How far behind the live edge the stream is meant to be played, seconds, when its source says (DASH's
+    /// `suggestedPresentationDelay`; HLS's `HOLD-BACK` could fill it). Nil: the client's own margin.
+    var holdBack: Double?
+    /// How often the source says its playlist may change (DASH's `minimumUpdatePeriod`), seconds: a playlist is not taken
+    /// as stuck before this has passed, however short its segments are. Nil: the target duration.
+    var updatePeriod: Double?
     var segments: [HLSSegment] = []
 
     /// A playlist that can still change: live, or an event going on.

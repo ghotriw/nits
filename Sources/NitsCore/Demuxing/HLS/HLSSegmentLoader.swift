@@ -125,6 +125,23 @@ final class HLSSegmentLoader: Sendable {
         }
     }
 
+    /// The `Date` of the answer at `url`, its body not read (`UTCTiming` `http-head`): the server's clock, to the second.
+    func serverDate(of url: URL) throws(HLSSegmentLoadError) -> Date? {
+        guard !url.isFileURL else { return nil }
+        switch transport.open(
+            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
+            abort: abort)
+        {
+        case .input(let input):
+            defer { input.close() }
+            return input.serverDate
+        case .failed(let code):
+            throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
+        case .notServed:
+            throw .notServed(url)
+        }
+    }
+
     // MARK: Decryption
 
     private func decrypt(_ data: Data, key: HLSKey, iv: [UInt8]?) throws(HLSSegmentLoadError) -> Data {

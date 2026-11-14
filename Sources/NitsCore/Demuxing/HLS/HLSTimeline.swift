@@ -57,6 +57,10 @@ struct HLSTimeline: Sendable, Equatable {
     /// The segments the playlist lists, in order.
     private(set) var entries: [Entry]
     private(set) var targetDuration: Double
+    /// How far behind the edge the source says to play (`HLSMediaPlaylist.holdBack`); the latest load's.
+    private(set) var holdBack: Double?
+    /// The source's update period (`HLSMediaPlaylist.updatePeriod`), the latest load's.
+    private(set) var updatePeriod: Double?
     private(set) var hasEnded: Bool
     /// The playlist could change when first loaded: it has a live window (`liveWindow`).
     let isLive: Bool
@@ -80,6 +84,8 @@ struct HLSTimeline: Sendable, Equatable {
     /// Places `playlist`'s segments from `start`.
     init(_ playlist: HLSMediaPlaylist, start: Double = 0) {
         targetDuration = playlist.targetDuration
+        holdBack = playlist.holdBack
+        updatePeriod = playlist.updatePeriod
         hasEnded = !playlist.isLive
         isLive = playlist.isLive
         beganAtStreamStart = Self.listsFromStreamStart(playlist)
@@ -114,7 +120,7 @@ struct HLSTimeline: Sendable, Equatable {
 
     /// The window of a playlist that was live when first loaded; nil for one finished then.
     var liveWindow: LiveWindow? {
-        isLive ? LiveWindow(start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded) : nil
+        isLive ? LiveWindow(start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded, holdBack: holdBack) : nil
     }
 
     /// The segment listed with media sequence number `sequence`.
@@ -384,6 +390,8 @@ struct HLSTimeline: Sendable, Equatable {
     /// Takes what a reload tells of the whole playlist.
     private mutating func accept(_ playlist: HLSMediaPlaylist) {
         targetDuration = playlist.targetDuration
+        holdBack = playlist.holdBack
+        updatePeriod = playlist.updatePeriod
         hasEnded = !playlist.isLive
     }
 

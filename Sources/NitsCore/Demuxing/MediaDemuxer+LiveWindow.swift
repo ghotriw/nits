@@ -12,12 +12,16 @@ public struct LiveWindow: Equatable, Sendable {
     public var hasSlid: Bool
     /// The playlist ended (`EXT-X-ENDLIST`): this is its last window, a recording that no longer grows or slides.
     public var hasEnded: Bool
+    /// How far behind the edge the stream says it is meant to be played, seconds, when it says (a DASH manifest's
+    /// `suggestedPresentationDelay`). Nil: `LiveStream.edgeMargin`.
+    public var holdBack: Double?
 
-    public init(start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false) {
+    public init(start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false, holdBack: Double? = nil) {
         self.start = start
         self.end = end
         self.hasSlid = hasSlid
         self.hasEnded = hasEnded
+        self.holdBack = holdBack
     }
 
     public var length: Double { end - start }

@@ -363,6 +363,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var received = 0
         /// Where the first answer came from, after the redirects a request that follows them went through.
         var servedFrom: URL?
+        /// The `Date` header of the first answer: the server's clock (a live DASH manifest's, when it tells none else).
+        var serverDateHeader: String?
         /// Of them, those that came while the transfer didn't run (still under way when suspended), and the first delivery
         /// of each spell: in no time.
         var untimed = 0
@@ -784,6 +786,20 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         state.withLock { $0.servedFrom }
     }
 
+    /// The server's clock as the answer's `Date` header tells it (whole seconds), once answered.
+    var serverDate: Date? {
+        state.withLock { $0.serverDateHeader }.flatMap(Self.httpDate(of:))
+    }
+
+    /// An HTTP date (RFC 9110 5.6.7, IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT").
+    static func httpDate(of text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: text)
+    }
+
     /// Body bytes the task has delivered so far, read or not.
     var receivedBytes: Int {
         state.withLock { $0.received }
@@ -976,6 +992,8 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             state.answer = answered.answer
             state.answeredAt = state.answeredAt ?? .now
             state.servedFrom = response.url
+            state.serverDateHeader =
+                state.serverDateHeader ?? (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Date")
             state.answeredLength = answered.remaining
             state.fileSize = answered.fileSize
             state.remaining = answered.remaining
