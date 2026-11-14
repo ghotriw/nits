@@ -104,6 +104,14 @@ struct AdaptiveBitrateLogic: Sendable {
         var pixels = 0
     }
 
+    /// The rung an opening that measured the link at `linkRate` bits a second starts on: the best that fits `safety` of
+    /// it, else the lowest. One rule for the input that probes the start and the demuxer that adopts it.
+    static func openingRung<Rung>(of rungs: [Rung], bandwidth: (Rung) -> Int, linkRate: Double) -> Rung? {
+        let share = Config().safety
+        let fitting = rungs.filter { Double(bandwidth($0)) <= linkRate * share }.max { bandwidth($0) < bandwidth($1) }
+        return fitting ?? rungs.min { bandwidth($0) < bandwidth($1) }
+    }
+
     let config: Config
     private var averages = [(value: 0.0, weight: 0.0), (value: 0.0, weight: 0.0)]
     /// Decayed sums of the requests' latency and of the media read meanwhile, seconds.

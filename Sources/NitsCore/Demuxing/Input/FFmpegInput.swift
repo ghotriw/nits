@@ -174,7 +174,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// The variants of a DASH ladder (`dashVariants`).
-    func variantCandidates() -> [MediaDemuxer.VariantCandidate]? {
+    func variantCandidates() -> [VariantCandidate]? {
         guard isDASH, let formatCtx = context else { return nil }
         return Self.dashVariants(in: formatCtx)
     }
@@ -184,7 +184,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// a variant; the sounds are the manifest's own, the same for all. Nil for a single picture.
     private static func dashVariants(
         in formatCtx: UnsafeMutablePointer<AVFormatContext>
-    ) -> [MediaDemuxer.VariantCandidate]? {
+    ) -> [VariantCandidate]? {
         let indexes = 0..<Int(formatCtx.pointee.nb_streams)
         let ofType = { (type: AVMediaType) in
             indexes.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
@@ -192,16 +192,16 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         let pictures = ofType(AVMEDIA_TYPE_VIDEO)
         let sounds = ofType(AVMEDIA_TYPE_AUDIO)
         guard pictures.count > 1 else { return nil }
-        var found: [MediaDemuxer.VariantCandidate] = []
+        var found: [VariantCandidate] = []
         for index in pictures {
             guard
                 let entry = av_dict_get(formatCtx.pointee.streams[index]?.pointee.metadata, "variant_bitrate", nil, 0),
                 let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
             else { return nil }
             found.append(
-                MediaDemuxer.VariantCandidate(
+                VariantCandidate(
                     id: index, bandwidth: bandwidth,
-                    streams: MediaDemuxer.VariantStreams(
+                    streams: VariantStreams(
                         video: index, audio: sounds, subtitles: [], all: [index] + sounds)))
         }
         return found
@@ -216,7 +216,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     // MARK: - Reading
 
     func read(_ pkt: inout AVPacket) -> Int32 {
-        guard let context else { return MediaDemuxer.averrorEOF }
+        guard let context else { return FFmpegErrorCode.eof }
         let ret = av_read_frame(context, &pkt)
         if ret >= 0 { Self.rebase(&pkt, origin: timelineOrigin, in: context) }
         return ret

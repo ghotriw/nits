@@ -370,7 +370,7 @@ struct ThumbnailTests {
 
     @Test("MediaDemuxer.ffmpegErrorDescription provides readable error strings")
     func testFFmpegErrorDescription() {
-        let eofDesc = MediaDemuxer.ffmpegErrorDescription(-541_478_725)  // AVERROR_EOF
+        let eofDesc = MediaDemuxer.ffmpegErrorDescription(FFmpegErrorCode.eof)
         #expect(!eofDesc.isEmpty)
         #expect(eofDesc.lowercased().contains("end of file"))
     }

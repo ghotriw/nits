@@ -250,7 +250,7 @@ enum EmbeddedSubtitleReader {
         }
         if isCancelled(interrupt) { return nil }
         // A read error isn't the end: what follows is just unread.
-        collector.finish(atEnd: result == MediaDemuxer.averrorEOF)
+        collector.finish(atEnd: result == FFmpegErrorCode.eof)
         return collector.packets
     }
 
@@ -287,7 +287,7 @@ enum EmbeddedSubtitleReader {
         var pkt = AVPacket()
         while !isCancelled(interrupt) {
             let code = lane.fill(before: limit.isFinite ? limit : nil)
-            if code == MediaDemuxer.averrorEOF || code == HLSLane.held {
+            if code == FFmpegErrorCode.eof || code == HLSLane.held {
                 return isCancelled(interrupt) ? nil : (collector.packets, covered)
             }
             guard code >= 0 else { return nil }

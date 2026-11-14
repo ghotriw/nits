@@ -160,7 +160,7 @@ extension MediaDemuxer {
             noteRead(from: mark)
         }
         guard ret >= 0 else {
-            if ret == Self.averrorEOF {
+            if ret == FFmpegErrorCode.eof {
                 readAheadHitEOF = true
             } else {
                 AppLog.warning(.demuxer, "\(streamingName): Read-ahead stopped: \(Self.ffmpegErrorDescription(ret))")

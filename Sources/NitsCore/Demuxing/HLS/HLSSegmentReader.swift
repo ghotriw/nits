@@ -243,8 +243,8 @@ final class HLSSegmentReader {
                 place(&packet)
                 return result
             }
-            guard result == MediaDemuxer.averrorEOF, isSegmentwise, failure == nil else {
-                return result == MediaDemuxer.averrorEOF ? endCode : result
+            guard result == FFmpegErrorCode.eof, isSegmentwise, failure == nil else {
+                return result == FFmpegErrorCode.eof ? endCode : result
             }
             closeContext()
         }
@@ -255,7 +255,7 @@ final class HLSSegmentReader {
     private func advanceSegment() -> Int32? {
         guard let segment = next() else {
             isEnded = true
-            return MediaDemuxer.averrorEOF
+            return FFmpegErrorCode.eof
         }
         do {
             try openSegmentContext(try loader.segment(segment), sequence: segment.discontinuitySequence)
@@ -313,12 +313,12 @@ final class HLSSegmentReader {
 
     /// What reading returns at the end of the bytes: the end of the stream, or the error of the load that ended them.
     private var endCode: Int32 {
-        failure.map(Self.code(for:)) ?? MediaDemuxer.averrorEOF
+        failure.map(Self.code(for:)) ?? FFmpegErrorCode.eof
     }
 
     static func code(for error: HLSSegmentLoadError) -> Int32 {
         switch error {
-        case .interrupted: HTTPSessionInput.averrorExit
+        case .interrupted: FFmpegErrorCode.exit
         case .failed(let code): code
         default: -EIO
         }
@@ -655,14 +655,14 @@ private final class SegmentFeed: FFmpegInputSource {
 
     func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
         while position >= chunk.count {
-            if ended { return MediaDemuxer.averrorEOF }
+            if ended { return FFmpegErrorCode.eof }
             switch provider() {
             case .data(let data):
                 chunk = data
                 position = 0
             case .end:
                 ended = true
-                return MediaDemuxer.averrorEOF
+                return FFmpegErrorCode.eof
             case .failed(let code):
                 ended = true
                 return code

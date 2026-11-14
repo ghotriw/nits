@@ -165,12 +165,12 @@ final class LiveSegmentGate: Sendable {
         var unknownEnds = 0
         var hasRenewed = false
         while true {
-            if shouldAbort() { return .failed(Self.exitError) }
+            if shouldAbort() { return .failed(FFmpegErrorCode.exit) }
             // Past the end of a stream that ended there is nothing to ask for.
             let current = state.withLock { $0 }
-            if current.isEnded, request.number > current.head.number { return .failed(Self.notFoundError) }
+            if current.isEnded, request.number > current.head.number { return .failed(FFmpegErrorCode.httpNotFound) }
             guard let address = source.url(for: request.key, number: request.number) else {
-                return .failed(Self.notFoundError)
+                return .failed(FFmpegErrorCode.httpNotFound)
             }
             let opened = attempt(address)
             if case .input = opened {
@@ -178,7 +178,7 @@ final class LiveSegmentGate: Sendable {
                 return opened
             }
             // Refused: the signature expired before it was renewed. Once; a second refusal is the server's.
-            if case .failed(let code) = opened, code == Self.forbiddenError, !hasRenewed {
+            if case .failed(let code) = opened, code == FFmpegErrorCode.httpForbidden, !hasRenewed {
                 hasRenewed = true
                 if source.renewSignature(shouldAbort: shouldAbort) { continue }
                 return opened
@@ -186,12 +186,12 @@ final class LiveSegmentGate: Sendable {
             let known = state.withLock { $0 }
             guard request.number > known.head.number else { return opened }
             // Past the head: it is not there yet, or never will be.
-            if known.isEnded { return .failed(Self.notFoundError) }
+            if known.isEnded { return .failed(FFmpegErrorCode.httpNotFound) }
             let now = ContinuousClock.now
             if now - lastPoll >= source.headPollInterval {
                 lastPoll = now
                 let answer = source.head(shouldAbort: shouldAbort)
-                if shouldAbort() { return .failed(Self.exitError) }
+                if shouldAbort() { return .failed(FFmpegErrorCode.exit) }
                 // Any answer is the server being there; only no answer at all is the network being down.
                 isServerAnswering = answer != .noAnswer
                 if case .head(let found) = answer {
@@ -210,11 +210,11 @@ final class LiveSegmentGate: Sendable {
             }
             if now - lastMovement >= source.segmentWaitLimit {
                 let over = source.hasEnded(shouldAbort: shouldAbort)
-                if shouldAbort() { return .failed(Self.exitError) }
+                if shouldAbort() { return .failed(FFmpegErrorCode.exit) }
                 switch over {
                 case true?:
                     end(after: known.head)
-                    return .failed(Self.notFoundError)
+                    return .failed(FFmpegErrorCode.httpNotFound)
                 case false?:
                     // Still on the air, and silent: waited for as long as it takes, asking again after another limit.
                     lastMovement = .now
@@ -227,7 +227,7 @@ final class LiveSegmentGate: Sendable {
                         unknownEnds += 1
                         if unknownEnds > Self.unknownRounds {
                             end(after: known.head)
-                            return .failed(Self.notFoundError)
+                            return .failed(FFmpegErrorCode.httpNotFound)
                         }
                     }
                 }
@@ -263,9 +263,4 @@ final class LiveSegmentGate: Sendable {
             Thread.sleep(forTimeInterval: 0.01)
         }
     }
-
-    /// FFmpeg's errors: the server's 403 and 404 (`AVERROR_HTTP_FORBIDDEN`, `AVERROR_HTTP_NOT_FOUND`), and `AVERROR_EXIT`.
-    static let forbiddenError = HTTPSessionInput.ffErrorTag(0xF8, "4", "0", "3")
-    static let notFoundError = HTTPSessionInput.ffErrorTag(0xF8, "4", "0", "4")
-    static let exitError = HTTPSessionInput.averrorExit
 }

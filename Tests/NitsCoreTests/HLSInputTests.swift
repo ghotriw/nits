@@ -83,7 +83,7 @@ struct HLSInputTests {
         #expect(abs(input.durationSeconds - 6) < 0.5)
 
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let video = packets.filter(\.isVideo)
         #expect(video.count > 100)
         #expect(abs((video.first?.pts ?? 99) - 0) < 0.5)
@@ -102,7 +102,7 @@ struct HLSInputTests {
         let input = try #require(Self.open(stand, "master.m3u8"))
         #expect(Self.codecTypes(input).filter { $0 == AVMEDIA_TYPE_AUDIO }.count == 1)
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let video = packets.filter(\.isVideo)
         let audio = packets.filter { !$0.isVideo }
         #expect(!video.isEmpty && !audio.isEmpty)
@@ -138,7 +138,7 @@ struct HLSInputTests {
         defer { stand.server.stop() }
         let input = try #require(Self.open(stand, "master.m3u8"))
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         for isVideo in [true, false] {
             let times = packets.filter { $0.isVideo == isVideo }.map(\.dts)
             #expect(zip(times, times.dropFirst()).allSatisfy { $1 >= $0 })
@@ -156,7 +156,7 @@ struct HLSInputTests {
         defer { stand.server.stop() }
         let input = try #require(Self.open(stand, "media.m3u8"))
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let times = packets.filter(\.isVideo).map(\.dts)
         #expect(times.count == 30, "\(times.count) pictures of 3 s at 10 fps")
         #expect(zip(times, times.dropFirst()).allSatisfy { $1 > $0 })
@@ -174,7 +174,7 @@ struct HLSInputTests {
         behavior.failure = .status(404)
         stand.server.setBehavior(behavior, forPaths: { $0.hasSuffix("_001.ts") })
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let attempts = stand.server.requests.filter { $0.path.hasSuffix("_001.ts") }.count
         #expect(attempts == 1)
         let video = packets.filter(\.isVideo)
@@ -198,7 +198,7 @@ struct HLSInputTests {
         #expect(widths == [640, 480, 320])
         #expect(candidates.map { input.variantDescription(id: $0.id) } == [.described, .pending, .pending])
         let (_, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let paths = stand.server.requests.map(\.path)
         // The rungs below were never asked for a segment.
         #expect(!paths.contains { ($0.hasPrefix("v0_") || $0.hasPrefix("v1_")) && $0.hasSuffix(".ts") }, "\(paths)")
@@ -391,7 +391,7 @@ struct HLSInputTests {
         let (before, _) = Self.drain(input, limit: 20)
         input.rewind()
         let (after, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         #expect(before.first?.dts == after.first?.dts, "the same packets again")
         let whole = stand.server.requests.filter { $0.path == "v2_000.ts" && $0.range == nil }
         #expect(whole.count == 1, "\(stand.server.requests.map(\.path))")
@@ -445,7 +445,7 @@ struct HLSInputTests {
         let kept = Set(top.streams.all).subtracting(top.streams.subtitles).union([subtitle])
         for index in 0..<input.streamCount where !kept.contains(index) { input.setReading(false, stream: index) }
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let cues = packets.filter { $0.stream == subtitle }
         #expect(!cues.isEmpty)
         // "Hello" is at 0.5 s and "World" at 3 s of the media, which an MPEG-TS starts a second and more in.
@@ -531,7 +531,7 @@ struct HLSInputTests {
         #expect(!cueFiles().contains { $0.hasSuffix("2.vtt") }, "\(cueFiles())")
 
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let cues = packets.filter { $0.stream == subtitle }
         #expect(cues.count == 1 && abs((cues.first?.pts ?? 0) - 4.5) < 0.15, "\(cues.map(\.pts))")
     }
@@ -582,7 +582,7 @@ struct HLSInputTests {
         let subtitle = try #require(
             (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_SUBTITLE })
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         // The second stretch's first picture (at 0.066 s of its media) anchors it at the break, 3 s: the cue, at 0.5 s of
         // that media, is at 3.434 s. Placed by the first stretch's offset it would be at 0.434 s.
         let cues = packets.filter { $0.stream == subtitle }.map(\.pts)
@@ -682,7 +682,7 @@ struct HLSInputTests {
         defer { stand.server.stop() }
         let input = try Self.packedAudioInput(stand, firstTicks: nil)
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let audio = packets.filter { !$0.isVideo }
         let video = packets.filter(\.isVideo)
         #expect(abs((audio.first?.pts ?? 99) - 0) < 0.01, "the sound starts at \(audio.first?.pts ?? 99) s")
@@ -703,7 +703,7 @@ struct HLSInputTests {
         let input = try #require(Self.open(stand, "master.m3u8"))
         let audioTimes = { (packets: [Packet]) in packets.filter { !$0.isVideo }.map(\.dts) }
         let (whole, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let read = audioTimes(whole)
         #expect(!read.isEmpty)
 
@@ -772,7 +772,7 @@ struct HLSInputTests {
         #expect(input.network == nil)
         #expect(abs(input.durationSeconds - 6) < 0.5)
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         #expect(packets.filter(\.isVideo).count > 100)
     }
 
@@ -899,7 +899,7 @@ struct HLSInputTests {
         // And back to the start, to be read whole again.
         input.rewind()
         let (again, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         #expect(again.filter(\.isVideo).count > 100)
     }
 
@@ -975,7 +975,7 @@ struct HLSInputTests {
         #expect(!window.hasEnded)
 
         let (packets, code) = Self.drain(input)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let video = packets.filter(\.isVideo)
         #expect(abs((video.last?.pts ?? 0) - 6) < 0.6)
         #expect(requests.withLock { $0 } >= 3)
@@ -1004,7 +1004,7 @@ struct HLSInputTests {
         interrupt.cancel()
         #expect(done.wait(timeout: .now() + 5) == .success)
         let (packets, code) = try #require(result.withLock { $0 })
-        #expect(code == HTTPSessionInput.averrorExit)
+        #expect(code == FFmpegErrorCode.exit)
         #expect(!packets.isEmpty)
         #expect(ContinuousClock.now - began < .seconds(2))
     }

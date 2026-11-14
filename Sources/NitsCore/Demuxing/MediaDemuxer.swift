@@ -665,7 +665,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             })
         // A playlist under a name that tells none: FFmpeg, with no HLS demuxer, took it for no format at all
         // (`AVERROR_INVALIDDATA`), or for text (`tty`, which takes `.txt` and any small text).
-        let mayBePlaylist = opened.map(\.isTextFormat) ?? (interrupt.lastError?.code == Self.averrorInvalidData)
+        let mayBePlaylist = opened.map(\.isTextFormat) ?? (interrupt.lastError?.code == FFmpegErrorCode.invalidData)
         if liveHistory == nil, mayBePlaylist, HLSInput.sniffsAsPlaylist(url, headers: headers, interrupt: interrupt) {
             // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
             opened?.close()
@@ -773,12 +773,6 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.chapters = MediaChapter.normalized(input.chapters, duration: durationSeconds)
     }
 
-    /// `AVERROR_INVALIDDATA` (`-MKTAG('I', 'N', 'D', 'A')`): the input is of no format FFmpeg knows.
-    static let averrorInvalidData: Int32 = -0x4144_4E49
-
-    /// `AVERROR_EOF` (`-MKTAG('E', 'O', 'F', ' ')`); the macro does not import into Swift.
-    static let averrorEOF: Int32 = -0x2046_4F45
-
     /// The next packet of the input, with timestamps on the zero-based timeline. Records how far audio and video have
     /// been read (`readAheadSeconds`), and hands subtitle packets to `subtitleTracker`, as playback takes embedded
     /// subtitles in band: the main way for every source. A network source is opened again only to read its index and
@@ -798,8 +792,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             if ret < 0, interruptContext.isYieldingIO, !interruptContext.shouldAbort { return ret }
             // A download given up for another's interrupted the read (`requestAbandon`): it is no end, nor an error, nor a
             // measure of the network. The switch is made, between packets, and the read goes on in the variant it joins.
-            if ret == HTTPSessionInput.averrorExit, adaptiveBitrate.pendingAbandon != nil, !interruptContext.shouldAbort
-            {
+            if ret == FFmpegErrorCode.exit, adaptiveBitrate.pendingAbandon != nil, !interruptContext.shouldAbort {
                 _ = network?.transferMeter?.take()
                 beginRequestedVariantSwitch()
                 continue
@@ -827,7 +820,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 recordReadAhead(pkt)
                 subtitleTracker.readPacket(&pkt, in: input)
                 secondarySubtitleTracker.readPacket(&pkt, in: input)
-            } else if ret == Self.averrorEOF {
+            } else if ret == FFmpegErrorCode.eof {
                 endVariantSwitchAtEOF()
                 adaptiveBitrate.restart = nil
                 readAheadState.withLock { $0 = .infinity }

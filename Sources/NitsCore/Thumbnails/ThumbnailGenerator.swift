@@ -72,7 +72,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
                 path: path, headers: headers, httpRequestSize: httpRequestSize, interrupt: cancelToken,
                 failureCode: &failure)
             // A playlist under a name that tells none: FFmpeg could not open it, or took it for text.
-            let mayBePlaylist = opened.map(\.isTextFormat) ?? (failure == MediaDemuxer.averrorInvalidData)
+            let mayBePlaylist = opened.map(\.isTextFormat) ?? (failure == FFmpegErrorCode.invalidData)
             if mayBePlaylist, !isCancelled,
                 HLSInput.sniffsAsPlaylist(cleanPath, headers: headers, interrupt: cancelToken)
             {

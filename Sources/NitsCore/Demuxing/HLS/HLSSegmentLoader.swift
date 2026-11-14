@@ -111,7 +111,7 @@ final class HLSSegmentLoader: Sendable {
             let servedFrom = input.servedFrom ?? url
             return (try read(input), servedFrom)
         case .failed(let code):
-            throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
+            throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
         case .notServed:
             throw .notServed(url)
         }
@@ -173,7 +173,7 @@ final class HLSSegmentLoader: Sendable {
             if let range, Int64(body.count) > range.length { return body.prefix(Int(range.length)) }
             return body
         case .failed(let code):
-            throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
+            throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
         case .notServed:
             guard let range else { throw .notServed(url) }
             return try wholeFile(url, range: range)
@@ -210,13 +210,13 @@ final class HLSSegmentLoader: Sendable {
             if count > 0 {
                 body.append(buffer, count: Int(count))
                 if body.count >= limit { return body }
-            } else if count == MediaDemuxer.averrorEOF || count == 0 {
+            } else if count == FFmpegErrorCode.eof || count == 0 {
                 // A body shorter than the server announced is a connection that dropped, not a short segment.
                 if let length = input.answeredLength, length > 0, Int64(body.count) < length, limit == .max {
                     throw .failed(-EIO)
                 }
                 return body
-            } else if count == HTTPSessionInput.averrorExit {
+            } else if count == FFmpegErrorCode.exit {
                 throw .interrupted
             } else {
                 throw .failed(count)
@@ -324,7 +324,7 @@ final class HLSSegmentBody {
                 }
                 return chunk
             }
-            if result == MediaDemuxer.averrorEOF || result == 0 {
+            if result == FFmpegErrorCode.eof || result == 0 {
                 // A body shorter than the server announced (or than the range) is a connection that dropped.
                 let expected = limit ?? input.answeredLength.flatMap { $0 > 0 ? $0 : nil }
                 if let expected, Int64(received) < expected {
@@ -332,7 +332,7 @@ final class HLSSegmentBody {
                 }
                 return end(input, isComplete: true)
             }
-            throw result == HTTPSessionInput.averrorExit ? .interrupted : .failed(result)
+            throw result == FFmpegErrorCode.exit ? .interrupted : .failed(result)
         }
     }
 
@@ -430,7 +430,7 @@ extension HLSSegmentLoader {
             relay?.began(segment, input)
             return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
         case .failed(let code):
-            throw code == HTTPSessionInput.averrorExit ? .interrupted : .failed(code)
+            throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
         case .notServed:
             // A range the server answers whole (the request is already made once): the file, cut.
             return HLSSegmentBody(data: try wholeFileSegment(segment))

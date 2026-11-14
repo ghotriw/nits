@@ -196,7 +196,7 @@ struct HLSSegmentPipelineTests {
         for start in [0.0, 100.0] {
             let reader = try Self.reader(stand, media, start: start)
             let (packets, code) = Self.drain(reader)
-            #expect(code == MediaDemuxer.averrorEOF)
+            #expect(code == FFmpegErrorCode.eof)
             let video = packets.filter(\.isVideo)
             let audio = packets.filter { !$0.isVideo }
             #expect(video.count == 180, "\(video.count) pictures of 6 s at 30 fps")
@@ -230,7 +230,7 @@ struct HLSSegmentPipelineTests {
         #expect(media.segments[0].initSection != media.segments[1].initSection)
         let first = try Self.reader(stand, media, start: 0)
         let (firstPackets, firstCode) = Self.drain(first)
-        #expect(firstCode == MediaDemuxer.averrorEOF)
+        #expect(firstCode == FFmpegErrorCode.eof)
         // The run stops at the second init section: one segment.
         let video = firstPackets.filter(\.isVideo)
         #expect(abs((video.map(\.pts).max() ?? 0) - 4) < 0.2)
@@ -253,7 +253,7 @@ struct HLSSegmentPipelineTests {
         let media = try stand.playlist(name)
         let reader = try Self.reader(stand, media, start: 0)
         let (packets, code) = Self.drain(reader)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         let video = packets.filter(\.isVideo)
         #expect(video.count == 180, "\(video.count) pictures of 6 s")
         #expect((video.map(\.pts).max() ?? 0) > 5.8)
@@ -267,7 +267,7 @@ struct HLSSegmentPipelineTests {
         #expect(media.segments.count == 6)
         let reader = try Self.reader(stand, media, start: 0)
         let (packets, code) = Self.drain(reader)
-        #expect(code == MediaDemuxer.averrorEOF)
+        #expect(code == FFmpegErrorCode.eof)
         #expect(packets.count == 30, "\(packets.count) pictures of 3 s at 10 fps")
     }
 
@@ -281,7 +281,7 @@ struct HLSSegmentPipelineTests {
         let media = try stand.playlist("v0.m3u8")
         let reader = try Self.reader(stand, media, start: 0)
         let (packets, code) = Self.drain(reader)
-        #expect(code != MediaDemuxer.averrorEOF && code < 0)
+        #expect(code != FFmpegErrorCode.eof && code < 0)
         #expect(reader.failure != nil)
         #expect(packets.filter(\.isVideo).count >= 100, "The segments before it were read")
     }
@@ -388,7 +388,7 @@ struct HLSSegmentPipelineTests {
         // 20 s → 21 s, less 5.
         // Read again after the end: the run is over, and asks for nothing more.
         let askedAtEnd = asked
-        #expect(reader.read(&pointer.pointee) == MediaDemuxer.averrorEOF)
+        #expect(reader.read(&pointer.pointee) == FFmpegErrorCode.eof)
         #expect(asked == askedAtEnd)
         #expect(starts.count == 2 && abs(starts[0] - 6) < 0.01 && abs(starts[1] - 16) < 0.01, "\(starts)")
     }
@@ -421,7 +421,7 @@ struct HLSSegmentPipelineTests {
         #expect(reader.read(&pointer.pointee) >= 0)
         #expect(pointer.pointee.pts == 1000)
         av_packet_unref(pointer)
-        #expect(reader.read(&pointer.pointee) == MediaDemuxer.averrorEOF)
+        #expect(reader.read(&pointer.pointee) == FFmpegErrorCode.eof)
     }
 
     @Test("A WebVTT map written after the 33-bit wrap puts its cues beside media that began before it")

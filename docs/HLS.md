@@ -49,8 +49,8 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
     requests are stopped (`HLSSegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
     left out, and the next rung down is probed. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
   - *A slow link* (`openingLinkRate`): the rung it starts on is probed too, before the demuxer chooses (the same rule,
-    `HLSInput.startRung`), and the next one down when that probe fails; the download of the rung probed to start on
-    stops.
+    `AdaptiveBitrateLogic.openingRung`), and the next one down when that probe fails; the download of the rung probed
+    to start on stops.
   - *The link's rate* (`HTTPSessionTransport.waitForOpeningRate`, `OpeningLimit.linkRate`) is what the opening's
     transfers bring past their slow start (`skipSlowStart`): max(128 KB, what a link at `slowLinkLimit` carries in two
     round trips), the round trip TCP's handshake took on a new connection to the segments' host (QUIC's for HTTP/3;
@@ -353,6 +353,11 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   the shared pieces move down (HTTP transport, `NetworkTransferMeter`, `TimestampUnwrapper`, `AVStreamTable`), then the
   client stops naming `MediaDemuxer`; the FFmpeg boundary stays (the client hands out `AVPacket`s). A repository only
   with a second consumer.
+- **A DASH client of our own before the target** (2026-11-14): it is the second consumer of the segment machinery
+  (loader, reader, lanes, ABR's segments in flight), so a target drawn around HLS alone would be drawn again. Order:
+  the client's types free of `MediaDemuxer` (done 2026-11-14: the input's variant types and `FFmpegErrorCode` stand on
+  their own, one opening-rung rule in `AdaptiveBitrateLogic`); the segment machinery apart from HLS; the DASH client on
+  it, then FFmpeg's DASH demuxer and its patch gone; the target last, around both clients.
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
   play, content steering, interstitials (the primary plays).
 
@@ -557,7 +562,8 @@ where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
    stays on 480; without the check it probes up to 640. *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
    rung twice) was seen through FFmpeg's HLS demuxer, before the client; never reproduced, and the client's nine
    switches of 2026-11-13 peaked at 25–54 ms/s. Look again only if a step up is left right after it on a steady link.
-3. Then the client as a target of its own (`NitsHLS`, see "Decisions").
+3. Then the segment machinery apart from HLS, a DASH client on it, and only then a target of its own (see "Decisions":
+   "A DASH client of our own before the target").
 
 Decisions without a date: (b) AES-128 measures no link rate at the opening and its probes download whole segments
 (the fix is streaming decryption); (c) the Dolby Vision ladder bottoms at 5186k, so a slow link has nothing in it to

@@ -12,14 +12,6 @@ import Foundation
 /// old one reaches T, then takes over from T, and the old variant is discarded: the input stops it at the end of the
 /// segment it is reading.
 extension MediaDemuxer {
-    struct VariantStreams {
-        let video: Int?
-        let audio: [Int]
-        /// Subtitle renditions (`EXT-X-MEDIA` of type `SUBTITLES`): the subtitle streams other variants have too.
-        let subtitles: [Int]
-        let all: [Int]
-    }
-
     /// What the variants are of, and which demuxer, for the log: "DASH #2", or "HLS #5".
     var streamingName: String {
         "\(input.streamingName) #\(logID)"
@@ -198,9 +190,7 @@ extension MediaDemuxer {
         let rungs = startable.isEmpty ? ladder : startable
         var start = rungs.max { $0.bandwidth < $1.bandwidth } ?? best
         if let linkRate {
-            let share = AdaptiveBitrateLogic.Config().safety
-            let fitting = rungs.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
-            start = fitting ?? rungs.min { $0.bandwidth < $1.bandwidth } ?? best
+            start = AdaptiveBitrateLogic.openingRung(of: rungs, bandwidth: \.bandwidth, linkRate: linkRate) ?? best
         }
 
         let selected = start

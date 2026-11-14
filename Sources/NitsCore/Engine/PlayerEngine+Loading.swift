@@ -570,9 +570,9 @@ extension PlayerEngine {
         [-65, -61, -51, -60, -64, -54, -50].contains(code)
     }
 
-    /// `AVERROR_HTTP_FORBIDDEN` (`FFERRTAG(0xF8, '4', '0', '3')`, a macro Swift doesn't import).
+    /// `AVERROR_HTTP_FORBIDDEN`: the server's 403.
     nonisolated static func isForbiddenError(_ code: Int32) -> Bool {
-        code == -0x3330_34F8
+        code == FFmpegErrorCode.httpForbidden
     }
 
     func loadSync(

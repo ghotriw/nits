@@ -91,7 +91,7 @@ struct LiveSegmentGateTests {
                 end: nil, meter: NetworkTransferMeter(), shouldAbort: Self.never))
     }
 
-    private static func failure(_ code: Int32 = LiveSegmentGate.notFoundError) -> HTTPSessionTransport.Opened {
+    private static func failure(_ code: Int32 = FFmpegErrorCode.httpNotFound) -> HTTPSessionTransport.Opened {
         .failed(code)
     }
 
@@ -126,7 +126,7 @@ struct LiveSegmentGateTests {
             attempts.withLock { $0 += 1 }
             return Self.failure()
         }
-        guard case .failed(LiveSegmentGate.notFoundError) = past else {
+        guard case .failed(FFmpegErrorCode.httpNotFound) = past else {
             Issue.record("\(past)")
             return
         }
@@ -143,7 +143,7 @@ struct LiveSegmentGateTests {
             switch n {
             case 1: return .notServed
             case 2: return Self.failure()
-            case 3: return Self.failure(HTTPSessionInput.ffErrorTag(0xF8, "5", "X", "X"))
+            case 3: return Self.failure(FFmpegErrorCode.tag(0xF8, "5", "X", "X"))
             default: return Self.input()
             }
         }
@@ -170,7 +170,7 @@ struct LiveSegmentGateTests {
 
         let started = ContinuousClock.now
         let result = gate.open(.init(key: "v", number: 11), shouldAbort: Self.never) { _ in Self.failure() }
-        guard case .failed(LiveSegmentGate.notFoundError) = result else {
+        guard case .failed(FFmpegErrorCode.httpNotFound) = result else {
             Issue.record("\(result)")
             return
         }
@@ -271,7 +271,7 @@ struct LiveSegmentGateTests {
         source.say(ended: nil)
         let gate = gate(source: source)
         let result = gate.open(.init(key: "v", number: 11), shouldAbort: Self.never) { _ in Self.failure() }
-        guard case .failed(LiveSegmentGate.notFoundError) = result else {
+        guard case .failed(FFmpegErrorCode.httpNotFound) = result else {
             Issue.record("\(result)")
             return
         }
@@ -288,7 +288,7 @@ struct LiveSegmentGateTests {
             source.say(ended: sourceSays)
             let gate = gate(source: source)
             let result = gate.open(.init(key: "v", number: 11), shouldAbort: Self.never) { _ in Self.failure() }
-            guard case .failed(LiveSegmentGate.notFoundError) = result else {
+            guard case .failed(FFmpegErrorCode.httpNotFound) = result else {
                 Issue.record("\(result) (the source says \(String(describing: sourceSays)))")
                 return
             }
@@ -313,7 +313,7 @@ struct LiveSegmentGateTests {
             let result = gate.open(.init(key: "v", number: 11), shouldAbort: isAborted) { _ in Self.failure() }
             // Many limits went by (twenty milliseconds each), and what ended the wait was the abort, not a failure handed to
             // the demuxer to skip.
-            guard case .failed(HTTPSessionInput.averrorExit) = result else {
+            guard case .failed(FFmpegErrorCode.exit) = result else {
                 Issue.record("\(result) (the source says \(String(describing: sourceSays)))")
                 return
             }
@@ -336,7 +336,7 @@ struct LiveSegmentGateTests {
         let result = gate.open(.init(key: "v", number: 11), shouldAbort: isAborted) { _ in
             Self.failure()
         }
-        guard case .failed(HTTPSessionInput.averrorExit) = result else {
+        guard case .failed(FFmpegErrorCode.exit) = result else {
             Issue.record("\(result)")
             return
         }
@@ -350,7 +350,7 @@ struct LiveSegmentGateTests {
         let gate = gate(source: source)
         let refusing = OSAllocatedUnfairLock(initialState: true)
         source.onRenew { refusing.withLock { $0 = false } }
-        let forbidden = LiveSegmentGate.forbiddenError
+        let forbidden = FFmpegErrorCode.httpForbidden
         let result = gate.open(.init(key: "v", number: 3), shouldAbort: Self.never) { _ in
             refusing.withLock { $0 } ? Self.failure(forbidden) : Self.input()
         }

@@ -64,7 +64,7 @@ enum MediaDurationProbe {
         let ret = avformat_open_input(&formatCtx, path, nil, &options)
         guard ret >= 0, let ctx = formatCtx else {
             // A playlist under a name that tells none (FFmpeg has no HLS demuxer).
-            if ret == MediaDemuxer.averrorInvalidData, isNetwork,
+            if ret == FFmpegErrorCode.invalidData, isNetwork,
                 HLSInput.sniffsAsPlaylist(path, headers: headers, interrupt: interrupt)
             {
                 return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)

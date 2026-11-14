@@ -134,7 +134,7 @@ final class ThumbnailSource {
         // The cheapest rung that is described. One described as another (`DemuxerInput.variantDescription`) is described
         // by its first read, before the decoder is made from its stream: read once, then back to the start (which replays
         // what was read). One whose read fails or finds other streams gives way to the next cheapest.
-        var chosen: MediaDemuxer.VariantCandidate?
+        var chosen: VariantCandidate?
         for candidate in withPicture {
             guard let video = candidate.streams.video else { continue }
             if input.variantDescription(id: candidate.id) == .pending {

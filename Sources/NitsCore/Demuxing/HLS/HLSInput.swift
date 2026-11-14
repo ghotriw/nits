@@ -142,7 +142,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     private var joinSequence: Int?
     /// The variants described from another rung's probe (`redescribe`): pending until their first read, then described
     /// or rejected. A variant not in it is described by a probe of its own.
-    private let descriptions = OSAllocatedUnfairLock<[Int: MediaDemuxer.VariantDescription]>(initialState: [:])
+    private let descriptions = OSAllocatedUnfairLock<[Int: VariantDescription]>(initialState: [:])
     /// The link's rate the opening measured (`HTTPSessionTransport.waitForOpeningRate`), read once the probes ended.
     private var openingRate: Double?
     let isLivePlaylist: Bool
@@ -477,15 +477,16 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         /// Rungs described as the model, by their position in `wanted`.
         var clones = Set(
             model == nil ? [] : candidates.filter { probedLanes[$0].value != true && results[$0].value == nil })
-        // A link proven slow starts on a rung below the top (`MediaDemuxer.adoptVariants`, the same rule: `startRung`): one
-        // described as the model is probed now, as the demuxer starts only on a rung described by its own probe. One that
-        // fails is left out, and the next rung down is the start: the demuxer then picks it the same way. The download of
-        // the rung probed to start on (`.start`) stops: it would share the slow link with the one played.
+        // A link proven slow starts on a rung below the top (`AdaptiveBitrateLogic.openingRung`, the demuxer's rule
+        // too): one described as the model is probed now, as the demuxer starts only on a rung described by its own
+        // probe. One that fails is left out, and the next rung down is the start: the demuxer then picks it the same
+        // way. The download of the rung probed to start on (`.start`) stops: it would share the slow link with the one
+        // played.
         if let rate = openingRate, rate < Self.slowLinkLimit {
             let open = plan.filter { lanesToOpen[$0.video] != nil && results[$0.video].value == nil }
-            if let start = Self.startRung(plan: open, linkRate: rate),
-                let startBandwidth = open.first(where: { $0.video == start })?.bandwidth
-            {
+            if let startRung = AdaptiveBitrateLogic.openingRung(of: open, bandwidth: { $0.bandwidth }, linkRate: rate) {
+                let start = startRung.video
+                let startBandwidth = startRung.bandwidth
                 if let probedStart = model ?? (candidates.isEmpty ? referenceIndex : nil), probedStart != start {
                     lanesToOpen[probedStart]?.endDownload()
                 }
@@ -676,16 +677,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
     }
 
-    /// The rung (by position in `wanted`) a link of `linkRate` bits a second starts on, as `MediaDemuxer.adoptVariants`
-    /// chooses it: the best that fits the link's safe share, else the lowest.
-    static func startRung(plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])], linkRate: Double)
-        -> Int?
-    {
-        let share = AdaptiveBitrateLogic.Config().safety
-        let fitting = plan.filter { Double($0.bandwidth) <= linkRate * share }.max { $0.bandwidth < $1.bandwidth }
-        return (fitting ?? plan.min { $0.bandwidth < $1.bandwidth })?.video
-    }
-
     /// A clone's first run found `streams` (`HLSLane.describeFirstRun`): when they are of the kinds and number its lane
     /// was described with, their description replaces the model's in the table (the time base kept: the lane puts its
     /// packets on it), and its variants are `described`; else they are `rejected`, and the lane reads nothing. On the
@@ -715,12 +706,12 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         return true
     }
 
-    func variantDescription(id: Int) -> MediaDemuxer.VariantDescription {
+    func variantDescription(id: Int) -> VariantDescription {
         descriptions.withLock { $0[id] } ?? .described
     }
 
     /// A clone probed at the seek's target `seconds` (`HLSLane.describeByProbe`), which `redescribe`s it.
-    func describeVariant(id: Int, at seconds: Double) -> MediaDemuxer.VariantDescription {
+    func describeVariant(id: Int, at seconds: Double) -> VariantDescription {
         if variantDescription(id: id) == .pending, let variant = variants.first(where: { $0.id == id }) {
             _ = lanes[variant.lane].describeByProbe(at: seconds)
         }
@@ -803,7 +794,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     /// The variants as `hls.c`'s programs group their streams: the variant's own (its picture, the sound muxed into it)
     /// and those of the renditions it names. A variant of a media playlist alone is none.
-    func variantCandidates() -> [MediaDemuxer.VariantCandidate]? {
+    func variantCandidates() -> [VariantCandidate]? {
         guard !variants.isEmpty else { return nil }
         return variants.map { variant in
             let own = tableStreams(ofLane: variant.lane)
@@ -811,9 +802,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 tableStreams(ofLane: variant.lane, AVMEDIA_TYPE_AUDIO)
                 + variant.audioLanes.flatMap { tableStreams(ofLane: $0) }
             let subtitles = variant.subtitleLanes.flatMap { tableStreams(ofLane: $0) }
-            return MediaDemuxer.VariantCandidate(
+            return VariantCandidate(
                 id: variant.id, bandwidth: variant.bandwidth,
-                streams: MediaDemuxer.VariantStreams(
+                streams: VariantStreams(
                     video: tableStreams(ofLane: variant.lane, AVMEDIA_TYPE_VIDEO).first, audio: audio,
                     subtitles: subtitles, all: own.filter { !audio.contains($0) } + audio + subtitles))
         }
@@ -839,7 +830,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// A lane's segment as the demuxer wants it told: with the variants the lane serves and whether sound is muxed in.
-    private func inFlight(_ segment: HLSLane.SegmentInFlight, laneIndex: Int) -> MediaDemuxer.InFlightSegment {
+    private func inFlight(_ segment: HLSLane.SegmentInFlight, laneIndex: Int) -> InFlightSegment {
         // Variants that differ in their audio group share a playlist, so a lane may be several variants'.
         .init(
             variants: variants.filter { $0.lane == laneIndex }.map(\.id), sequence: segment.sequence,
@@ -848,7 +839,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Each variant's picture lane tells how far its segment's download has got (`HLSLane.observeProgress`).
-    func observeSegments(_ observer: @escaping @Sendable (MediaDemuxer.InFlightSegment) -> Void) {
+    func observeSegments(_ observer: @escaping @Sendable (InFlightSegment) -> Void) {
         // A rendition's lanes too (no variants: told so): the thread may stand on their input while a picture downloads.
         for laneIndex in lanes.indices {
             let ids = variants.filter { $0.lane == laneIndex }.map(\.id)
@@ -863,7 +854,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// The same, asked for now, of the lanes read: while the read-ahead is full nothing waits for the download.
-    func pollSegments(_ observer: (MediaDemuxer.InFlightSegment) -> Void) {
+    func pollSegments(_ observer: (InFlightSegment) -> Void) {
         for laneIndex in Set(variants.map(\.lane)) where lanes.indices.contains(laneIndex) {
             if let segment = lanes[laneIndex].pollProgress() { observer(inFlight(segment, laneIndex: laneIndex)) }
         }
@@ -881,7 +872,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         lanes[variant.lane].join(sequence: sequence)
     }
 
-    func canJoin(variant id: Int, sequence: Int) -> MediaDemuxer.JoinRefusal? {
+    func canJoin(variant id: Int, sequence: Int) -> JoinRefusal? {
         guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane) else {
             return .noSegment
         }
@@ -921,9 +912,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 case .audio: code = lane.fill(picture: picture)
                 case .subtitle: code = lane.fill(before: media, picture: picture)
                 }
-                if code == MediaDemuxer.averrorEOF || (lane.kind != .primary && code == HLSLane.held) { continue }
+                if code == FFmpegErrorCode.eof || (lane.kind != .primary && code == HLSLane.held) { continue }
                 if code < 0 {
-                    guard code != HTTPSessionInput.averrorExit, canDrop(lane) else { return code }
+                    guard code != FFmpegErrorCode.exit, canDrop(lane) else { return code }
                     AppLog.warning(.demuxer, "HLS: \(lane.label) failed (\(code)) and is left out")
                     lane.giveUp()
                     continue
@@ -939,7 +930,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 } ?? true
             if isFirst { best = lane }
         }
-        guard let best else { return MediaDemuxer.averrorEOF }
+        guard let best else { return FFmpegErrorCode.eof }
         // Where reading is: the picture's, not a rendition read ahead of it.
         if lanes.lazy.filter({ $0.kind == .primary && $0.isRead }).count < 2 { catchingUp = nil }
         if best.kind == .primary, best !== catchingUp, best.pendingTime.isFinite { lastTime = best.pendingTime }
@@ -1104,7 +1095,7 @@ private final class ProbeRace: @unchecked Sendable {
                 if let failure {
                     state.errors[index] = failure
                     let isLoser = state.winner.map { $0 != index } ?? false
-                    if isLoser, failure.code == HTTPSessionInput.averrorExit { state.stopped.insert(index) }
+                    if isLoser, failure.code == FFmpegErrorCode.exit { state.stopped.insert(index) }
                 }
             }
             changed.signal()

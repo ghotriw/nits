@@ -607,8 +607,6 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     private var lowWater: Int { isHeld ? Self.openingLowWater : Self.lowWater }
     /// Seconds before asking again for a body cut short, a retry each: FFmpeg's `reconnect` waits 0, 1, 2, … s.
     static let retryDelays = [0.0, 1, 2]
-    /// `AVERROR_EXIT` (`-MKTAG('E', 'X', 'I', 'T')`), FFmpeg's error for an interrupted call.
-    static let averrorExit: Int32 = -0x5449_5845
 
     private let holder: HTTPSessionHolder
     private let request: URLRequest
@@ -766,7 +764,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     fileprivate func waitForAnswer() -> HTTPSessionTransport.Opened {
         guard wait(until: { $0.answer != nil }) else {
             close()
-            return .failed(Self.averrorExit)
+            return .failed(FFmpegErrorCode.exit)
         }
         switch state.withLock({ $0.answer }) {
         case .open?: return .input(self)
@@ -867,15 +865,15 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     private func readOnce(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
         guard
             wait(until: { $0.buffered > 0 || $0.isFinished || $0.remaining == 0 || $0.needsContinuation })
-        else { return Self.averrorExit }
+        else { return FFmpegErrorCode.exit }
         let (result, isServed) = state.withLockUnchecked { state -> (Int32, Bool) in
-            if state.remaining == 0 { return (MediaDemuxer.averrorEOF, true) }
+            if state.remaining == 0 { return (FFmpegErrorCode.eof, true) }
             if state.buffered == 0, state.needsContinuation {
                 // The piece is read: the next, and the reader waits for it.
                 startContinuation(in: &state)
                 return (Self.again, false)
             }
-            guard state.buffered > 0 else { return (state.failed ? -EIO : MediaDemuxer.averrorEOF, false) }
+            guard state.buffered > 0 else { return (state.failed ? -EIO : FFmpegErrorCode.eof, false) }
             var wanted = Int(size)
             if let remaining = state.remaining { wanted = Int(min(Int64(wanted), remaining)) }
             var copied = 0
@@ -912,9 +910,9 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         return size
     }
 
-    /// Gives the download up for another's: the task is cancelled, and a read waiting for it, now or later, is interrupted
-    /// (`averrorExit`, as a seek interrupts it) instead of reading what is left of the body as the end of a segment.
-    /// What it received stays reported as a transfer (`reportTransfer`): the link did carry it.
+    /// Gives the download up for another's: the task is cancelled, and a read waiting for it, now or later, is
+    /// interrupted (`FFmpegErrorCode.exit`, as a seek interrupts it) instead of reading what is left of the body as the
+    /// end of a segment. What it received stays reported as a transfer (`reportTransfer`): the link did carry it.
     func abandon() {
         state.withLockUnchecked { $0.isAbandoned = true }
         close()
@@ -1140,24 +1138,16 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             else { return (.notServed, nil, nil) }
             let fileSize = contentRange.split(separator: "/").last.flatMap { Int64($0) }
             return (.open, fileSize, length)
-        case 400: return (.failed(ffErrorTag(0xF8, "4", "0", "0")), nil, nil)
-        case 401: return (.failed(ffErrorTag(0xF8, "4", "0", "1")), nil, nil)
-        case 403: return (.failed(ffErrorTag(0xF8, "4", "0", "3")), nil, nil)
-        case 404: return (.failed(ffErrorTag(0xF8, "4", "0", "4")), nil, nil)
-        case 429: return (.failed(ffErrorTag(0xF8, "4", "2", "9")), nil, nil)
-        case 400..<500: return (.failed(ffErrorTag(0xF8, "4", "X", "X")), nil, nil)
-        case 500..<600: return (.failed(ffErrorTag(0xF8, "5", "X", "X")), nil, nil)
+        case 400: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "0", "0")), nil, nil)
+        case 401: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "0", "1")), nil, nil)
+        case 403: return (.failed(FFmpegErrorCode.httpForbidden), nil, nil)
+        case 404: return (.failed(FFmpegErrorCode.httpNotFound), nil, nil)
+        case 429: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "2", "9")), nil, nil)
+        case 400..<500: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "X", "X")), nil, nil)
+        case 500..<600: return (.failed(FFmpegErrorCode.tag(0xF8, "5", "X", "X")), nil, nil)
         // A redirect (not followed) and the rest: FFmpeg's to open.
         default: return (.notServed, nil, nil)
         }
-    }
-
-    /// `FFERRTAG(a, b, c, d)`, which doesn't import into Swift: FFmpeg's `AVERROR_HTTP_*`.
-    static func ffErrorTag(_ a: UInt8, _ b: Character, _ c: Character, _ d: Character) -> Int32 {
-        let tag =
-            UInt32(a) | UInt32(b.asciiValue ?? 0) << 8 | UInt32(c.asciiValue ?? 0) << 16
-            | UInt32(d.asciiValue ?? 0) << 24
-        return -Int32(bitPattern: tag)
     }
 }
 

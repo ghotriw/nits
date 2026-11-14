@@ -6,19 +6,6 @@ import Foundation
 /// decision is logged with where the segment is against the playing position. Background: "Adaptive bitrate" in
 /// `docs/ARCHITECTURE.md`.
 extension MediaDemuxer {
-    /// A segment of a variant that is being downloaded, as the input tells it while the read waits for its bytes.
-    struct InFlightSegment: Sendable, Equatable {
-        /// The variants the lane belongs to (variants that differ in their audio group share a playlist).
-        let variants: [Int]
-        let sequence: Int
-        /// Seconds on the timeline the segment starts at, and how long it is.
-        let start: Double
-        let duration: Double
-        let progress: HTTPSessionInput.Progress
-        /// The variant's own lane carries sound (muxed into the picture's segments, as in MPEG-TS), not a rendition.
-        let hasMuxedAudio: Bool
-    }
-
     /// What came of the checks of the segments in flight, so each is acted on and logged once: a segment is decided when
     /// its download was given up or refused for good (`AbandonRefusal.isFinal`); a passing refusal leaves it to the next
     /// check, and is logged once while it lasts.

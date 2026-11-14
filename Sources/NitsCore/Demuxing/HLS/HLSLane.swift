@@ -563,10 +563,10 @@ final class HLSLane: @unchecked Sendable {
     /// without cues to find the next, and wait at a live edge in a silence while the picture's packets are ready. With
     /// `picture`, a rendition's run of a sequence the picture has not anchored yet waits for it (`waitsForAnchor`).
     func fill(before limit: Double? = nil, picture: Double? = nil) -> Int32 {
-        guard isRead else { return MediaDemuxer.averrorEOF }
+        guard isRead else { return FFmpegErrorCode.eof }
         if hasPending { return 0 }
         // Given up for another's: nothing more is read of it (an interrupt, as a seek's, until the demuxer has switched).
-        if isAbandoned { return HTTPSessionInput.averrorExit }
+        if isAbandoned { return FFmpegErrorCode.exit }
         if isRejected { return Self.rejected }
         if let code = resolveStart() { return code }
         readLimit = limit
@@ -607,7 +607,7 @@ final class HLSLane: @unchecked Sendable {
                     return Self.held
                 case .ended:
                     isFinished = true
-                    return MediaDemuxer.averrorEOF
+                    return FFmpegErrorCode.eof
                 case .stopped(let code):
                     return code
                 }
@@ -628,8 +628,8 @@ final class HLSLane: @unchecked Sendable {
             // Given up meanwhile: however the reader put the interrupt (FFmpeg's MPEG-TS demuxer makes a short read the
             // end of its stream), it is one, never a failed segment to skip nor an end to go on from, to the next segment
             // of this variant.
-            if isAbandoned { return HTTPSessionInput.averrorExit }
-            if code == MediaDemuxer.averrorEOF {
+            if isAbandoned { return FFmpegErrorCode.exit }
+            if code == FFmpegErrorCode.eof {
                 if let stop = stopCode {
                     stopCode = nil
                     return stop
@@ -646,7 +646,7 @@ final class HLSLane: @unchecked Sendable {
     /// and repeat the packets a demux error came after); a lane whose segments fail `maxSkippedSegments` in a row gives
     /// the error up. Nil to go on reading; else what `fill` returns.
     private func recover(from code: Int32) -> Int32? {
-        if code == HTTPSessionInput.averrorExit { return code }
+        if code == FFmpegErrorCode.exit { return code }
         skipped += 1
         guard skipped < Self.maxSkippedSegments, let failed = resume else { return code }
         switch following(failed) {
@@ -657,7 +657,7 @@ final class HLSLane: @unchecked Sendable {
         case .ended:
             resume = nil
             isFinished = true
-            return MediaDemuxer.averrorEOF
+            return FFmpegErrorCode.eof
         case .stopped(let stop):
             return stop
         }
@@ -918,7 +918,7 @@ final class HLSLane: @unchecked Sendable {
             // hls.c does, so a segment that expired is skipped rather than asked for.
             // Only an abort stops the read here: segments are listed ahead, and a stuck or failing playlist is decided
             // at the edge (`waitForReload`).
-            if let code = reloadIfStale(), code == HTTPSessionInput.averrorExit { return .stopped(code) }
+            if let code = reloadIfStale(), code == FFmpegErrorCode.exit { return .stopped(code) }
             switch timeline.next(after: entry) {
             case .entry(let next):
                 // Numbers that don't follow: segments missed (a late reload, `HLSTimeline.startRun`) between bytes that
@@ -945,11 +945,11 @@ final class HLSLane: @unchecked Sendable {
         let due = lastLoad + .seconds(max(interval, 0.5))
         let wake = DispatchSemaphore(value: 0)
         while ContinuousClock.now < due {
-            if shouldAbort() { return HTTPSessionInput.averrorExit }
+            if shouldAbort() { return FFmpegErrorCode.exit }
             // The read waits for the live stream's next segment with its thread, as FFmpeg's does inside `av_read_frame`.
             _ = wake.wait(timeout: .now() + .milliseconds(50))
         }
-        if shouldAbort() { return HTTPSessionInput.averrorExit }
+        if shouldAbort() { return FFmpegErrorCode.exit }
         return reload()
     }
 
@@ -967,7 +967,7 @@ final class HLSLane: @unchecked Sendable {
             return apply(timeline.reload(playlist), playlist)
         } catch {
             lastLoad = .now
-            if error == .interrupted { return HTTPSessionInput.averrorExit }
+            if error == .interrupted { return FFmpegErrorCode.exit }
             failedReloads += 1
             return failedReloads >= Self.maxFailedReloads ? HLSSegmentReader.code(for: error) : nil
         }
