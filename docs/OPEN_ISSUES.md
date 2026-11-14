@@ -234,7 +234,7 @@ Accepted for now, noted for later.
   the pool by itself, and a suite that blocks its thread for seconds tips more tests over it. Not looked into: the stall
   measures of the two ladder tests are the ones to judge first; `HLSOverHTTPTests.swift:312` showed up in 2 of 6 runs with
   the live-history suites and in none of 2 without, too few to tell if they have a part in it. Two runs more with the head
-  of the stream added (`LiveSegmentGate`, `YouTubeLive` suites; 4 and 2 failures): `DASHLadderTests.swift:289`,
+  of the stream added (the gate it was then, `YouTubeLive` suites; 4 and 2 failures): `DASHLadderTests.swift:289`,
   `HLSOverHTTPTests.swift:312` and `AdaptiveBitrateTests.swift:146` (twice); then one of the new engine tests, which
   asserted that a stream was not yet ended right after its load, that took 45 s there (fixed: a load in a one-thread pool
   can outlast any wait a test sets).
@@ -269,7 +269,7 @@ Not checked, from the review of the same change:
   page by then, throw, and the segments be refused: the picture stands, with no fallback to resolving it as a video.
   Whether the server keeps a premiere's segments after its end, as it does a live stream's, is the thing to see.
 - The end of a premiere at the edge: the manifest goes on past the head for a day (`futureSegments`) though the end is
-  known (`duration`), so `LiveSegmentGate` waits `segmentWaitLimit` (60 s) and then asks yt-dlp before `hasEnded` is set:
+  known (`duration`), so `DASHHistory` waits `segmentWaitLimit` (60 s) and then asks yt-dlp before `hasEnded` is set:
   a minute of buffering at the end, and no limit to it if yt-dlp still says `is_live` then.
 
 **Not checked on a real stream (2026-11-04)**:
@@ -289,3 +289,16 @@ Not checked, from the review of the same change:
   slid: the first switch to the other numbering moves the start of the window by all the time since the stream opened
   (`first_timestamp_updated` is set when `first_timestamp` is, and only a slide moves it), up to an hour. Needs both a
   growing playlist and variants that do not share a base; not seen.
+
+- **A live history opened again from the same `ResolvedMedia`** starts from the resolver's head, which is stale by then
+  (`DASHHistory` counts its slide from its own creation): until the first head poll (`headPollInterval`) the window starts
+  with segments already expired and ends at the old head. As before the move to the client; not fixed.
+
+- **`AdaptiveBitrateTests` on the strict pool (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) fail at random, with no code
+  behind it (2026-11-14, DASH client step 6).** Same suite alone, 15 tests, each run ~155 s: on the step 6 changes 3 runs
+  failed ("A low variant's small segments, slow to be answered…" twice, then it and "At a live stream's edge, the raised
+  read-ahead…"), 1 passed; on a clean `HEAD` (stash) 1 run passed and 1 failed on a different test ("The two transfers of
+  a switch share the link…"). So it is the pool, not the change: do not bisect it again, and do not take one failure for
+  a regression. Judge a change by the suite passing in the normal pool and with `NITS_READ_AHEAD_LOCAL=1`, and by the
+  failures being ABR timing ones (`waitUntil`, `estimate`, `playedWidth`) on both sides. The fix is the cause, not a
+  gate: see "blocking FFmpeg on the cooperative pool" above.

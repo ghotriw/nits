@@ -69,7 +69,8 @@ public struct LiveHistory: Sendable, Equatable {
     /// The number of that segment (the newest one then).
     public var headNumber: Int
     /// What the manifest's segments are asked for through (their addresses, the head, the signature), when the manifest
-    /// goes on past the head: the segments to come are waited for (`LiveSegmentGate`). `nil`: the manifest ends at the head.
+    /// goes on past the head: the playlists list the segments up to the head, which the source tells (`DASHHistory`).
+    /// `nil`: the manifest ends at the head.
     public var source: (any LiveSegmentSource)?
 
     /// How long a segment of a live stream given as segments lasts, about (YouTube's): the end of a segment whose start is
@@ -87,10 +88,23 @@ public struct LiveHistory: Sendable, Equatable {
         URL(string: segmentAddress(base, number: String(number)))
     }
 
+    /// The host of the addresses the manifest names, which no DNS knows: the client asks the source for the address of
+    /// each (`HLSPlaylistSource.address(of:)`).
+    package static let host = "live.nits.invalid"
+
     /// What a manifest names the stream `key` by: the address its segments are asked for (with `sq=N`) through the
     /// source (`LiveSegmentSource.url(for:number:)`), not an address that exists.
     package static func streamAddress(_ key: String) -> String {
-        "https://\(LiveSegmentGate.host)/\(key)"
+        "https://\(host)/\(key)"
+    }
+
+    /// The stream and the number of the segment `url` names, when it is one of the manifest's addresses.
+    package static func segment(named url: URL) -> (key: String, number: Int)? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.host == host,
+            let number = components.queryItems?.first(where: { $0.name == "sq" })?.value.flatMap({ Int($0) })
+        else { return nil }
+        let key = String(components.path.drop { $0 == "/" })
+        return key.isEmpty ? nil : (key, number)
     }
 
     public init(origin: Double, end: Double, headNumber: Int = 0, source: (any LiveSegmentSource)? = nil) {

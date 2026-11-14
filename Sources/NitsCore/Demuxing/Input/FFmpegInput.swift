@@ -5,7 +5,7 @@ import Foundation
 /// `HLSInput`'s (FFmpeg's HLS demuxer is not built). See `DemuxerInput`.
 ///
 /// Its network requests go through `ioBytes` (`FFmpegIOByteCounter`): counted for adaptive bitrate, served by
-/// `HTTPSessionTransport` for DASH, and through a `LiveSegmentGate` for a live stream's history.
+/// `HTTPSessionTransport` for DASH.
 final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// The open context; nil once closed.
     private(set) var context: UnsafeMutablePointer<AVFormatContext>?
@@ -21,13 +21,8 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - httpRequestSize: What a network input's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`).
-    ///   - liveHistory: A live stream's past as segments: its manifest's segments are asked for through its source, and
-    ///     the timeline starts at its origin.
-    ///   - onLiveHistoryChange: What the history's gate finds (a head further on, the end of the stream), on the
-    ///     reading thread.
     init?(
-        url: String, headers: [String: String], httpRequestSize: Int?, interrupt: FFmpegInterrupt,
-        liveHistory: LiveHistory?, onLiveHistoryChange: @escaping @Sendable (LiveSegmentGate.Change) -> Void
+        url: String, headers: [String: String], httpRequestSize: Int?, interrupt: FFmpegInterrupt
     ) {
         self.interrupt = interrupt
         let ioBytes = FFmpegIOByteCounter()
@@ -38,15 +33,6 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         // Setup interrupt callback to abort hung network requests cleanly. `self.interrupt` keeps it alive.
         interrupt.install(on: allocatedCtx)
         ioBytes.install(on: allocatedCtx)
-        // The segments of a live stream's history are asked for through the source, and those to come are waited for.
-        // What the gate finds (a head further on, the end of the stream) moves the window the engine is told of.
-        if let history = liveHistory, let source = history.source {
-            ioBytes.liveSegments = LiveSegmentGate(
-                source: source,
-                head: LiveHead(
-                    number: history.headNumber, startTime: history.end - LiveSegmentGate.nominalSegmentDuration),
-                onChange: onLiveHistoryChange)
-        }
         // Until the opening is done (`finishOpening`, or a failure), the inputs a DASH demuxer opens for the start of
         // each rung of a ladder are not downloaded whole.
         ioBytes.isOpening = true
@@ -109,9 +95,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
             hasIndex: Self.describesStreams(formatCtx), landsBetweenKeyframes: Self.isUnindexedStream(formatCtx),
             interleavesVariantsByPresentation: isDASH)
 
-        var origin = Self.timelineOrigin(of: formatCtx)
-        // The segments of a live stream's past carry the stream's time (hours in): the timeline starts at the first.
-        if let liveHistory { origin = Int64((liveHistory.origin * Double(AV_TIME_BASE)).rounded()) }
+        let origin = Self.timelineOrigin(of: formatCtx)
         timelineOrigin = origin
         if origin != 0 {
             AppLog.info(
@@ -207,8 +191,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         return found
     }
 
-    /// FFmpeg's formats have no live window of their own to tell: a DASH stream's history is told by the gate
-    /// (`LiveSegmentGate`), and a live playlist is `HLSInput`'s.
+    /// FFmpeg's formats have no live window of their own to tell: a live playlist is `HLSInput`'s.
     let isLivePlaylist = false
 
     func liveWindow() -> LiveWindow? { nil }

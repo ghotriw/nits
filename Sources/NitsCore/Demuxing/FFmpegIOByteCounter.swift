@@ -34,9 +34,6 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private var customInputs: [UnsafeMutablePointer<AVIOContext>: any FFmpegInputSource] = [:]
     /// Makes `transport`, when set before the context opens: a network source's.
     var makeTransport: (() -> HTTPSessionTransport)?
-    /// The segments of a live stream's history, named by keys and numbers in its manifest, are opened through this: the
-    /// source's address for each, and a wait for those past the head.
-    var liveSegments: LiveSegmentGate?
     /// The demuxer is opening (`MediaDemuxer.init`): the inputs a DASH demuxer opens meanwhile are held to a few hundred
     /// kilobytes of download, which it reads the start of and leaves (`HTTPSessionInput.OpeningLimit`).
     var isOpening = false
@@ -157,19 +154,8 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
         let offset = Self.intOption("offset", in: options) ?? 0
         let cookieOrigin = cookies == nil ? nil : masterLocation
         let opening: HTTPSessionInput.Opening? = isOpening ? .held : nil
-        let opened: HTTPSessionTransport.Opened
-        if let gate = liveSegments, let segment = gate.request(for: url) {
-            opened = gate.open(segment, shouldAbort: transport.shouldAbort) { address in
-                // The CDN may redirect a segment (YouTube's 4K tier does, to another server), and its address is whole.
-                transport.open(
-                    address.absoluteString, offset: offset, end: end, cookies: cookies, cookieOrigin: cookieOrigin,
-                    opening: opening, followsRedirects: true)
-            }
-        } else {
-            opened = transport.open(
-                url, offset: offset, end: end, cookies: cookies, cookieOrigin: cookieOrigin,
-                opening: opening)
-        }
+        let opened = transport.open(
+            url, offset: offset, end: end, cookies: cookies, cookieOrigin: cookieOrigin, opening: opening)
         switch opened {
         case .input(let input):
             guard let context = makeContext(serving: input) else {

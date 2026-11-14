@@ -53,6 +53,8 @@ struct DASHPlaylists: HLSPlaylistSource {
 
     /// Its segments may be local files: a manifest read from a file.
     let allowsFiles: Bool
+    /// A live stream's history, when the manifest is one (`DASHHistory`): its playlists list up to the head.
+    let history: DASHHistory?
 
     /// The manifest at `address`, or `inline` (the resolver's, which came from `address`).
     init(address: URL, inline: Data? = nil, clock: @escaping @Sendable () -> Date = { Date() }) {
@@ -67,8 +69,11 @@ struct DASHPlaylists: HLSPlaylistSource {
         self.init(id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline, clock: { Date() })
     }
 
-    private init(id: String, address: URL, inline: Data?, clock: @escaping @Sendable () -> Date) {
+    private init(
+        id: String, address: URL, inline: Data?, clock: @escaping @Sendable () -> Date, history: DASHHistory? = nil
+    ) {
         self.clock = clock
+        self.history = history
         self.id = id
         self.address = address
         self.inline = inline
@@ -78,15 +83,20 @@ struct DASHPlaylists: HLSPlaylistSource {
 
     /// The manifest a demuxer is asked to open at `path`: an inline one (`MediaURL.inlineDASHManifest`), or one at an
     /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other.
-    init?(media path: String) {
+    init?(media path: String, history liveHistory: LiveHistory? = nil) {
         if let inline = MediaURL.inlineDASHManifestContents(path) {
-            if let source = inline.source {
-                self.init(address: source, inline: inline.manifest)
-            } else {
-                self.init(inline: inline.manifest)
+            let clock: @Sendable () -> Date = { Date() }
+            let history = liveHistory?.source.map {
+                DASHHistory(source: $0, head: liveHistory?.headNumber ?? 0, clock: clock)
             }
+            let id = UUID().uuidString.lowercased()
+            self.init(
+                id: id, address: inline.source ?? URL(string: "\(Self.scheme)://\(id)/")!, inline: inline.manifest,
+                clock: clock, history: history)
             return
         }
+        // A history is a manifest of keys the resolver made, never an address.
+        guard liveHistory == nil else { return nil }
         let normalized = MediaURL.normalizeMediaPath(path)
         let isNetwork = MediaURL.isNetworkURL(normalized)
         guard var address = isNetwork ? URL(string: normalized) : URL(fileURLWithPath: normalized),
@@ -115,6 +125,16 @@ struct DASHPlaylists: HLSPlaylistSource {
             built.entries.indices.contains(index)
         else { throw .load(.notServed(url)) }
         return .media(try mediaPlaylist(index, of: built, loader: loader))
+    }
+
+    /// A live stream's history names its segments by key and number; the signed address is the source's, as it is now.
+    func address(of url: URL) -> URL? {
+        guard let history, let segment = LiveHistory.segment(named: url) else { return url }
+        return history.source.url(for: segment.key, number: segment.number)
+    }
+
+    func renewAddresses(shouldAbort: () -> Bool) -> Bool {
+        history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
     private func read(loader: HLSSegmentLoader) throws(HLSPlaylistSourceError) -> Built {
@@ -309,6 +329,9 @@ struct DASHPlaylists: HLSPlaylistSource {
     ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
         if built.isLive { return try livePlaylist(index, of: built, loader: loader) }
         let entry = built.entries[index]
+        if let history, let playlist = entry.playlist {
+            return history.listing(of: playlist, shouldAbort: { loader.isAborted })
+        }
         if let playlist = entry.playlist { return playlist }
         guard let indexed = entry.indexed else { throw .load(.notServed(masterURL)) }
         return try indexed.value(loader: loader) { loader throws(HLSPlaylistSourceError) in

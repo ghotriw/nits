@@ -42,6 +42,8 @@ final class HLSSegmentLoader: Sendable {
     private let abort: (@Sendable () -> Bool)?
     /// Told how far each segment download has got while the reader waits for it (`watching`).
     private let relay: HLSSegmentProgressRelay?
+    /// Where the addresses the playlists list really go, and what renews them (`HLSPlaylistSource.address(of:)`).
+    private let addresses: (any HLSPlaylistSource)?
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
     static let cacheLimit = 32
@@ -50,9 +52,10 @@ final class HLSSegmentLoader: Sendable {
     static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
 
-    init(transport: HTTPSessionTransport, allowsFiles: Bool = false) {
+    init(transport: HTTPSessionTransport, allowsFiles: Bool = false, addresses: (any HLSPlaylistSource)? = nil) {
         self.transport = transport
         self.allowsFiles = allowsFiles
+        self.addresses = addresses
         cache = OSAllocatedUnfairLock(initialState: Cache())
         abort = nil
         relay = nil
@@ -61,6 +64,7 @@ final class HLSSegmentLoader: Sendable {
     private init(sharing loader: HLSSegmentLoader, abort: (@Sendable () -> Bool)?, relay: HLSSegmentProgressRelay?) {
         transport = loader.transport
         allowsFiles = loader.allowsFiles
+        addresses = loader.addresses
         cache = loader.cache
         self.abort = abort
         self.relay = relay
@@ -182,15 +186,32 @@ final class HLSSegmentLoader: Sendable {
 
     // MARK: Download
 
+    /// Asks `request` for `url` at the address the source gives it now (`HLSPlaylistSource.address(of:)`); once more at
+    /// the address as renewed when the server refuses one the source gave (403: the signature expired before the source
+    /// renewed it). A second refusal is the server's.
+    private func open(
+        _ url: URL, _ request: (String) -> HTTPSessionTransport.Opened
+    ) -> HTTPSessionTransport.Opened {
+        guard let addresses else { return request(url.absoluteString) }
+        guard let address = addresses.address(of: url) else { return .failed(FFmpegErrorCode.httpNotFound) }
+        let opened = request(address.absoluteString)
+        guard address != url, case .failed(let code) = opened, code == FFmpegErrorCode.httpForbidden,
+            addresses.renewAddresses(shouldAbort: { isAborted }),
+            let renewed = addresses.address(of: url)
+        else { return opened }
+        return request(renewed.absoluteString)
+    }
+
     /// The body of `url`, or of its `range`. A range the server answers whole (the transport leaves that to FFmpeg
     /// otherwise) is asked for as the file and cut.
     private func download(_ url: URL, range: HLSByteRange?) throws(HLSSegmentLoadError) -> Data {
         if let range, range.length == 0 { return Data() }
         if url.isFileURL { return try file(url, range: range) }
-        let address = url.absoluteString
-        let opened = transport.open(
-            address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, cookies: nil,
-            cookieOrigin: nil, followsRedirects: true, abort: abort)
+        let opened = open(url) { address in
+            transport.open(
+                address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, cookies: nil,
+                cookieOrigin: nil, followsRedirects: true, abort: abort)
+        }
         switch opened {
         case .input(let input):
             // A server may answer a range with more than was asked for (206 with a longer range).
@@ -208,9 +229,12 @@ final class HLSSegmentLoader: Sendable {
     /// A byte range the server answers whole: the file, cut to the range.
     private func wholeFile(_ url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
         guard
-            case .input(let input) = transport.open(
-                url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
-                abort: abort)
+            case .input(let input) = open(
+                url,
+                {
+                    transport.open(
+                        $0, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true, abort: abort)
+                })
         else { throw .notServed(url) }
         let whole = try read(input, limit: Int(range.range.upperBound))
         guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
@@ -446,10 +470,12 @@ extension HLSSegmentLoader {
         let range = segment.byteRange
         var onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)?
         if let relay { onProgress = { [segment] progress in relay.tell(segment, progress) } }
-        let opened = transport.open(
-            segment.url.absoluteString, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
-            cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort,
-            onProgress: onProgress)
+        let opened = open(segment.url) { address in
+            transport.open(
+                address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
+                cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort,
+                onProgress: onProgress)
+        }
         switch opened {
         case .input(let input):
             relay?.began(segment, input)

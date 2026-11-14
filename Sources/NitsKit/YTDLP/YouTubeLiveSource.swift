@@ -32,7 +32,6 @@ final class YouTubeLiveSource: LiveSegmentSource {
     private let refresher = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     let segmentWaitLimit: Duration
     let headPollInterval: Duration
-    let reportedSegmentGrace: Duration
 
     /// - Parameters:
     ///   - urls: The signed address of each stream, by key, without a segment's number.
@@ -40,7 +39,7 @@ final class YouTubeLiveSource: LiveSegmentSource {
     ///   - refreshMargin: How long before the earliest address expires it is renewed, seconds.
     init(
         urls: [String: String], headers: [String: String], segmentWaitLimit: Duration = .seconds(60),
-        headPollInterval: Duration = .seconds(5), reportedSegmentGrace: Duration = .seconds(15),
+        headPollInterval: Duration = .seconds(5),
         refreshMargin: Double = 1800, renew: @escaping Renew, isOver: @escaping Over = { true },
         headRequest: @escaping HeadRequest = urlSessionHead
     ) {
@@ -48,7 +47,6 @@ final class YouTubeLiveSource: LiveSegmentSource {
         self.headers = headers
         self.segmentWaitLimit = segmentWaitLimit
         self.headPollInterval = headPollInterval
-        self.reportedSegmentGrace = reportedSegmentGrace
         self.refreshMargin = refreshMargin
         self.renew = renew
         self.isOver = isOver

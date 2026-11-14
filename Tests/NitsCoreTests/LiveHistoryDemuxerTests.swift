@@ -6,14 +6,6 @@ import Testing
 
 @testable import NitsCore
 
-/// Whether the FFmpeg linked has `scripts/patches/ffmpeg-dashdec-interrupt.patch` (the build says so in its version,
-/// `--extra-version` in `build_dependencies.sh`): without it a DASH demuxer that is interrupted while it reads can go round at full speed for as
-/// long as the interrupt lasts. Only the test that seeks hundreds of times needs it to end; the others hold on any build.
-let hasDashInterruptPatch = String(cString: av_version_info()).contains("nits-dash-interrupt")
-
-private let needsDashInterruptPatch: ConditionTrait = .enabled(
-    if: hasDashInterruptPatch, "needs the bundled FFmpeg with the DASH interrupt patch")
-
 /// For stress loops only, which hold a slot of the network budget for seconds: not for a test that fails in a strict pool,
 /// which the check of the HTTP suites (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) is there to catch. In a pool of one thread
 /// the loops below hold the only one, and the timing tests of the other suites failed more with them (two runs: 2 and 4
@@ -25,7 +17,7 @@ private let notInStrictPool: ConditionTrait = .enabled(
 /// A live stream's past given as numbered segments (`LiveHistory`): the segments carry the stream's time, hours into
 /// it, so the demuxer plays them as live on a timeline from zero. The segments are those of the `dashSegments` preset,
 /// whose timestamps run on from segment to segment; the window starts at the second, as a day-deep window does hours
-/// into a stream. Needs FFmpeg built with libxml2 (the bundled one), else the tests do nothing.
+/// into a stream.
 @Suite(
     "Live history demuxing", .serialized, .hostDependent, .networkServer, .backstopTimeLimit)
 struct LiveHistoryDemuxerTests {
@@ -108,15 +100,12 @@ struct LiveHistoryDemuxerTests {
     }
 
     @Test(
-        "Seeks made while the read-ahead is in the middle of the segments never wait for it for good",
-        needsDashInterruptPatch, notInStrictPool)
+        "Seeks made while the read-ahead is in the middle of the segments never wait for it for good", notInStrictPool)
     func seeksRepeatedlyWhileReading() throws {
         guard let server = try InlineDASHTests.server() else { return }
         defer { server.stop() }
-        // Without `ffmpeg-dashdec-interrupt.patch` FFmpeg's DASH demuxer returns "a packet read, none given" when it is
-        // interrupted, and libavformat reads again for as long as the interrupt lasts. A seek that interrupted it, holding
-        // the interrupt until it had the input the read was holding, waited for good: three runs in four, within a hundred
-        // and fifty seeks. The hang here is the suite's time limit.
+        // A seek that interrupts the read holds the interrupt until it has the input the read was holding. The hang here is
+        // the suite's time limit.
         for round in 0..<300 {
             let demuxer = try demuxer(server: server)
             demuxer.startReadAhead()

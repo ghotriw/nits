@@ -91,7 +91,7 @@ enum YouTubeLiveHistory {
     /// Segments between two segments whose times are read: an hour. A stretch of shorter segments (4.933 s instead
     /// of 5) is not seen but by an anchor, so the timeline is off by that much between two: seconds.
     static let anchorSpacing = 720
-    /// How far past the head the manifest goes: a day. The segments to come are waited for (`LiveSegmentGate`); with the
+    /// How far past the head the manifest goes: a day. The segments to come are listed as the head moves (`DASHHistory`); with the
     /// signature renewed meanwhile (`YouTubeLiveSource`), the manifest need not be made again while the stream is watched.
     static let futureSegments = 17280
     /// How far back the window reaches at most: a day of segments. Deliberate, not for want of more: the server keeps a
@@ -206,7 +206,7 @@ enum YouTubeLiveHistory {
             let window = SegmentedDASHManifest.window(
                 through: anchors, lastNumber: newest, lastDuration: nominalSegmentDuration)
         else { throw Failure.noHead }
-        // The manifest names a stream by its key, not by its signed address, which expires (`LiveSegmentGate`).
+        // The manifest names a stream by its key, not by its signed address, which expires (`DASHPlaylists.address(of:)`).
         let keyed = streams.map { stream -> SegmentedDASHManifest.Stream in
             var stream = stream
             stream.url = LiveHistory.streamAddress(stream.id)

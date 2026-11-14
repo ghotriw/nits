@@ -72,10 +72,9 @@ selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`i
 FFmpeg closes the input through `io_close2`; the ones `HLSSegmentReader` makes for each run of segments are Nits' own and
 read through a Swift closure.
 
-So does blocking a thread, which FFmpeg's reads do by nature: `LiveSegmentGate` waits for a live stream's next segment
-inside `io_open` with `Thread.sleep` in steps of 10 ms, and `YouTubeLiveSource` waits for yt-dlp and the network on a
+So does blocking a thread, which FFmpeg's reads do by nature: `YouTubeLiveSource` waits for yt-dlp and the network on a
 `DispatchSemaphore` (`blocking`, up to 90 s). `HLSLane` waits for a live playlist's next segment the same way, on a
-`DispatchSemaphore` in steps of 50 ms (`HLSInput`, Nits' own HLS client). All three run on the thread of the demuxer's read (or of its opening, a pool
+`DispatchSemaphore` in steps of 50 ms (`HLSInput`, Nits' own HLS client). Both run on the thread of the demuxer's read (or of its opening, a pool
 thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). The opening of an HLS stream waits
 the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in steps of 50 ms, then the probes' threads) and for the link's rate (`HTTPSessionTransport.waitForOpeningRate`, steps of 20 ms; `skipSlowStart` for a round trip's metrics, 100 ms at most), as
 it already blocks its thread on the playlists and the probes side by side; its requests give way to an abort too. A DASH
@@ -232,17 +231,21 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
   `docs/ARCHITECTURE.md` and "Live playlists" in `docs/HLS.md`.
 - **A live stream's history as numbered segments** (`ResolvedMedia.liveHistory`, YouTube's `&sq=N`; `AppSettings.liveHistory`) is
-  told to the demuxer (`LiveHistory`), never read from the format context: the window is the resolver's, the timeline is
-  rebased to zero, and `MediaInfo.timelineOrigin` is the stream's time at that zero, so a position is saved as its time
-  plus the origin. The manifest stays static (FFmpeg does not seek a `dynamic` MPD). FFmpeg's DASH demuxer is patched to
-  return an error when interrupted (`scripts/patches/ffmpeg-dashdec-interrupt.patch`, `nits-dash-interrupt` in the
-  build's version): unpatched, an interrupted read can go round at full speed, and a seek that interrupted it waits for it for good.
-  Tests that interrupt a DASH read check the version string. Its manifest names the streams by keys
-  (`LiveHistory.streamAddress`) and goes on past the head: `LiveSegmentGate` (in `io_open`) asks `LiveSegmentSource` for
-  each segment's signed address and waits for those past the head. Once the head stood still for `segmentWaitLimit` the
-  source decides if the stream is over: if it is, the window gets `hasEnded`; if not, the wait has no limit. Never fail a
-  segment past the head to the demuxer (it skips it: a hole in time) unless the head reports it there and the server does
-  not serve it, and never put a signed address in the manifest. Background: "Live streams" in `docs/ARCHITECTURE.md`.
+  the client's alone (`DASHHistory`, in `DASHPlaylists`): it lists the static manifest the resolver made (a day past the
+  head) up to the segment before the head the source tells (`LiveSegmentSource.head`, asked by a reload no more often than
+  `headPollInterval`), and the window is the input's like any live playlist's. The timeline is rebased to zero, and
+  `MediaInfo.timelineOrigin` is the stream's time at that zero (`LiveHistory.origin`), so a position is saved as its time
+  plus the origin. The manifest names the streams by keys (`LiveHistory.streamAddress`); the loader asks the source for each
+  segment's signed address at the request (`HLSPlaylistSource.address(of:)`) and renews it once on a 403 (`renewAddresses`):
+  never put a signed address in the manifest or a playlist. Once the head stood still for `segmentWaitLimit` the source decides
+  if the stream is over: if it is, the playlist ends after the head's segment (`hasEnded`); if not, the wait has no limit
+  (`HLSMediaPlaylist.updatePeriod` keeps the lane from calling it stuck). A segment listed that the server does not serve is
+  skipped by the lane like any other (a hole in time), which is why the head's own segment is not listed until the end.
+  Background: "Live streams" in `docs/ARCHITECTURE.md`.
+- FFmpeg's DASH demuxer, which plays what the DASH client refuses until it goes (`PLAN.md` step 8), is patched to return an error
+  when interrupted (`scripts/patches/ffmpeg-dashdec-interrupt.patch`, `nits-dash-interrupt` in the build's version):
+  unpatched, an interrupted read can go round at full speed, and a seek that interrupted it waits for it for good. Tests
+  that interrupt a DASH read through it check the version string. The history no longer needs it.
 - **HLS is Nits' own client** (`Demuxing/HLS/`: `HLSPlaylist`, `HLSTimeline`, `HLSSegmentLoader`, `HLSSegmentReader`,
   `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by

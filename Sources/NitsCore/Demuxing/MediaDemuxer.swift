@@ -218,9 +218,10 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// A live HLS stream: opened as a playlist that slides and has no end yet (it stays set once the playlist ends,
     /// `LiveWindow.hasEnded`). It has no duration (`durationSeconds` is 0); what can be seeked in is `liveWindow`.
     public internal(set) var isLive = false
-    /// A live stream given as the segments of its past (`LiveHistory`): played as live, though its manifest is a static
-    /// one the demuxer reads the end of, on a timeline from zero. Its window is told by the resolver, not by the format
-    /// context (`publishLiveWindow`), and `streamTimeOrigin` is the stream's time at the timeline's zero.
+    /// A live stream given as the segments of its past (`LiveHistory`): played as live on a timeline from zero, by the
+    /// client (`DASHHistory` lists the segments up to the head), whose playlists tell its window (`publishLiveWindow`); one
+    /// with no source is a static manifest read to its end, its window the resolver's. `streamTimeOrigin` is the stream's
+    /// time at the timeline's zero.
     public internal(set) var liveHistory: LiveHistory?
     public var streamTimeOrigin: Double { liveHistory?.origin ?? 0 }
     public var liveWindow: LiveWindow? { liveReport?.window }
@@ -664,7 +665,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play yet (the source's
         // refusal, with its reason) is left to FFmpeg's DASH demuxer; any other failure is the opening's.
-        if liveHistory == nil, Self.dashInput != .ffmpeg, let playlists = DASHPlaylists(media: url) {
+        // A live stream's history (`LiveHistory`) is the client's alone: its segments are named by keys only it resolves.
+        if Self.dashInput != .ffmpeg || liveHistory != nil,
+            let playlists = DASHPlaylists(media: url, history: liveHistory)
+        {
             let input = HLSInput(
                 master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
                 allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
@@ -673,7 +677,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             if let input, playlists.refusal == nil {
                 self.init(
                     input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
-                    audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
+                    audioOnly: audioOnly, liveHistory: liveHistory, liveWindowState: windowState)
                 return
             }
             if let input, let refusal = playlists.refusal {
@@ -684,7 +688,7 @@ public final class MediaDemuxer: @unchecked Sendable {
             }
             // Asked of the source itself, not read off the interrupt's last error, which another failure (or an earlier
             // attempt on the same context) may have written.
-            guard let refusal = playlists.refusal, Self.dashInput != .client else {
+            guard let refusal = playlists.refusal, Self.dashInput != .client, liveHistory == nil else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
             }
@@ -692,20 +696,18 @@ public final class MediaDemuxer: @unchecked Sendable {
             interrupt.clearError()
             AppLog.info(.demuxer, "DASH: left to FFmpeg's demuxer (\(refusal))")
         }
-        let origin = liveHistory?.origin ?? 0
+        // A history is the client's alone: opened as a file it would lose its window and ask for addresses no DNS knows.
+        guard liveHistory == nil else {
+            interrupt.recordError(code: -ENOSYS, message: "DASH: a live history the client could not open")
+            if interruptContext == nil { interrupt.cancel() }
+            return nil
+        }
         let opened = FFmpegInput(
-            url: url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt,
-            liveHistory: liveHistory,
-            onLiveHistoryChange: { change in
-                windowState.withLock { state in
-                    guard let report = state else { return }
-                    state = Self.applying(change, to: report, origin: origin, now: .now)
-                }
-            })
+            url: url, headers: headers, httpRequestSize: httpRequestSize, interrupt: interrupt)
         // A playlist under a name that tells none: FFmpeg, with no HLS demuxer, took it for no format at all
         // (`AVERROR_INVALIDDATA`), or for text (`tty`, which takes `.txt` and any small text).
         let mayBePlaylist = opened.map(\.isTextFormat) ?? (interrupt.lastError?.code == FFmpegErrorCode.invalidData)
-        if liveHistory == nil, mayBePlaylist, HLSInput.sniffsAsPlaylist(url, headers: headers, interrupt: interrupt) {
+        if mayBePlaylist, HLSInput.sniffsAsPlaylist(url, headers: headers, interrupt: interrupt) {
             // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
             opened?.close()
             guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
@@ -724,7 +726,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         }
         self.init(
             input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
-            audioOnly: audioOnly, liveHistory: liveHistory, liveWindowState: windowState)
+            audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
     }
 
     /// Reads `input`, opened with `interruptContext`. Nil when it has neither a picture nor a sound to play.
@@ -837,7 +839,7 @@ public final class MediaDemuxer: @unchecked Sendable {
                 continue
             }
             // The playlist is reloaded inside the read: the window it tells moved.
-            if isLive, liveHistory == nil { publishLiveWindow() }
+            if isLive { publishLiveWindow() }
             // The variant switched to was described by its first read, inside this one.
             let givenUp = variantSwitch == nil ? [] : verifyVariantSwitchTarget()
             if ret >= 0 {

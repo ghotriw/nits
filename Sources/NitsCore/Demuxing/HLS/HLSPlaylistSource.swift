@@ -10,6 +10,21 @@ protocol HLSPlaylistSource: Sendable {
     /// giving way to its abort, as the caller's segments do.
     func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader) throws(HLSPlaylistSourceError)
         -> HLSPlaylist
+
+    /// Where a request for `url`, an address a playlist lists (a segment's, an init section's), really goes: asked by the
+    /// loader at each request, so an address that expires (a signed one) is given as it is now, and the playlist names
+    /// the segment by a key that stays. Called on the thread that reads, which it may block.
+    /// Nil when it has none (a key it does not know): the request fails as not found, without going to the network.
+    func address(of url: URL) -> URL?
+
+    /// Makes the addresses valid again after the server refused one (403: it expired before it was renewed); asked
+    /// once per request, which is then made again at `address(of:)`. False when it could not.
+    func renewAddresses(shouldAbort: () -> Bool) -> Bool
+}
+
+extension HLSPlaylistSource {
+    func address(of url: URL) -> URL? { url }
+    func renewAddresses(shouldAbort: () -> Bool) -> Bool { false }
 }
 
 enum HLSPlaylistSourceError: Error, Equatable {

@@ -66,40 +66,24 @@ struct LiveStreamTests {
     }
 
     @MainActor
-    @Test("The window the gate finds more of keeps the start it had slid to: the slide is not taken back to the load")
-    func theStartKeepsSlidingWhenTheGateFindsTheHead() throws {
+    @Test("A window told again as the head moves on goes on sliding from where it had slid to, not from the load")
+    func theStartKeepsSlidingWhenTheWindowIsTold() throws {
         let t0 = ContinuousClock.now
-        let first = LiveReport(window: LiveWindow(start: 0, end: 10_000, hasSlid: true), loadedAt: t0)
-        // Five minutes on, the head is found further.
-        let found = LiveSegmentGate.Change.headAdvanced(LiveHead(number: 7, startTime: 12_000))
-        let next = MediaDemuxer.applying(found, to: first, origin: 0, now: t0 + .seconds(300))
-        #expect(abs(next.window.start - 300) < 0.001, "\(next.window)")
-        #expect(next.window.end == 12_005)
-        #expect(next.loadedAt == t0 + .seconds(300))
-
-        // What the engine makes of it: the start goes on from 300, not from 0 again.
+        let first = LiveWindow(start: 0, end: 10_000, hasSlid: true)
         let live = LiveStream()
-        live.begin(isLive: true, window: first.window, at: t0)
-        live.update(window: next.window, at: next.loadedAt)
+        live.begin(isLive: true, window: first, at: t0)
+        // Five minutes on, the playlist lists as far as the head, and the segments that expired are not listed.
+        let next = LiveWindow(start: 300, end: 12_005, hasSlid: true)
+        live.update(window: next, at: t0 + .seconds(300))
         let start = try #require(live.window(at: t0 + .seconds(310))).start
         #expect(abs(start - 310) < 0.5, "\(start)")
 
         // The end of the stream: its end, and the start it had reached, and no more sliding.
-        let ended = MediaDemuxer.applying(
-            .ended(lastNumber: 9, endTime: 11_000), to: next, origin: 0, now: t0 + .seconds(400))
-        #expect(ended.window.hasEnded)
-        #expect(abs(ended.window.start - 400) < 0.001)
-        #expect(ended.window.end == 12_005, "an end never goes back")
-        // A window that does not slide keeps its start; one never past its end.
-        let still = MediaDemuxer.applying(
-            found, to: LiveReport(window: LiveWindow(start: 5, end: 100), loadedAt: t0), origin: 0,
-            now: t0 + .seconds(60))
-        #expect(still.window.start == 5)
-        let late = MediaDemuxer.applying(
-            .headAdvanced(LiveHead(number: 1, startTime: 0)),
-            to: LiveReport(window: LiveWindow(start: 0, end: 50, hasSlid: true), loadedAt: t0), origin: 0,
-            now: t0 + .seconds(500))
-        #expect(late.window.start <= late.window.end)
+        live.update(
+            window: LiveWindow(start: 400, end: 12_005, hasSlid: true, hasEnded: true), at: t0 + .seconds(400))
+        let ended = try #require(live.window(at: t0 + .seconds(500)))
+        #expect(ended.hasEnded)
+        #expect(abs(ended.start - 400) < 0.5, "\(ended)")
     }
 
     @MainActor

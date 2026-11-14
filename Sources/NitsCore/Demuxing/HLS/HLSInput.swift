@@ -225,7 +225,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         self.transport = transport
         meter = TransferAccount(meter: transport.meter)
-        let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
+        let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal, addresses: playlists)
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
         func fail(_ message: String, code: Int32 = -EIO, level: LogLevel = .error) {

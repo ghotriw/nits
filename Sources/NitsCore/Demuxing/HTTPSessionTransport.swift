@@ -600,7 +600,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// How the input is read while the demuxer opens, when it is one of the opening's (`openingLimit`).
     private let opening: Opening
     /// A redirect is followed here, and the answer of where it leads is the input's. For a request whose address is whole
-    /// and whose answer needs no other address to be read (a live stream's segment, `LiveSegmentGate`); an HLS playlist's
+    /// and whose answer needs no other address to be read (a live history's segment); an HLS playlist's
     /// is FFmpeg's, which resolves the relative addresses in it against where it was served from.
     private let followsRedirects: Bool
     /// Held to the opening's buffer: a held input of the opening, while it goes on.

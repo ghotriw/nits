@@ -100,7 +100,9 @@ package struct SegmentedDASHManifest: Sendable {
         let lengths: [(seconds: Double, milliseconds: Int, count: Int)] =
             runs?.filter { $0.count > 0 }.map { ($0.duration, max(1, Int(($0.duration * 1000).rounded())), $0.count) }
             ?? [(segmentDuration, max(1, Int((segmentDuration * 1000).rounded())), segmentCount)]
-        let total = Double(lengths.reduce(0) { $0 + $1.milliseconds * $1.count }) / 1000
+        // The period ends where its last segment does: the timeline begins at `startTime`, not at the period's zero, and a
+        // client that cuts the segments at the period's length would lose those of a stream hours in.
+        let total = startTime + Double(lengths.reduce(0) { $0 + $1.milliseconds * $1.count }) / 1000
         // Every run says where it starts, from the exact lengths before it, not from the rounded ones the demuxer adds up:
         // a length in whole milliseconds is up to half of one off, which over a run of an hour is a third of a second,
         // and over a day of runs would pile up to seconds.
