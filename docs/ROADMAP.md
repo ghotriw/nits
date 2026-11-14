@@ -406,8 +406,9 @@ flowchart TD
     source reads each file's `sidx` when its playlist is asked for (chains, hierarchies past the index range, an index
     in a file of its own, a late start), once for every caller, and tells its segments as byte ranges; the resolver no
     longer reads indexes, and a ladder of such pictures is a ladder (numbered by time, a rung of other boundaries left
-    out). WebM files (`Cues`) are not the client's: refused, so FFmpeg's demuxer plays them as before, until the resolver
-    routes them as a file with its sound added. Not measured on a real stream yet (Shaka's tos-ttml).
+    out). WebM files (`Cues`) are not the client's: a manifest of them alone plays its best as a file, the others in the
+    format menu, the sound added; beside MP4 pictures they are left out. Shaka's tos-ttml: a ladder of 7, opening 2 s,
+    seeks 1 s (through FFmpeg's demuxer, which now gets the ladder of files, 3.6 s and a seek that misses).
   - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
     crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.

@@ -48,7 +48,9 @@ package struct DASHManifest {
     /// The pictures played, the best first.
     package let videos: [Video]
     private let videoPlaces: [String: Place]
-    private let audioPlaces: [Place]
+    /// The best sound of each language, the main one's first, with its language ("" when the manifest tells none).
+    private let audio: [(place: Place, language: String)]
+    private var audioPlaces: [Place] { audio.map(\.place) }
 
     /// Whether the manifest has audio to play.
     package var hasAudio: Bool { !audioPlaces.isEmpty }
@@ -149,6 +151,12 @@ package struct DASHManifest {
             if ra != rb { return ra < rb }
             return a.bandwidth > b.bandwidth
         }
+        // Files the client reads no index of (a WebM file's is its `Cues`: not `isSegmented`) play as files when the
+        // manifest has no other picture (`playsAsFiles`). Beside pictures the client reads they are left out, before the
+        // duplicates are (a file must not take the place of the same picture told otherwise): as files, their formats
+        // would share the page's added sound (`ResolvedMedia.audioFiles`) with a manifest that carries its own. The
+        // client reading `Cues` would make them pictures of the manifest again: then this goes (PLAN.md, 3b).
+        if pictures.contains(where: \.video.isSegmented) { pictures.removeAll { !$0.video.isSegmented } }
         // Each is offered; ids kept unique, and one that a second adaptation set lists again (the same size, codec and
         // bitrate) once.
         var seenKeys: Set<String> = []
@@ -187,10 +195,15 @@ package struct DASHManifest {
             }
         }
         languages.sort { (bestSound[$0]?.role == 2) && !(bestSound[$1]?.role == 2) }
-        self.audioPlaces = languages.compactMap { bestSound[$0]?.place }
+        self.audio = languages.compactMap { language in bestSound[language].map { ($0.place, language) } }
 
-        // Written once to know that it can be: a timeline that cannot be made to end is not for FFmpeg to seek in.
-        guard videos.isEmpty && audioPlaces.isEmpty || rewritten(videoIDs: videos.prefix(1).map(\.id)) != nil else {
+        // Written once to know that it can be: a timeline that cannot be made to end is not for FFmpeg to seek in. Not
+        // when the pictures play as files: a sound of such a timeline is then left out alone (`sounds`).
+        let playsAsFiles = !videos.isEmpty && !videos.contains(where: \.isSegmented)
+        guard
+            videos.isEmpty && audio.isEmpty || playsAsFiles
+                || rewritten(videoIDs: videos.prefix(1).map(\.id)) != nil
+        else {
             return nil
         }
     }
@@ -198,8 +211,7 @@ package struct DASHManifest {
     /// The manifest with the picture `videoID` (the best one when nil) and the audio, as the demuxer is given it. Nil
     /// when the picture is none of `videos`.
     package func text(videoID: String? = nil) -> String? {
-        guard let rewritten = rewritten(videoIDs: (videoID ?? videos.first?.id).map { [$0] } ?? []) else { return nil }
-        return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
+        text(videoIDs: (videoID ?? videos.first?.id).map { [$0] } ?? [])
     }
 
     /// The pictures that can follow the network as one: those of the best one's codec and range (HDR or not), as
@@ -248,12 +260,18 @@ package struct DASHManifest {
     /// nil without a ladder.
     package func ladderText(of video: Video? = nil) -> String? {
         let rungs = video.map(ladder(of:)) ?? ladder
-        guard !rungs.isEmpty, let rewritten = rewritten(videoIDs: rungs.map(\.id)) else { return nil }
+        guard !rungs.isEmpty else { return nil }
+        return text(videoIDs: rungs.map(\.id))
+    }
+
+    /// `rewritten` as the demuxer is given it.
+    private func text(videoIDs: [String], audio: [Place]? = nil) -> String? {
+        guard let rewritten = rewritten(videoIDs: videoIDs, audio: audio) else { return nil }
         return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
     }
 
-    private func rewritten(videoIDs: [String]) -> XMLTreeElement? {
-        var kept: [Place] = audioPlaces
+    private func rewritten(videoIDs: [String], audio: [Place]? = nil) -> XMLTreeElement? {
+        var kept: [Place] = audio ?? audioPlaces
         for id in videoIDs.reversed() {
             guard let place = videoPlaces[id] else { return nil }
             kept.insert(place, at: 0)
@@ -321,6 +339,67 @@ package struct DASHManifest {
         let path = components.path
         if let slash = path.lastIndex(of: "/") { components.path = String(path[...slash]) }
         return components.string ?? manifestURL.absoluteString
+    }
+
+    // MARK: - Files
+
+    /// The pictures are all files the client reads no index of (a WebM file's `Cues`, a file without an index range):
+    /// each plays as a file (`file(videoID:)`), its sound added (`sounds`), without adaptive bitrate; a seek is one in a
+    /// network file. Not when the manifest has a picture the client reads: those files are then left out.
+    package var playsAsFiles: Bool { !videos.isEmpty && !videos.contains(where: \.isSegmented) }
+
+    /// A sound of the manifest, to add to a picture played as a file.
+    package struct Sound: Equatable {
+        /// Its file, for one the client reads no index of; else a manifest of it alone, which the client reads.
+        package var path: String
+        package var language: String?
+    }
+
+    /// The best sound of each language, the main one's first: a file the client reads no index of as it is (FFmpeg reads
+    /// it), any other as a manifest of it alone (the client reads it: segments, or a file with its `sidx`), written by
+    /// `inline` (the resolver's `data:` address).
+    package func sounds(inline: (String) -> String) -> [Sound] {
+        guard case .element(let period) = root.children[periodIndex] else { return [] }
+        return audio.compactMap { place, language in
+            guard case .element(let set) = period.children[place.set],
+                case .element(let representation) = set.children[place.representation]
+            else { return nil }
+            let path: String
+            if !Self.hasSegments(in: [representation, set, period]),
+                let url = fileURL(of: representation, in: set, period: period)
+            {
+                path = url.absoluteString
+            } else {
+                guard let text = text(videoIDs: [], audio: [place]) else { return nil }
+                path = inline(text)
+            }
+            return Sound(path: path, language: language.isEmpty ? nil : language)
+        }
+    }
+
+    /// The file of the picture `videoID`; nil when it is none of `videos` or has no `BaseURL` of its own.
+    package func file(videoID: String) -> URL? {
+        guard let place = videoPlaces[videoID], case .element(let period) = root.children[periodIndex],
+            case .element(let set) = period.children[place.set],
+            case .element(let representation) = set.children[place.representation]
+        else { return nil }
+        return fileURL(of: representation, in: set, period: period)
+    }
+
+    /// The file of a representation: its `BaseURL`, and those above it, resolved. Nil when the set and the
+    /// representation tell none (the manifest's own address is no file).
+    private func fileURL(of representation: XMLTreeElement, in set: XMLTreeElement, period: XMLTreeElement) -> URL? {
+        var url = URL(string: absoluteBase)
+        var hasOwn = false
+        for (node, isOwn) in [(period, false), (set, true), (representation, true)] {
+            guard
+                let text = node.elements(named: "BaseURL").first?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                !text.isEmpty
+            else { continue }
+            url = URL(string: text, relativeTo: url)?.absoluteURL
+            hasOwn = hasOwn || isOwn
+        }
+        return hasOwn ? url : nil
     }
 
     // MARK: - Timelines

@@ -61,14 +61,40 @@ struct DASHManifestResolver: MediaResolver {
         let inline = { (text: String) in MediaURL.inlineDASHManifest(text, source: finalURL) }
         // HDR10 and SDR of one size and codec would differ in the menu by their bitrates only. Dolby Vision says it in
         // its name.
-        func format(_ video: DASHManifest.Video, text: String?) -> VideoFormat? {
-            text.map { text in
+        func format(_ video: DASHManifest.Video, url: String?) -> VideoFormat? {
+            url.map { url in
                 VideoFormat(
-                    id: video.id, url: inline(text), width: video.width,
+                    id: video.id, url: url, width: video.width,
                     height: video.height,
                     frameRate: video.frameRate,
                     codec: video.isHDR && video.codec != "Dolby Vision" ? "\(video.codec) HDR" : video.codec,
                     bitrate: video.bandwidth)
+            }
+        }
+        // Pictures that are all files the client reads no index of (WebM's): each a file, the sound added (PLAN.md, 3b).
+        if manifest.playsAsFiles {
+            let formats = manifest.videos.compactMap { format($0, url: manifest.file(videoID: $0.id)?.absoluteString) }
+            if let first = formats.first {
+                let sounds = manifest.sounds(inline: inline).compactMap { sound in
+                    URL(string: sound.path).map { (url: $0, language: sound.language) }
+                }
+                AppLog.info(
+                    .engine,
+                    "DASH: '\(url.absoluteString)': \(formats.count) picture(s) played as files, \(sounds.count) sound(s) added"
+                )
+                return ResolvedMedia(
+                    path: first.url, headers: headers,
+                    audioFiles: sounds.enumerated().map { index, sound in
+                        // Named by its language: a track is otherwise named by its file, and a manifest of it alone is
+                        // a `data:` address.
+                        let title =
+                            sound.language.flatMap { Locale.current.localizedString(forLanguageCode: $0) }
+                            ?? sound.language ?? "Audio \(index + 1)"
+                        return MediaLoadRequest.AudioFile(
+                            url: sound.url, title: title, language: sound.language, isRequired: index == 0)
+                    },
+                    title: manifest.title, videoFormats: formats.count > 1 ? formats : [],
+                    selectedVideoFormatID: formats.count > 1 ? first.id : nil)
             }
         }
         // A ladder of pictures that can follow the network plays as one: the demuxer lists the rungs as variants and
@@ -79,10 +105,10 @@ struct DASHManifestResolver: MediaResolver {
         let formats: [VideoFormat]
         if hasLadder {
             formats = manifest.codecGroups.compactMap { head in
-                format(head, text: manifest.ladderText(of: head) ?? manifest.text(videoID: head.id))
+                format(head, url: (manifest.ladderText(of: head) ?? manifest.text(videoID: head.id)).map(inline))
             }
         } else {
-            formats = manifest.videos.compactMap { format($0, text: manifest.text(videoID: $0.id)) }
+            formats = manifest.videos.compactMap { format($0, url: manifest.text(videoID: $0.id).map(inline)) }
         }
         guard
             let path = ladder ?? formats.first?.url

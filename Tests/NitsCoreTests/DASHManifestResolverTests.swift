@@ -213,3 +213,36 @@ extension DASHManifestResolverTests {
         #expect(chosen.path == byDefault.path)
     }
 }
+
+extension DASHManifestResolverTests {
+    @Test("A manifest of WebM files plays its best picture as a file, the others to choose from, the sounds added")
+    func webmFilesPlayAsFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "NitsWebMFiles-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let server = try TestHTTPServer(root: directory)
+        defer { server.stop() }
+        let text = String(
+            decoding: DASHManifestTests.mpd(
+                period: #"<AdaptationSet contentType="video">"#
+                    + DASHManifestTests.webmFile("hi", 1920, 1080, bandwidth: 3_000_000)
+                    + DASHManifestTests.webmFile("lo", 1280, 720, bandwidth: 1_000_000) + "</AdaptationSet>"
+                    + DASHManifestTests.fileSound + DASHManifestTests.segmentedSound), as: UTF8.self)
+        server.setResponder(forPath: "dash.mpd") { Data(text.utf8) }
+        let headers = ["X-Nits": "1"]
+        let manifestURL = try #require(URL(string: server.url("dash.mpd")))
+        let media = try #require(try await DASHManifestResolver().resolve(manifestURL, headers: headers))
+        #expect(media.path == server.url("hi.webm"))
+        #expect(media.headers == headers)
+        #expect(media.videoFormats.map(\.id) == ["hi", "lo"] && media.selectedVideoFormatID == "hi")
+        #expect(media.videoFormats.last?.url == server.url("lo.webm"))
+        #expect(media.audioFiles.map(\.isRequired) == [true, false])
+        #expect(media.audioFiles.map(\.language) == ["en", "uk"])
+        #expect(media.audioFiles.first?.url.absoluteString == server.url("en.webm"))
+        #expect(MediaURL.isInlineDASHManifest(media.audioFiles.last?.url.absoluteString ?? ""))
+        // Named by their language, not by an address (a manifest of it alone is a `data:` one).
+        #expect(
+            media.audioFiles.map(\.title) == ["en", "uk"].map { Locale.current.localizedString(forLanguageCode: $0) })
+    }
+}

@@ -525,3 +525,112 @@ struct DASHManifestTests {
         #expect(DASHElements.duration(of: "PT10") == nil)
     }
 }
+
+extension DASHManifestTests {
+    /// A WebM file of `id` (its index is its `Cues`, which the client does not read).
+    static func webmFile(_ id: String, _ width: Int, _ height: Int, bandwidth: Int) -> String {
+        video(
+            id, width, height, codecs: "vp09.00.40.08", bandwidth: bandwidth,
+            inside:
+                #"<BaseURL>\#(id).webm</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+        ).replacingOccurrences(of: "video/mp4", with: "video/webm")
+    }
+
+    static let fileSound = """
+        <AdaptationSet contentType="audio" lang="en"><Representation id="en" mimeType="audio/webm" codecs="opus" \
+        bandwidth="1"><BaseURL>en.webm</BaseURL><SegmentBase indexRange="300-400"><Initialization range="0-299"/>\
+        </SegmentBase></Representation></AdaptationSet>
+        """
+    static let segmentedSound = """
+        <AdaptationSet contentType="audio" lang="uk"><SegmentTemplate media="uk/$Number$.m4s" duration="4"/>\
+        <Representation id="uk" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
+        """
+
+    @Test(
+        "Pictures that are files the client reads no index of play as files with their sounds; beside one it reads, left out"
+    )
+    func filesWithoutAnIndex() throws {
+        let mp4 = Self.video(
+            "m", 1280, 720, bandwidth: 2_000_000,
+            inside:
+                #"<BaseURL>m.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+        )
+        let mixed = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"#
+                        + Self.webmFile("w", 1920, 1080, bandwidth: 3_000_000)
+                        + mp4 + "</AdaptationSet>" + Self.fileSound), url: Self.url))
+        #expect(mixed.videos.map(\.id) == ["m"], "The larger WebM file is left out beside the MP4 the client reads")
+        #expect(!mixed.playsAsFiles)
+        let mixedText = try #require(mixed.text())
+        #expect(mixedText.contains("m.mp4") && !mixedText.contains("w.webm"))
+
+        let files = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"#
+                        + Self.webmFile("hi", 1920, 1080, bandwidth: 3_000_000)
+                        + Self.webmFile("lo", 1280, 720, bandwidth: 1_000_000) + "</AdaptationSet>" + Self.fileSound
+                        + Self.segmentedSound), url: Self.url))
+        #expect(files.playsAsFiles)
+        #expect(files.videos.map(\.id) == ["hi", "lo"])
+        #expect(files.file(videoID: "hi") == URL(string: "hi.webm", relativeTo: Self.url)?.absoluteURL)
+        let sounds = files.sounds { "inline:" + $0 }
+        #expect(sounds.map(\.language) == ["en", "uk"])
+        #expect(sounds.first?.path == URL(string: "en.webm", relativeTo: Self.url)?.absoluteURL.absoluteString)
+        // A sound of segments as a manifest of it alone: no picture, no other sound.
+        let alone = try #require(sounds.last?.path)
+        #expect(alone.hasPrefix("inline:") && alone.contains("uk/$Number$.m4s"))
+        #expect(!alone.contains("en.webm") && !alone.contains("hi.webm"))
+    }
+}
+
+extension DASHManifestTests {
+    @Test("A file beside the same picture told by segments does not take its place: the segments' one is kept")
+    func fileBesideTheSamePicture() throws {
+        // Same size, codec and bitrate: one picture listed twice, as a WebM file and by a template.
+        let template = Self.video(
+            "t", 1920, 1080, codecs: "vp09.00.40.08", bandwidth: 3_000_000,
+            inside: #"<SegmentTemplate media="t/$Number$.webm" duration="4"/>"#
+        ).replacingOccurrences(of: "video/mp4", with: "video/webm")
+        for order in [
+            [Self.webmFile("w", 1920, 1080, bandwidth: 3_000_000), template],
+            [template, Self.webmFile("w", 1920, 1080, bandwidth: 3_000_000)],
+        ] {
+            let manifest = try #require(
+                DASHManifest(
+                    data: Self.mpd(
+                        period: #"<AdaptationSet contentType="video">"# + order.joined() + "</AdaptationSet>"),
+                    url: Self.url))
+            #expect(manifest.videos.map(\.id) == ["t"])
+        }
+    }
+
+    @Test(
+        "Pictures played as files: an MP4 sound with its index goes to the client, one of an endless timeline is left out"
+    )
+    func soundsBesideFiles() throws {
+        let indexedSound = """
+            <AdaptationSet contentType="audio" lang="de"><Representation id="de" mimeType="audio/mp4" codecs="mp4a.40.2" \
+            bandwidth="1"><BaseURL>de.mp4</BaseURL><SegmentBase indexRange="700-800"><Initialization range="0-699"/>\
+            </SegmentBase></Representation></AdaptationSet>
+            """
+        let endless = """
+            <AdaptationSet contentType="audio" lang="uk"><SegmentTemplate media="uk/$Number$.m4s" timescale="1">\
+            <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline></SegmentTemplate>\
+            <Representation id="uk" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
+            """
+        // No length told: the template's timeline cannot be made to end, which refused the manifest before.
+        let manifest = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"# + Self.webmFile("hi", 1920, 1080, bandwidth: 1)
+                        + "</AdaptationSet>" + Self.fileSound + indexedSound + endless, duration: ""),
+                url: Self.url))
+        #expect(manifest.playsAsFiles)
+        let sounds = manifest.sounds { "inline:" + $0 }
+        #expect(sounds.map(\.language) == ["en", "de"])
+        #expect(sounds.last?.path.hasPrefix("inline:") == true && sounds.last?.path.contains("de.mp4") == true)
+    }
+}
