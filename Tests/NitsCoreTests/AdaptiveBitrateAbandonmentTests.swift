@@ -238,6 +238,56 @@ struct AdaptiveBitrateAbandonmentMarginTests {
         #expect(abs(decision.lower - 3.2) < 0.01, "The whole segment's time, as `remaining` is")
     }
 
+    @Test("Inside the segment with nothing of it queued the lowest is cut in past what is read, a hole for a stall")
+    func holeTakesTheLowest() throws {
+        let logic = AdaptiveBitrateLogic()
+        // 1 Mbit/s, nothing buffered: the rest takes ~25 s. The lowest reaches a keyframe 2 s into the segment in
+        // 0.2 + 2 x 0.5 / 1 = 1.2 s; the 1.5 Mbit/s rung in 3.2 s, a longer stall: the lowest.
+        let download = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 475_000, length: 3_750_000, elapsed: 4, firstAnswer: 0.2, transferring: 3.8,
+            measuredBytes: 475_000)
+        let hole = AdaptiveBitrateLogic.Hole(reach: 2, skipped: 0.3)
+        let decision = try #require(
+            logic.abandonment(of: download, among: Self.ladder, buffer: 0, roundTrip: 0.2, hole: hole))
+        #expect(decision.target == 0)
+        // Joining the next segment, its start is all it reads before the cut.
+        let next = AdaptiveBitrateLogic.Hole(reach: 0, skipped: 4)
+        #expect(logic.abandonment(of: download, among: Self.ladder, buffer: 0, roundTrip: 0.2, hole: next)?.target == 0)
+    }
+
+    @Test("A hole longer than the stall it saves is not made")
+    func holeLongerThanTheStall() {
+        let logic = AdaptiveBitrateLogic()
+        // 2.5 Mbit/s: 4.2 s of the segment left (1.32 MB of 2.6 MB), sooner than that by the margin is 3.2 s. Joining the next
+        // segment takes 0.2 s and skips 5 s of picture: more than the 4 s of stall it saves.
+        let download = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 1_280_000, length: 2_600_000, elapsed: 4.3, firstAnswer: 0.2,
+            transferring: 4.1, measuredBytes: 1_280_000)
+        let long = AdaptiveBitrateLogic.Hole(reach: 0, skipped: 5)
+        #expect(
+            logic.evaluation(of: download, among: Self.ladder, buffer: 0, roundTrip: 0.2, hole: long)
+                == .keep(.holeOverStall))
+        // A short one is.
+        let short = AdaptiveBitrateLogic.Hole(reach: 0, skipped: 2)
+        #expect(
+            logic.abandonment(of: download, among: Self.ladder, buffer: 0, roundTrip: 0.2, hole: short)?.target == 0)
+    }
+
+    @Test("Pictures queued without a keyframe play on meanwhile: the stall a hole saves is what is left past them")
+    func holeCountsTheBuffer() {
+        let logic = AdaptiveBitrateLogic()
+        // As above: 4.2 s left, 2 s skipped. With 2.5 s of a long GOP queued the download stalls 1.7 s, the lower variant
+        // none (0.2 s to reach the cut): 1.7 s saved for 2 s of picture.
+        let download = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 1_280_000, length: 2_600_000, elapsed: 4.3, firstAnswer: 0.2,
+            transferring: 4.1, measuredBytes: 1_280_000)
+        let hole = AdaptiveBitrateLogic.Hole(reach: 0, skipped: 2)
+        #expect(
+            logic.evaluation(of: download, among: Self.ladder, buffer: 2.5, roundTrip: 0.2, hole: hole)
+                == .keep(.holeOverStall))
+        #expect(logic.abandonment(of: download, among: Self.ladder, buffer: 1, roundTrip: 0.2, hole: hole)?.target == 0)
+    }
+
     @Test("Inside the segment a lower variant in time but no sooner than finishing by the margin is no gain")
     func insideNoGainIsNoGain() {
         let logic = AdaptiveBitrateLogic()

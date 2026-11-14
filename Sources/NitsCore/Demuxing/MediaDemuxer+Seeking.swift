@@ -45,6 +45,7 @@ extension MediaDemuxer {
         reportVariant(at: seconds)
         audioQueue.removeAll()
         videoQueue.removeAll()
+        keyframeTrail = KeyframeTrail()
         lastAudioPts = -1
         lastVideoReadTime = Int64.min
         inputEndedOnDemand = false

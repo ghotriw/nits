@@ -316,9 +316,10 @@ extension MediaDemuxer {
         // its read describes it (`verifyVariantSwitchTarget`).
         newSwitch.isTargetVerified = input.variantDescription(id: requested) == .described
         if let abandonment {
-            // The new variant reads the segment from its start, and the old one's streams are not read meanwhile.
+            // The new variant reads the segment from its start (or the next one, `joinSequence`), and the old one's
+            // streams are not read meanwhile: the splice does not wait for the old segment (`spliceAbandoned`).
             newSwitch.abandoned = abandonment
-            input.joinNext(atSequence: abandonment.sequence)
+            input.joinNext(atSequence: abandonment.joinedSequence)
         }
         variantSwitch = newSwitch
         // A download given up read again is spliced no further: the variant read from here is the new one.
@@ -330,7 +331,10 @@ extension MediaDemuxer {
             .demuxer,
             "\(streamingName): switching to \(target.width)x\(target.height) at \(target.bandwidth / 1000) kbit/s"
                 + (abandonment.map {
-                    ", segment \($0.sequence) read from its start (the download of variant \($0.from) given up)"
+                    $0.joinSequence == nil
+                        ? ", segment \($0.sequence) read from its start (the download of variant \($0.from) given up)"
+                        : ", segment \($0.joinedSequence) read from its start (the download of variant \($0.from) "
+                            + "given up in segment \($0.sequence), the rest of it skipped)"
                 } ?? ""))
     }
 

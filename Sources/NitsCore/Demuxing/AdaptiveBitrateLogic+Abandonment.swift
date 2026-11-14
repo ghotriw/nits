@@ -43,14 +43,16 @@ extension AdaptiveBitrateLogic {
     /// one is reloaded at a switch); hls.js counts it so. `cutOffset`: with the position inside the segment, the seconds
     /// from its start to the queued keyframe the lower variant is cut in at (`buffer` ends there): the lower variant must
     /// read up to it within the buffer, and no lower one is taken when none does (its keyframe would come after the
-    /// position passed it: a hole in the picture, where ahead of the position it is a stall).
+    /// position passed it: a hole in the picture, where ahead of the position it is a stall). `hole`: with the position
+    /// inside the segment and nothing of it queued to cut at, where the lower variant is cut in past what is handed out
+    /// (`Hole`); `cutOffset` is then not given.
     func abandonment(
         of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
-        cutOffset: Double? = nil
+        cutOffset: Double? = nil, hole: Hole? = nil
     ) -> Abandonment? {
         if case .abandon(let decision) = evaluation(
             of: download, among: variants, buffer: buffer, roundTrip: roundTrip, playlistLoad: playlistLoad,
-            cutOffset: cutOffset)
+            cutOffset: cutOffset, hole: hole)
         {
             return decision
         }
@@ -67,6 +69,18 @@ extension AdaptiveBitrateLogic {
         case fitsBuffer = "rest fits the buffer"
         case noGain = "no lower segment sooner by the margin"
         case cutOutOfReach = "no lower variant reaches the cut inside the segment in time"
+        case holeOverStall = "the picture skipped is longer than the stall saved"
+    }
+
+    /// A give-up with the position inside the segment and nothing of it queued to cut at: the old variant's pictures
+    /// handed out play as they arrive (the buffer is empty, or holds no keyframe), so the lower variant is cut in at a
+    /// keyframe past them, and what is between is skipped.
+    struct Hole: Sendable, Equatable {
+        /// Seconds of the lower variant read before the cut: from the segment's start to the keyframe expected past what
+        /// is handed out, or 0 when the lower variant joins the next segment (the keyframe is not known, or is that one).
+        var reach: Double
+        /// Seconds of picture skipped: from the last one handed out to the cut.
+        var skipped: Double
     }
 
     enum Evaluation: Sendable, Equatable {
@@ -76,7 +90,7 @@ extension AdaptiveBitrateLogic {
 
     func evaluation(
         of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
-        cutOffset: Double? = nil
+        cutOffset: Double? = nil, hole: Hole? = nil
     ) -> Evaluation {
         let ladder = variants.sorted { $0.bandwidth < $1.bandwidth }
         guard let position = ladder.firstIndex(where: { $0.id == download.variant }), position > 0,
@@ -123,7 +137,21 @@ extension AdaptiveBitrateLogic {
         let deadline = min(buffer, download.duration + roundTrip)
         let sooner = remaining - margin
         let reachable: Int?
-        if let cutOffset {
+        if let hole {
+            // Nothing to play before the cut but what is buffered: every second the lower variant takes to reach it is a
+            // second of stall, so the lowest is taken (as ahead of the position with nothing buffered). Only when it
+            // reaches the cut sooner than the download ends by the margin, and the stall it saves is longer than the
+            // picture it skips (a hole to the next segment's start can be most of a segment; 15 → 1.5 Mbit/s at 3 s:
+            // 29.4 s of stall where the download was kept).
+            let reach =
+                roundTrip + playlistLoad + min(max(hole.reach, 0), download.duration)
+                * Double(ladder[0].bandwidth) / rate
+            guard reach < sooner else { return .keep(.noGain) }
+            // The stall saved: the download's past the buffer, less the lower variant's past it (pictures without a keyframe
+            // queued, a long GOP's, still play meanwhile).
+            guard remaining - max(reach, buffer) >= hole.skipped else { return .keep(.holeOverStall) }
+            reachable = 0
+        } else if let cutOffset {
             // Inside the segment the old variant is read no more past its queued keyframe: a lower variant late to it
             // leaves a hole, not a stall, so none is taken that misses it (no fallback to the lowest). It must read up to
             // the cut before the position gets there, and the rest of its segment before playback does (one whose bitrate

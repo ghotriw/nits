@@ -161,6 +161,9 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// out), so that a test's premise (the position inside the segment) does not depend on how late playback runs on a
     /// busy machine. Set before `startReadAhead`.
     var abandonCheckGate: (@Sendable (_ segment: InFlightSegment, _ position: Double) -> Bool)?
+    /// Tests only: false leaves a give-up with nothing of its segment queued to cut at without the keyframes read
+    /// (`expectedHoleCut`), so it joins the next segment, as with no history kept.
+    var abandonExpectsKeyframes = true
     /// This demuxer's number in the log (`streamingName`): one log holds the lines of every stream open (windows,
     /// thumbnails), and tests running side by side.
     let logID = MediaDemuxer.logIDs.withLock { counter in
@@ -427,6 +430,10 @@ public final class MediaDemuxer: @unchecked Sendable {
 
     var audioQueue = DemuxerPacketBuffer<DemuxedAudioPacket>(indexesKeyframes: false)
     var videoQueue = DemuxerPacketBuffer<DemuxedVideoPacket>()
+    /// The times of the latest video keyframes queued, apart from the packets: a live read-ahead keeps no history
+    /// (`backBytes` 0), and a give-up with nothing queued to cut at places its cut by them (`expectedHoleCut`). Behind
+    /// `queueLock`, as the queue.
+    var keyframeTrail = KeyframeTrail()
     private let maxAudioQueueCount = 500
     private let maxVideoQueueCount = 180
     /// Bumped at a variant's splice (`spliceVariantVideo`): the packets read in between carry it

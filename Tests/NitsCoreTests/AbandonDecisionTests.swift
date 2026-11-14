@@ -44,6 +44,47 @@ struct AbandonDecisionTests {
         #expect(place(cursor: 7, keyframes: [8, 10], muxedSound: 10.5) == .insideWithoutKeyframe)
     }
 
+    /// The segment is [6, 12) s; `after` is how far the old variant is read.
+    private func holeCut(after: Double, known: [Double]) -> Double? {
+        MediaDemuxer.expectedHoleCut(start: 6, duration: 6, after: after, known: known)
+    }
+
+    @Test("With nothing of the segment queued, the cut is the keyframe expected past what is read, by the spacing read")
+    func holeCutAtTheNextKeyframe() {
+        // Keyframes every 2 s, the segment's at 6 handed out: the next at 8.
+        #expect(holeCut(after: 7.5, known: [0, 2, 4, 6]) == 8)
+        // The spacing of the keyframes read, whatever segment they are of (the 15 → 1.5 Mbit/s stand: every 0.33 s).
+        let short = holeCut(after: 8.57, known: [7.98, 8.31])
+        #expect(short.map { abs($0 - 8.64) < 0.001 } == true, "\(String(describing: short))")
+        // Read past where one was expected (a keyframe missing): the one after.
+        #expect(holeCut(after: 8.5, known: [2, 4, 6]) == 10)
+        // Keyframes queued past what is read are not what the spacing counts from.
+        #expect(holeCut(after: 7.5, known: [0, 2, 4, 6, 11]) == 8)
+    }
+
+    @Test("With no spacing known, or the next keyframe at the segment's end, the lower variant joins the next segment")
+    func holeCutJoinsTheNextSegment() {
+        #expect(holeCut(after: 7, known: []) == nil)
+        #expect(holeCut(after: 7, known: [6]) == nil, "one keyframe: no spacing")
+        #expect(holeCut(after: 7, known: [0, 6]) == nil, "a keyframe a segment")
+        #expect(holeCut(after: 10.5, known: [6, 8, 10]) == nil, "the next is the next segment's, at 12")
+    }
+
+    @Test("The keyframes queued are kept apart from the packets: the latest, once each, a break starting them over")
+    func keyframeTrail() {
+        var trail = MediaDemuxer.KeyframeTrail()
+        for time in stride(from: 0.0, through: 20, by: 2) { trail.note(time) }
+        #expect(trail.times == [4, 6, 8, 10, 12, 14, 16, 18, 20], "the latest nine")
+        trail.note(20)
+        #expect(trail.times.last == 20 && trail.times.count == 9, "the same keyframe queued again counts once")
+        // A download read again from 16: what came after it goes.
+        trail.note(16)
+        #expect(trail.times == [4, 6, 8, 10, 12, 14, 16])
+        // A break: the times start over.
+        trail.note(1)
+        #expect(trail.times == [1])
+    }
+
     @Test("A download given up and read again is checked again")
     func reopensWhatIsReadAgain() {
         var log = MediaDemuxer.AbandonmentLog()
@@ -64,9 +105,9 @@ struct AbandonDecisionTests {
         #expect(!log.isDecided(variant: 2, sequence: 5))
         let again = log.record(.refused(.switchUnderWay), variant: 2, sequence: 5)
         #expect(!again, "the same refusal is logged once")
-        let another = log.record(.refused(.noKeyframeQueued), variant: 2, sequence: 5)
+        let another = log.record(.refused(.join(.noSegment)), variant: 2, sequence: 5)
         #expect(another, "another one is logged")
-        let nextSegment = log.record(.refused(.noKeyframeQueued), variant: 2, sequence: 6)
+        let nextSegment = log.record(.refused(.join(.noSegment)), variant: 2, sequence: 6)
         #expect(nextSegment, "so is the next segment's")
 
         let requested = log.record(.requested, variant: 2, sequence: 6)
@@ -88,7 +129,6 @@ struct AbandonDecisionTests {
             #expect(log.isDecided(variant: 2, sequence: sequence), "\(refusal.text)")
         }
         #expect(!MediaDemuxer.AbandonRefusal.switchUnderWay.isFinal)
-        #expect(!MediaDemuxer.AbandonRefusal.noKeyframeQueued.isFinal)
         #expect(
             !MediaDemuxer.AbandonRefusal.join(.noSegment).isFinal,
             "a target's live playlist a reload behind lists the segment a moment later")

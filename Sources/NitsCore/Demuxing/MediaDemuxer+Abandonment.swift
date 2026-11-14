@@ -74,6 +74,23 @@ extension MediaDemuxer {
         return .inside(keyframe: keyframe)
     }
 
+    /// Where a give-up with the position inside the segment and nothing of it queued to cut at (`insideWithoutKeyframe`)
+    /// expects the new variant's keyframe: the old variant's next one past what is read (`after`), by the spacing of the
+    /// keyframes it has queued (`known`, in order, handed out or not: `KeyframeTrail`, which a live stream with no
+    /// history keeps too); the variants of a ladder put theirs at the same times, and the splice takes the new variant's next one if
+    /// not (`spliceAbandoned`). Nil when the lower variant is to join the next segment instead: fewer than two keyframes
+    /// known (no spacing), or the next one falls at the segment's end, as with a keyframe a segment.
+    static func expectedHoleCut(start: Double, duration: Double, after: Double, known: [Double]) -> Double? {
+        let end = start + duration
+        let read = known.filter { $0 <= after && $0 < end }
+        let gaps = zip(read, read.dropFirst()).map { $1 - $0 }.filter { $0 > 0.01 }.suffix(8).sorted()
+        guard let last = read.last, !gaps.isEmpty else { return nil }
+        let gop = gaps[gaps.count / 2]
+        var next = last + gop
+        while next <= after { next += gop }
+        return next < end - gop / 2 ? next : nil
+    }
+
     /// Called on the read-ahead thread: while it waits for the download inside the read (`lock` held, `queueLock` released:
     /// what is written with both is read), or from its idle step (`pollInFlightSegments`: both held, `queueLockHeld`).
     func noteSegmentInFlight(
@@ -112,16 +129,32 @@ extension MediaDemuxer {
                 start: segment.start, duration: segment.duration, cursor: cursor, keyframes: position.keyframes,
                 muxedSoundHandedOut: segment.hasMuxedAudio ? position.soundHandedOut : nil)
         }
-        // Inside the segment the lower variant must reach the keyframe it is cut in at (`cutOffset`: no hole).
+        // Inside the segment the lower variant must reach the keyframe it is cut in at (`cutOffset`: no hole). With
+        // nothing of the segment queued to cut at, the old pictures play as they come: it is cut in past them, at the
+        // keyframe expected next (`expectedHoleCut`) or at the next segment's start, and what is between is skipped
+        // (`hole`). Refusing it left the download to play out: 15 → 1.5 Mbit/s at 3 s, 29.4 s of stall.
         let cut: Double?
         let playable: Double
         var cutOffset: Double?
+        var hole: AdaptiveBitrateLogic.Hole?
+        var joinSequence = segment.sequence
         switch place {
         case .ahead: (cut, playable) = (segment.start, segment.start)
         case .inside(let keyframe):
             (cut, playable) = (keyframe, keyframe)
             cutOffset = keyframe - segment.start
-        case .insideWithoutKeyframe: (cut, playable) = (nil, readPoint)
+        case .insideWithoutKeyframe:
+            let position = queued ?? queuedPosition(queueLockHeld: queueLockHeld)
+            let expected =
+                abandonExpectsKeyframes
+                ? Self.expectedHoleCut(
+                    start: segment.start, duration: segment.duration, after: readPoint,
+                    known: position.readKeyframes) : nil
+            let end = segment.start + segment.duration
+            if expected == nil { joinSequence = segment.sequence + 1 }
+            (cut, playable) = (expected ?? end, readPoint)
+            hole = AdaptiveBitrateLogic.Hole(
+                reach: expected.map { $0 - segment.start } ?? 0, skipped: max((expected ?? end) - readPoint, 0))
         }
         let buffer = max(playable - cursor, 0)
         let progress = segment.progress
@@ -133,7 +166,7 @@ extension MediaDemuxer {
             isSuspended: progress.isSuspended)
         let evaluation = adaptiveBitrate.logic.evaluation(
             of: download, among: ladder, buffer: buffer, roundTrip: roundTrip, playlistLoad: isLive ? roundTrip : 0,
-            cutOffset: cutOffset)
+            cutOffset: cutOffset, hole: hole)
         guard case .abandon(let decision) = evaluation else {
             if case .keep(let refusal) = evaluation {
                 return trace(source, segment, "kept: \(refusal.rawValue), buffer \(String(format: "%.1f", buffer)) s")
@@ -144,7 +177,8 @@ extension MediaDemuxer {
         if adaptiveBitrate.abandonmentLog.isDecided(variant: variant, sequence: segment.sequence) { return }
         // The cut at the new variant's keyframe needs the old packets from there on not handed out yet: ahead of the
         // position, the segment's start; inside it, a keyframe the old variant has queued inside the segment, if the new
-        // one has a keyframe of the same time (`spliceAbandoned`; else the ordinary splice, a gap).
+        // one has a keyframe of the same time (`spliceAbandoned`; else the ordinary splice, a gap); with none queued, a
+        // keyframe past what is read, of this segment or the next (a hole).
         var outcome = AbandonOutcome.refused(.notAskedFor)
         // The give-up replaces a switch not spliced yet: it goes no higher than where that one was going (a target since
         // rejected is no bound).
@@ -157,12 +191,9 @@ extension MediaDemuxer {
                 return pending.target.id
             } ?? decision.target
         if abandonsDownloads {
-            outcome =
-                cut.map {
-                    requestAbandon(
-                        from: variant, to: target, sequence: segment.sequence, start: segment.start,
-                        cut: place == .ahead ? nil : $0, download: download)
-                } ?? .refused(.noKeyframeQueued)
+            outcome = requestAbandon(
+                from: variant, to: target, sequence: segment.sequence, start: segment.start,
+                cut: place == .ahead ? nil : cut, joinSequence: joinSequence, download: download)
         }
         guard adaptiveBitrate.abandonmentLog.record(outcome, variant: variant, sequence: segment.sequence) else {
             return
@@ -184,6 +215,12 @@ extension MediaDemuxer {
             verdict = "position inside the segment, queued keyframe at \(format(keyframe)) s (cut there)"
         case .insideWithoutKeyframe:
             verdict = "position inside the segment, no keyframe of it queued ahead of the sound handed out"
+            if let hole, let cut {
+                verdict +=
+                    joinSequence == segment.sequence
+                    ? "; cut in at the keyframe expected at \(format(cut)) s, a hole of \(format(hole.skipped)) s"
+                    : "; joins segment \(joinSequence) at \(format(cut)) s, a hole of \(format(hole.skipped)) s"
+            }
         }
         // Sound muxed into the variant (TS) is cut with the picture: handed out past the cut, that keyframe will not do.
         // A separate rendition is not touched, whatever its cursor.
@@ -213,6 +250,8 @@ extension MediaDemuxer {
         let soundHandedOut: Double?
         let keyframes: [Double]
         let gop: Double?
+        /// The latest video keyframes queued, handed out or not, in order (`KeyframeTrail`: kept with no history too, live).
+        let readKeyframes: [Double]
     }
 
     /// Takes `queueLock` (after `lock`) unless the caller holds it.
@@ -225,16 +264,17 @@ extension MediaDemuxer {
             let audio = demuxer.audioQueue.peek().flatMap { seconds($0.pts, $0.dts, demuxer.audioTimebase) }
             let handedOut = seconds(demuxer.audioQueue.lastHandedOutPTS, Int64.min, demuxer.audioTimebase)
             // A video packet is read with its own time base: a switch changes it while older packets still wait.
-            let keyframes = demuxer.videoQueue.keyframeIndices.compactMap { index -> Double? in
-                guard index >= demuxer.videoQueue.readIndex, let packet = demuxer.videoQueue.peekAt(index) else {
-                    return nil
-                }
-                return seconds(packet.pts, packet.dts, packet.format.timebase)
+            let queue = demuxer.videoQueue
+            let time = { (index: Int) -> Double? in
+                queue.peekAt(index).flatMap { seconds($0.pts, $0.dts, $0.format.timebase) }
             }
+            let keyframes = queue.keyframeIndices.filter { $0 >= queue.readIndex }.compactMap(time)
             let gop =
                 keyframes.count > 1
                 ? (keyframes[keyframes.count - 1] - keyframes[0]) / Double(keyframes.count - 1) : nil
-            return QueuedPosition(audioCursor: audio, soundHandedOut: handedOut, keyframes: keyframes, gop: gop)
+            return QueuedPosition(
+                audioCursor: audio, soundHandedOut: handedOut, keyframes: keyframes, gop: gop,
+                readKeyframes: demuxer.keyframeTrail.times)
         }
         // The idle step holds `queueLock` already; inside the read it is released.
         return queueLockHeld ? read(self) : readingDescription(read)
@@ -348,8 +388,15 @@ extension MediaDemuxer {
         /// Where the segment starts on the timeline (seconds).
         let start: Double
         /// With the position inside the segment, the old variant's queued keyframe (seconds) the new one is to be cut in
-        /// at; nil when the segment is ahead of the position. For the log of the splice.
+        /// at, or the keyframe expected past what is read when none is queued; nil when the segment is ahead of the
+        /// position. For the log of the splice.
         var cut: Double? = nil
+        /// The segment the new variant reads from its start, when not `sequence`: the next one, with nothing of `sequence`
+        /// queued to cut at and no keyframe of it expected past what is read (`expectedHoleCut`); the rest of `sequence`
+        /// is skipped. A switch that does not come reads `sequence` again all the same.
+        var joinSequence: Int? = nil
+
+        var joinedSequence: Int { joinSequence ?? sequence }
     }
 
     /// Why a download the rule gives up is not.
@@ -358,15 +405,13 @@ extension MediaDemuxer {
         case notAskedFor
         /// A switch is spliced or took a download over itself, or another download given up waits for its switch.
         case switchUnderWay
-        /// The position is inside the segment and the old variant has no keyframe of it queued to cut at.
-        case noKeyframeQueued
         case rejected
         case join(JoinRefusal)
 
-        /// Whether it holds for the segment for good; a passing one (the switch made, a keyframe queued) is asked again.
+        /// Whether it holds for the segment for good; a passing one (the switch made, a target's playlist a reload behind) is asked again.
         var isFinal: Bool {
             switch self {
-            case .switchUnderWay, .noKeyframeQueued: false
+            case .switchUnderWay: false
             // A playlist of the target that lags a reload behind (live) lists the segment a moment later.
             case .join(let refusal): refusal != .noSegment
             case .notAskedFor, .rejected: true
@@ -377,7 +422,6 @@ extension MediaDemuxer {
             switch self {
             case .notAskedFor: "not asked for"
             case .switchUnderWay: "a switch is under way"
-            case .noKeyframeQueued: "the position is inside the segment, no keyframe of it queued"
             case .rejected: "the variant is rejected"
             case .join(let refusal): refusal.rawValue
             }
@@ -405,11 +449,12 @@ extension MediaDemuxer {
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
     /// reason, when it cannot be done: a switch is spliced or took a download over itself (one not spliced yet is replaced),
     /// or another download given up waits for its switch, or `target` is rejected, or has not the segment
-    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on). `cut` is the queued
-    /// keyframe the cut is expected at when the position is inside the segment; `download` is what the rule judged, which
-    /// the estimate learns from (`AdaptiveBitrateLogic.noteAbandoned`).
+    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on, or not there yet).
+    /// `cut` is the keyframe the cut is expected at when the position is inside the segment; `joinSequence` the segment
+    /// the new variant reads from its start, when not `sequence` (`PendingAbandon.joinSequence`); `download` is what the
+    /// rule judged, which the estimate learns from (`AdaptiveBitrateLogic.noteAbandoned`).
     func requestAbandon(
-        from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil,
+        from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil, joinSequence: Int? = nil,
         download: AdaptiveBitrateLogic.Download? = nil
     ) -> AbandonOutcome {
         // A switch not spliced yet is replaced (`replaceableSwitch`; `beginRequestedVariantSwitch` gives it up): it joined
@@ -422,9 +467,11 @@ extension MediaDemuxer {
         }
         guard adaptiveBitrate.pendingAbandon == nil else { return .refused(.switchUnderWay) }
         guard input.variantDescription(id: target) != .rejected else { return .refused(.rejected) }
-        if let refusal = input.canJoin(variant: target, sequence: sequence) { return .refused(.join(refusal)) }
+        let joins = joinSequence ?? sequence
+        if let refusal = input.canJoin(variant: target, sequence: joins) { return .refused(.join(refusal)) }
         adaptiveBitrate.pendingAbandon = PendingAbandon(
-            from: from, target: target, sequence: sequence, start: start, cut: cut)
+            from: from, target: target, sequence: sequence, start: start, cut: cut,
+            joinSequence: joins == sequence ? nil : joins)
         input.abandonDownload(ofVariant: from)
         let before = adaptiveBitrate.logic.estimate
         adaptiveBitrate.logic.noteAbandoned(
@@ -523,7 +570,10 @@ extension MediaDemuxer {
             how = " (\(cutCount) old pictures cut, \(lost) of them presented before it)"
         } else if let lastOld, lastOld != Int64.min {
             // The old pictures end before the keyframe: what is between is a hole.
-            how = " (nothing queued of it past that; the old pictures end at \(format(toSeconds(lastOld, timebase))) s)"
+            let end = toSeconds(lastOld, timebase)
+            how =
+                " (nothing queued of it past that; the old pictures end at \(format(end)) s: a hole of "
+                + "\(format(max(seconds - end, 0))) s)"
         } else {
             how = " (nothing of the old variant queued)"
         }
@@ -673,5 +723,27 @@ extension MediaDemuxer {
             position += 1
         }
         return (count, lost)
+    }
+}
+
+extension MediaDemuxer {
+    /// The times (seconds) of the latest video keyframes queued, apart from the packets, which a live read-ahead does not
+    /// keep once handed out (`backBytes` 0): what a give-up with nothing of its segment queued places its cut by
+    /// (`expectedHoleCut`). Started again at a seek; where the times go back, what is not before them goes.
+    struct KeyframeTrail: Sendable, Equatable {
+        /// As many as the spacing is taken from (`expectedHoleCut` looks at eight gaps).
+        static let capacity = 9
+        private(set) var times: [Double] = []
+
+        mutating func note(_ time: Double) {
+            if let last = times.last {
+                if abs(time - last) < 0.001 { return }
+                // Read again from further back (a download given up and read again, its tail cut) the later ones go; at a
+                // break, whose times start over, all of them.
+                if time < last { times.removeAll { $0 >= time - 0.001 } }
+            }
+            times.append(time)
+            if times.count > Self.capacity { times.removeFirst(times.count - Self.capacity) }
+        }
     }
 }

@@ -280,7 +280,14 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
   from its start (`DemuxerInput.joinNext`); the old variant's queued tail is cut as ExoPlayer splices a chunk
   (`attemptSplice`): from the first picture in decode order presented at or after the new keyframe, refused while one
   at or after it is handed out, the old variant's own sound cut on its own (a rendition both share is not touched).
-  With the position inside the segment the cut is at a keyframe of it still queued. The estimate learns the download
+  With the position inside the segment the cut is at a keyframe of it still queued; with none queued (the buffer empty,
+  every picture handed out as it comes), at the keyframe expected past what is read, by the spacing of the old
+  variant's latest keyframes, kept apart from the packets, as a live read-ahead keeps no history (`KeyframeTrail`,
+  `expectedHoleCut`), or, with no spacing known or that keyframe at
+  the segment's end, at the next segment's start (`PendingAbandon.joinSequence`): the lowest rung is taken, as each
+  second it takes to reach the cut is one of stall, and only when the stall it saves is longer than the picture it
+  skips, less what of a long GOP is queued without a keyframe and plays meanwhile
+  (`AdaptiveBitrateLogic.Hole`). The estimate learns the download
   given up (hls.js's `resetEstimator`), or `choose` climbs straight back. A switch given up before its splice reads the
   old segment again, spliced in at its first keyframe past what is handed out (`RestartSplice`). Inside the segment a
   lower variant is taken only when it reaches the cut and carries the rest of its segment in time (a late one leaves a
@@ -433,6 +440,15 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   up for 0.5 s of gain.
 - **Inside the segment, a lower rung only if it reaches the cut and carries the rest of its segment in time**, with no
   fallback to the lowest: there a late rung leaves a hole, not a stall.
+- **With nothing of the segment queued, a give-up with a hole, not a refusal** (2026-11-14, second opinion merged):
+  the download played out instead, and 15 → 1.5 Mbit/s at 3 s stalled 29.4 s (where hls.js, which plays no part of a
+  segment before it is buffered, stalled none), the rule asking for the give-up for ~25 s; a switch under way beside it
+  halved the link the old segment had. Now: a short stall while the lowest rung reads to the cut, and a hole of up to a
+  GOP (4.3 s and 0.2 s on the stand). The cut is placed from the keyframes read, handed out ones included, kept apart
+  from the packets (a live read-ahead drops what it hands out: from the queue's history, live would always have joined
+  the next segment), not a threshold on the GOP. *Turned down:* joining the next segment by default (as safe): it skips the rest of
+  the segment, 7.4 s of picture on the stand, where a cut inside skips ~0.3 s; it stays the fallback with no keyframe
+  spacing known, a trade of a hole for a stall, and only when the stall saved is the longer.
 - **A switch not spliced yet gives way to a give-up** (2026-11-13, second opinion merged; hls.js's `fragBlockingSwitch`):
   it joins the segment after the one the old variant downloads and splices only once that came whole. Refused while a
   switch ran, a step down by the estimate right after a slow segment left the old variant's next 7.3 MB downloading for
@@ -502,14 +518,16 @@ its HLS master.
 | 2026-11-12 | A drop with a full buffer | HEVC, NLC off then 2 Mbit/s at 45 s | given up 4.1 s after the drop, clean cut, no step back up, 0 s stalled |
 | 2026-11-13 | Against hls.js, drop with a full buffer | HEVC, proxy: ~100 → 2 / 1 Mbit/s at 45 s, → 2 at 12 s | 0 s stalled for both in all three; see *Giving a download up* in "Adaptive bitrate" for the rungs and the estimate |
 | 2026-11-13 | A slow segment's weight and a give-up during a switch | HEVC, proxy: ~100 → 2 Mbit/s at 45 s, 150 s | weighing alone: estimate 80 → 2 Mbit/s, step down at once, but the old segment kept beside the new: 7.3 s stalled; with the give-up: 0 s, 805k then 1240k on an estimate of ~2 Mbit/s (was 12.6–14.1 Mbit/s and the top again) |
+| 2026-11-14 | A drop with a partly built buffer | HEVC, proxy: 15 → 1.5 Mbit/s at 3, 5, 10, 20, 30 s, 90 s; Nits, hls.js default and capped at 30 s | at 5–30 s (Nits 1.6–32 s buffered at the give-up) 0 s stalled for all, given up ~4 s after the drop; at 3 s Nits **29.4 s stalled** (picture at 0.8 s), hls.js 0 s (first picture 10.5 / 16.6 s): see *A give-up too late for its keyframe* |
+| 2026-11-14 | The same with a give-up with nothing queued | HEVC, proxy: 15 → 1.5 Mbit/s at 3 and 5 s, Nits only | at 3 s 29.4 → **4.3 s stalled**: given up 4 s into the next segment for the lowest, cut at its keyframe past what was read (9.983 s, 9.85 expected: the lowest rung's keyframes stand elsewhere), a hole of 0.2 s; the rest of the stall is the first segment's tail and the rule's wait of half a segment; at 5 s unchanged, 0 s |
 
 Raw data, kept out of git: `.agents/hls-stand/` (the proxy stand), `.agents/hls-client/measurements/` (opening and give-up
-series), `.agents/abr-measurements/` (2026-11-07). Not measured yet: a drop with a partly built buffer, a stream with 2–6
+series), `.agents/abr-measurements/` (2026-11-07). Not measured yet: a stream with 2–6
 s GOPs (whether a re-read from the current frame is ever needed), links of 5–10 Mbit/s against a heavy top.
 
 ## State and known limitations
 
-### Where it stands (2026-11-13)
+### Where it stands (2026-11-14)
 
 The client is HLS's only path (FFmpeg's HLS demuxer is not built), merged into `main`; real streams run clean
 (Apple's examples, Mux and Google DAI, JW AES, YouTube live). Giving a download up is on by default, and with a full
@@ -519,8 +537,21 @@ give-up replaces a switch not spliced, and each spell's first delivery is left o
 *Throughput* and *Giving a download up*); on the stand (~100 → 2 Mbit/s, 150 s) 0 s stalled, the estimate ~2 Mbit/s,
 where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
 
-1. **A drop with a partly built buffer**, measured on the shaping proxy (a first link of ~15 Mbit/s, then 1.5): until
-   then "no stall" is shown for a full buffer only.
+1. *Done 2026-11-14:* a drop with a partly built buffer. On the stand (15 → 1.5 Mbit/s) a drop at 5–30 s stalls
+   nothing; one at 3 s, with nothing of the segment queued, stalled 29.4 s and now 4.3 s (*With nothing of the segment
+   queued* in "Decisions"). Left from it:
+   - A lane opening a run reports no progress (`HLSLane.isOpening`): the read thread stood 9 s in a switch's opening of
+     an MPEG-TS segment at 8 KB/s in a test and checked no download meanwhile. fMP4 opens on its init section and did
+     not show it on the stand.
+   - With a thin buffer `choose` asks for the next segment with no room for the buffer (5.6 Mbit/s on an estimate of
+     6.2 with 0.3 s buffered); hls.js bounds the fetch by the buffer and `maxStarvationDelay`. Not called for by a
+     measurement yet: a fourfold drop beats any margin.
+   - Joined to the next segment, a rung's own sound (MPEG-TS) has the same hole as its picture: the demuxer's cut is
+     tested (`AbandonDownloadTests`), the engine crossing it (clock, buffering, renderer) is not.
+   - On a VOD's last segment with no keyframe spacing known there is no next segment to join: the refusal
+     (`noSegment`) is passing, so the download plays out, a stall as before; on live, until the next segment is listed.
+   - Flake: `AdaptiveBitrateTests.switchOverlapIsNoCollapse` fails 2 of 3 runs alone on 4407ff7 (before this work):
+     cause not looked for yet.
 2. A live-stream test of `isReadAheadReal` (the probe up must not take a live edge's raised read-ahead for a full one).
    *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
    rung twice) was seen through FFmpeg's HLS demuxer, before the client; never reproduced, and the client's nine
@@ -537,8 +568,11 @@ its audio group).
 - **A give-up too late for its keyframe leaves a hole.** Once the picture at the segment's start (or at the queued
   keyframe inside it) is handed out, the cut goes to the new variant's next keyframe, and what is between is skipped
   (a test that gave up with 1.7 s buffered and the lower rung 3.1 s away: 12.1 → 13.0 s). With the position inside
-  the segment and no keyframe of it queued, nothing is given up (`noKeyframeQueued`): the download plays out, a stall
-  where the link cannot carry it.
+  the segment and no keyframe of it queued, the give-up costs a short stall and a hole: the picture stands while the
+  lowest rung reads to the cut (one GOP and a round trip; the stall's larger part is the rule's wait of half a segment),
+  then skips to its keyframe past what is read, up to a GOP on (0.2 s on the stand), or to the next segment's start
+  when no keyframe spacing is known (the rest of the segment: a picture standing while a separate sound plays on). A
+  sound muxed into the old rung has the same hole.
 - **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only an opening rate under
   3 Mbit/s starts lower (`HLSInput.openingLinkRate`, `slowLinkLimit`): the rate follows the CDN's answers as much as the
   link (4.8 Mbit/s on a fast one, before the opening skipped TCP's slow start), so a higher limit would start low on fast links. A start segment that will not arrive in time is given up

@@ -124,7 +124,9 @@ extension MediaDemuxer {
     /// Queues a held picture as every picture is: the queue with the format it plays with, and the
     /// account of what has been read.
     private func queueHeldVideo(_ held: HeldVideoPacket) {
-        videoQueue.append(DemuxedVideoPacket(held, format: videoFormat))
+        let packet = DemuxedVideoPacket(held, format: videoFormat)
+        videoQueue.append(packet)
+        noteKeyframe(of: packet)
         lastVideoReadTime = held.decodeTime
         recordReadAhead(held.packet.pointee)
     }

@@ -67,6 +67,8 @@ final class TestHTTPServer: Sendable {
         var responders: [String: @Sendable () -> Data] = [:]
         var behaviors: [(matches: @Sendable (String) -> Bool, behavior: Behavior)] = []
         var requests: [Request] = []
+        /// The paths whose body the client stopped taking before its end (the connection failed), in order.
+        var cutOff: [String] = []
         /// The paths a `dropMidwayOnce` response was cut short for.
         var dropped: Set<String> = []
         var connections: [ObjectIdentifier: NWConnection] = [:]
@@ -153,6 +155,12 @@ final class TestHTTPServer: Sendable {
     /// Paths asked for so far (without the leading slash), in order.
     var requests: [Request] {
         state.withLock { $0.requests }
+    }
+
+    /// Paths whose body the client stopped taking before its end (a download cancelled), in order; not those `dropMidway`
+    /// cut short.
+    var cutOff: [String] {
+        state.withLock { $0.cutOff }
     }
 
     func stop() {
@@ -297,7 +305,10 @@ final class TestHTTPServer: Sendable {
                 return state.linkFreeAt
             }
             if let slot { await pause(until: slot) }
-            guard await send(Data(chunk), on: connection) else { return false }
+            guard await send(Data(chunk), on: connection) else {
+                state.withLock { $0.cutOff.append(path) }
+                return false
+            }
             sent = end
             if sent >= dropAt { return false }
 

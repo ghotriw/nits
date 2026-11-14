@@ -209,7 +209,18 @@ extension MediaDemuxer {
     /// each); the packets queued before keep theirs.
     func videoPacket(from pkt: AVPacket) -> DemuxedVideoPacket {
         refreshVideoFormat(from: pkt)
-        return DemuxedVideoPacket(pkt, format: videoFormat)
+        let packet = DemuxedVideoPacket(pkt, format: videoFormat)
+        noteKeyframe(of: packet)
+        return packet
+    }
+
+    /// Notes a keyframe queued in `keyframeTrail`, in its own time base (the one it was read with, as `queuedPosition`
+    /// reads the queue). Every picture queued comes here: read (`videoPacket(from:)`) or held for a switch and queued
+    /// at its splice (`queueHeldVideo`).
+    func noteKeyframe(of packet: DemuxedVideoPacket) {
+        let base = packet.format.timebase
+        guard packet.isKeyFrame, packet.effectivePTS != Int64.min, base.den > 0 else { return }
+        keyframeTrail.note(Double(packet.effectivePTS) * Double(base.num) / Double(base.den))
     }
 
     /// The `avcC` / `hvcC` a key frame brings as new extradata: an HLS stream of fragmented MP4 whose `EXT-X-MAP` changed
