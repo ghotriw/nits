@@ -23,6 +23,8 @@ struct DASHPresentation: Sendable {
         /// Its period's initialization, in a representation of several periods (their inits differ); else the
         /// representation's.
         var initSection: HLSInitSection?
+        /// Silence kept in its place: a period of a sound with none of its own (`merge`). Never requested.
+        var isGap = false
     }
 
     struct Representation: Sendable, Equatable {
@@ -190,7 +192,8 @@ extension DASHPresentation {
                 period: period, base: baseURL(of: period, relativeTo: mpdBase), duration: times[number].duration,
                 live: live, isOfSeveral: kept.count > 1)
         }
-        let result: PeriodRead = kept.count == 1 ? reads[0] : try merge(reads, starts: times.map(\.start))
+        let result: PeriodRead =
+            kept.count == 1 ? reads[0] : try merge(reads, starts: times.map(\.start), lengths: times.map(\.duration))
         if let reason = result.skippedPictures.first, !result.representations.contains(where: { $0.kind == .video }) {
             throw .unsupported(reason)
         }
@@ -225,6 +228,8 @@ extension DASHPresentation {
         /// so are not played silent. One with no decoder or no segments would be silent however it is opened.
         var skippedSounds: [String] = []
         var hasProtected = false
+        /// It has a set of sound, whatever became of its representations: a period without one is silent.
+        var hasSoundSet = false
     }
 
     private static func hasSets(_ period: XMLTreeElement) -> Bool {
@@ -283,6 +288,7 @@ extension DASHPresentation {
                 guard case .element(let element) = child, element.localName == "Representation" else { continue }
                 let kind = DASHElements.kind(of: set) ?? DASHElements.kind(of: element)
                 guard kind == "video" || kind == "audio" else { continue }
+                if kind == "audio" { read.hasSoundSet = true }
                 guard set.elements(named: "ContentProtection").isEmpty,
                     element.elements(named: "ContentProtection").isEmpty
                 else {
@@ -385,7 +391,15 @@ extension DASHPresentation {
     /// presentation's time (`starts`), numbered from 1 across them, each marked with its period (a discontinuity: the
     /// media's timestamps restart there) and its period's initialization. One that a period lacks is left out. The
     /// pictures and sounds of a period must tell one `presentationTimeOffset`, as a manifest's of one period.
-    private static func merge(_ reads: [PeriodRead], starts: [Double]) throws(DASHPresentationError) -> PeriodRead {
+    /// A period with no sound set at all (an advertisement's slate) beside others that have some plays silent: the sound's
+    /// segments carry it as gaps (`Segment.isGap`, as long as the period, cut as long as the sound's own segments, which
+    /// the timeline counts from the start of the period list, so the sound after it, and the film's before an advertisement's,
+    /// stay in their places); only after the last period that has sound none are needed. A period whose sound is told but
+    /// not played (protected, unsupported) is not silent: the stream is refused as for any sound that does not continue.
+    /// The sound's representations are those of the first period that has sound.
+    private static func merge(
+        _ reads: [PeriodRead], starts: [Double], lengths: [Double?]
+    ) throws(DASHPresentationError) -> PeriodRead {
         var merged = PeriodRead()
         for (number, read) in reads.enumerated() {
             merged.skipped += read.skipped.map { "period \(number + 1), \($0)" }
@@ -393,39 +407,69 @@ extension DASHPresentation {
             merged.skippedSounds += read.skippedSounds.map { "period \(number + 1), \($0)" }
             merged.hasProtected = merged.hasProtected || read.hasProtected
         }
-        var members: [[Representation]] = []
-        for first in reads[0].representations {
-            var found = [first]
-            for other in reads.dropFirst() {
-                guard let member = continuation(of: first, in: other.representations) else { break }
-                found.append(member)
+        let hasSound = { (read: PeriodRead) in read.representations.contains { $0.kind == .audio } }
+        let isSilent = { (read: PeriodRead) in !read.hasSoundSet }
+        let firstSound = reads.firstIndex(where: hasSound)
+        let lastSound = reads.lastIndex(where: hasSound)
+        // Each is the period it starts from, and what continues it in every period (nil: a silent period).
+        var members: [(from: Int, found: [Representation?])] = []
+        for (from, read) in reads.enumerated() {
+            for first in read.representations where first.kind == .video ? from == 0 : from == firstSound {
+                var found: [Representation?] = Array(repeating: nil, count: from) + [first]
+                var isComplete = true
+                for number in (from + 1)..<max(reads.count, from + 1) {
+                    if let member = continuation(of: first, in: reads[number].representations) {
+                        found.append(member)
+                    } else if first.kind == .audio && isSilent(reads[number]) {
+                        found.append(nil)
+                    } else {
+                        isComplete = false
+                        break
+                    }
+                }
+                // A period before the sound's first that told sound of its own lost it: not silent.
+                guard isComplete, reads[..<from].allSatisfy(isSilent) else {
+                    let reason = "\(first.id): not in every period"
+                    merged.skipped.append(reason)
+                    if first.kind == .video { merged.skippedPictures.append(reason) }
+                    continue
+                }
+                members.append((from, found))
             }
-            guard found.count == reads.count else {
-                let reason = "\(first.id): not in every period"
-                merged.skipped.append(reason)
-                if first.kind == .video { merged.skippedPictures.append(reason) }
-                continue
-            }
-            members.append(found)
         }
         for number in reads.indices {
-            let offsets = members.map { $0[number].presentationTimeOffset }
+            let offsets = members.compactMap { $0.found[number]?.presentationTimeOffset }
             if let first = offsets.first, let other = offsets.first(where: { abs($0 - first) > 0.001 }) {
                 throw .unsupported(
                     "presentation time offsets that differ in period \(number + 1) (\(first) s, \(other) s)")
             }
         }
-        // A film that had sound in its first period is not played silent because later periods' sound found no match.
-        if reads[0].representations.contains(where: { $0.kind == .audio })
-            && !members.contains(where: { $0[0].kind == .audio })
-        {
+        // A film that had sound is not played silent because its periods' sound found no match.
+        if firstSound != nil && !members.contains(where: { $0.found.contains { $0?.kind == .audio } }) {
             throw .unsupported("sound that does not continue through every period")
         }
-        for found in members {
-            var representation = found[0]
+        for (from, found) in members {
+            guard var representation = found[from] else { continue }
             representation.initSection = nil
             representation.segments = []
+            // Silence is cut as long as the sound's own segments.
+            let piece = max(found.compactMap { $0?.segments.map(\.duration).max() }.max() ?? 0, 1)
+            let url = found.lazy.compactMap { $0?.segments.first?.url }.first
             for (number, member) in found.enumerated() {
+                guard let member else {
+                    // After the last period with sound, nothing follows that needs its place kept.
+                    guard let url, let length = lengths[number], number < (lastSound ?? 0) else { continue }
+                    var done = 0.0
+                    while done < length - 0.001 {
+                        let duration = min(piece, length - done)
+                        representation.segments.append(
+                            Segment(
+                                url: url, start: starts[number] + done, duration: duration,
+                                number: representation.segments.count + 1, period: number, isGap: true))
+                        done += duration
+                    }
+                    continue
+                }
                 for var segment in member.segments {
                     segment.number = representation.segments.count + 1
                     segment.start += starts[number]

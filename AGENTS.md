@@ -246,7 +246,10 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
   A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). The client plays playlists,
   not their text: they come from an `HLSPlaylistSource` (`HLSServedPlaylists` for HLS), the way another manifest (DASH)
-  comes into it. Background: "Timeline and discontinuities" in `docs/HLS.md`.
+  comes into it. A segment with `isGap` (`EXT-X-GAP`; a DASH period with no sound beside others that have some, which
+  `DASHPresentation.merge` keeps in its place so the sound after it is) is never requested: `HLSLane` steps over it as a
+  run of its own, and anything that picks a segment by time or number goes through `readable`. Background: "Timeline and
+  discontinuities" in `docs/HLS.md`.
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
   selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
   selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only

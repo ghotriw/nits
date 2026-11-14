@@ -61,6 +61,64 @@ struct InlineDASHTests {
         #expect(segments.allSatisfy { $0.headers["x-nits"] == "1" }, "The other headers reach them too")
     }
 
+    /// Two periods of two segments each, the first without sound when `silentFirst` (a slate before the film).
+    private static func twoPeriods(_ server: TestHTTPServer, silentFirst: Bool) -> String {
+        let period = { (start: Int) -> String in
+            let kinds = [("video", "v", "video/mp4"), ("audio", "a", "audio/mp4")]
+                .filter { kind, _, _ in kind == "video" || !(silentFirst && start == 0) }
+            let sets = kinds.map { kind, id, mime in
+                let media = LiveHistory.segmentAddress(server.url(kind), number: "$Number$")
+                return """
+                    <AdaptationSet mimeType="\(mime)" segmentAlignment="true"><Representation id="\(id)" bandwidth="1">\
+                    <SegmentTemplate timescale="1000" startNumber="0" media="\(media)">\
+                    <SegmentTimeline><S t="0" d="1000" r="1"/></SegmentTimeline></SegmentTemplate>\
+                    </Representation></AdaptationSet>
+                    """
+            }.joined()
+            return #"<Period start="PT\#(start)S" duration="PT2S">\#(sets)</Period>"#
+        }
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S">\
+            \(period(0))\(period(2))</MPD>
+            """
+    }
+
+    @Test("A slate with no sound before the film plays silent: the sound of the next period stays at its place")
+    func playsASilentPeriod() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        let whole = try #require(
+            MediaDemuxer(url: MediaURL.inlineDASHManifest(Self.twoPeriods(server, silentFirst: false))))
+        whole.startReadAhead()
+        while whole.nextVideoSample() != nil {}
+        var expected = 0
+        while whole.nextAudioPacket() != nil { expected += 1 }
+
+        let demuxer = try #require(
+            MediaDemuxer(url: MediaURL.inlineDASHManifest(Self.twoPeriods(server, silentFirst: true))))
+        #expect(demuxer.hasAudio)
+        #expect(abs(demuxer.durationSeconds - 4) < 0.1)
+        demuxer.startReadAhead()
+        var pictures = 0
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        var packets = 0
+        while demuxer.nextAudioPacket() != nil { packets += 1 }
+        #expect(pictures == 100, "\(pictures) pictures")
+        #expect(
+            abs(packets - expected / 2) <= 4,
+            "\(packets) audio packets, about \(expected / 2) of the \(expected) wanted")
+
+        // A seek into the slate, where there is no sound, lands on the picture and the sound comes at its place.
+        demuxer.seek(to: 0.5, exact: false)
+        var seen = 0
+        while demuxer.nextVideoSample() != nil { seen += 1 }
+        #expect(seen == 100, "\(seen) pictures after a seek into the slate")
+        var after = 0
+        while demuxer.nextAudioPacket() != nil { after += 1 }
+        #expect(abs(after - expected / 2) <= 4, "\(after) audio packets after a seek into the slate")
+    }
+
     @Test("A seek lands on the segment's keyframe and plays on from there; only the segments from it are asked for")
     func seeksBySegment() throws {
         guard let server = try Self.server() else { return }

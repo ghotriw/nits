@@ -208,6 +208,55 @@ struct DASHPlaylistsTests {
         #expect(built.entries.contains { $0.representation.kind == .audio })
     }
 
+    /// `periods` with the sound of the given periods taken out (an advertisement's slate).
+    static func silent(_ data: Data, periods silent: Set<Int>) throws -> Data {
+        let text = try #require(String(data: data, encoding: .utf8))
+        var parts = text.components(separatedBy: "<Period ")
+        for number in silent {
+            let part = parts[number + 1]
+            let start = try #require(part.range(of: "<AdaptationSet contentType=\"audio\""))
+            let end = try #require(part.range(of: "</AdaptationSet>", range: start.upperBound..<part.endIndex))
+            parts[number + 1] = part.replacingCharacters(in: start.lowerBound..<end.upperBound, with: "")
+        }
+        return Data(parts.joined(separator: "<Period ").utf8)
+    }
+
+    @Test("A period with no sound beside others that have some plays silent: the sound keeps its place by gaps")
+    func silentPeriods() throws {
+        let three = Self.periods([(nil, "PT10S", "p0", "v"), (nil, "PT10S", "p1", "v"), (nil, "PT10S", "p2", "v")])
+        // In the middle: 4 + 4 + 2 s of sound, gaps as long as the segments (4 + 4 + 2 s), 4 + 4 + 2 s of sound.
+        let middle = try Self.playlists(Self.silent(three, periods: [1]))
+        let sound = try #require(middle.entries.first { $0.representation.kind == .audio })
+        #expect(
+            sound.representation.segments.map(\.isGap) == [false, false, false, true, true, true, false, false, false])
+        #expect(sound.representation.segments.map(\.start) == [0, 4, 8, 10, 14, 18, 20, 24, 28])
+        #expect(sound.representation.segments.map(\.period) == [0, 0, 0, 1, 1, 1, 2, 2, 2])
+        #expect(sound.representation.segments.map(\.duration) == [4, 4, 2, 4, 4, 2, 4, 4, 2])
+        let playlist = try #require(sound.playlist)
+        #expect(playlist.segments.map(\.isGap) == sound.representation.segments.map(\.isGap))
+        #expect(playlist.segments.map(\.discontinuitySequence) == [0, 0, 0, 1, 1, 1, 2, 2, 2])
+        #expect(playlist.targetDuration == 4)
+
+        // First: a slate before the film. Last: nothing after the sound needs its place kept.
+        let leading = try Self.playlists(Self.silent(three, periods: [0]))
+        let film = try #require(leading.entries.first { $0.representation.kind == .audio }).representation
+        #expect(film.segments.prefix(3).allSatisfy(\.isGap) && film.segments.dropFirst(3).allSatisfy { !$0.isGap })
+        #expect(film.segments.count == 9 && film.segments[3].start == 10)
+        let trailing = try Self.playlists(Self.silent(three, periods: [2]))
+        let early = try #require(trailing.entries.first { $0.representation.kind == .audio }).representation
+        #expect(early.segments.count == 6 && early.segments.allSatisfy { !$0.isGap })
+
+        // A period whose sound is told but not played (here protected) is not silent: refused, not played with a hole.
+        let protected = try Self.changedInSecond(
+            three, "<AdaptationSet contentType=\"audio\" lang=\"uk\">",
+            "<AdaptationSet contentType=\"audio\" lang=\"uk\"><ContentProtection schemeIdUri=\"urn:x\"/>")
+        #expect(Self.refusal(protected) == "sound that does not continue through every period")
+
+        // No sound anywhere: no sound entry, the picture plays.
+        let none = try Self.playlists(Self.silent(three, periods: [0, 1, 2]))
+        #expect(!none.entries.contains { $0.representation.kind == .audio })
+    }
+
     /// `of` replaced by `with` in the periods' text from the second period's first address on.
     static func changedInSecond(_ data: Data, _ of: String, _ with: String) throws -> Data {
         let text = try #require(String(data: data, encoding: .utf8))

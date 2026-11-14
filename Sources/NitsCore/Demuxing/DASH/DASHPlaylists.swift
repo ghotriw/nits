@@ -318,7 +318,8 @@ struct DASHPlaylists: HLSPlaylistSource {
             HLSSegment(
                 url: segment.url, duration: segment.duration, sequence: numbers?[index] ?? segment.number,
                 discontinuitySequence: segment.period, byteRange: segment.byteRange,
-                initSection: segment.initSection ?? representation.initSection)
+                initSection: segment.isGap ? nil : segment.initSection ?? representation.initSection,
+                isGap: segment.isGap)
         }
         playlist.mediaSequence = playlist.segments.first?.sequence ?? 0
         return playlist

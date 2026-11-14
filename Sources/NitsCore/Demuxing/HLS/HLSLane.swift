@@ -187,9 +187,71 @@ final class HLSLane: @unchecked Sendable {
 
     // MARK: Opening
 
+    /// Where a read goes from a segment: `entry`, or the first segment after it that is not a gap (silence kept in its
+    /// place is never read, so a run that starts there starts where the sound does).
+    enum Readable: Equatable {
+        case entry(HLSTimeline.Entry)
+        /// Only gaps follow, to the end of a finished playlist: nothing to read from there.
+        case ended
+        /// Only gaps follow, to the edge of a live window (`after` is the last of them): more segments may come.
+        case pending(after: HLSTimeline.Entry)
+
+        var entry: HLSTimeline.Entry? {
+            if case .entry(let entry) = self { return entry }
+            return nil
+        }
+    }
+
+    func readable(_ entry: HLSTimeline.Entry) -> Readable {
+        var entry = entry
+        while entry.segment.isGap {
+            switch timeline.next(after: entry) {
+            case .entry(let next), .expired(resumingAt: let next): entry = next
+            case .ended: return .ended
+            case .pending: return .pending(after: entry)
+            }
+        }
+        return .entry(entry)
+    }
+
+    /// The segment a start chose, as `readable`. Nil to resume from nothing: the lane is finished when only gaps follow
+    /// to the end; at a live edge it goes on from the last of them (`current`), and `following` waits there for the
+    /// segments that come.
+    private func startingPoint(_ chosen: HLSTimeline.Entry?) -> HLSTimeline.Entry? {
+        guard let chosen else { return nil }
+        switch readable(chosen) {
+        case .entry(let entry): return entry
+        case .ended: isFinished = true
+        case .pending(let last): current = last
+        }
+        return nil
+    }
+
+    /// The segment a lane opens or is probed at: where `readable` says; at a live edge in gaps, the last one before them
+    /// that is not a gap (the lane is only described from it, or the stream opens in the history of the window).
+    private func openingEntry(_ found: HLSTimeline.Entry) throws(HLSSegmentReaderError) -> HLSTimeline.Entry {
+        switch readable(found) {
+        case .entry(let entry): return entry
+        case .ended: throw .open(-EINVAL)
+        case .pending:
+            guard let before = timeline.entries.last(where: { $0.start < found.start && !$0.segment.isGap }) else {
+                throw .open(-EINVAL)
+            }
+            return before
+        }
+    }
+
+    /// The segment after a gap: the one that follows it, which a run of its own reads (a hole in time).
+    private func following(afterGap gap: HLSTimeline.Entry) -> Step {
+        let step = following(gap)
+        if case .entry(let after, _) = step { return .entry(after, breaksRun: true) }
+        return step
+    }
+
     /// Opens the first run at the segment that holds `time` and probes its streams: the first reader the lane keeps.
     func open(at time: Double) throws(HLSSegmentReaderError) {
-        guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
+        guard let found = timeline.entry(at: time) else { throw .open(-EINVAL) }
+        let entry = try openingEntry(found)
         nextRunReason = .open
         try startRun(at: entry)
     }
@@ -207,7 +269,8 @@ final class HLSLane: @unchecked Sendable {
         at time: Double, loader probeLoader: HLSSegmentLoader? = nil, opening: HTTPSessionInput.Opening = .held,
         onAnswer: (() -> Void)? = nil
     ) throws(HLSSegmentReaderError) {
-        guard let entry = timeline.entry(at: time) else { throw .open(-EINVAL) }
+        guard let found = timeline.entry(at: time) else { throw .open(-EINVAL) }
+        let entry = try openingEntry(found)
         let began = ContinuousClock.now
         let probed = try HLSSegmentReader(
             loader: probeLoader ?? loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
@@ -417,7 +480,8 @@ final class HLSLane: @unchecked Sendable {
         guard isOpening, let first = runFirst, first.sequence == segment.sequence, let target = seekTarget else {
             return
         }
-        guard redoAttempts < Self.maxRedos, let better = timeline.entry(at: target), better.sequence != first.sequence,
+        guard redoAttempts < Self.maxRedos, let better = timeline.entry(at: target).flatMap({ readable($0).entry }),
+            better.sequence != first.sequence,
             better.epoch == first.epoch
         else {
             seekTarget = nil
@@ -503,13 +567,13 @@ final class HLSLane: @unchecked Sendable {
         switch chosen {
         case .containing(let time):
             // A time before the window (a rewind after it slid) is the window's first segment, not its edge.
-            resume =
-                time < timeline.start ? timeline.entries.first : (timeline.entry(at: time) ?? timeline.entries.last)
+            resume = startingPoint(
+                time < timeline.start ? timeline.entries.first : (timeline.entry(at: time) ?? timeline.entries.last))
         case .sequence(let sequence):
-            resume = timeline.entry(sequence: sequence) ?? timeline.entries.last
+            resume = startingPoint(timeline.entry(sequence: sequence) ?? timeline.entries.last)
         case .following(let time):
             if time < timeline.start {
-                resume = timeline.entries.first
+                resume = startingPoint(timeline.entries.first)
             } else {
                 // The segment after it, which `following` waits for at a live edge, or the end of the playlist.
                 current = timeline.entry(at: time) ?? timeline.entries.last
@@ -924,12 +988,15 @@ final class HLSLane: @unchecked Sendable {
             if let code = reloadIfStale(), code == FFmpegErrorCode.exit { return .stopped(code) }
             switch timeline.next(after: entry) {
             case .entry(let next):
+                // Silence kept in its place (`HLSSegment.isGap`) is never read: on to the segment after it, a run of its
+                // own (a hole in time, as a segment that failed leaves).
+                if next.segment.isGap { return following(afterGap: next) }
                 // Numbers that don't follow: segments missed (a late reload, `HLSTimeline.startRun`) between bytes that
-                // are not one stream, whatever the discontinuity sequence says.
-                return .entry(
-                    next,
-                    breaksRun: next.segment.isGap || entry.segment.isGap || next.sequence != entry.sequence + 1)
+                // are not one stream, whatever the discontinuity sequence says. `entry` may be a gap (`current` after a
+                // start that chose one).
+                return .entry(next, breaksRun: entry.segment.isGap || next.sequence != entry.sequence + 1)
             case .expired(let next):
+                if next.segment.isGap { return following(afterGap: next) }
                 return .entry(next, breaksRun: true)
             case .ended:
                 return .ended
