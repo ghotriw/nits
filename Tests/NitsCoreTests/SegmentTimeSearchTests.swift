@@ -182,7 +182,10 @@ struct SegmentTimeSearchTests {
         #expect(text.contains(#"startNumber="311256""#))
         // Every run says where it starts (from the exact lengths, 49.333 s after the first), not only the first.
         #expect(text.contains(#"<S t="1549013667" d="4933" r="9"/><S t="1549063000" d="5000" r="4"/>"#), "\(text)")
-        #expect(text.contains(#"mediaPresentationDuration="PT74.33S""#), "\(text)")
+        // The period ends where its last segment does, on the stream's own timeline: its start (1549013.667 s) plus the
+        // 74.33 s the runs add up to. A client cuts a period's segments at its length, so the sum alone (74.33 s) would
+        // lose every segment of a stream hours in.
+        #expect(text.contains(#"mediaPresentationDuration="PT1549087.997S""#), "\(text)")
         #expect(text.contains("sq=$Number$"))
     }
 
