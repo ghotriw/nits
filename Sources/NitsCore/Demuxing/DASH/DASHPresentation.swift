@@ -182,6 +182,15 @@ extension DASHPresentation {
         if let reason = result.skippedPictures.first, !result.representations.contains(where: { $0.kind == .video }) {
             throw .unsupported(reason)
         }
+        // A picture whose codecs name more than one carries its sound (muxed): that is the sound played then.
+        let carriesSound = { (representation: Representation) in
+            representation.kind == .audio || (representation.codecs?.contains(",") ?? false)
+        }
+        if let reason = result.skippedSounds.first, result.representations.contains(where: { $0.kind == .video }),
+            !result.representations.contains(where: carriesSound)
+        {
+            throw .unsupported(reason)
+        }
         if result.representations.isEmpty {
             if result.hasProtected { throw .unsupported("its streams are protected (DRM)") }
             if let reason = result.skipped.first { throw .unsupported(reason) }
@@ -200,6 +209,9 @@ extension DASHPresentation {
         var skipped: [String] = []
         /// Those of them that are pictures: a manifest of pictures, none played, is not played as its sound alone.
         var skippedPictures: [String] = []
+        /// Those that are sounds the build decodes, refused for how they are told: pictures whose every sound is left out
+        /// so are not played silent. One with no decoder or no segments would be silent however it is opened.
+        var skippedSounds: [String] = []
         var hasProtected = false
     }
 
@@ -285,6 +297,9 @@ extension DASHPresentation {
                     if case .unsupported(let reason) = error {
                         read.skipped.append("\(id): \(reason)")
                         if kind == "video" { read.skippedPictures.append("\(id): \(reason)") }
+                        if kind == "audio", value("codecs").flatMap(CodecFamily.canDecodeAudio(in:)) != false {
+                            read.skippedSounds.append("\(id): \(reason)")
+                        }
                     }
                     continue
                 }
@@ -363,6 +378,7 @@ extension DASHPresentation {
         for (number, read) in reads.enumerated() {
             merged.skipped += read.skipped.map { "period \(number + 1), \($0)" }
             merged.skippedPictures += read.skippedPictures.map { "period \(number + 1), \($0)" }
+            merged.skippedSounds += read.skippedSounds.map { "period \(number + 1), \($0)" }
             merged.hasProtected = merged.hasProtected || read.hasProtected
         }
         var members: [[Representation]] = []
@@ -661,6 +677,19 @@ extension DASHPresentation {
         return value
     }
 
+    private static func product(_ a: Int64, _ b: Int64) throws(DASHPresentationError) -> Int64 {
+        let (value, overflow) = a.multipliedReportingOverflow(by: b)
+        guard !overflow else { throw .unsupported("times past what they are counted in") }
+        return value
+    }
+
+    /// A count of segments the manifest's numbers make (rounded already): one past what a count holds is refused, never
+    /// a trap. The bound leaves room to add a segment's number to it.
+    private static func segmentCount(_ value: Double) throws(DASHPresentationError) -> Int {
+        guard value.isFinite, abs(value) < 4.0e18 else { throw .unsupported("a count of segments past what it holds") }
+        return Int(value)
+    }
+
     /// `seconds` in `timescale`'s units.
     private static func ticks(_ seconds: Double, timescale: Int64) throws(DASHPresentationError) -> Int64 {
         let value = (seconds * Double(timescale)).rounded()
@@ -739,7 +768,7 @@ extension DASHPresentation {
                 }
                 guard let limit, limit > time else { break }
                 let span = try sum(limit, -time)
-                let count = Int(
+                let count = try segmentCount(
                     (Double(span) / Double(duration)).rounded(edge != nil && index + 1 == entries.count ? .down : .up))
                 guard count >= 1 else { break }
                 repeats = count - 1
@@ -813,7 +842,7 @@ extension DASHPresentation {
                 periodDuration: periodDuration)
         } else if let duration = information.duration {
             guard let periodEnd else { throw .unsupported("a template counted over a period of no length told") }
-            var count = Int((Double(try sum(periodEnd, -offset)) / Double(duration)).rounded(.up))
+            var count = try segmentCount((Double(try sum(periodEnd, -offset)) / Double(duration)).rounded(.up))
             if let endNumber = information.attributes["endNumber"].flatMap({ Int($0) }),
                 (0...numberLimit).contains(endNumber)
             {
@@ -860,17 +889,17 @@ extension DASHPresentation {
         var last: Int
         if let periodDuration, edge >= periodDuration {
             edge = periodDuration
-            last = Int((periodDuration / length).rounded(.up)) - 1
+            last = try segmentCount((periodDuration / length).rounded(.up)) - 1
         } else {
             guard edge.isFinite, abs(edge) < 9.0e12 else { throw .unsupported("a clock too far from the manifest's") }
-            last = Int((edge / length + 1e-6).rounded(.down)) - 1
+            last = try segmentCount((edge / length + 1e-6).rounded(.down)) - 1
         }
         if let endNumber = information.attributes["endNumber"].flatMap({ Int($0) }),
             (0...numberLimit).contains(endNumber)
         {
             last = min(last, endNumber - information.startNumber)
         }
-        var first = max(0, Int((max(0, edge - live.depth) / length).rounded(.down)))
+        var first = max(0, try segmentCount((max(0, edge - live.depth) / length).rounded(.down)))
         first = max(first, last - segmentLimit + 1)
         guard first <= last else { return ([], 0) }
         let end = try periodEnd(information, periodDuration: periodDuration)
@@ -878,19 +907,22 @@ extension DASHPresentation {
         var times: [(time: Int64, duration: Int64)] = []
         times.reserveCapacity(last - first + 1)
         for position in first...last {
-            let time = try sum(offset, Int64(position) * duration)
+            let time = try sum(offset, product(Int64(position), duration))
             var own = duration
-            if let end, time + own > end { own = max(1, end - time) }
+            if let end, try sum(time, own) > end { own = max(1, end - time) }
             times.append((time, own))
         }
         return (times, first)
     }
 
     /// Drops the timeline's segments that ended before its window: `depth` seconds back from the newest one's end.
-    /// Returns how many were dropped.
+    /// Returns how many were dropped. A depth past what a time holds in the timescale reaches back past every one.
     private static func trim(_ times: inout [(time: Int64, duration: Int64)], timescale: Int64, depth: Double) -> Int {
         guard let last = times.last else { return 0 }
-        let threshold = last.time + last.duration - Int64(depth * Double(timescale))
+        let depthTicks = (depth * Double(timescale)).rounded(.down)
+        guard depthTicks.isFinite, depthTicks < 9.0e18 else { return 0 }
+        // Both are whole and not negative: the difference holds.
+        let threshold = last.time + last.duration - Int64(max(0, depthTicks))
         let dropped = times.firstIndex { $0.time + $0.duration > threshold } ?? times.count - 1
         times.removeFirst(dropped)
         return dropped

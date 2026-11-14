@@ -131,6 +131,27 @@ struct DASHLiveTests {
         #expect(Self.refusal(of: Self.mpd(Self.video(template: one)))?.contains("SegmentBase") == true)
     }
 
+    @Test("Numbers past what a count or a time holds are refused, not a crash")
+    func hugeNumbers() {
+        // Segments of a tick in the largest timescale: more by the clock than a count holds.
+        let tiny = #"<SegmentTemplate timescale="9223372036854775807" duration="1" media="s$Number$"/>"#
+        #expect(Self.refusal(of: Self.mpd(Self.video(template: tiny))) != nil)
+        // Second-long segments in a timescale whose ticks by the clock are past what a time holds.
+        let large =
+            #"<SegmentTemplate timescale="9000000000000000000" duration="9000000000000000000" media="s$Number$"/>"#
+        #expect(Self.refusal(of: Self.mpd(Self.video(template: large))) != nil)
+    }
+
+    @Test("A depth past what a time holds in the timescale reaches back past every segment: none is dropped")
+    func depthPastTheTimescale() throws {
+        let listed = """
+            <SegmentTemplate timescale="9000000000000000000" media="s$Time$">\
+            <SegmentTimeline><S t="0" d="1000" r="1"/></SegmentTimeline></SegmentTemplate>
+            """
+        let deep = Self.mpd(Self.video(template: listed), attributes: #"timeShiftBufferDepth="PT10S""#)
+        #expect(try Self.segments(deep, at: 0.5).count == 2)
+    }
+
     @Test("What the manifest tells of itself: update period, depth, delay, clock descriptors, location")
     func attributes() throws {
         let data = Self.mpd(

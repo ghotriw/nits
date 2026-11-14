@@ -302,6 +302,20 @@ struct DASHPlaylistsTests {
             #"<AdaptationSet contentType="video"><ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011"/>\#(Self.template)\#(Self.video("v", 640, 360, bandwidth: 1))</AdaptationSet>"#
         )
         #expect(reason(protected)?.contains("DRM") == true)
+        // Pictures whose every sound is left out are not played silent; one sound played beside it is enough.
+        let webMSound = """
+            <AdaptationSet contentType="audio"><Representation id="w" codecs="opus" bandwidth="1" mimeType="audio/webm">\
+            <BaseURL>a.webm</BaseURL><SegmentBase indexRange="800-999"/></Representation></AdaptationSet>
+            """
+        #expect(reason(Self.mpd(video + webMSound))?.contains("WebM") == true)
+        let mp4Sound = """
+            <AdaptationSet contentType="audio"><SegmentTemplate media="a$Number$.m4s" duration="4"/>\
+            <Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
+            """
+        #expect(reason(Self.mpd(video + webMSound + mp4Sound)) == nil)
+        // A picture that carries its sound (muxed) has it whatever else is left out.
+        let muxed = video.replacingOccurrences(of: #"codecs="avc1.4d401f""#, with: #"codecs="avc1.4d401f,mp4a.40.2""#)
+        #expect(reason(Self.mpd(muxed + webMSound)) == nil)
         #expect(throws: DASHPresentationError.unreadable) { try Self.parse(Data("<html/>".utf8)) }
     }
 
@@ -452,6 +466,8 @@ struct DASHPlaylistsTests {
     func hugeNumbers() {
         #expect(Self.refusal(Self.timeline(#"<S d="10" r="9223372036854775807"/>"#)) != nil)
         #expect(Self.refusal(Self.timeline(#"<S t="9223372036854775800" d="100" r="1"/>"#)) != nil)
+        // A repeat up to a start at the end of what a time holds counts more segments than an Int does.
+        #expect(Self.refusal(Self.timeline(#"<S t="0" d="1" r="-1"/><S t="9223372036854775807" d="1"/>"#)) != nil)
         #expect(
             Self.refusal(
                 Self.mpd(

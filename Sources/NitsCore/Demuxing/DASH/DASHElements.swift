@@ -51,11 +51,14 @@ enum DASHElements {
     /// "24", "30000/1001".
     static func frameRate(of text: String) -> Double? {
         let parts = text.split(separator: "/").compactMap { Double($0) }
+        let rate: Double
         switch parts.count {
-        case 1: return parts[0]
-        case 2 where parts[1] != 0: return parts[0] / parts[1]
+        case 1: rate = parts[0]
+        case 2 where parts[1] != 0: rate = parts[0] / parts[1]
         default: return nil
         }
+        // A rate no picture has (inf, nan, 1e300) is none: labels and pacing turn it into whole numbers.
+        return rate.isFinite && rate > 0 && rate < 10_000 ? rate : nil
     }
 
     /// An ISO 8601 duration ("PT0H9M54.00S", "P1DT2H") in seconds; years and months as 365 and 30 days.

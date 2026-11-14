@@ -448,13 +448,17 @@ package struct DASHManifest {
             else { return false }
             if let start = segment.attribute("t").flatMap({ Double($0) }) { time = start }
             var repeats = segment.attribute("r").flatMap { Int($0) } ?? 0
+            // The manifest's numbers: a count past what one holds is a timeline not expanded, never a trap.
+            guard repeats < Int(Int32.max) else { return false }
             if repeats < 0 {
                 var limit: Double?
                 if n + 1 < positions.count, case .element(let next) = timeline.children[positions[n + 1]] {
                     limit = next.attribute("t").flatMap { Double($0) }
                 }
                 guard let end = limit ?? periodDuration.map({ $0 * timescale + offset }) else { return false }
-                repeats = max(0, Int(((end - time) / duration - 1e-6).rounded(.up)) - 1)
+                let count = ((end - time) / duration - 1e-6).rounded(.up)
+                guard count.isFinite, abs(count) < Double(Int32.max) else { return false }
+                repeats = max(0, Int(count) - 1)
                 segment.setAttribute("r", to: String(repeats))
                 timeline.children[position] = .element(segment)
             }

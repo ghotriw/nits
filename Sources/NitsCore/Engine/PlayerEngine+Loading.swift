@@ -521,8 +521,10 @@ extension PlayerEngine {
             for opened in externalAudio { opened.demuxer.cancel() }
             demuxer.cancel()
             fail(
-                "Can't read the media's audio from \(lost.url.host ?? lost.url.absoluteString)",
-                logging: "Failed to open the audio of '\(path)': \(lost.url.absoluteString)")
+                "Can't read the media's audio from \(MediaURL.displayHost(of: lost.url))",
+                logging:
+                    "Failed to open the audio of '\(MediaURL.loggable(path))': \(MediaURL.loggable(lost.url.absoluteString))"
+            )
             return
         }
         let inputs = Self.makeInputs(main: demuxer, requested: lookup.requested, opened: externalAudio)
@@ -887,7 +889,9 @@ extension PlayerEngine {
             else {
                 if !interrupt.isCancelled {
                     AppLog.warning(
-                        .audio, "Can't read audio file \(file.url.isFileURL ? file.url.path : file.url.absoluteString)")
+                        .audio,
+                        "Can't read audio file \(file.url.isFileURL ? file.url.path : MediaURL.loggable(file.url.absoluteString))"
+                    )
                 }
                 return
             }

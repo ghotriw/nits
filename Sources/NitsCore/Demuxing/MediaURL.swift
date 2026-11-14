@@ -79,6 +79,13 @@ public enum MediaURL {
         isInlineDASHManifest(path) ? "inline DASH manifest (\(path.utf8.count) bytes)" : path
     }
 
+    /// Where `url` is read from, as told to the user: its host, or for an inline DASH manifest the host it was read from.
+    static func displayHost(of url: URL) -> String {
+        let text = url.absoluteString
+        guard isInlineDASHManifest(text) else { return url.host ?? text }
+        return inlineDASHManifestContents(text)?.source?.host ?? "an inline DASH manifest"
+    }
+
     /// Whether `path` is read over the network: a URL, an inline DASH manifest, or a saved HLS manifest of network
     /// media.
     public static func isNetworkSource(_ path: String) -> Bool {

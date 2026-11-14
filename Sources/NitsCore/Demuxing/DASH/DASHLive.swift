@@ -88,7 +88,7 @@ extension DASHPlaylists {
                         base = memory.first.number - at
                     } else if first.start > memory.last.start {
                         let gap = first.start - (memory.last.start + memory.last.duration)
-                        base = memory.last.number + 1 + Int((gap / max(first.duration, 0.001)).rounded())
+                        base = memory.last.number + 1 + DASHPlaylists.segments(in: gap, of: first.duration)
                     }
                 }
                 state.memories[index] = Memory(
@@ -323,8 +323,15 @@ extension DASHPlaylists {
             {
                 return nil
             }
-            result.append(numbers[cursor] + Int((delta / max(near.duration, 0.001)).rounded()))
+            result.append(numbers[cursor] + Self.segments(in: delta, of: near.duration))
         }
         return result
+    }
+
+    /// How many segments of `duration` fit in `span` seconds, rounded. The times are the manifest's: a count past any
+    /// window is bounded, never a trap.
+    static func segments(in span: Double, of duration: Double) -> Int {
+        let count = (span / max(duration, 0.001)).rounded()
+        return count.isFinite ? Int(min(max(count, -1.0e12), 1.0e12)) : 0
     }
 }
