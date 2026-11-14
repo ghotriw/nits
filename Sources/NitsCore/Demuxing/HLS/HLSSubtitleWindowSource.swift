@@ -12,6 +12,8 @@ struct HLSSubtitleWindowSource: Sendable {
     let url: URL
     let timeline: HLSTimeline
     let variables: [String: String]
+    /// Where the stream's playlists come from, as the opening read them.
+    let playlists: any HLSPlaylistSource
     let anchors: HLSTimestampAnchors
     /// The cookies the stream's own session holds (the master's answer set them), which the read's session takes over.
     let cookies: @Sendable () -> [HTTPCookie]

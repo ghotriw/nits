@@ -209,6 +209,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         self.transport = transport
         meter = TransferAccount(meter: transport.meter)
         let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
+        let playlists: any HLSPlaylistSource = HLSServedPlaylists()
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
         func fail(_ message: String, code: Int32 = -EIO) {
@@ -216,21 +217,17 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             AppLog.error(.demuxer, "HLS: \(message) for '\(MediaURL.loggable(url))'")
         }
 
-        let first: (data: Data, servedFrom: URL)
         let parsed: HLSPlaylist
-        var masterLoaded = began
-        do {
-            first = try loader.playlist(masterURL)
-            parsed = try HLSPlaylist.parse(first.data, url: first.servedFrom)
-            masterLoaded = ContinuousClock.now
-        } catch let error as HLSSegmentLoadError {
-            let code = HLSSegmentReader.code(for: error)
-            fail("playlist failed to load (\(error))", code: code)
-            return nil
+        do throws(HLSPlaylistSourceError) {
+            parsed = try playlists.playlist(at: masterURL, variables: [:], loader: loader)
         } catch {
-            fail("not a playlist (\(error))")
+            switch error {
+            case .load(let reason): fail("playlist failed to load (\(reason))", code: error.code)
+            case .unreadable(let reason): fail("not a playlist (\(reason))", code: error.code)
+            }
             return nil
         }
+        let masterLoaded = ContinuousClock.now
 
         // The playlists the stream is read from: the media playlist itself, or the master's variants and the renditions
         // they play with (each address once: variants differing in their audio group share a playlist).
@@ -289,17 +286,14 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 slots[index].set(media)
                 return
             }
-            do {
-                let loaded = try loader.playlist(requests[index].url)
-                if case .media(let media) = try HLSPlaylist.parse(
-                    loaded.data, url: loaded.servedFrom, variables: imported)
-                {
-                    slots[index].set(media)
-                }
-            } catch let error as HLSSegmentLoadError {
-                failures[index].set(HLSSegmentReader.code(for: error))
+            do throws(HLSPlaylistSourceError) {
+                let playlist = try playlists.playlist(at: requests[index].url, variables: imported, loader: loader)
+                if case .media(let media) = playlist { slots[index].set(media) }
             } catch {
-                problems[index].set("not a playlist (\(error))")
+                switch error {
+                case .load: failures[index].set(error.code)
+                case .unreadable(let reason): problems[index].set("not a playlist (\(reason))")
+                }
             }
         }
 
@@ -354,7 +348,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             }
             return HLSLane(
                 kind: wanted[index].kind, url: wanted[index].url, timeline: timeline, variables: variables,
-                loader: loader, anchors: anchors, shouldAbort: shouldAbort)
+                playlists: playlists, loader: loader, anchors: anchors, shouldAbort: shouldAbort)
         }
 
         // Each lane opened at the segment that holds the start, to learn its streams. One playlist alone is read from its
@@ -602,7 +596,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 guard let slot = lane.streams.first else { continue }
                 subtitleSources[slot.table] = HLSSubtitleWindowSource(
                     address: url, headers: headers, allowsFiles: isLocal, url: lane.url, timeline: lane.timeline,
-                    variables: variables, anchors: anchors, cookies: { [transport] in transport.cookies })
+                    variables: variables, playlists: playlists, anchors: anchors,
+                    cookies: { [transport] in transport.cookies })
             }
         }
 
@@ -618,11 +613,11 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
         let ms = HLSOpeningMeasure.ms
         let ended = ContinuousClock.now
-        let playlists = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - masterLoaded))"
+        let playlistsLoad = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - masterLoaded))"
         let probes = "\(isProbing ? "probes" : "firstRun")=\(opened)/\(ms(probed - playlistsLoaded))"
         AppLog.info(
             .demuxer,
-            "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlists) \(probes) "
+            "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlistsLoad) \(probes) "
                 + "clones=\(cloneLanes.count) describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         if isProbing {
             let told = openingRate.map { "\(Int($0 / 1000))kbit/s" } ?? "-"

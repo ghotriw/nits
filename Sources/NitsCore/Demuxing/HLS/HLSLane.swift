@@ -32,6 +32,8 @@ final class HLSLane: @unchecked Sendable {
     let url: URL
     /// The master's variables, which the media playlist may import (`EXT-X-DEFINE`).
     private let variables: [String: String]
+    /// Where a reload of the playlist comes from.
+    private let playlists: any HLSPlaylistSource
     private var loader: HLSSegmentLoader
     private let progressRelay: HLSSegmentProgressRelay
     private let shouldAbort: () -> Bool
@@ -105,13 +107,14 @@ final class HLSLane: @unchecked Sendable {
     private var skipped = 0
 
     init(
-        kind: Kind, url: URL, timeline: HLSTimeline, variables: [String: String], loader: HLSSegmentLoader,
-        anchors: HLSTimestampAnchors, shouldAbort: @escaping () -> Bool
+        kind: Kind, url: URL, timeline: HLSTimeline, variables: [String: String], playlists: any HLSPlaylistSource,
+        loader: HLSSegmentLoader, anchors: HLSTimestampAnchors, shouldAbort: @escaping () -> Bool
     ) {
         self.kind = kind
         self.url = url
         self.timeline = timeline
         self.variables = variables
+        self.playlists = playlists
         let relay = HLSSegmentProgressRelay()
         progressRelay = relay
         self.loader = loader.watching(relay)
@@ -956,10 +959,10 @@ final class HLSLane: @unchecked Sendable {
     /// Loads the playlist again and merges it. Nil when the timeline may have changed; the error to stop the lane
     /// with otherwise.
     private func reload() -> Int32? {
-        do throws(HLSSegmentLoadError) {
-            let loaded = try loader.playlist(url)
+        do throws(HLSPlaylistSourceError) {
+            let loaded = try playlists.playlist(at: url, variables: variables, loader: loader)
             lastLoad = .now
-            guard case .media(let playlist) = try Self.parse(loaded, variables: variables) else {
+            guard case .media(let playlist) = loaded else {
                 failedReloads += 1
                 return failedReloads >= Self.maxFailedReloads ? -EIO : nil
             }
@@ -967,19 +970,9 @@ final class HLSLane: @unchecked Sendable {
             return apply(timeline.reload(playlist), playlist)
         } catch {
             lastLoad = .now
-            if error == .interrupted { return FFmpegErrorCode.exit }
+            if error == .load(.interrupted) { return FFmpegErrorCode.exit }
             failedReloads += 1
-            return failedReloads >= Self.maxFailedReloads ? HLSSegmentReader.code(for: error) : nil
-        }
-    }
-
-    private static func parse(
-        _ loaded: (data: Data, servedFrom: URL), variables: [String: String]
-    ) throws(HLSSegmentLoadError) -> HLSPlaylist {
-        do {
-            return try HLSPlaylist.parse(loaded.data, url: loaded.servedFrom, variables: variables)
-        } catch {
-            throw .failed(-EIO)
+            return failedReloads >= Self.maxFailedReloads ? error.code : nil
         }
     }
 

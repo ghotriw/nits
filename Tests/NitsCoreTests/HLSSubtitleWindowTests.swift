@@ -35,7 +35,7 @@ struct HLSSubtitleWindowTests {
         let anchors = HLSTimestampAnchors()
         let source = HLSSubtitleWindowSource(
             address: url.path, headers: [:], allowsFiles: true, url: url, timeline: HLSTimeline(playlist),
-            variables: [:], anchors: anchors, cookies: { [] })
+            variables: [:], playlists: HLSServedPlaylists(), anchors: anchors, cookies: { [] })
         return (source, anchors)
     }
 

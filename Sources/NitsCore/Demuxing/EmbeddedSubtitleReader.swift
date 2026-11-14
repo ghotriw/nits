@@ -276,10 +276,10 @@ enum EmbeddedSubtitleReader {
         let abort: @Sendable () -> Bool = { interrupt?.shouldInterruptFFmpeg == true }
         let transport = HTTPSessionTransport(source: source.address, headers: source.headers, shouldAbort: abort)
         transport.adopt(source.cookies())
+        let loader = HLSSegmentLoader(transport: transport, allowsFiles: source.allowsFiles)
         let lane = HLSLane(
             kind: .subtitle, url: source.url, timeline: source.timeline, variables: source.variables,
-            loader: HLSSegmentLoader(transport: transport, allowsFiles: source.allowsFiles), anchors: source.anchors,
-            shouldAbort: abort)
+            playlists: source.playlists, loader: loader, anchors: source.anchors, shouldAbort: abort)
         defer { lane.close() }
         lane.setStreams([HLSLane.StreamSlot(table: 0, timebase: timebase, type: AVMEDIA_TYPE_SUBTITLE)])
         lane.reposition(at: covered.lowerBound)

@@ -354,10 +354,16 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   client stops naming `MediaDemuxer`; the FFmpeg boundary stays (the client hands out `AVPacket`s). A repository only
   with a second consumer.
 - **A DASH client of our own before the target** (2026-11-14): it is the second consumer of the segment machinery
-  (loader, reader, lanes, ABR's segments in flight), so a target drawn around HLS alone would be drawn again. Order:
-  the client's types free of `MediaDemuxer` (done 2026-11-14: the input's variant types and `FFmpegErrorCode` stand on
-  their own, one opening-rung rule in `AdaptiveBitrateLogic`); the segment machinery apart from HLS; the DASH client on
-  it, then FFmpeg's DASH demuxer and its patch gone; the target last, around both clients.
+  (loader, reader, lanes, ABR's segments in flight), so a target drawn around HLS alone would be drawn again.
+  *Chosen:* DASH as a second way into the client's model, an MPD told as a master and media playlists (Shaka does the
+  converse, HLS into its DASH-like model): the client plays playlists, not their text. *Turned down:* a common engine
+  with a timeline, segment and timestamp protocol per format: nearly all of the client is already format-free, and the
+  protocols would be drawn for a client not yet written. Order: the client's types free of `MediaDemuxer` (done
+  2026-11-14: the input's variant types and `FFmpegErrorCode` stand on their own, one opening-rung rule in
+  `AdaptiveBitrateLogic`); where playlists come from apart from the client (done 2026-11-14: `HLSPlaylistSource`, the
+  opening's and a live lane's reloads; `HLSServedPlaylists` for HLS); the DASH client as such a source, extending the
+  model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
+  and its patch gone; the target last, around both, with the model's names made neutral.
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
   play, content steering, interstitials (the primary plays).
 
@@ -562,8 +568,8 @@ where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
    stays on 480; without the check it probes up to 640. *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
    rung twice) was seen through FFmpeg's HLS demuxer, before the client; never reproduced, and the client's nine
    switches of 2026-11-13 peaked at 25–54 ms/s. Look again only if a step up is left right after it on a steady link.
-3. Then the segment machinery apart from HLS, a DASH client on it, and only then a target of its own (see "Decisions":
-   "A DASH client of our own before the target").
+3. Then a DASH client as a source of playlists for the client (`HLSPlaylistSource`), and only then a target of its own
+   (see "Decisions": "A DASH client of our own before the target").
 
 Decisions without a date: (b) AES-128 measures no link rate at the opening and its probes download whole segments
 (the fix is streaming decryption); (c) the Dolby Vision ladder bottoms at 5186k, so a slow link has nothing in it to

@@ -245,8 +245,9 @@ pattern for other code.
   `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
   the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
-  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). Background: "Timeline and
-  discontinuities" in `docs/HLS.md`.
+  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). The client plays playlists,
+  not their text: they come from an `HLSPlaylistSource` (`HLSServedPlaylists` for HLS), the way another manifest (DASH)
+  comes into it. Background: "Timeline and discontinuities" in `docs/HLS.md`.
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
   selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
   selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only
