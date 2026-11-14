@@ -223,7 +223,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     }
 
     /// Whether `ctx` was opened by FFmpeg's `tty` demuxer (ANSI art): it takes `.txt` by its extension and accepts any
-    /// small text, so a playlist under that name opens as one instead of failing (`HLSInput.sniffsAsPlaylist`).
+    /// small text, so a playlist under that name opens as one instead of failing (`SniffedPlaylist.sniff`).
     static func isTextFormat(_ ctx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
         guard let name = ctx.pointee.iformat?.pointee.name else { return false }
         return String(cString: name) == "tty"

@@ -868,11 +868,11 @@ struct HLSInputTests {
         stand.server.setResponder(forPath: "stream") { playlist }
         stand.server.setResponder(forPath: "radio") { Data("ID3\u{3}\u{0}binary".utf8) }
         let interrupt = FFmpegInterrupt()
-        #expect(HLSInput.sniffsAsPlaylist(stand.server.url("stream"), headers: [:], interrupt: interrupt))
-        #expect(!HLSInput.sniffsAsPlaylist(stand.server.url("radio"), headers: [:], interrupt: interrupt))
+        #expect(SniffedPlaylist.sniff(stand.server.url("stream"), headers: [:], interrupt: interrupt) == .hls)
+        #expect(SniffedPlaylist.sniff(stand.server.url("radio"), headers: [:], interrupt: interrupt) == nil)
         // Whatever the name: a playlist under another one is found by its bytes.
         stand.server.setResponder(forPath: "list.php") { playlist }
-        #expect(HLSInput.sniffsAsPlaylist(stand.server.url("list.php"), headers: [:], interrupt: interrupt))
+        #expect(SniffedPlaylist.sniff(stand.server.url("list.php"), headers: [:], interrupt: interrupt) == .hls)
     }
 
     // MARK: Seeking

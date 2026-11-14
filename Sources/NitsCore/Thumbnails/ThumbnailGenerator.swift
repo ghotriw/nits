@@ -67,7 +67,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         if HLSInput.applies(to: cleanPath) {
             opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
         } else if DASHPlaylists(media: path) != nil {
-            opened = ThumbnailSource.openDASH(url: path, headers: headers, interrupt: cancelToken)
+            opened = ThumbnailSource.openDASH(url: cleanPath, headers: headers, interrupt: cancelToken)
         } else {
             var failure: Int32 = 0
             opened = ThumbnailSource.openFFmpeg(
@@ -76,10 +76,16 @@ public final class ThumbnailGenerator: @unchecked Sendable {
             // A playlist under a name that tells none: FFmpeg could not open it, or took it for text.
             let mayBePlaylist = opened.map(\.isTextFormat) ?? (failure == FFmpegErrorCode.invalidData)
             if mayBePlaylist, !isCancelled,
-                HLSInput.sniffsAsPlaylist(cleanPath, headers: headers, interrupt: cancelToken)
+                let sniffed = SniffedPlaylist.sniff(cleanPath, headers: headers, interrupt: cancelToken)
             {
                 opened?.close()
-                opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
+                switch sniffed {
+                case .hls:
+                    opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
+                case .dash:
+                    opened = ThumbnailSource.openDASH(
+                        url: cleanPath, headers: headers, interrupt: cancelToken, assumingManifest: true)
+                }
             }
         }
         guard let source = opened else { return [] }

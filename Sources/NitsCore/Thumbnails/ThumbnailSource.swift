@@ -130,16 +130,11 @@ final class ThumbnailSource {
 
     /// Opens the finished DASH stream at `url` (an address or the resolver's inline manifest) through the client; nil for
     /// one it refuses. See `open(_:)`.
-    static func openDASH(url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> ThumbnailSource? {
-        guard let playlists = DASHPlaylists(media: url) else { return nil }
-        let input = HLSInput(
-            master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
-            allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
-        guard playlists.refusal == nil else {
-            input?.close()
-            return nil
-        }
-        return open(input)
+    static func openDASH(
+        url: String, headers: [String: String], interrupt: FFmpegInterrupt, assumingManifest: Bool = false
+    ) -> ThumbnailSource? {
+        guard let playlists = DASHPlaylists(media: url, assumingManifest: assumingManifest) else { return nil }
+        return open(playlists.makeInput(headers: headers, interrupt: interrupt))
     }
 
     /// Takes the picture of a finished stream `input` opened, on its cheapest variant with a picture: thumbnails are

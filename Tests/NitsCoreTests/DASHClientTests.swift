@@ -169,6 +169,40 @@ struct DASHClientTests {
         #expect(Self.manifestRequests(server) == 0, "An inline manifest is not fetched")
     }
 
+    @Test("A manifest at an address that does not end in .mpd is found by its bytes and played by the client")
+    func manifestUnderAnotherName() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        let text = Self.manifest(server)
+        server.setResponder(forPath: "manifest") { Data(text.utf8) }
+        server.setResponder(forPath: "stream.txt") { Data(text.utf8) }
+        for address in [server.url("manifest") + "?format=dash", server.url("stream.txt")] {
+            let demuxer = try #require(MediaDemuxer(url: address), Comment(rawValue: address))
+            let input = try #require(demuxer.input as? HLSInput)
+            #expect(input.streamingName == "DASH", Comment(rawValue: address))
+            #expect(
+                demuxer.variants.count == SyntheticTestMediaFactory.dashLadderRungs.count, Comment(rawValue: address))
+            #expect(demuxer.hasAudio, Comment(rawValue: address))
+        }
+        // Other bytes under a name like it are not a manifest.
+        server.setResponder(forPath: "page") { Data("<html><body>no</body></html>".utf8) }
+        #expect(MediaDemuxer(url: server.url("page") + "?format=dash") == nil)
+    }
+
+    @Test("Thumbnails of a manifest are made, under the name .mpd and under another")
+    func thumbnailsOfAManifest() async throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        let text = Self.manifest(server)
+        server.setResponder(forPath: "show.mpd") { Data(text.utf8) }
+        server.setResponder(forPath: "stream.txt") { Data(text.utf8) }
+        for address in [server.url("show.mpd"), server.url("stream.txt")] {
+            let generator = ThumbnailGenerator(path: address, duration: Double(Self.count))
+            let thumbnails = await generator.generateThumbnails { _, _ in }
+            #expect(!thumbnails.isEmpty, Comment(rawValue: address))
+        }
+    }
+
     @Test("What the client refuses is the opening's failure, with its reason; so is a manifest that fails to load")
     func refusalIsTheOpeningsFailure() throws {
         guard let made = SingleFileDASHTests.make() else { return }

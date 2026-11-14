@@ -314,9 +314,3 @@ Not checked, from the review of the same change:
   a regression. Judge a change by the suite passing in the normal pool and with `NITS_READ_AHEAD_LOCAL=1`, and by the
   failures being ABR timing ones (`waitUntil`, `estimate`, `playedWidth`) on both sides. The fix is the cause, not a
   gate: see "blocking FFmpeg on the cooperative pool" above.
-
-- **DASH at an address that does not end in `.mpd`** (`…/manifest?format=dash`) does not open: the client and the
-  resolver know a manifest by its name (`DASHPlaylists.init(media:)`, `DASHManifestResolver.order(for:)`), and FFmpeg's DASH
-  demuxer, which used to find it by content, is gone (dropped 2026-11-14). A check of the content, as `sniffsAsPlaylist` does
-  for HLS (the root `<MPD` after an optional `<?xml …?>`, so more than 16 bytes read), and a `DASHPlaylists` made for an
-  address without the suffix, is not done yet; it wants a test of its own.

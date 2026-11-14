@@ -65,7 +65,7 @@ enum MediaDurationProbe {
         guard ret >= 0, let ctx = formatCtx else {
             // A playlist under a name that tells none (FFmpeg has no HLS demuxer).
             if ret == FFmpegErrorCode.invalidData, isNetwork,
-                HLSInput.sniffsAsPlaylist(path, headers: headers, interrupt: interrupt)
+                SniffedPlaylist.sniff(path, headers: headers, interrupt: interrupt) == .hls
             {
                 return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
             }
@@ -79,7 +79,7 @@ enum MediaDurationProbe {
 
         // Opened as text (`tty` takes `.txt`): a playlist under that name.
         if isNetwork, FFmpegInput.isTextFormat(ctx),
-            HLSInput.sniffsAsPlaylist(path, headers: headers, interrupt: interrupt)
+            SniffedPlaylist.sniff(path, headers: headers, interrupt: interrupt) == .hls
         {
             return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
         }

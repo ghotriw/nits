@@ -68,7 +68,7 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
   next packet (`HLSLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
   another to find the next cue before any packet came out, or wait at a live edge while the picture's packets were ready.
   A playlist URL (`.m3u8`, `.m3u`) opens this way, over HTTP(S) or as a saved manifest (a file whose text is an HLS
-  manifest); an address with no extension is asked for its first bytes (`HLSInput.sniffsAsPlaylist`, one small range
+  manifest); an address with no extension is asked for its first bytes (`SniffedPlaylist.sniff`, one small range
   request) and opens this way when they say `#EXTM3U`. A playlist served over HTTP(S) never reads a local file, whatever
   it lists (`HLSSegmentLoader.allowsFiles`).
 - **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their

@@ -324,8 +324,9 @@ flowchart TD
     text, images, trick play) and the protected (DRM) streams. The other pictures are the quality menu
     (`ResolvedMedia.videoFormats`, each a manifest of its own), the switch opening it again at the position, as a video
     site's. A live manifest, one of several periods or one that can't be read is left to the demuxer as it is.
-  - [ ] Manifests at an address that doesn't end in `.mpd` (the demuxer opens them without the above: the first
-    picture, the seek of `r="-1"`); WebVTT sidecar subtitles of a manifest; thumbnails of a `.mpd` (none are made
+  - [x] Manifests at an address that doesn't end in `.mpd` are found by their bytes (`SniffedPlaylist`, after FFmpeg
+    fails to open the address, as for HLS) and played by the client as any other.
+  - [ ] WebVTT sidecar subtitles of a manifest; thumbnails of a `.mpd` (none are made
     of an inline manifest, whatever the network policy: the generator has no options for its segments).
   - [x] Segments of one URL that yt-dlp lists (`http_dash_segments` with `target_duration`: YouTube's recording of a
     live stream that just ended, before it is turned into files) play from a manifest built from them

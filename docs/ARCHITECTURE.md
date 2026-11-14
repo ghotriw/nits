@@ -110,7 +110,9 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   (`MediaResolverChain`; it ends in `.mpd`, a name like Unified Streaming's `/.mpd` too). It downloads the manifest
   with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`), with the
   address it came from after redirects (`MediaURL.inlineDASHManifest(_:source:)`, a `source` parameter of the `data:`
-  URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, or one at a `.mpd` address, with
+  URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, one at a `.mpd` address, or one
+  at another network address whose first bytes are a manifest's root (`SniffedPlaylist`, asked after FFmpeg failed
+  to open it, as for an HLS playlist under another name), with
   the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
   refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods whose reload tells
   no period to play, one file (`SegmentBase`) in a manifest of several, DRM, a manifest over 8 MB, …) is the opening's

@@ -82,8 +82,10 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// The manifest a demuxer is asked to open at `path`: an inline one (`MediaURL.inlineDASHManifest`), or one at an
-    /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other.
-    init?(media path: String, history liveHistory: LiveHistory? = nil) {
+    /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other,
+    /// unless `assumingManifest`: the address was found to serve a manifest by its bytes (`SniffedPlaylist`), whatever
+    /// its name.
+    init?(media path: String, history liveHistory: LiveHistory? = nil, assumingManifest: Bool = false) {
         if let inline = MediaURL.inlineDASHManifestContents(path) {
             let clock: @Sendable () -> Date = { Date() }
             let history = liveHistory?.source.map {
@@ -100,7 +102,7 @@ struct DASHPlaylists: HLSPlaylistSource {
         let normalized = MediaURL.normalizeMediaPath(path)
         let isNetwork = MediaURL.isNetworkURL(normalized)
         guard var address = isNetwork ? URL(string: normalized) : URL(fileURLWithPath: normalized),
-            address.lastPathComponent.lowercased().hasSuffix(".mpd")
+            assumingManifest || address.lastPathComponent.lowercased().hasSuffix(".mpd")
         else { return nil }
         // `HTTPS://`: the client's requests know a network address by its scheme in lower case.
         if isNetwork, var components = URLComponents(url: address, resolvingAgainstBaseURL: false) {
@@ -108,6 +110,23 @@ struct DASHPlaylists: HLSPlaylistSource {
             address = components.url ?? address
         }
         self.init(address: address)
+    }
+
+    /// The client's input for this manifest, or nil with the reason recorded on `interrupt` (the opening's error). An
+    /// opening that went on without what the stream is not played without (the default sound, whose index the source
+    /// refused) is refused too: not played silent. Asked of the source itself, not read off the interrupt's last error,
+    /// which another failure (or an earlier attempt on the same context) may have written.
+    func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> HLSInput? {
+        let input = HLSInput(
+            master: masterURL, playlists: self, source: address.absoluteString, allowsFiles: allowsFiles,
+            headers: headers, interrupt: interrupt, streamingName: "DASH")
+        guard let input else { return nil }
+        guard let refusal else { return input }
+        input.close()
+        interrupt.recordError(
+            code: HLSPlaylistSourceError.unsupported(refusal).code,
+            message: "DASH: not played by the client: \(refusal)")
+        return nil
     }
 
     func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader) throws(HLSPlaylistSourceError)

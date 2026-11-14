@@ -656,26 +656,14 @@ public final class MediaDemuxer: @unchecked Sendable {
         // with its reason) is the opening's error: nothing falls back on FFmpeg's DASH demuxer, which is not built.
         // A live stream's history (`LiveHistory`) is the client's alone: its segments are named by keys only it resolves.
         if let playlists = DASHPlaylists(media: url, history: liveHistory) {
-            let input = HLSInput(
-                master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
-                allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
-            // An opening that went on without what the stream is not played without (the default sound, whose index the
-            // source refused) is refused too: not played silent. Asked of the source itself, not read off the interrupt's
-            // last error, which another failure (or an earlier attempt on the same context) may have written.
-            if let input, playlists.refusal == nil {
-                self.init(
-                    input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
-                    audioOnly: audioOnly, liveHistory: liveHistory, liveWindowState: windowState)
-                return
+            guard let input = playlists.makeInput(headers: headers, interrupt: interrupt) else {
+                if interruptContext == nil { interrupt.cancel() }
+                return nil
             }
-            if let input, let refusal = playlists.refusal {
-                input.close()
-                interrupt.recordError(
-                    code: HLSPlaylistSourceError.unsupported(refusal).code,
-                    message: "DASH: not played by the client: \(refusal)")
-            }
-            if interruptContext == nil { interrupt.cancel() }
-            return nil
+            self.init(
+                input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+                audioOnly: audioOnly, liveHistory: liveHistory, liveWindowState: windowState)
+            return
         }
         // A history is the client's alone: opened as a file it would lose its window and ask for addresses no DNS knows.
         guard liveHistory == nil else {
@@ -688,7 +676,20 @@ public final class MediaDemuxer: @unchecked Sendable {
         // A playlist under a name that tells none: FFmpeg, with no HLS demuxer, took it for no format at all
         // (`AVERROR_INVALIDDATA`), or for text (`tty`, which takes `.txt` and any small text).
         let mayBePlaylist = opened.map(\.isTextFormat) ?? (interrupt.lastError?.code == FFmpegErrorCode.invalidData)
-        if mayBePlaylist, HLSInput.sniffsAsPlaylist(url, headers: headers, interrupt: interrupt) {
+        let sniffed = mayBePlaylist ? SniffedPlaylist.sniff(url, headers: headers, interrupt: interrupt) : nil
+        if sniffed == .dash, let playlists = DASHPlaylists(media: url, assumingManifest: true) {
+            // A manifest under a name that tells none (`…/manifest?format=dash`): the client, as for one named `.mpd`.
+            opened?.close()
+            guard let input = playlists.makeInput(headers: headers, interrupt: interrupt) else {
+                if interruptContext == nil { interrupt.cancel() }
+                return nil
+            }
+            self.init(
+                input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+                audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
+            return
+        }
+        if sniffed == .hls {
             // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
             opened?.close()
             guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {

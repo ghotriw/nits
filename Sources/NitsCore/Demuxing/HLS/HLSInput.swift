@@ -57,33 +57,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     private static let playlistExtensions: Set<String> = ["m3u8", "m3u"]
 
-    /// Whether an HTTP(S) address that FFmpeg could not open (`AVERROR_INVALIDDATA`) serves a playlist under another
-    /// name or none (`.php?id=`, `.txt`, no extension): its first bytes say. The one request is a range of a few hundred
-    /// bytes, answered and dropped. Asked only after FFmpeg failed, so a file never pays for it.
-    static func sniffsAsPlaylist(_ url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Bool {
-        guard HTTPSessionTransport.serves(url) else { return false }
-        let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
-        guard
-            case .input(let input) = transport.open(
-                url, offset: 0, end: 512, followsRedirects: true)
-        else { return false }
-        defer { input.close() }
-        let wanted = 16
-        var head = [UInt8](repeating: 0, count: wanted)
-        var count = 0
-        while count < wanted {
-            let offset = count
-            let read = head.withUnsafeMutableBufferPointer {
-                input.read($0.baseAddress! + offset, Int32(wanted - offset))
-            }
-            if read <= 0 { break }
-            count += Int(read)
-        }
-        var bytes = head.prefix(count)
-        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes = bytes.dropFirst(3) }
-        return bytes.starts(with: Array("#EXTM3U".utf8))
-    }
-
     /// The streams of a reader that a lane of `kind` describes and reads: pictures and sounds of a variant (not cover
     /// art, subtitles in the segments, data), the sound of an audio rendition, the cues of a subtitle rendition.
     static func keeps(_ stream: UnsafeMutablePointer<AVStream>, in kind: HLSLane.Kind) -> Bool {
