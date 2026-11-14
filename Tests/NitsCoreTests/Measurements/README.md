@@ -30,7 +30,8 @@ Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/exampl
   start. A seek back every 10 s of playhead leaves almost no net progress, so the network is barely used (nothing to
   adapt to): keep `NITS_MEASURE_ABR_SEEK_EVERY` at 30 or more for ABR to move.
 - `ABRStart` real stream: `prefetch=[...]` is the client's log line when the opening ends (`HLS client: ... opening N kbit/s`,
-  `HLSInput.openingLinkRate`'s source); `decided=` is the read position's choice, `shown=` what the picture was.
+  `HLSInput.openingLinkRate`'s source); `asked=` is when each switch began (its log line, `WxH@kbit/s@s`), `decided=`
+  when the read position's variant changed (the splice, which may be much later: labels are widths), `shown=` what the picture was.
 - `HLSOpening`: `rtt=` is `ping`'s average. The `[open]` and `[seek]` lines are the client's own (debug level): `HLS opening:` splits
   `HLSInput.init` (playlists `count/time`, probes `count/time` side by side, `describe` the rest); each `HLS run:` is a run
   of segments: `probe`, `reposition` (the opening's start, a seek, a rewind; `+replay` reuses the kept first segment),

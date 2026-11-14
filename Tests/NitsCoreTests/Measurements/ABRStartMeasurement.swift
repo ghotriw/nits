@@ -90,6 +90,7 @@ struct ABRStartRealMeasurement {
         let first = demuxer.selectedVariantId.flatMap { id in demuxer.variants.first { $0.id == id } }
         demuxer.startReadAhead(limits: .init())
         let readStart = ContinuousClock.now
+        let readStartDate = Date()
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer)
         var firstPicture: Double?
         var estimates: [Int] = []
@@ -129,6 +130,17 @@ struct ABRStartRealMeasurement {
             "given up was cut at", "is not cut at", "took a download over was given up", "rest of it is lost",
             "the sound could not be cut",
         ]
+        // When each switch began (`decided` is when it spliced: a step down asked for at 10 s showed as a step up at 45.8 s).
+        let name = demuxer.streamingName + ":"
+        let asked = LogStore.shared.snapshot().filter {
+            $0.timestamp >= readStartDate && $0.message.contains(name) && $0.message.contains("switching to ")
+        }.compactMap { entry -> String? in
+            let pattern = #"switching to \d+x\d+ at \d+ kbit/s"#
+            guard let range = entry.message.range(of: pattern, options: .regularExpression) else { return nil }
+            let words = entry.message[range].split(separator: " ")
+            return
+                "\(words[2])@\(words[4])k@\(String(format: "%.1f", entry.timestamp.timeIntervalSince(readStartDate)))s"
+        }
         for entry in LogStore.shared.snapshot()
         where entry.message.hasPrefix("ABR abandon") || splice.contains(where: entry.message.contains) {
             print("MEASURE-REAL   [abandon] \(entry.message)")
@@ -136,7 +148,7 @@ struct ABRStartRealMeasurement {
         print(
             "MEASURE-REAL label=\(ProcessInfo.processInfo.environment["NITS_MEASURE_LABEL"] ?? "-") url=\(url) open=\(String(format: "%.1f", open)) s start=\(first.map { "\($0.width)p@\($0.bandwidth / 1000)k" } ?? "-") "
                 + "firstPicture=\(firstPicture.map { String(format: "%.1f", $0) } ?? "none") s stalled=\(String(format: "%.1f", consumer.stalled)) s "
-                + "prefetch=[\(prefetch)] estimate(kbit/s, per s)=\(estimates) latencyShare(ms/s)=\(latencies) decided=\(decided) shown=\(shown)"
+                + "prefetch=[\(prefetch)] estimate(kbit/s, per s)=\(estimates) latencyShare(ms/s)=\(latencies) asked=\(asked) decided=\(decided) shown=\(shown)"
         )
     }
 }

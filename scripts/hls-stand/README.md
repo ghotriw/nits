@@ -30,8 +30,10 @@ Read the results with care:
   rung's size, and only within one ladder: on Apple's HEVC example Chrome plays HEVC + AAC, Nits AVC + AC-3.
 - hls.js buffers up to 60 MB by default (`maxBufferSize`; ~75 s at 6.6 Mbit/s): `maxBufferLength` is only its floor.
   `--maxBuf N` caps `maxBufferLength` and `maxMaxBufferLength` at N, to compare at Nits' 30 s read-ahead.
-- Clocks: the schedule and hls.js's events count from the proxy's first request; Nits' `decided=` / `shown=` from the
-  end of its opening (add `open=`).
+- Clocks: the schedule and hls.js's events count from the proxy's first request; Nits' `asked=` / `decided=` / `shown=` from
+  the end of its opening (add `open=`).
+- Nits' `decided=` is when a switch spliced, not when it began (`asked=`): a step down begun at 10 s and spliced after a
+  slow segment read as a step up at 45.8 s (2026-11-14).
 - Nits' measurement takes no sound through an audio renderer; hls.js plays muted sound in the browser.
 - RTT is the real one to the CDN (the proxy adds none unless `--rtt`): check the node first (`dig`, `ping -c 10`) and
   measure on one without loss.
