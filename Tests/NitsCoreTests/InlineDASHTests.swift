@@ -23,13 +23,13 @@ struct InlineDASHTests {
     }
 
     /// The manifest the resolver builds for the segments, as the demuxer is given it.
-    private static func manifest(for server: TestHTTPServer) -> String {
+    private static func manifest(for server: TestHTTPServer, segmentCount: Int = count) -> String {
         MediaURL.inlineDASHManifest(
             SegmentedDASHManifest(
                 streams: [
                     .init(kind: .video, id: "v", container: "mp4", url: server.url("video")),
                     .init(kind: .audio, id: "a", container: "mp4", url: server.url("audio")),
-                ], segmentDuration: 1, segmentCount: count
+                ], segmentDuration: 1, segmentCount: segmentCount
             ).text())
     }
 
@@ -103,6 +103,32 @@ struct InlineDASHTests {
         #expect(
             abs(packets - expected) <= 4,
             "\(packets) audio packets after the seek, \(expected) expected of \(allPackets) in all")
+    }
+
+    @Test("A manifest that lists segments past the last one the server has plays what there is and ends")
+    func endsWhereTheServerHasNoMore() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        // Audio of a run to the end, to compare with: the same server, the manifest as long as the segments.
+        let whole = try #require(MediaDemuxer(url: Self.manifest(for: server)))
+        whole.startReadAhead()
+        while whole.nextVideoSample() != nil {}
+        var expected = 0
+        while whole.nextAudioPacket() != nil { expected += 1 }
+
+        // yt-dlp's page length can make a count past the recording's (4097 s for 4095 segments): the server answers
+        // 404 for those.
+        let demuxer = try #require(MediaDemuxer(url: Self.manifest(for: server, segmentCount: Self.count + 2)))
+        demuxer.startReadAhead()
+        var pictures = 0
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        #expect(pictures == 25 * Self.count, "\(pictures) pictures; asked for \(server.requests.map(\.path))")
+        var packets = 0
+        while demuxer.nextAudioPacket() != nil { packets += 1 }
+        #expect(abs(packets - expected) <= 4, "\(packets) audio packets, \(expected) in a run to the end")
+        #expect(
+            server.requests.map(\.path).contains("video/\(Self.count)"),
+            "The segment past the last was asked for, or the case is not the one meant")
     }
 
     @Test("The manifest is not written to the log, nor are thumbnails made of it")
