@@ -173,6 +173,13 @@ Accepted for now, noted for later.
   limitations (the start on a middle link, the estimate after a slow segment, a rung at the edge flapping, what breaks
   leave, subtitle renditions, advertisements on streams of their own, variant switches at the edges, AES-128) are kept
   there, with the open work in order.
+- **DASH: WebM pictures beside pictures the client reads are left out.** The client reads no WebM index (`Cues`), so a
+  WebM picture plays only as a file (`DASHManifest.playsAsFiles`), and only when the manifest has no other picture:
+  beside MP4 ones of an index or a template they leave the format menu, even when larger or of the preferred codec (a VP9
+  file to 2160p beside H.264 segments to 1080p: 1080p H.264 only). A `Cues` reader beside `SegmentIndex` brings them
+  back as rungs of the ladder, and `playsAsFiles` and the added sounds go with it; the open part is the reading, a WebM
+  segment being a bare `Cluster` that FFmpeg's Matroska demuxer takes only after the init. Not needed for dropping
+  dashdec; worth it once such a manifest turns up.
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest
