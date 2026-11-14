@@ -52,14 +52,18 @@ extension DASHPlaylists {
             var updatePeriod: Double?
             var location: URL?
             var snapshot: (generation: Int, at: Date, presentation: DASHPresentation)?
+            /// The start of the period played (`Live.periodStart`), once one was read: a later manifest that lists more
+            /// periods is read as that one, up to the next one's start.
+            var periodStart: Double?
             var memories: [Int: Memory] = [:]
         }
 
         let state = OSAllocatedUnfairLock(initialState: State())
 
         /// The opening's fetch, which the first asks are answered from.
-        func begin(_ fetched: Fetched, offset: Double, updatePeriod: Double?, location: URL?) {
+        func begin(_ fetched: Fetched, offset: Double, updatePeriod: Double?, location: URL?, periodStart: Double) {
             state.withLock { state in
+                state.periodStart = periodStart
                 state.fetch = Store(value: fetched)
                 state.held = fetched
                 state.generation = fetched.generation
@@ -138,12 +142,13 @@ extension DASHPlaylists {
 
     // MARK: - Reading
 
-    /// The presentation `data` tells at the clock `now`.
+    /// The presentation `data` tells at the clock `now`; of a live manifest of several periods, the one that starts at
+    /// `periodStart` (the one played).
     func presentation(
-        _ data: Data, servedFrom: URL, now: Date
+        _ data: Data, servedFrom: URL, now: Date, periodStart: Double? = nil
     ) throws(HLSPlaylistSourceError) -> DASHPresentation {
         do throws(DASHPresentationError) {
-            return try DASHPresentation.parse(data, url: servedFrom, now: now)
+            return try DASHPresentation.parse(data, url: servedFrom, now: now, livePeriodStart: periodStart)
         } catch {
             switch error {
             case .unreadable: throw .unreadable(.notAPlaylist)
@@ -199,12 +204,16 @@ extension DASHPlaylists {
             return held.presentation
         }
         if let reused { return reused }
-        let offset = live.state.withLock { $0.offset }
+        let (offset, periodStart) = live.state.withLock { ($0.offset, $0.periodStart) }
         var used = fetched
         let presentation: DASHPresentation
         do throws(HLSPlaylistSourceError) {
+            // A manifest that comes to list a period after the one played (server-side ad insertion's break, told
+            // before it comes or after) is read as the one played up to the next one's start: its segments end there, and
+            // the playlist with them (`livePlaylist`'s `hasEnded`).
             presentation = try self.presentation(
-                fetched.data, servedFrom: fetched.servedFrom, now: host.addingTimeInterval(offset))
+                fetched.data, servedFrom: fetched.servedFrom, now: host.addingTimeInterval(offset),
+                periodStart: periodStart)
         } catch {
             // A fetch that answered with what does not read (cut short, an error page) is no end of the stream either: the
             // last manifest that read is used, as for a fetch that failed. A manifest that reads as one not played is a refusal.
@@ -214,7 +223,7 @@ extension DASHPlaylists {
             AppLog.warning(.demuxer, "DASH: the manifest fetched does not read; the one held is read again")
             used = held
             presentation = try self.presentation(
-                held.data, servedFrom: held.servedFrom, now: host.addingTimeInterval(offset))
+                held.data, servedFrom: held.servedFrom, now: host.addingTimeInterval(offset), periodStart: periodStart)
         }
         let finalFetched = used
         live.state.withLock { state in
@@ -247,7 +256,8 @@ extension DASHPlaylists {
             targetDuration: (representation.segments.map(\.duration).max() ?? 0).rounded(.up))
         playlist.hasIndependentSegments = true
         let live = presentation.live
-        // A manifest that turned static, or whose period has ended, is a recording now: no segment will come.
+        // A manifest that turned static, or whose period has ended (another follows it: an ad break), is a recording now:
+        // no segment will come.
         let hasEnded = live == nil || presentation.periodDuration.map { (live?.edge ?? 0) >= $0 } == true
         if hasEnded {
             playlist.type = .vod

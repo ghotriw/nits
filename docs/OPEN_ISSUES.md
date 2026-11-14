@@ -173,6 +173,11 @@ Accepted for now, noted for later.
   limitations (the start on a middle link, the estimate after a slow segment, a rung at the edge flapping, what breaks
   leave, subtitle renditions, advertisements on streams of their own, variant switches at the edges, AES-128) are kept
   there, with the open work in order.
+- **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
+  (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
+  `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest
+  of several periods at the opening is refused. Several periods of a live manifest, numbered across them, are the way
+  on.
 - **The Metal shader's colour is set once per load.** `ToneMapController.mediaDidLoad` sets the matrix, primaries,
   transfer, bit depth and range (`ShaderColorimetry`) and the static peak; an HLS variant switch rereads the stream's
   colour (`configureVideoStream`) but not into the uniforms, so a ladder mixing `VIDEO-RANGE` SDR and PQ, or

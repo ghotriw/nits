@@ -268,6 +268,70 @@ struct DASHLiveTests {
         #expect(fetches() > unreadable, "fetched again once the server answers")
     }
 
+    @Test(
+        "A live manifest that comes to list a period after the one played (an ad break) plays that one up to the next's start, then ends"
+    )
+    func playsThePeriodUpToTheNext() throws {
+        let server = try TestHTTPServer(root: FileManager.default.temporaryDirectory)
+        defer { server.stop() }
+        let video = Self.video(template: Self.counted)
+        server.setResponder(forPath: "live.mpd") {
+            Self.mpd(video, attributes: #"minimumUpdatePeriod="PT2S""#)
+        }
+        let address = URL(string: server.url("live.mpd"))!
+        let now = OSAllocatedUnfairLock(initialState: 100.0)
+        let source = DASHPlaylists(address: address, clock: { Self.at(now.withLock { $0 }) })
+        let loader = Self.loader(for: address)
+        #expect(try Self.media(source, loader).segments.last?.sequence == 50)
+        func breakAt(_ start: Int) -> Data {
+            Data(
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" availabilityStartTime="1970-01-01T00:00:00Z" \
+                minBufferTime="PT2S" minimumUpdatePeriod="PT2S"><Period id="0" start="PT0S">\(video)</Period>\
+                <Period id="1" start="PT\(start)S">\(video)</Period></MPD>
+                """.utf8)
+        }
+        // Told before it comes: the period played goes on to it.
+        let announced = breakAt(200)
+        server.setResponder(forPath: "live.mpd") { announced }
+        now.withLock { $0 = 104 }
+        let before = try Self.media(source, loader)
+        #expect(before.hasEnded == false)
+        #expect(before.segments.last?.sequence == 52)
+        now.withLock { $0 = 201 }
+        let ended = try Self.media(source, loader)
+        #expect(ended.hasEnded)
+        #expect(ended.segments.last?.sequence == 100, "the last segment ends at the break (198..200), none after it")
+    }
+
+    @Test(
+        "A break told after it came ends the period played at its start: the segments up to it are listed, the last cut"
+    )
+    func breakAlreadyPast() throws {
+        let video = Self.video(template: Self.counted)
+        let now = OSAllocatedUnfairLock(initialState: 100.0)
+        let source = Self.source(Self.mpd(video), now: now)
+        #expect(try Self.media(source, Self.loader()).segments.last?.sequence == 50)
+        let data = Data(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" availabilityStartTime="1970-01-01T00:00:00Z" \
+            minBufferTime="PT2S"><Period id="0" start="PT0S">\(video)</Period>\
+            <Period id="1" start="PT103S">\(video)</Period></MPD>
+            """.utf8)
+        let presentation = try DASHPresentation.parse(data, url: Self.url, now: Self.at(104), livePeriodStart: 0)
+        let segments = try #require(presentation.representations.first).segments
+        #expect(presentation.periodDuration == 103)
+        #expect(segments.last?.start == 102)
+        #expect(segments.last?.duration == 1)
+        // Without the period played (the opening) several periods are refused; one no longer listed is refused too.
+        #expect(Self.refusal(of: data)?.contains("2 periods") == true)
+        #expect(throws: DASHPresentationError.unsupported("the period played is no longer in the manifest")) {
+            try DASHPresentation.parse(data, url: Self.url, now: Self.at(104), livePeriodStart: 50)
+        }
+    }
+
     @Test("A delay of 0 is no nearer the edge than a segment")
     func zeroDelay() throws {
         let data = Self.mpd(Self.video(template: Self.counted), attributes: #"suggestedPresentationDelay="PT0S""#)

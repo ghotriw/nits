@@ -129,18 +129,31 @@ extension DASHPresentation {
     static let segmentLimit = 200_000
 
     /// The presentation `data` holds; `url` is where it came from (after redirects), what its addresses are relative to.
-    static func parse(_ data: Data, url: URL, now: Date? = nil) throws(DASHPresentationError) -> DASHPresentation {
+    /// A live manifest of several periods is read as the one that starts at `livePeriodStart` (the one played: a period
+    /// told after it, an ad break of server-side insertion, ends it), and refused without one (at the opening).
+    static func parse(
+        _ data: Data, url: URL, now: Date? = nil, livePeriodStart: Double? = nil
+    ) throws(DASHPresentationError) -> DASHPresentation {
         guard let root = XMLTreeElement.parse(data, limit: sizeLimit), root.localName == "MPD" else {
             throw .unreadable
         }
         let type = root.attribute("type") ?? "static"
         guard type == "static" || type == "dynamic" else { throw .unsupported("a \(type) manifest") }
-        let periods = root.elements(named: "Period")
-        guard let period = periods.first else { throw .unsupported("no period") }
-        guard periods.count == 1 || type == "static" else {
+        var periods = root.elements(named: "Period")
+        guard !periods.isEmpty else { throw .unsupported("no period") }
+        let presentationDuration = root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:))
+        if type == "dynamic" && periods.count > 1 && livePeriodStart == nil {
             throw .unsupported("\(periods.count) periods in a live manifest")
         }
-        let start = period.attribute("start").flatMap(DASHElements.duration(of:)) ?? 0
+        var times = try periodTimes(of: periods, presentationDuration: presentationDuration)
+        if type == "dynamic" && periods.count > 1, let livePeriodStart {
+            guard let played = times.firstIndex(where: { abs($0.start - livePeriodStart) <= 0.001 }) else {
+                throw .unsupported("the period played is no longer in the manifest")
+            }
+            periods = [periods[played]]
+            times = [times[played]]
+        }
+        let start = times[0].start
         var live: Live?
         if type == "dynamic" {
             guard let now else { throw .unsupported("a dynamic manifest (live)") }
@@ -163,8 +176,6 @@ extension DASHPresentation {
                 edge: now.timeIntervalSince(availabilityStart) - start, depth: max(depth, 0))
         }
         let mpdBase = baseURL(of: root, relativeTo: url)
-        let presentationDuration = root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:))
-        var times = try periodTimes(of: periods, presentationDuration: presentationDuration)
         var kept = periods
         if periods.count > 1 {
             // A period of no length, or with no set of its own (an ad slot that came out empty), is not played.

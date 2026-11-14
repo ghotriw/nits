@@ -155,7 +155,8 @@ struct DASHPlaylists: HLSPlaylistSource {
             let offset = try clockOffset(of: timing.timings, loader: loader)
             live.begin(
                 Fetched(data: data, servedFrom: servedFrom, at: clock(), generation: 0), offset: offset,
-                updatePeriod: inline == nil ? timing.minimumUpdatePeriod : nil, location: timing.location)
+                updatePeriod: inline == nil ? timing.minimumUpdatePeriod : nil, location: timing.location,
+                periodStart: timing.periodStart)
             if offset != 0 {
                 presentation = try self.presentation(
                     data, servedFrom: servedFrom, now: clock().addingTimeInterval(offset))
