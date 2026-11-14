@@ -313,7 +313,7 @@ flowchart TD
     the playlist has a new segment (up to a segment's duration). Interrupting that wait makes FFmpeg fail the
     segment read (`AVERROR_EXIT`): find out first whether the playlist recovers from it.
 - [ ] **3.5.2. MPEG-DASH Integration:**
-  - [x] FFmpeg's DASH demuxer in the bundled build (`--enable-libxml2`, the system's libxml2 linked from the SDK).
+  - [x] FFmpeg's DASH demuxer in the bundled build (`--enable-libxml2`, the system's libxml2 linked from the SDK); removed with step 8 of the DASH client (2026-11-14), which plays DASH now.
     Homebrew's FFmpeg has none, so a `swift run` / `swift test` without `.build/dependencies` can't open a manifest.
     It has no adaptive bitrate of its own, and on its own it opens every representation of a manifest at once (slow),
     fails the opening for one it can't read (a TTML track), plays the first picture it lists (the lowest), and seeks
@@ -409,8 +409,6 @@ flowchart TD
     out). WebM files (`Cues`) are not the client's: a manifest of them alone plays its best as a file, the others in the
     format menu, the sound added; beside MP4 pictures they are left out. Shaka's tos-ttml: a ladder of 7, opening 2 s,
     seeks 1 s (through FFmpeg's demuxer, which now gets the ladder of files, 3.6 s and a seek that misses).
-  - [ ] Send `scripts/patches/ffmpeg-dashdec-keep-libxml2.patch` (no `xmlCleanupParser()` after each manifest, which
-    crashes a parse going on in another thread) to FFmpeg: it still has the call in master and in 9.0.
   - [ ] A live (`type="dynamic"`) manifest, several periods.
 
 ---

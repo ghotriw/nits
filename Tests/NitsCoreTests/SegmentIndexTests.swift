@@ -262,7 +262,7 @@ struct SingleFileDASHTests {
 
     @Test("A ladder of files plays by its indexes: a rung of other boundaries is left out, each index is read once")
     func ladder() async throws {
-        guard MediaDemuxer.dashInput != .ffmpeg, let made = Self.make() else { return }
+        guard let made = Self.make() else { return }
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let (server, manifestURL) = try Self.served(made, videos: [0, 1, 2])
         defer { server.stop() }
@@ -345,7 +345,7 @@ struct SingleFileDASHTests {
 
     @Test("A server that answers a range with the whole file: the index is cut from it, and the ladder opens")
     func serverIgnoringRanges() throws {
-        guard MediaDemuxer.dashInput != .ffmpeg, let made = Self.make() else { return }
+        guard let made = Self.make() else { return }
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let (server, url) = try Self.served(made, videos: [0, 1])
         defer { server.stop() }
@@ -426,9 +426,9 @@ extension SegmentIndexTests {
 }
 
 extension SingleFileDASHTests {
-    @Test("A sound whose index is refused refuses the stream: not played silent, left to FFmpeg's demuxer for now")
+    @Test("A sound whose index is refused refuses the stream: not played silent")
     func refusedSoundRefusesTheStream() throws {
-        guard MediaDemuxer.dashInput != .ffmpeg, let made = Self.make() else { return }
+        guard let made = Self.make() else { return }
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let server = try TestHTTPServer(root: made.directory)
         defer { server.stop() }
@@ -445,11 +445,7 @@ extension SingleFileDASHTests {
         #expect(source.refusal?.contains("no sidx") == true, "\(source.refusal ?? "nil")")
 
         let demuxer = MediaDemuxer(url: server.url("dash.mpd"))
-        if MediaDemuxer.dashInput == .client {
-            #expect(demuxer == nil)
-        } else {
-            #expect(demuxer?.input is FFmpegInput)
-        }
+        #expect(demuxer == nil, "A refusal is the opening's failure")
     }
 }
 

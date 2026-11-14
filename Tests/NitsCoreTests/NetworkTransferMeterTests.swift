@@ -44,9 +44,9 @@ struct NetworkTransferMeterTests {
         let transport = HTTPSessionTransport(source: server.url("long"), headers: [:]) { false }
         guard
             case .input(let longInput) = transport.open(
-                server.url("long"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil),
+                server.url("long"), offset: 0, end: nil),
             case .input(let shortInput) = transport.open(
-                server.url("short"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+                server.url("short"), offset: 0, end: nil)
         else {
             Issue.record("not served")
             return
@@ -85,7 +85,7 @@ struct NetworkTransferMeterTests {
         let transport = HTTPSessionTransport(source: server.url("piece"), headers: [:]) { false }
         guard
             case .input(let input) = transport.open(
-                server.url("piece"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+                server.url("piece"), offset: 0, end: nil)
         else {
             Issue.record("not served")
             return

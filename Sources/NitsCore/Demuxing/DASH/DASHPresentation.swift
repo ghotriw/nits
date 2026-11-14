@@ -2,7 +2,7 @@ import Foundation
 
 /// An MPD read for the client (`DASHPlaylists`): its pictures and sounds with their segments, each placed on the
 /// presentation's time. What the client does not play yet is refused with a reason (`DASHPresentationError.unsupported`),
-/// which lets the demuxer open the manifest otherwise while FFmpeg's DASH demuxer is still there.
+/// which fails the opening (nothing else plays it).
 ///
 /// Read (ISO/IEC 23009-1): one `static` period; `SegmentTemplate` (`$Number$` / `$Time$`, with a `SegmentTimeline` or
 /// a `@duration`), `SegmentList` (`SegmentURL`, `mediaRange`) and `SegmentBase` (one MP4 file whose `sidx` tells its
@@ -122,7 +122,7 @@ enum DASHPresentationError: Error, Equatable {
 }
 
 extension DASHPresentation {
-    /// The most a manifest read may be, in bytes (as `DASHManifest.sizeLimit`).
+    /// The most a manifest read may be, in bytes; a larger one is refused with that reason.
     static let sizeLimit = 8 << 20
     /// The most segments one representation is given: a template counted by `@duration` over a period of years would
     /// list them all.
@@ -134,6 +134,7 @@ extension DASHPresentation {
     static func parse(
         _ data: Data, url: URL, now: Date? = nil, livePeriodStart: Double? = nil
     ) throws(DASHPresentationError) -> DASHPresentation {
+        guard data.count <= sizeLimit else { throw .unsupported("a manifest over \(sizeLimit >> 20) MB") }
         guard let root = XMLTreeElement.parse(data, limit: sizeLimit), root.localName == "MPD" else {
             throw .unreadable
         }

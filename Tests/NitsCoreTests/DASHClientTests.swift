@@ -157,7 +157,7 @@ struct DASHClientTests {
 
     @Test("A demuxer opens the resolver's manifest with the client, with the address it came from")
     func demuxerOpensWithTheClient() throws {
-        guard MediaDemuxer.dashInput != .ffmpeg, let server = try Self.server() else { return }
+        guard let server = try Self.server() else { return }
         defer { server.stop() }
         let address = try #require(URL(string: server.url("manifest.mpd")))
         let demuxer = try #require(
@@ -169,36 +169,25 @@ struct DASHClientTests {
         #expect(Self.manifestRequests(server) == 0, "An inline manifest is not fetched")
     }
 
-    @Test("What the client refuses is left to FFmpeg's demuxer; a manifest that fails to load is the opening's failure")
-    func refusalFallsBackToFFmpeg() throws {
-        guard MediaDemuxer.dashInput == .auto, let made = SingleFileDASHTests.make() else { return }
+    @Test("What the client refuses is the opening's failure, with its reason; so is a manifest that fails to load")
+    func refusalIsTheOpeningsFailure() throws {
+        guard let made = SingleFileDASHTests.make() else { return }
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let server = try TestHTTPServer(root: made.directory)
         defer { server.stop() }
         // One file per representation (`SegmentBase`) whose index range holds no index: the client refuses the picture,
-        // which the others depend on. FFmpeg's demuxer reads the file from its start.
+        // which the others depend on.
         let manifest = SingleFileDASHTests.manifest(made, brokenIndex: true)
         server.setResponder(forPath: "dash.mpd") { Data(manifest.utf8) }
-        let demuxer = try #require(MediaDemuxer(url: server.url("dash.mpd")))
-        #expect(demuxer.input is FFmpegInput)
-        #expect(demuxer.nextVideoSample() != nil)
+        let interrupt = FFmpegInterrupt()
+        #expect(MediaDemuxer(url: server.url("dash.mpd"), interruptContext: interrupt) == nil)
+        #expect(interrupt.lastError?.message.contains("no sidx") == true, "\(String(describing: interrupt.lastError))")
 
         let before = server.requests.count
-        #expect(MediaDemuxer(url: server.url("missing.mpd")) == nil)
+        let missing = FFmpegInterrupt()
+        #expect(MediaDemuxer(url: server.url("missing.mpd"), interruptContext: missing) == nil)
         let asked = server.requests.dropFirst(before).filter { $0.path.hasSuffix("missing.mpd") }
-        #expect(asked.count == 1, "Asked again by FFmpeg's demuxer: \(asked.count) requests")
-
-        // A refusal recorded by an earlier attempt on the same context is not this one's: still no FFmpeg.
-        let interrupt = FFmpegInterrupt()
-        interrupt.recordError(code: HLSPlaylistSourceError.unsupported("").code, message: "an earlier refusal")
-        let again = server.requests.count
-        #expect(MediaDemuxer(url: server.url("missing.mpd"), interruptContext: interrupt) == nil)
-        #expect(server.requests.dropFirst(again).filter { $0.path.hasSuffix("missing.mpd") }.count == 1)
-        #expect(interrupt.lastError?.code != HLSPlaylistSourceError.unsupported("").code, "The failure is the load's")
-
-        // After a refusal, FFmpeg's outcome is the opening's: the refusal is not left as its error.
-        let fallback = FFmpegInterrupt()
-        _ = try #require(MediaDemuxer(url: server.url("dash.mpd"), interruptContext: fallback))
-        #expect(fallback.lastError == nil, "\(String(describing: fallback.lastError))")
+        #expect(asked.count == 1, "Asked once, not again by another demuxer: \(asked.count) requests")
+        #expect(missing.lastError?.code != HLSPlaylistSourceError.unsupported("").code, "The failure is the load's")
     }
 }

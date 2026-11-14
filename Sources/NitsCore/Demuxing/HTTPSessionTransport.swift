@@ -2,7 +2,7 @@ import CFFmpeg
 import Foundation
 import os
 
-/// Reads the HTTP(S) inputs of Nits' HLS client (and of a DASH demuxer) through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
+/// Reads the HTTP(S) inputs of Nits' HLS and DASH client through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
 /// `FFmpegIOByteCounter`). FFmpeg downloads a segment only as fast as its reads take the bytes, inside
 /// `av_read_frame`, so what the network does could only be guessed from how long reads took. Here each request is a
 /// task of its own: its answer, which `io_open` waits for (the request's latency), and its transfer, which goes on
@@ -12,8 +12,7 @@ import os
 /// request through `io_open` (`is_native_http` in its `hls.c`).
 ///
 /// What FFmpeg's HTTP did for the inputs it opened, the transport does for these: the source's headers (and FFmpeg's
-/// user agent without one), the cookies FFmpeg passes on from the answers of the inputs it opened itself (its
-/// `cookies` option: the master's), no compressed bodies (`Accept-Encoding: identity`, as FFmpeg asks: URLSession
+/// user agent without one), no compressed bodies (`Accept-Encoding: identity`, as FFmpeg asks: URLSession
 /// hands a compressed body on decompressed, which would count bytes the link never carried in the samples, and byte
 /// ranges are of the file, not of a compressed stream), and a body cut short asked for again from where it stopped
 /// (`HTTPSessionInput`, as FFmpeg's `reconnect`).
@@ -31,14 +30,10 @@ final class HTTPSessionTransport: Sendable {
     }
 
     let meter = NetworkTransferMeter()
-    /// What the inputs opened while a DASH demuxer opens are held to, until `endOpening`.
+    /// What the inputs opened while the client (HLS or DASH) opens are held to, until `endOpening`.
     private let openingLimit = HTTPSessionInput.OpeningLimit()
     let holder: HTTPSessionHolder
     private let headers: [String: String]
-    /// Where the cookies FFmpeg passes on came from, when the master's location isn't told: the source.
-    private let cookieOrigin: URL?
-    /// FFmpeg's `cookies` option last stored in the session's cookies.
-    private let storedCookies = OSAllocatedUnfairLock<String?>(initialState: nil)
     let shouldAbort: @Sendable () -> Bool
 
     /// `headers` are the source's (the user agent among them), sent with every request; `shouldAbort` interrupts the
@@ -54,7 +49,6 @@ final class HTTPSessionTransport: Sendable {
         headers["Accept-Encoding"] = "identity"
         self.headers = headers
         self.shouldAbort = shouldAbort
-        cookieOrigin = MediaURL.isNetworkURL(source) ? URL(string: source) : nil
         let configuration = URLSessionConfiguration.ephemeral
         // FFmpeg's `rw_timeout` (`MediaURL.applyNetworkOptions`): seconds without data.
         configuration.timeoutIntervalForRequest = 10
@@ -72,8 +66,6 @@ final class HTTPSessionTransport: Sendable {
         url.hasPrefix("http://") || url.hasPrefix("https://")
     }
 
-    /// Bits a second the inputs held while opening have brought (`OpeningLimit.throughput`).
-    var openingThroughput: Double? { openingLimit.throughput }
     /// The opening's rate at the points it could be read at, for the measurement (`OpeningLimit.rateReport`).
     var openingRateReport: String { openingLimit.rateReport }
 
@@ -127,21 +119,16 @@ final class HTTPSessionTransport: Sendable {
         openingLimit.lift()
     }
 
-    /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `cookies` is
-    /// FFmpeg's option of that name: `Set-Cookie` values, a line each, from the answer of `cookieOrigin` (where the
-    /// master was served from, after its redirects). `opening`: a request of the demuxer's opening, and how it is read
-    /// (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
+    /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `opening`: a request of the
+    /// demuxer's opening, and how it is read (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
     /// that lost its race, `HLSInput`). `onProgress` is told how far the request has got while it waits for its answer
     /// too (a server that stalls before its headers), and for its bytes after.
     func open(
-        _ url: String, offset: Int64, end: Int64?, cookies: String?, cookieOrigin: String?,
+        _ url: String, offset: Int64, end: Int64?,
         opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)? = nil
     ) -> Opened {
         guard let requestURL = URL(string: url) else { return .notServed }
-        if let cookies {
-            store(cookies, from: cookieOrigin.flatMap(URL.init(string:)) ?? self.cookieOrigin ?? requestURL)
-        }
         var request = URLRequest(url: requestURL)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let interrupts: @Sendable () -> Bool
@@ -174,7 +161,7 @@ final class HTTPSessionTransport: Sendable {
     /// brought 4K down a step 4 s in.
     static let oneTimeRequestBytes: Int64 = 16 << 10
 
-    /// The cookies the session holds, from `Set-Cookie` answers and FFmpeg's option.
+    /// The cookies the session holds, from `Set-Cookie` answers.
     var cookies: [HTTPCookie] { holder.cookieStorage?.cookies ?? [] }
 
     /// Takes over cookies another session holds (a read of the same stream on a session of its own).
@@ -183,19 +170,6 @@ final class HTTPSessionTransport: Sendable {
         for cookie in cookies { storage.setCookie(cookie) }
     }
 
-    /// The cookies of `cookies` (FFmpeg's option, as it was last) into the session's, which sends them where they
-    /// apply. Without a domain of their own they are `origin`'s.
-    private func store(_ cookies: String, from origin: URL) {
-        let isNew = storedCookies.withLock { stored in
-            defer { stored = cookies }
-            return stored != cookies
-        }
-        guard isNew, let storage = holder.cookieStorage else { return }
-        for line in cookies.split(whereSeparator: \.isNewline) {
-            let parsed = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": String(line)], for: origin)
-            storage.setCookies(parsed, for: origin, mainDocumentURL: nil)
-        }
-    }
 }
 
 /// The transfers `HTTPSessionTransport`'s requests made, for `MediaDemuxer.noteRead`: each from its answer to its last

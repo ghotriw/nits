@@ -59,7 +59,7 @@ struct HTTPSessionOpeningLimitTests {
         let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
         guard
             case .input(let held) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .held)
+                server.url("body"), offset: 0, end: nil, opening: .held)
         else {
             Issue.record("not served")
             return
@@ -71,7 +71,7 @@ struct HTTPSessionOpeningLimitTests {
         // One opened with no such limit takes the whole body at once.
         guard
             case .input(let free) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+                server.url("body"), offset: 0, end: nil)
         else {
             Issue.record("not served")
             return
@@ -103,8 +103,7 @@ extension HTTPSessionOpeningLimitTests {
         let end = Self.size - 50_000
         guard
             case .input(let input) = transport.open(
-                server.url("body"), offset: Int64(offset), end: Int64(end), cookies: nil, cookieOrigin: nil,
-                opening: .held)
+                server.url("body"), offset: Int64(offset), end: Int64(end), opening: .held)
         else {
             Issue.record("not served")
             return
@@ -162,7 +161,7 @@ extension HTTPSessionOpeningLimitTests {
         let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
         guard
             case .input(let input) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .held)
+                server.url("body"), offset: 0, end: nil, opening: .held)
         else {
             Issue.record("not served")
             return
@@ -192,7 +191,7 @@ struct HTTPSessionHolderTests {
         let before = transport.holder.session
         guard
             case .input(let input) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+                server.url("body"), offset: 0, end: nil)
         else {
             Issue.record("the request was not served")
             return
@@ -237,7 +236,7 @@ struct HTTPSessionHolderTests {
         func open() -> HTTPSessionInput? {
             guard
                 case .input(let input) = transport.open(
-                    server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil)
+                    server.url("body"), offset: 0, end: nil)
             else { return nil }
             return input
         }
@@ -317,7 +316,7 @@ extension HTTPSessionOpeningLimitTests {
         let transport = HTTPSessionTransport(source: server.url("body"), headers: [:]) { false }
         guard
             case .input(let input) = transport.open(
-                server.url("body"), offset: 0, end: nil, cookies: nil, cookieOrigin: nil, opening: .start)
+                server.url("body"), offset: 0, end: nil, opening: .start)
         else {
             Issue.record("not served")
             return

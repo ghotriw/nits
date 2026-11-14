@@ -65,7 +65,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         guard
             case .input(let input) = transport.open(
-                url, offset: 0, end: 512, cookies: nil, cookieOrigin: nil, followsRedirects: true)
+                url, offset: 0, end: 512, followsRedirects: true)
         else { return false }
         defer { input.close() }
         let wanted = 16
@@ -1030,10 +1030,6 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let lane = lanes[info.lane]
         return lane.streams.indices.contains(info.slot) && lane.streams[info.slot].isRead
     }
-
-    func closeUnusedRepresentations() {}
-
-    func prepareSeek(reading indices: [Int]) {}
 
     func close() {
         for lane in lanes { lane.close() }

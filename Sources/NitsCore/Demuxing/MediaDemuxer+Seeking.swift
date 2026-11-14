@@ -40,7 +40,6 @@ extension MediaDemuxer {
         completeVariantSwitchBeforeSeek(at: seconds)
         // A track selected before the seek is read from its target (an audio track switch seeks for this).
         applyChangedStreamSelection()
-        input.prepareSeek(reading: [videoStreamIndex, audioStreamIndex] + selectedSubtitleStreamIndices)
         // Splices read ahead past the target are gone: the variant read now plays from it.
         reportVariant(at: seconds)
         audioQueue.removeAll()
@@ -305,21 +304,6 @@ extension MediaDemuxer {
                     seconds: seconds, width: Int(size.width), height: Int(size.height), sampleAspectRatio: aspect,
                     isLanding: isLanding))
         }
-    }
-
-    /// Before the first seek of a load, to its start position: the representations of a ladder that are not played are
-    /// closed first, so that the seek does not move them (`DemuxerInput.closeUnusedRepresentations`).
-    ///
-    /// For the seek to a start position a load makes only: once playback has read, they are closed, and a packet read
-    /// before a seek in the middle of it would be a request for nothing.
-    public func prepareFirstSeek() {
-        lockIO()
-        defer { lock.unlock() }
-        queueLock.lock()
-        defer { queueLock.unlock() }
-        guard !firstSeekPrepared, variants.count > 1 else { return }
-        firstSeekPrepared = true
-        withoutQueueLock { input.closeUnusedRepresentations() }
     }
 
     /// Reads the audio that plays with the landed keyframe when audio is delayed against the picture.

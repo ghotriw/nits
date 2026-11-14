@@ -108,9 +108,6 @@ public final class MediaDemuxer: @unchecked Sendable {
     var variantStreams: [Int: VariantStreams] = [:]
     /// The switch being spliced. Written with `lock` and `queueLock` held, so either one reads it.
     var variantSwitch: VariantSwitch?
-    /// The input was asked to close the variants not read before the first seek (`prepareFirstSeek`), once. Behind
-    /// `lock` and `queueLock`.
-    var firstSeekPrepared = false
     /// The pictures read from a timeline second on: of which variant, and as they are.
     public struct VariantChange: Sendable {
         public let variant: StreamVariant
@@ -626,14 +623,6 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
-    /// Which input plays a DASH manifest: the client, falling back on FFmpeg's demuxer for what it refuses (`auto`), or
-    /// either alone, to run the DASH suites against each (`NITS_DASH_INPUT=client` / `ffmpeg`; tests only).
-    enum DASHInputChoice: String {
-        case auto, client, ffmpeg
-    }
-    nonisolated static let dashInput =
-        ProcessInfo.processInfo.environment["NITS_DASH_INPUT"].flatMap(DASHInputChoice.init(rawValue:)) ?? .auto
-
     /// Opens `url`: with `HLSInput` when it is an HLS playlist or a DASH manifest the client plays, else with FFmpeg
     /// (`FFmpegInput`).
     ///
@@ -663,17 +652,16 @@ public final class MediaDemuxer: @unchecked Sendable {
                 audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
             return
         }
-        // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play yet (the source's
-        // refusal, with its reason) is left to FFmpeg's DASH demuxer; any other failure is the opening's.
+        // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play (the source's refusal,
+        // with its reason) is the opening's error: nothing falls back on FFmpeg's DASH demuxer, which is not built.
         // A live stream's history (`LiveHistory`) is the client's alone: its segments are named by keys only it resolves.
-        if Self.dashInput != .ffmpeg || liveHistory != nil,
-            let playlists = DASHPlaylists(media: url, history: liveHistory)
-        {
+        if let playlists = DASHPlaylists(media: url, history: liveHistory) {
             let input = HLSInput(
                 master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
                 allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
             // An opening that went on without what the stream is not played without (the default sound, whose index the
-            // source refused) is refused too: not played silent.
+            // source refused) is refused too: not played silent. Asked of the source itself, not read off the interrupt's
+            // last error, which another failure (or an earlier attempt on the same context) may have written.
             if let input, playlists.refusal == nil {
                 self.init(
                     input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
@@ -686,15 +674,8 @@ public final class MediaDemuxer: @unchecked Sendable {
                     code: HLSPlaylistSourceError.unsupported(refusal).code,
                     message: "DASH: not played by the client: \(refusal)")
             }
-            // Asked of the source itself, not read off the interrupt's last error, which another failure (or an earlier
-            // attempt on the same context) may have written.
-            guard let refusal = playlists.refusal, Self.dashInput != .client, liveHistory == nil else {
-                if interruptContext == nil { interrupt.cancel() }
-                return nil
-            }
-            // FFmpeg's failure, not the refusal, is the opening's if it fails too.
-            interrupt.clearError()
-            AppLog.info(.demuxer, "DASH: left to FFmpeg's demuxer (\(refusal))")
+            if interruptContext == nil { interrupt.cancel() }
+            return nil
         }
         // A history is the client's alone: opened as a file it would lose its window and ask for addresses no DNS knows.
         guard liveHistory == nil else {

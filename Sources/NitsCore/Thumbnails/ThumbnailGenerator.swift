@@ -62,10 +62,12 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         guard !isCancelled else { return [] }
 
         let cleanPath = MediaURL.normalizeMediaPath(path)
-        // A finished HLS stream goes through Nits' own client: FFmpeg has no HLS demuxer left to open it.
+        // A finished HLS or DASH stream goes through Nits' own client: FFmpeg has neither demuxer left to open it.
         var opened: ThumbnailSource?
         if HLSInput.applies(to: cleanPath) {
             opened = ThumbnailSource.openHLS(url: cleanPath, headers: headers, interrupt: cancelToken)
+        } else if DASHPlaylists(media: path) != nil {
+            opened = ThumbnailSource.openDASH(url: path, headers: headers, interrupt: cancelToken)
         } else {
             var failure: Int32 = 0
             opened = ThumbnailSource.openFFmpeg(

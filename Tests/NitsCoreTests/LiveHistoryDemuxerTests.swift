@@ -127,8 +127,8 @@ struct LiveHistoryDemuxerTests {
         defer { server.stop() }
         // The engine cancels the interrupt (`PlayerEngine.currentInterruptContext`), then lets the demuxer go: closing
         // waits for the read to give the input up. A read cut short inside a segment ends with an error, as it should;
-        // one cancelled between a segment's end and the next one's start came back from FFmpeg's DASH demuxer as "a packet
-        // read" (unpatched: `dash_read_packet`), again and again. So the rounds cancel at any moment from 0 to 20 ms. (On the unpatched library none of 400 looped: this holds the patched one to it.)
+        // one cancelled between a segment's end and the next one's start came back from FFmpeg's DASH demuxer (gone
+        // since) as "a packet read", again and again. So the rounds cancel at any moment from 0 to 20 ms, which the client holds to.
         var generator = SystemRandomNumberGenerator()
         for round in 0..<150 {
             let isWindow = round % 2 == 0

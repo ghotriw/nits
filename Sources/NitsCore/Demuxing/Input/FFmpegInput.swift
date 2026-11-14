@@ -1,11 +1,10 @@
 import CFFmpeg
 import Foundation
 
-/// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file, a DASH manifest. HLS is
-/// `HLSInput`'s (FFmpeg's HLS demuxer is not built). See `DemuxerInput`.
+/// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file. HLS and DASH are
+/// `HLSInput`'s (FFmpeg's HLS and DASH demuxers are not built). See `DemuxerInput`.
 ///
-/// Its network requests go through `ioBytes` (`FFmpegIOByteCounter`): counted for adaptive bitrate, served by
-/// `HTTPSessionTransport` for DASH.
+/// Its network requests go through `ioBytes` (`FFmpegIOByteCounter`), which counts them for adaptive bitrate.
 final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// The open context; nil once closed.
     private(set) var context: UnsafeMutablePointer<AVFormatContext>?
@@ -15,7 +14,6 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     let traits: DemuxerInputTraits
     let timelineOrigin: Int64
     let isNetworkSource: Bool
-    private let isDASH: Bool
 
     /// Opens `url`; nil when FFmpeg can't (the error is recorded on `interrupt`).
     ///
@@ -33,9 +31,6 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         // Setup interrupt callback to abort hung network requests cleanly. `self.interrupt` keeps it alive.
         interrupt.install(on: allocatedCtx)
         ioBytes.install(on: allocatedCtx)
-        // Until the opening is done (`finishOpening`, or a failure), the inputs a DASH demuxer opens for the start of
-        // each rung of a ladder are not downloaded whole.
-        ioBytes.isOpening = true
 
         var avOptions: OpaquePointer? = nil
         defer {
@@ -47,22 +42,6 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         let isNetworkSource = MediaURL.applySourceOptions(
             &avOptions, path: url, headers: headers, httpRequestSize: httpRequestSize)
         self.isNetworkSource = isNetworkSource
-        if MediaURL.isInlineDASHManifest(url) {
-            ioBytes.segmentRequestOptions = MediaURL.requestOptions(headers: headers)
-        }
-        // A DASH demuxer's requests go through `URLSession`, which tells their answers from their transfers and keeps the
-        // connections open (`HTTPSessionTransport`, made for the first).
-        if isNetworkSource {
-            ioBytes.makeTransport = { [interrupt] in
-                // The requests too give way to a seek that waits for the input (`yieldIO`), not just FFmpeg's own waits.
-                HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
-            }
-        }
-        // A failed opening ends here, as `finishOpening` does.
-        var opened = false
-        defer {
-            if !opened { ioBytes.endOpening() }
-        }
 
         let ret = avformat_open_input(&ctx, url, nil, &avOptions)
         guard ret >= 0, let formatCtx = ctx else {
@@ -87,13 +66,9 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
             return nil
         }
         context = formatCtx
-        opened = true
 
-        let formatName = formatCtx.pointee.iformat.map { String(cString: $0.pointee.name) } ?? ""
-        isDASH = formatName == "dash"
         traits = DemuxerInputTraits(
-            hasIndex: Self.describesStreams(formatCtx), landsBetweenKeyframes: Self.isUnindexedStream(formatCtx),
-            interleavesVariantsByPresentation: isDASH)
+            hasIndex: Self.describesStreams(formatCtx), landsBetweenKeyframes: Self.isUnindexedStream(formatCtx))
 
         let origin = Self.timelineOrigin(of: formatCtx)
         timelineOrigin = origin
@@ -113,13 +88,11 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
         avformat_close_input(&context)
     }
 
-    func finishOpening() {
-        ioBytes.endOpening()
-    }
+    func finishOpening() {}
 
     // MARK: - Description
 
-    var streamingName: String { isDASH ? "DASH" : "FFmpeg" }
+    let streamingName = "FFmpeg"
 
     var durationSeconds: Double {
         guard let context, context.pointee.duration > 0 else { return 0 }
@@ -153,43 +126,9 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
 
     // MARK: - Variants and live
 
-    var openingLinkRate: Double? {
-        isDASH ? ioBytes.transport?.openingThroughput : nil
-    }
+    let openingLinkRate: Double? = nil
 
-    /// The variants of a DASH ladder (`dashVariants`).
-    func variantCandidates() -> [VariantCandidate]? {
-        guard isDASH, let formatCtx = context else { return nil }
-        return Self.dashVariants(in: formatCtx)
-    }
-
-    /// The variants of a DASH manifest, when it lists a ladder of pictures: FFmpeg's DASH demuxer has one program and
-    /// a stream for each representation, the picture ones with their `bandwidth` as `variant_bitrate`. Every picture is
-    /// a variant; the sounds are the manifest's own, the same for all. Nil for a single picture.
-    private static func dashVariants(
-        in formatCtx: UnsafeMutablePointer<AVFormatContext>
-    ) -> [VariantCandidate]? {
-        let indexes = 0..<Int(formatCtx.pointee.nb_streams)
-        let ofType = { (type: AVMediaType) in
-            indexes.filter { formatCtx.pointee.streams[$0]?.pointee.codecpar.pointee.codec_type == type }
-        }
-        let pictures = ofType(AVMEDIA_TYPE_VIDEO)
-        let sounds = ofType(AVMEDIA_TYPE_AUDIO)
-        guard pictures.count > 1 else { return nil }
-        var found: [VariantCandidate] = []
-        for index in pictures {
-            guard
-                let entry = av_dict_get(formatCtx.pointee.streams[index]?.pointee.metadata, "variant_bitrate", nil, 0),
-                let bandwidth = Int(String(cString: entry.pointee.value)), bandwidth > 0
-            else { return nil }
-            found.append(
-                VariantCandidate(
-                    id: index, bandwidth: bandwidth,
-                    streams: VariantStreams(
-                        video: index, audio: sounds, subtitles: [], all: [index] + sounds)))
-        }
-        return found
-    }
+    func variantCandidates() -> [VariantCandidate]? { nil }
 
     /// FFmpeg's formats have no live window of their own to tell: a live playlist is `HLSInput`'s.
     let isLivePlaylist = false
@@ -254,29 +193,6 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
     /// Whether stream `index` is read (tests).
     func isReading(stream index: Int) -> Bool {
         stream(index).map { $0.pointee.discard != AVDISCARD_ALL } ?? false
-    }
-
-    /// FFmpeg's DASH demuxer opens every representation of a ladder, and closes those discarded only when it reads a
-    /// packet (`recheck_discard_flags`): a seek before the first read goes through all of them, each one reading its
-    /// file up to the target when it has no index it can use (a single file: 19 s for a ladder of 7, 7 s once the
-    /// others are closed). One packet read first, dropped by the seek, closes them.
-    func closeUnusedRepresentations() {
-        guard isDASH, let ctx = context else { return }
-        var pkt = AVPacket()
-        // A packet the probing of the streams left is handed out first, with no word to the DASH demuxer: dropped,
-        // as the seek does.
-        avformat_flush(ctx)
-        if av_read_frame(ctx, &pkt) >= 0 { av_packet_unref(&pkt) }
-    }
-
-    /// FFmpeg's DASH demuxer, once a stream was read to its end, closes its input and sets the stream to
-    /// `AVDISCARD_ALL`, so that it stays closed: a seek back moves its segment number, but nothing opens the input
-    /// again, and the stream reads nothing. The streams playing are enabled again before the seek.
-    func prepareSeek(reading indices: [Int]) {
-        guard isDASH else { return }
-        for index in indices where index >= 0 {
-            setReading(true, stream: index)
-        }
     }
 
     // MARK: - FFmpeg's formats
@@ -357,5 +273,5 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
 }
 
 extension FFmpegIOByteCounter: NetworkReadAccount {
-    var transferMeter: NetworkTransferMeter? { transport?.meter }
+    var transferMeter: NetworkTransferMeter? { nil }
 }

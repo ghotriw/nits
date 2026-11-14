@@ -1205,7 +1205,6 @@ extension PlayerEngine {
             var isPositioned = false
             if interrupt?.isCancelled != true, seekGeneration.isCurrent(seekId) {
                 if effectiveStartTime > 0 {
-                    demuxer.prepareFirstSeek()
                     demuxer.seek(to: effectiveStartTime, audioDelay: audioDelay)
                     isPositioned = true
                     demuxer.setTargetAudioPts(seconds: effectiveStartTime - audioDelay)

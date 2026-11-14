@@ -12,7 +12,7 @@ import Foundation
 /// open; its parameters may be updated behind the demuxer's `lock` (a stream FFmpeg opens later, a DASH representation).
 ///
 /// Behind the demuxer's `lock` (which `MediaDemuxer.lockIO()` takes), but for what is noted. The blocking calls (`read`,
-/// the seeks, `closeUnusedRepresentations`) run with `queueLock` released, and give way to the interrupt context the
+/// the seeks) run with `queueLock` released, and give way to the interrupt context the
 /// input was made with (`FFmpegInterrupt`).
 protocol DemuxerInput: StreamDescriptions {
     // MARK: Description (readable outside `lock`, as track selection reads it; an input may update the
@@ -96,11 +96,6 @@ protocol DemuxerInput: StreamDescriptions {
     /// Reads stream `index` or not: the container skips a stream not read where it can (an HLS rendition is not
     /// downloaded).
     func setReading(_ isRead: Bool, stream index: Int)
-    /// Before the first seek of a load with variants: closes those not read, where the container opens every one of a
-    /// ladder and closes those discarded only once it reads a packet (DASH). Nothing for others. With `queueLock` released.
-    func closeUnusedRepresentations()
-    /// Before a seek: streams read that the container stopped at their end (DASH) are read again.
-    func prepareSeek(reading indices: [Int])
 
     /// Closes the input. Behind the demuxer's `lock`, once.
     func close()
@@ -114,9 +109,6 @@ struct DemuxerInputTraits: Sendable {
     /// No index, and timestamps that may jump (MPEG-TS / MPEG-PS, an HLS stream of them): a seek bisects and lands on
     /// whatever packet is nearest, mid-GOP, and the demuxer reads on to a keyframe (`syncToVideoKeyframe`).
     var landsBetweenKeyframes = false
-    /// The variants interleave by presentation time, not decode time (FFmpeg's DASH demuxer): a switch holds the new
-    /// variant's keyframe for the old one's pictures that decode before it (`MediaDemuxer+VariantHold.swift`).
-    var interleavesVariantsByPresentation = false
     /// A second demuxer can open the source by its address, as a file (`EmbeddedSubtitleReader`'s reads): not a playlist
     /// the input assembles itself (HLS).
     var opensAsFile = true

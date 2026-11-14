@@ -335,13 +335,12 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
 - **A client of our own; FFmpeg demuxes segments only** (2026-11-10, phases 1–7, FFmpeg's HLS demuxer removed with
   deps 1.7.0). FFmpeg's `hls.c` needed three patches of ours (live seeks, the timeline at a break, a renewed `EXT-X-MAP`)
   and workarounds around it (a playlist prefetcher, `hls_live` metadata, `http_multiple`, a program splice), and gave no
-  hold on the opening, on what a request costs, or on where a segment's packets go. DASH stays on FFmpeg, with its
-  patches.
+  hold on the opening, on what a request costs, or on where a segment's packets go. DASH followed with a client of its own (2026-11-14, step 8 of the DASH plan: FFmpeg's DASH demuxer, `--enable-libxml2` and both patches gone, deps 1.8.0).
 - **A `DemuxerInput` seam first, not a "virtual `AVFormatContext`"** (the user, 2026-11-10): the shortcut would have
   worked sooner and been rewritten as the work went on. The input lists variants as its container groups them; the
   demuxer chooses and splices, for any input.
 - **A lane per variant playlist, spliced by the demuxer** (phase 5): each variant's streams are in the input's table and
-  the demuxer's splice (`+Variants`, `+VariantHold`) switches between them. *Turned down:* the client switching at a
+  the demuxer's splice (`+Variants`) switches between them. *Turned down:* the client switching at a
   segment boundary itself and passing new parameter sets as `AV_PKT_DATA_NEW_EXTRADATA` (one stream for all variants).
 - **Segments stream into FFmpeg as they arrive** (phase 5). *Turned down:* whole-segment loads: a segment's download
   came before the first picture (4 s at 1.5 Mbit/s for 0.7 MB; 3.3 s of stall where the test allows 1.5). Encrypted
@@ -362,9 +361,9 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   2026-11-14: the input's variant types and `FFmpegErrorCode` stand on their own, one opening-rung rule in
   `AdaptiveBitrateLogic`); where playlists come from apart from the client (done 2026-11-14: `HLSPlaylistSource`, the
   opening's and a live lane's reloads; `HLSServedPlaylists` for HLS); the DASH client as such a source
-  (`DASHPlaylists`, a static MPD of one period or several, each a discontinuity: done 2026-11-14, routed by its own refusal, what it does not play yet
-  going to FFmpeg's DASH demuxer), extending the model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
-  and its patch gone; the target last, around both, with the model's names made neutral.
+  (`DASHPlaylists`: static and live MPDs, periods as discontinuities, a live history; done 2026-11-14, what it refuses is the
+  opening's failure with its reason), extending the model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
+  and its patches gone (step 8, 2026-11-14); the target last, around both, with the model's names made neutral.
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
   play, content steering, interstitials (the primary plays).
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// A DASH manifest (MPD) for streams a site gives as numbered segments of one URL, as YouTube's recording of a live
 /// stream that just ended (`http_dash_segments` formats with `…&sq=N` segments), which yt-dlp lists but no HTTP file
-/// holds. FFmpeg's DASH demuxer plays it: the streams (a picture and its audio) come out of one demuxer, and it seeks
+/// holds. The DASH client plays it: a picture and its audio are two lanes, and it seeks
 /// by segment. Each segment holds the stream's initialization data. Given to the demuxer inline
 /// (`MediaURL.inlineDASHManifest`): a format of the resolver's, not for hosts to open.
 package struct SegmentedDASHManifest: Sendable {

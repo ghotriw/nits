@@ -6,7 +6,7 @@ import Testing
 
 /// `.mpd` addresses played through `DASHManifestResolver`: the manifest is served by `TestHTTPServer` beside the
 /// segments of the `dashSegments` preset (the same four seconds for every picture it lists), read as the engine reads
-/// it. Need FFmpeg built with libxml2, else they do nothing.
+/// it.
 @Suite("DASH manifest resolver", .serialized, .hostDependent)
 struct DASHManifestResolverTests {
     private static let count = SyntheticTestMediaFactory.dashSegmentCount
@@ -90,7 +90,6 @@ struct DASHManifestResolverTests {
     @Test("Only .mpd addresses are the resolver's; the host's resolver keeps the rest")
     func decidesByAddress() throws {
         let resolver = DASHManifestResolver()
-        guard resolver.order(for: URL(string: "https://a.example/v.mpd")!) != nil else { return }  // no DASH demuxer
         #expect(resolver.order(for: URL(string: "https://a.example/v.mpd")!) == .beforeOpening)
         #expect(resolver.order(for: URL(string: "https://a.example/v/.MPD?x=1")!) == .beforeOpening)
         #expect(resolver.order(for: URL(string: "https://a.example/x.ism/.mpd")!) == .beforeOpening)
@@ -109,11 +108,9 @@ struct DASHManifestResolverTests {
         #expect(MediaResolverChain(host: nil).order(for: URL(string: "https://a.example/page")!) == nil)
     }
 
-    @Test("A manifest it cannot use is left to the demuxer; one of protected streams fails with the reason")
+    @Test("A manifest it cannot use is left to the client; one of protected streams fails with the reason")
     func leavesWhatItCannotUse() async throws {
-        guard DASHManifestResolver().order(for: URL(string: "https://a.example/v.mpd")!) != nil,
-            let server = try Self.served()
-        else { return }
+        guard let server = try Self.served() else { return }
         defer { server.stop() }
         let live = Self.manifest.replacingOccurrences(of: #"type="static""#, with: #"type="dynamic""#)
         server.setResponder(forPath: "live.mpd") { Data(live.utf8) }
@@ -145,9 +142,7 @@ struct DASHManifestResolverTests {
 extension DASHManifestResolverTests {
     @Test("An HDR picture says so in the quality menu, beside its codec; Dolby Vision's name does already")
     func labelsHDRPictures() async throws {
-        guard DASHManifestResolver().order(for: URL(string: "https://a.example/v.mpd")!) != nil,
-            let server = try Self.served()
-        else { return }
+        guard let server = try Self.served() else { return }
         defer { server.stop() }
         let hdr = """
             <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S"><Period>\

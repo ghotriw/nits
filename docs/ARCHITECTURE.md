@@ -112,20 +112,22 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   address it came from after redirects (`MediaURL.inlineDASHManifest(_:source:)`, a `source` parameter of the `data:`
   URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, or one at a `.mpd` address, with
   the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
-  refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods, one file (`SegmentBase`) in a manifest of several, DRM, …)
-  goes on to FFmpeg's DASH demuxer, any other failure is the opening's (`NITS_DASH_INPUT=client` / `ffmpeg` forces
-  either, for tests). The rewriting is for FFmpeg's DASH demuxer, which
-  opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,
-  in a timeline that repeats a segment to the end (`r="-1"`), seeks to the second segment. So it keeps the ladder of
+  refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods whose reload tells
+  no period to play, one file (`SegmentBase`) in a manifest of several, DRM, a manifest over 8 MB, …) is the opening's
+  failure, the reason in its error: nothing falls back on FFmpeg, whose DASH demuxer is not built
+  (`--disable-demuxer=dash`). The rewriting is what the resolver did for that demuxer, which opened every representation at once,
+  failed for one it couldn't read (TTML), played the first picture it listed and, in a timeline that repeats a segment
+  to the end (`r="-1"`), seeked to the second segment. It stays for the choices the client reads from it, until the
+  resolver hands the address and the choice instead (D1 in the DASH plan): it keeps the ladder of
   one codec and range (the preferred one, `VideoCodecPreference`; a ladder plays as one, `MediaDemuxer.variants`; the
   best picture of each other codec is in `ResolvedMedia.videoFormats`, each a manifest of its own with its ladder,
   which the format menu switches to as for a video site), the best audio of each language (not a codec FFmpeg has no
   decoder for: AC-4, MPEG-H;
   `CodecFamily.canDecodeAudio`), and drops text and images, trick play and DRM streams;
   gives timelines their repeats from the length of the period, and the manifest an absolute `BaseURL` of the address
-  after redirects. A manifest it can't handle (live, several periods, unreadable) returns `nil`: the address opens as it
-  is. Codec families are read by `CodecFamily`, shared with HLS. The segments' requests carry the headers through
-  `segmentRequestOptions` as for any inline manifest.
+  after redirects. A manifest it can't handle (live, several periods, unreadable) returns `nil`: the address is the
+  client's as it is. Codec families are read by `CodecFamily`, shared with HLS. The segments' requests carry the
+  source's headers (the client's transport).
 - A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
   into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers, the page's
   subtitle files, chapters and action buttons). A host can give subtitle files of its own with any request
@@ -142,15 +144,10 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   (Deno, for YouTube). Its formats exclude DASH manifests; HLS opens from its master
   playlist (`manifest_url`), for its variants and adaptive bitrate. Segments of one URL (YouTube's recording of a live
   stream that just ended, `http_dash_segments`) are the last choice of the selector: `SegmentedDASHManifest` makes a
-  manifest of them, given to the demuxer inline (`MediaURL.inlineDASHManifest`, a `data:` URL), where FFmpeg's DASH
-  demuxer reads the picture and its audio out of one input and seeks by segment. It copies the HTTP options of its
-  segments from the input the manifest came from, which a `data:` one isn't, so `FFmpegIOByteCounter` adds them to
-  each request (`segmentRequestOptions`). The manifest has a `SegmentTimeline`: from the duration alone FFmpeg counts
-  one segment too many and asks for it. And once a stream was read to its end the DASH demuxer closes its input and
-  sets the stream to `AVDISCARD_ALL`, which a seek back doesn't undo: `seek` enables the streams playing again
-  (`FFmpegInput.prepareSeek`). The manifest is the resolver's own format (`package` access, not for hosts to open),
-  so the thumbnails, the history and the logs treat it apart (`MediaURL.loggable`). Needs the bundled FFmpeg
-  (`--enable-libxml2`). Progressive files are read in HTTP requests of
+  manifest of them, given to the demuxer inline (`MediaURL.inlineDASHManifest`, a `data:` URL), which the DASH client
+  plays: the picture and its audio are two lanes, seeks go by segment. The manifest is the resolver's own format
+  (`package` access, not for hosts to open), so the thumbnails (`ThumbnailSource.openDASH`, the client as well), the
+  history and the logs treat it apart (`MediaURL.loggable`). Progressive files are read in HTTP requests of
   the size yt-dlp downloads them in (`http_chunk_size` → `httpRequestSize`, FFmpeg's `request_size`): YouTube throttles
   a request for the whole file to about twice its bitrate, which 2x playback outruns, and serves 10 MB ranges at the
   link's rate. The author's chapters stand in for a container without any. A YouTube video's SponsorBlock segments become skip
@@ -229,11 +226,10 @@ its network: how to open, read (timestamps already on the zero-based timeline, `
 timeline), read a stream or not (`setReading`), how its streams group into variants (`variantCandidates`, of which the
 demuxer chooses), what its live playlist's window is, and what its reads cost on the network (`NetworkReadAccount`, for
 adaptive bitrate). What the demuxer has to read around is told as traits (`DemuxerInputTraits`: an index, seeks that land
-between keyframes, variants interleaved by presentation time), not by the format's name.
+between keyframes), not by the format's name.
 
 Streams are described as `AVStream`s, which every decoder is made from. `FFmpegInput` is FFmpeg's `avformat_open_input`
-on a file, a network file or a DASH manifest, with the network around it (`FFmpegIOByteCounter`,
-`HTTPSessionTransport`). `HLSInput` (`Demuxing/HLS/`) is Nits' own HLS client: playlists, segments,
+on a file or a network file, with the bytes it reads counted (`FFmpegIOByteCounter`). `HLSInput` (`Demuxing/HLS/`) is Nits' own HLS and DASH client (a manifest is told to it by an `HLSPlaylistSource`, `DASHPlaylists` for an MPD): playlists, segments,
 discontinuities, live windows and renditions are its; FFmpeg only demuxes each segment, and its own HLS demuxer is not
 built (see `docs/HLS.md`). An input that demuxes by other means keeps its
 streams in an `AVStreamTable`.
@@ -552,26 +548,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
 - **HLS.** `HLSInput` opens a playlist (one request for each playlist, a probe of the top rung, the link's rate),
   reads its segments, renditions and live window, and splices a variant switch at the read position: see "The client"
   and "Variant switches" in `docs/HLS.md`.
-- **DASH variants** (FFmpeg's DASH demuxer, for what the client refuses; the client's are HLS's). A DASH manifest's
-  ladder (`DASHManifest.ladder`: the pictures of the best one's codec and range, the manifest written with every
-  rung) is the demuxer's variants: FFmpeg's DASH demuxer has one program and a stream for each representation, the
-  picture ones with `variant_bitrate` (`dashVariants`), the sounds the manifest's own.
-  Its segments are served by `HTTPSessionTransport` as HLS's, which `AdaptiveBitrateLogic` measures. A switch is the
-  same splice, with one difference: FFmpeg's DASH demuxer reads the representation whose last picture presents
-  earliest, so with B-frames the new variant, catching up from the start of its segment, runs ahead of the old by the
-  depth of the reordering (HLS's reads by decode time), or the old variant reads its own keyframe first, and the order
-  is no rule. So (`MediaDemuxer+VariantHold.swift`) the old variant's pictures are delayed while the keyframe is looked
-  for (`heldOld`, `heldOldVideoLimit`), and the keyframe is not spliced when found: it, and the pictures after it, are
-  held (`candidate`, `heldVideo`) until the old variant hands over its first picture that decodes with or after it,
-  and the format description changes then (a packet keeps the one it was read with). The
-  held pictures are `AVPacket`s kept by reference and go through what every picture does when released, the captions
-  in their SEI (`processVideoPacket`) first, in the order the decoder takes them. The keyframe must decode after every
-  picture the old variant has handed over, else the old one's own keyframe would be repeated. A seek, the end of the
-  input and `heldVideoLimit` pictures end the wait.
-  FFmpeg's DASH demuxer frees libxml2's process-wide state after each manifest it reads (`xmlCleanupParser`), which
-  crashes a parse going on in another thread (our `XMLTree`, the playlist parser's XSPF, a system framework's): the
-  bundled FFmpeg is built without that call (`scripts/patches/ffmpeg-dashdec-keep-libxml2.patch`, applied by
-  `build_dependencies.sh`; upstream has it still). A Homebrew FFmpeg has no DASH demuxer, and so has no such call.
+- **DASH variants** are the client's, as HLS's: a manifest's ladder (the pictures of the best one's codec and range) is
+  the demuxer's variants, its sounds the manifest's own, and a switch is the splice described in "Variant switches" in
+  `docs/HLS.md` (the client reads the lanes by decode time, as for HLS). FFmpeg's DASH demuxer, which read the lanes by
+  presentation time and needed the old variant's pictures held back for a splice, and the patches it needed, are gone.
 - **Adaptive bitrate** (`AdaptiveBitrateLogic`, `MediaDemuxer+AdaptiveBitrate.swift`) chooses the variant while
   reading ahead, for HLS and DASH alike, until one is chosen by hand: the requests and their measure, the decisions,
   giving a download up, and what was measured are in "Adaptive bitrate" in `docs/HLS.md`. **Renditions** (`EXT-X-MEDIA`
@@ -641,7 +621,7 @@ numbered segments of one URL (`…&sq=N`) the server keeps for days; so are thos
   and what is listed is the segments up to the one before the head the source tells (below), from where the window has
   slid to (the segments whose time has passed since the first load count as expired, as the engine slides its window), so
   the window is read off the input like HLS's and the media plays as live (`isLive`, no duration). FFmpeg's DASH demuxer
-  would not do: it does not seek a `dynamic` MPD, starts it a minute before its end and reloads it from its address. A history
+  (gone since) did not do: it did not seek a `dynamic` MPD, starts it a minute before its end and reloads it from its address. A history
   with no source (a manifest that ends at the head) is a finished playlist the demuxer tells as live, its window the resolver's.
 - **The timeline is rebased to zero** (`timelineOrigin` = the first segment's start, as for MPEG-TS and HLS), and
   `MediaInfo.timelineOrigin` keeps the stream's time at that zero. A position is saved in the stream's time (time plus

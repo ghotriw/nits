@@ -67,10 +67,8 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
 The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go through cached
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
-(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: `FFmpegInput` holds it and closes the context first. An
-`AVIOContext` served by Nits (`HTTPSessionInput`, a DASH demuxer's HTTP requests) takes a retained one, released when
-FFmpeg closes the input through `io_close2`; the ones `HLSSegmentReader` makes for each run of segments are Nits' own and
-read through a Swift closure.
+(`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: `FFmpegInput` holds it and closes the context first. The
+`AVIOContext`s `HLSSegmentReader` makes for each run of segments are Nits' own and read through a Swift closure.
 
 So does blocking a thread, which FFmpeg's reads do by nature: `YouTubeLiveSource` waits for yt-dlp and the network on a
 `DispatchSemaphore` (`blocking`, up to 90 s). `HLSLane` waits for a live playlist's next segment the same way, on a
@@ -242,10 +240,6 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   (`HLSMediaPlaylist.updatePeriod` keeps the lane from calling it stuck). A segment listed that the server does not serve is
   skipped by the lane like any other (a hole in time), which is why the head's own segment is not listed until the end.
   Background: "Live streams" in `docs/ARCHITECTURE.md`.
-- FFmpeg's DASH demuxer, which plays what the DASH client refuses until it goes (`PLAN.md` step 8), is patched to return an error
-  when interrupted (`scripts/patches/ffmpeg-dashdec-interrupt.patch`, `nits-dash-interrupt` in the build's version):
-  unpatched, an interrupted read can go round at full speed, and a seek that interrupted it waits for it for good. Tests
-  that interrupt a DASH read through it check the version string. The history no longer needs it.
 - **HLS is Nits' own client** (`Demuxing/HLS/`: `HLSPlaylist`, `HLSTimeline`, `HLSSegmentLoader`, `HLSSegmentReader`,
   `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
@@ -256,7 +250,7 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
   selection, variant splice and subtitles are the demuxer's, whatever the input; opening, reading, seeking, stream
   selection, the timeline's origin, variants as the container groups them and a live window are the input's. What only
-  FFmpeg's formats do (a format's name, `AVFMT_*` flags, DASH's quirks) goes in `FFmpegInput` or a trait
+  FFmpeg's formats do (a format's name, `AVFMT_*` flags) goes in `FFmpegInput` or a trait
   of `DemuxerInputTraits`, never a check of `iformat` in the demuxer. Background: "Inputs" in `docs/ARCHITECTURE.md`.
 - MPEG-TS / MPEG-PS timestamps are rebased to a zero-based timeline: read packets through
   `readPacket` (or `FFmpegInput.rebase` on another `AVFormatContext`); `DemuxerInput`'s seeks take targets on the

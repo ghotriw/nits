@@ -1,15 +1,13 @@
-import CFFmpeg
 import Foundation
 
 /// Plays the DASH manifests (`.mpd`) of the network. Reads the manifest itself (`DASHManifest`) and hands the demuxer
 /// a rewritten one with the ladder of the preferred codec (`VideoCodecPreference`), the best picture of each other codec
 /// offered to choose from, with a ladder of its own (`ResolvedMedia.videoFormats`:
 /// the quality menu, and the switch that opens the manifest again at the position, are the ones of a video site's
-/// pictures). A manifest it cannot read or has no use for (a live one, of several periods) is left to the demuxer to
-/// open as it is, which plays the first picture it lists.
+/// pictures). A manifest it cannot read or has no use for (a live one, of several periods) is left to the
+/// client (`DASHPlaylists`) to open as it is, with the ladder and sounds it reads itself.
 ///
-/// Asked for addresses ending in `.mpd` only: a manifest at another address, which FFmpeg opens itself, plays
-/// without this.
+/// Asked for addresses ending in `.mpd` only.
 struct DASHManifestResolver: MediaResolver {
     var session: URLSession = .shared
     /// Which codec is preferred among the pictures of a size (`VideoCodecPreference`).
@@ -17,9 +15,7 @@ struct DASHManifestResolver: MediaResolver {
 
     func order(for url: URL) -> MediaResolutionOrder? {
         // The name's end, not its extension: Unified Streaming's manifest is `…/.mpd`, a name that has none.
-        guard url.lastPathComponent.lowercased().hasSuffix(".mpd"), av_find_input_format("dash") != nil else {
-            return nil
-        }
+        guard url.lastPathComponent.lowercased().hasSuffix(".mpd") else { return nil }
         return .beforeOpening
     }
 

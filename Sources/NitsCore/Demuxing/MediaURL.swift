@@ -32,7 +32,7 @@ public enum MediaURL {
         return PlaylistParser.isHLSManifest(content: text) && (text.contains("http://") || text.contains("https://"))
     }
 
-    /// The location of a DASH manifest given inline, as a `data:` URL (`inlineDASHManifest(_:)`): FFmpeg's DASH demuxer
+    /// The location of a DASH manifest given inline, as a `data:` URL (`inlineDASHManifest(_:)`): the DASH client
     /// reads the manifest from it, and the media segments it lists from the network.
     public static func isInlineDASHManifest(_ path: String) -> Bool {
         guard path.range(of: inlineDASHPrefix, options: [.anchored, .caseInsensitive]) != nil,
@@ -122,8 +122,7 @@ public enum MediaURL {
     }
 
     /// The options of an HTTP request: the custom headers (CRLF-sanitized; `User-Agent` as FFmpeg's own option), plus
-    /// reconnect and 10 s I/O timeout settings. Given to the input, and to the requests of a demuxer that opens its own
-    /// (DASH's segments, when its manifest is not an HTTP input they could be copied from).
+    /// reconnect and 10 s I/O timeout settings. Given to the input FFmpeg opens.
     static func requestOptions(headers: [String: String]) -> [(name: String, value: String)] {
         var options: [(name: String, value: String)] = []
         var headerString = ""

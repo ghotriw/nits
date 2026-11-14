@@ -1,14 +1,13 @@
 import Foundation
 
-/// A DASH manifest (MPD) read to be played by FFmpeg's DASH demuxer, and written again for it.
+/// A DASH manifest (MPD) read by the resolver (`DASHManifestResolver`) and written again for the client.
 ///
-/// FFmpeg opens every representation of a manifest as soon as it opens it (seconds, over the network, for a ladder of
-/// a dozen), fails the whole opening for one it cannot read (a TTML subtitle track), and plays the first picture it
-/// lists, the lowest. It also seeks wrongly in a timeline that repeats a segment "to the end" (`r="-1"`: it lands
-/// on the second segment). So the manifest is rewritten before FFmpeg sees it: the ladder of one codec and range (the
-/// pictures that follow the network as one; the best picture of each other codec is offered to choose from), the best
-/// audio of each language, nothing FFmpeg cannot read, a timeline that
-/// ends, and an absolute `BaseURL`. Given to the demuxer inline (`MediaURL.inlineDASHManifest`).
+/// The client (`DASHPlaylists`) reads the manifest itself; what the resolver keeps of it is the choices the client's
+/// player shows: the ladder of one codec and range (the pictures that follow the network as one; the best picture of
+/// each other codec is offered to choose from), the best audio of each language, nothing without a decoder (DRM, text,
+/// images), a timeline that ends, and an absolute `BaseURL`. Given to the demuxer inline (`MediaURL.inlineDASHManifest`).
+/// The rewriting was made for FFmpeg's DASH demuxer, which is gone; it goes when the resolver hands the address and its
+/// choices instead.
 ///
 /// Only a finished (`static`) manifest of one period is handled; for others the initializer returns nil, and the
 /// address is opened as it is.

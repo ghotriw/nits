@@ -9,16 +9,13 @@ build details are in `Contents/Resources/ThirdPartyLicenses`.
 
 | Library | License | Source |
 |---|---|---|
-| [FFmpeg](https://ffmpeg.org) (libavformat, libavcodec, libavutil, libswresample, libswscale) | LGPL-2.1-or-later | Upstream release with two patches: [`scripts/patches/ffmpeg-dashdec-interrupt.patch`](https://github.com/ghotriw/nits/blob/main/scripts/patches/ffmpeg-dashdec-interrupt.patch) (its DASH demuxer returns an error, not "a packet was read", when a read is interrupted, so that a seek that interrupts a read does not leave libavformat reading again at full speed; ours) and [`scripts/patches/ffmpeg-dashdec-keep-libxml2.patch`](https://github.com/ghotriw/nits/blob/main/scripts/patches/ffmpeg-dashdec-keep-libxml2.patch) (its DASH demuxer no longer frees libxml2's state for the whole process after each manifest, which crashes a parse going on in another thread); its HLS demuxer is not built (HLS is read by Nits' own client, FFmpeg only demuxes the segments); the exact source archive and the patches are attached to the matching `deps-v*` [GitHub release](https://github.com/ghotriw/nits/releases). Built by [`scripts/build_dependencies.sh`](https://github.com/ghotriw/nits/blob/main/scripts/build_dependencies.sh). |
+| [FFmpeg](https://ffmpeg.org) (libavformat, libavcodec, libavutil, libswresample, libswscale) | LGPL-2.1-or-later | Upstream release, unmodified; its HLS and DASH demuxers are not built (HLS and DASH are read by Nits' own clients, FFmpeg only demuxes the segments); the exact source archive is attached to the matching `deps-v*` [GitHub release](https://github.com/ghotriw/nits/releases). Built by [`scripts/build_dependencies.sh`](https://github.com/ghotriw/nits/blob/main/scripts/build_dependencies.sh). |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | BSD-2-Clause | Same as above. |
 | [libass](https://github.com/libass/libass) | ISC | Same as above. Draws ASS / SSA subtitles; fonts come from Core Text. |
 | [FreeType](https://freetype.org) | FreeType License (FTL) | Same as above. Used by libass and HarfBuzz. |
 | [HarfBuzz](https://harfbuzz.github.io) | "Old MIT" | Same as above. Text shaping for libass. |
 | [FriBidi](https://github.com/fribidi/fribidi) | LGPL-2.1-or-later | Same as above. Bidirectional text for libass. |
 | [libunibreak](https://github.com/adah1972/libunibreak) | zlib | Same as above. Line breaking for libass. |
-
-FFmpeg's DASH demuxer reads its manifests with libxml2 (MIT), the one macOS ships (`/usr/lib/libxml2.2.dylib`):
-linked, not bundled.
 
 FFmpeg is built without `--enable-gpl`, `--enable-version3` or `--enable-nonfree`. Being dynamically
 linked, the libraries can be replaced with your own builds of the same major versions (re-sign the

@@ -116,7 +116,7 @@ final class HLSSegmentLoader: Sendable {
             return (try file(url, range: nil), url)
         }
         switch transport.open(
-            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
+            url.absoluteString, offset: 0, end: nil, followsRedirects: true,
             abort: abort)
         {
         case .input(let input):
@@ -133,7 +133,7 @@ final class HLSSegmentLoader: Sendable {
     func serverDate(of url: URL) throws(HLSSegmentLoadError) -> Date? {
         guard !url.isFileURL else { return nil }
         switch transport.open(
-            url.absoluteString, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true,
+            url.absoluteString, offset: 0, end: nil, followsRedirects: true,
             abort: abort)
         {
         case .input(let input):
@@ -209,8 +209,8 @@ final class HLSSegmentLoader: Sendable {
         if url.isFileURL { return try file(url, range: range) }
         let opened = open(url) { address in
             transport.open(
-                address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, cookies: nil,
-                cookieOrigin: nil, followsRedirects: true, abort: abort)
+                address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length }, followsRedirects: true,
+                abort: abort)
         }
         switch opened {
         case .input(let input):
@@ -233,7 +233,7 @@ final class HLSSegmentLoader: Sendable {
                 url,
                 {
                     transport.open(
-                        $0, offset: 0, end: nil, cookies: nil, cookieOrigin: nil, followsRedirects: true, abort: abort)
+                        $0, offset: 0, end: nil, followsRedirects: true, abort: abort)
                 })
         else { throw .notServed(url) }
         let whole = try read(input, limit: Int(range.range.upperBound))
@@ -473,7 +473,7 @@ extension HLSSegmentLoader {
         let opened = open(segment.url) { address in
             transport.open(
                 address, offset: range?.offset ?? 0, end: range.map { $0.offset + $0.length },
-                cookies: nil, cookieOrigin: nil, opening: opening, followsRedirects: true, abort: abort,
+                opening: opening, followsRedirects: true, abort: abort,
                 onProgress: onProgress)
         }
         switch opened {

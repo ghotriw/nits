@@ -91,35 +91,11 @@ rm -rf "ffmpeg-$FFMPEG_VERSION"
 tar -xf "ffmpeg-$FFMPEG_VERSION.tar.xz"
 cd "ffmpeg-$FFMPEG_VERSION"
 
-# The changes to FFmpeg's source (scripts/patches/, listed in THIRD_PARTY_NOTICES.md): its DASH demuxer frees
-# libxml2's state for the whole process after each manifest, which a parse going on elsewhere crashes on, and returns
-# "a packet was read" when a read is interrupted, which libavformat answers by reading again for as long as the interrupt
-# lasts. HLS is read by Nits' own client (`HLSInput`), with FFmpeg only demuxing each segment: its HLS demuxer is not
-# built (`--disable-demuxer=hls` below), so nothing can fall back on it.
-for patch_file in "$DIR"/scripts/patches/ffmpeg-*.patch; do
-    echo "==> Applying $(basename "$patch_file")..."
-    patch -p1 < "$patch_file"
-done
-if grep -q 'xmlCleanupParser();' libavformat/dashdec.c; then
-    echo "Error: dashdec.c still calls xmlCleanupParser()" >&2
-    exit 1
-fi
-
-# The DASH demuxer reads its manifest with libxml2 (MIT), which macOS ships: linked from the SDK, not bundled. FFmpeg's
-# configure finds it through pkg-config; the file goes into the prefix, first in the search path, so a Homebrew libxml2
-# is not picked. It has no Cflags: the SDK's path must not end up in the archive (the headers come from --extra-cflags).
-SDK_PATH="$(xcrun --show-sdk-path)"
-mkdir -p "$PREFIX/lib/pkgconfig"
-cat > "$PREFIX/lib/pkgconfig/libxml-2.0.pc" <<EOF
-Name: libXML
-Description: libxml2 of the macOS SDK
-Version: 2.9.13
-Libs: -lxml2
-EOF
-
+# FFmpeg is built as released. HLS and DASH are read by Nits' own clients (`HLSInput`), with FFmpeg only demuxing each
+# segment: its HLS demuxer is not built (`--disable-demuxer=hls` below), its DASH demuxer too (`--disable-demuxer=dash`), so
+# nothing can fall back on either.
 FFMPEG_CONFIGURE_FLAGS=(
     --prefix="$PREFIX"
-    --extra-version=nits-dash-interrupt
     --arch="$DEPS_ARCH"
     --target-os=darwin
     --cc=clang
@@ -130,10 +106,10 @@ FFMPEG_CONFIGURE_FLAGS=(
     --disable-encoders
     --disable-muxers
     --disable-demuxer=hls
+    --disable-demuxer=dash
     --disable-gpl
     --disable-nonfree
     --enable-libdav1d
-    --enable-libxml2
     --enable-audiotoolbox
     --enable-videotoolbox
     --enable-network
@@ -141,7 +117,7 @@ FFMPEG_CONFIGURE_FLAGS=(
     --disable-sdl2
     --disable-avdevice
     --disable-avfilter
-    --extra-cflags="$COMMON_CFLAGS -I$PREFIX/include -I$SDK_PATH/usr/include/libxml2"
+    --extra-cflags="$COMMON_CFLAGS -I$PREFIX/include"
     --extra-ldflags="$COMMON_LDFLAGS -L$PREFIX/lib"
 )
 ./configure "${FFMPEG_CONFIGURE_FLAGS[@]}"
@@ -254,8 +230,6 @@ mkdir -p "$LICENSES_DIR/ffmpeg" "$LICENSES_DIR/dav1d" "$LICENSES_DIR/libass" "$L
     "$LICENSES_DIR/harfbuzz" "$LICENSES_DIR/fribidi" "$LICENSES_DIR/libunibreak"
 cp "$SRC_DIR/ffmpeg-$FFMPEG_VERSION/LICENSE.md" "$SRC_DIR/ffmpeg-$FFMPEG_VERSION/COPYING.LGPLv2.1" \
     "$LICENSES_DIR/ffmpeg/"
-# The change to FFmpeg, in the app itself (LGPL-2.1 §2a: files changed are to be stated), not only in the release.
-cp "$DIR"/scripts/patches/ffmpeg-*.patch "$LICENSES_DIR/ffmpeg/"
 cp "$SRC_DIR/dav1d-$DAV1D_VERSION/COPYING" "$LICENSES_DIR/dav1d/"
 cp "$SRC_DIR/libass-$LIBASS_VERSION/COPYING" "$LICENSES_DIR/libass/"
 cp "$SRC_DIR/freetype-$FREETYPE_VERSION/LICENSE.TXT" "$SRC_DIR/freetype-$FREETYPE_VERSION/docs/FTL.TXT" \
@@ -265,19 +239,11 @@ cp "$SRC_DIR/fribidi-$FRIBIDI_VERSION/COPYING" "$LICENSES_DIR/fribidi/"
 cp "$SRC_DIR/libunibreak-$LIBUNIBREAK_VERSION/LICENCE" "$LICENSES_DIR/libunibreak/"
 {
     echo "Nits bundles FFmpeg, dav1d, libass, FreeType, HarfBuzz, FriBidi and libunibreak as dynamic libraries in Contents/Frameworks."
-    echo "FFmpeg is modified by the patch named below; the others are unmodified."
+    echo "None of them is modified."
     echo "You may replace them with your own builds of the same major versions."
     echo
     echo "FFmpeg $FFMPEG_VERSION — GNU Lesser General Public License v2.1 or later"
     echo "  Source: https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
-    echo "  MODIFIED: the files changed are those the patches in this folder name (ffmpeg/*.patch):"
-    for patch_file in "$DIR"/scripts/patches/ffmpeg-*.patch; do
-        echo "    $(basename "$patch_file"): $(grep -m1 -E '^\+\+\+ ' "$patch_file" | sed -E 's|^\+\+\+ b/||')"
-    done
-    echo "    (the DASH demuxer no longer calls xmlCleanupParser() after each manifest it reads, which frees libxml2's state"
-    echo "    for the whole process and crashes a parse going on in another thread)"
-    echo "    (the DASH demuxer returns an error, not \"a packet was read\", when a read is interrupted, so that a seek that"
-    echo "    interrupts a read does not leave libavformat reading again at full speed)"
     echo "  Configure flags (paths elided):"
     for flag in "${FFMPEG_CONFIGURE_FLAGS[@]}"; do
         case "$flag" in --prefix=*|--extra-*) continue ;; esac

@@ -121,12 +121,33 @@ final class ThumbnailSource {
         return source
     }
 
-    // MARK: HLS
+    // MARK: HLS and DASH
 
-    /// Opens the finished HLS stream at `url` through the client, on its cheapest variant with a picture: thumbnails are
-    /// small, and a lane nothing reads downloads nothing. Nil for a live stream (no timeline to sample) or one that doesn't open.
+    /// Opens the finished HLS stream at `url` through the client (see `open(_:)`).
     static func openHLS(url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> ThumbnailSource? {
-        guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt), !input.isLivePlaylist else {
+        open(HLSInput(url: url, headers: headers, interrupt: interrupt))
+    }
+
+    /// Opens the finished DASH stream at `url` (an address or the resolver's inline manifest) through the client; nil for
+    /// one it refuses. See `open(_:)`.
+    static func openDASH(url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> ThumbnailSource? {
+        guard let playlists = DASHPlaylists(media: url) else { return nil }
+        let input = HLSInput(
+            master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
+            allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
+        guard playlists.refusal == nil else {
+            input?.close()
+            return nil
+        }
+        return open(input)
+    }
+
+    /// Takes the picture of a finished stream `input` opened, on its cheapest variant with a picture: thumbnails are
+    /// small, and a lane nothing reads downloads nothing. Nil for a live stream (no timeline to sample) or one without
+    /// a picture.
+    private static func open(_ input: HLSInput?) -> ThumbnailSource? {
+        guard let input, !input.isLivePlaylist else {
+            input?.close()
             return nil
         }
         let withPicture = (input.variantCandidates()?.filter { $0.streams.video != nil } ?? [])

@@ -5,7 +5,7 @@
 # Bump DEPS_VERSION whenever versions or configure flags change, run the "Build and Release
 # Dependencies" workflow, then paste the SHA-256 it prints into DEPS_ARCHIVE_SHA256.
 
-DEPS_VERSION="1.7.0"
+DEPS_VERSION="1.8.0"
 FFMPEG_VERSION="9.0.2"
 DAV1D_VERSION="1.5.0"
 LIBASS_VERSION="0.17.5"
@@ -17,18 +17,14 @@ DEPS_ARCH="arm64"
 DEPS_MIN_MACOS="15.0"
 
 # SHA-256 of the release asset for DEPS_VERSION. Empty = not published yet: setup builds from source.
-DEPS_ARCHIVE_SHA256="e18876bcf317402d4eb4b6cf69a5039d58d609a7bac257191a631e83f986b32b"
+DEPS_ARCHIVE_SHA256=""
 
 DEPS_ARCHIVE_NAME="nits-deps-macos15-${DEPS_ARCH}-v${DEPS_VERSION}.tar.gz"
 DEPS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-v${DEPS_VERSION}/${DEPS_ARCHIVE_NAME}"
 
-# The FFmpeg patches the build applies (scripts/patches/): a prefix built with others is not this one, whatever the
-# version says.
-DEPS_PATCHES_HASH="$(cat "$(dirname "${BASH_SOURCE[0]:-$0}")"/patches/ffmpeg-*.patch | shasum -a 256 | cut -c1-12)"
-
 # Written into the prefix by build_dependencies.sh; a mismatch means the prefix is stale.
 DEPS_STAMP_FILE=".nits-deps"
-DEPS_STAMP="deps=${DEPS_VERSION} ffmpeg=${FFMPEG_VERSION} dav1d=${DAV1D_VERSION} libass=${LIBASS_VERSION} freetype=${FREETYPE_VERSION} harfbuzz=${HARFBUZZ_VERSION} fribidi=${FRIBIDI_VERSION} libunibreak=${LIBUNIBREAK_VERSION} arch=${DEPS_ARCH} minos=${DEPS_MIN_MACOS} patches=${DEPS_PATCHES_HASH}"
+DEPS_STAMP="deps=${DEPS_VERSION} ffmpeg=${FFMPEG_VERSION} dav1d=${DAV1D_VERSION} libass=${LIBASS_VERSION} freetype=${FREETYPE_VERSION} harfbuzz=${HARFBUZZ_VERSION} fribidi=${FRIBIDI_VERSION} libunibreak=${LIBUNIBREAK_VERSION} arch=${DEPS_ARCH} minos=${DEPS_MIN_MACOS}"
 
 DEPS_REQUIRED_LIBS=(
     "libavformat.63.dylib"

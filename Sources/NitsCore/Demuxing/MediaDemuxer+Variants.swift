@@ -55,13 +55,6 @@ extension MediaDemuxer {
         var previousVideoTime: Int64
         /// New audio from the splice on, read before the old audio reached it.
         var heldAudio: [DemuxedAudioPacket] = []
-        /// DASH: the new variant's first keyframe, found while the old variant has yet to hand over the pictures that
-        /// decode before it (`holdsNewVariantForOld`); the splice waits for them.
-        var candidate: SpliceCandidate?
-        /// The new variant's pictures from `candidate` on, in the order they were read.
-        var heldVideo: [HeldVideoPacket] = []
-        /// DASH: the old variant's pictures delayed while the keyframe is looked for (`admitVideoWaitingForOld`).
-        var heldOld: [HeldVideoPacket] = []
         /// The target was described by its own read when the switch began, or has been since and switches
         /// (`verifyVariantSwitchTarget`).
         var isTargetVerified = false
@@ -348,10 +341,6 @@ extension MediaDemuxer {
         let audioSplices = pending.audioStream >= 0 && pending.audioStream != audioStreamIndex
 
         guard let spliceTime = pending.spliceTime else {
-            // FFmpeg's DASH demuxer reads the variants by presentation time: see `MediaDemuxer+VariantHold.swift`.
-            if holdsNewVariantForOld(), isVideoOfSwitch(index, pending) {
-                return admitVideoWaitingForOld(&pkt)
-            }
             if index == pending.streams.video {
                 // A variant read before hands out the packet it held when it was discarded first, from back then
                 // (FFmpeg's catch-up seek skips only what it reads after).
@@ -528,14 +517,9 @@ extension MediaDemuxer {
             return
         }
         if pending.spliceTime == nil {
-            // The keyframe waited for the old variant; the seek reads from the new one at its target instead (the parameter
-            // sets that were in band with the keyframe are still its).
-            let keyframe = pending.candidate?.data
-            variantSwitch?.candidate = nil
-            variantSwitch?.heldVideo = []
-            variantSwitch?.heldOld = []
+            // No keyframe came yet: the seek reads from the new variant at its target instead.
             let time = timebase.num > 0 ? Int64(seconds * Double(timebase.den) / Double(timebase.num)) : 0
-            guard spliceVariantVideo(at: time, keyframe: keyframe) else { return }
+            guard spliceVariantVideo(at: time, keyframe: nil) else { return }
         }
         spliceVariantAudio(releasingHeld: false)
     }
@@ -544,13 +528,7 @@ extension MediaDemuxer {
     func endVariantSwitchAtEOF() {
         guard let pending = variantSwitch else { return }
         if pending.spliceTime == nil {
-            // The old variant ended: what it had left to hand over is all it had.
-            if pending.candidate != nil {
-                spliceHeldVideo()
-                if variantSwitch != nil { spliceVariantAudio(releasingHeld: true) }
-            } else {
-                cancelVariantSwitch()
-            }
+            cancelVariantSwitch()
         } else {
             spliceVariantAudio(releasingHeld: true)
         }
@@ -576,8 +554,6 @@ extension MediaDemuxer {
     /// - Parameter reporting: Report the variant still playing (`onVariantChanged`), unless another was asked for.
     func cancelVariantSwitch(reporting: Bool = true) {
         guard let pending = variantSwitch else { return }
-        // The old variant plays on: what was delayed of it is queued, before anything it reads next.
-        for old in pending.heldOld { releaseOldVideo(old) }
         for index in pending.streams.all where !pending.previous.all.contains(index) {
             input.setReading(false, stream: index)
         }

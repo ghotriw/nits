@@ -6,18 +6,15 @@ import Testing
 @testable import NitsCore
 
 /// A DASH manifest given inline (`MediaURL.inlineDASHManifest`), as built for segments of one URL a site lists:
-/// FFmpeg's DASH demuxer reads it, and the segments (their URLs without an extension, each with the initialization
-/// data in it) from `TestHTTPServer`. Needs FFmpeg built with libxml2 (the bundled one; Homebrew's has no DASH
-/// demuxer), else the tests do nothing.
+/// the client reads it, and the segments (their URLs without an extension, each with the initialization data in
+/// it) from `TestHTTPServer`.
 @Suite("Inline DASH manifest", .serialized, .hostDependent, .networkServer)
 struct InlineDASHTests {
     private static var count: Int { SyntheticTestMediaFactory.dashSegmentCount }
 
-    /// A server of the `dashSegments` preset's segments; nil when FFmpeg can't make them or can't read DASH.
+    /// A server of the `dashSegments` preset's segments; nil when FFmpeg can't make them.
     static func server() throws -> TestHTTPServer? {
-        guard av_find_input_format("dash") != nil,
-            let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashSegments)
-        else { return nil }
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashSegments) else { return nil }
         let root = URL(fileURLWithPath: first).deletingLastPathComponent().deletingLastPathComponent()
         return try TestHTTPServer(root: root)
     }

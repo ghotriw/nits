@@ -7,20 +7,16 @@ import os
 @testable import NitsCore
 
 /// A DASH ladder (the `dashLadder` preset: three rungs with B-frames, a keyframe at each second) played from
-/// `TestHTTPServer` as the resolver's manifest of it: the input (the client, or FFmpeg's DASH demuxer for what the client
-/// refuses; `NITS_DASH_INPUT` forces either) lists the rungs as variants, and the
-/// demuxer switches between them without losing or repeating a picture. Need FFmpeg built with libxml2, else they do
-/// nothing.
+/// `TestHTTPServer` as the resolver's manifest of it: the client lists the rungs as variants, and the demuxer switches
+/// between them without losing or repeating a picture.
 @Suite("DASH ladder", .serialized, .hostDependent, .networkServer)
 struct DASHLadderTests {
     private static var count: Int { SyntheticTestMediaFactory.dashLadderSegmentCount }
     private static var pictures: Int { 25 * count }
 
-    /// A server of the preset's segments; nil when FFmpeg can't make them or can't read DASH.
+    /// A server of the preset's segments; nil when FFmpeg can't make them.
     static func server() throws -> TestHTTPServer? {
-        guard av_find_input_format("dash") != nil,
-            let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashLadder)
-        else { return nil }
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashLadder) else { return nil }
         let root = URL(fileURLWithPath: first).deletingLastPathComponent().deletingLastPathComponent()
         return try TestHTTPServer(root: root)
     }
@@ -85,25 +81,6 @@ struct DASHLadderTests {
             "\(comment): irregular steps \(irregular.prefix(5).map { "\($0.offset): \($0.element)" })")
     }
 
-    @Test("A seek before the first read leaves the rungs not played alone: they are not moved to where it lands")
-    func firstSeekClosesTheOthers() throws {
-        guard let server = try Self.server() else { return }
-        defer { server.stop() }
-        let demuxer = try #require(MediaDemuxer(url: Self.manifest(for: server)))
-        demuxer.startReadAhead(limits: .init(seconds: 30), held: true)
-        let before = server.requests.count
-        demuxer.prepareFirstSeek()
-        demuxer.seek(to: 8.5, exact: true)
-        let sample = try #require(demuxer.nextVideoSample())
-        #expect(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) >= 8)
-        // Rung 2 plays (the best); a segment of rung 0 or 1 past the first is a seek that moved them as well.
-        let moved = server.requests.dropFirst(before).map(\.path).filter { path in
-            ["video0/", "video1/"].contains { path.hasPrefix($0) }
-                && Int(path.split(separator: "/").last ?? "") ?? 0 >= 5
-        }
-        #expect(moved.isEmpty, "Segments of the rungs not played: \(moved)")
-    }
-
     @Test("The rungs of a ladder are the variants of the demuxer, the best selected")
     func listsTheRungs() throws {
         guard let server = try Self.server() else { return }
@@ -149,9 +126,7 @@ struct DASHLadderTests {
     @Test(
         "Captions in the pictures are read across a switch, at the keyframe it splices at")
     func keepsCaptionsAcrossASwitch() throws {
-        guard av_find_input_format("dash") != nil,
-            let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashLadderCaptions)
-        else { return }
+        guard let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashLadderCaptions) else { return }
         let server = try TestHTTPServer(
             root: URL(fileURLWithPath: first).deletingLastPathComponent().deletingLastPathComponent())
         defer { server.stop() }
@@ -193,7 +168,7 @@ struct DASHLadderTests {
         }
     }
 
-    @Test("DASH manifests opened and read on several threads at once don't crash libxml2")
+    @Test("DASH manifests opened and parsed on several threads at once")
     func opensOnSeveralThreads() async throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
@@ -201,8 +176,6 @@ struct DASHLadderTests {
         let text = String(
             decoding: Data(base64Encoded: String(manifest.dropFirst("data:application/dash+xml;base64,".count)))!,
             as: UTF8.self)
-        // Stock FFmpeg frees libxml2's global state after each manifest it reads, which crashed a parse going on in
-        // another thread: the bundled one is patched not to (scripts/patches).
         let opened = await withTaskGroup(of: Int.self) { group in
             for index in 0..<8 {
                 group.addTask {
@@ -279,7 +252,7 @@ struct DASHAdaptiveBitrateTests {
         #expect(demuxer.isAdaptiveBitrateEnabled)
         demuxer.adaptiveBitrateConfig = AdaptiveBitrateTests.config(readAhead: 3)
 
-        // Opening reads the start of every rung (FFmpeg's DASH demuxer opens them all), unthrottled here: those
+        // Opening reads the start of the rungs probed, unthrottled here: those
         // transfers say nothing of the network playback meets.
         _ = demuxer.network?.transferMeter?.take()
         // 0.5 Mbit/s carries the 0.35 Mbit/s rung (80 % of it is 0.4), not the 0.8 one it starts on. The client may give
@@ -294,13 +267,7 @@ struct DASHAdaptiveBitrateTests {
             await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 320 },
             "Playing \(String(describing: consumer.playedWidth)); the variant is \(String(describing: demuxer.selectedVariantId))"
         )
-        if demuxer.input is HLSInput {
-            AdaptiveBitrateTests.expectCameDownWithoutStalling(consumer, to: 320, demuxer: demuxer, since: since)
-        } else {
-            // FFmpeg's DASH demuxer (until step 8 of `.agents/dash-client/PLAN.md`): no download given up.
-            #expect(consumer.stalled < 1.5, "Stalled \(consumer.stalled) s")
-            #expect(!consumer.pictures.contains { $0.width == 160 }, "Went below the rung the network carries")
-        }
+        AdaptiveBitrateTests.expectCameDownWithoutStalling(consumer, to: 320, demuxer: demuxer, since: since)
         #expect(demuxer.isAdaptiveBitrateEnabled, "The network chose, not the viewer")
     }
 }
