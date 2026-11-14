@@ -517,11 +517,11 @@ struct DASHManifestTests {
 
     @Test("Durations are read as ISO 8601 gives them")
     func readsDurations() {
-        #expect(DASHManifest.duration(of: "PT0H9M54.00S") == 594)
-        #expect(DASHManifest.duration(of: "PT1H") == 3600)
-        #expect(DASHManifest.duration(of: "P1DT2H") == 93600)
-        #expect(DASHManifest.duration(of: "PT1.5S") == 1.5)
-        #expect(DASHManifest.duration(of: "10") == nil)
-        #expect(DASHManifest.duration(of: "PT10") == nil)
+        #expect(DASHElements.duration(of: "PT0H9M54.00S") == 594)
+        #expect(DASHElements.duration(of: "PT1H") == 3600)
+        #expect(DASHElements.duration(of: "P1DT2H") == 93600)
+        #expect(DASHElements.duration(of: "PT1.5S") == 1.5)
+        #expect(DASHElements.duration(of: "10") == nil)
+        #expect(DASHElements.duration(of: "PT10") == nil)
     }
 }

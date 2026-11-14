@@ -150,7 +150,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     let traits = DemuxerInputTraits(hasIndex: false, landsBetweenKeyframes: true, opensAsFile: false)
     let isNetworkSource: Bool
-    let streamingName = "HLS"
+    /// "HLS", or the manifest's format the playlists were told from ("DASH").
+    let streamingName: String
     let chapters: [MediaChapter.Raw] = []
     let attachedFonts: [AssScript.Font] = []
 
@@ -193,28 +194,43 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
 
     /// Opens the stream at `url`, a master or a media playlist. Nil when it can't (recorded on `interrupt`).
     /// `answerLimit`: how long the top rung's probe waits for an answer before the next rung down is probed beside it.
-    init?(
+    convenience init?(
         url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
         answerLimit: Duration = HLSInput.answerLimit
     ) {
         let url = MediaURL.normalizeMediaPath(address)
-        self.interrupt = interrupt
-        let began = ContinuousClock.now
         let isLocal = !HTTPSessionTransport.serves(url)
-        guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url), let table = AVStreamTable() else {
-            return nil
-        }
+        guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
+        self.init(
+            master: masterURL, playlists: HLSServedPlaylists(), source: url, allowsFiles: isLocal, headers: headers,
+            interrupt: interrupt, answerLimit: answerLimit)
+    }
+
+    /// Opens the stream whose master (or only media) playlist `playlists` answers at `masterURL`: an HLS server's, or
+    /// another manifest's told as playlists (`DASHPlaylists`). `source`: the address the stream was asked by, which scopes
+    /// the requests' headers and cookies (`HTTPSessionTransport`); `allowsFiles`: its segments may be local files (a
+    /// saved playlist), which a `source` served over HTTP(S) never allows.
+    init?(
+        master masterURL: URL, playlists: any HLSPlaylistSource, source url: String, allowsFiles: Bool,
+        headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = HLSInput.answerLimit,
+        streamingName: String = "HLS"
+    ) {
+        // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`HLSSegmentLoader.allowsFiles`).
+        let isLocal = allowsFiles && !HTTPSessionTransport.serves(url)
+        self.interrupt = interrupt
+        self.streamingName = streamingName
+        let began = ContinuousClock.now
+        guard let table = AVStreamTable() else { return nil }
         self.table = table
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         self.transport = transport
         meter = TransferAccount(meter: transport.meter)
         let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
-        let playlists: any HLSPlaylistSource = HLSServedPlaylists()
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
         func fail(_ message: String, code: Int32 = -EIO) {
             interrupt.recordError(code: code, message: message)
-            AppLog.error(.demuxer, "HLS: \(message) for '\(MediaURL.loggable(url))'")
+            AppLog.error(.demuxer, "\(streamingName): \(message) for '\(MediaURL.loggable(url))'")
         }
 
         let parsed: HLSPlaylist
@@ -224,6 +240,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             switch error {
             case .load(let reason): fail("playlist failed to load (\(reason))", code: error.code)
             case .unreadable(let reason): fail("not a playlist (\(reason))", code: error.code)
+            case .unsupported(let reason): fail("not played by the client: \(reason)", code: error.code)
             }
             return nil
         }
@@ -293,6 +310,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 switch error {
                 case .load: failures[index].set(error.code)
                 case .unreadable(let reason): problems[index].set("not a playlist (\(reason))")
+                case .unsupported(let reason): problems[index].set("not played by the client: \(reason)")
                 }
             }
         }
@@ -402,7 +420,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                         queue.removeFirst()
                         AppLog.warning(
                             .demuxer,
-                            "HLS: \(lane.label) has not answered in \(HLSOpeningMeasure.ms(answerLimit)), "
+                            "\(streamingName): \(lane.label) has not answered in \(HLSOpeningMeasure.ms(answerLimit)), "
                                 + "probing \(neighbour.label) beside it")
                         race.start(next, lane: neighbour, at: probeTime, loader: loader)
                         started.append(next)
@@ -491,7 +509,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 for rung in downward {
                     if probedLanes[rung].value == true { break }
                     guard clones.contains(rung) else { continue }
-                    AppLog.info(.demuxer, "HLS: the link is slow, probing \(built[rung]?.label ?? "") to start on")
+                    AppLog.info(
+                        .demuxer, "\(streamingName): the link is slow, probing \(built[rung]?.label ?? "") to start on")
                     probe(rung, opening: .start)
                     clones.remove(rung)
                     if probedLanes[rung].value == true { break }
@@ -509,7 +528,8 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                     return nil
                 }
                 // A rung or rendition that fails to open is left out; the stream plays without it.
-                AppLog.warning(.demuxer, "HLS: \(wanted[index].url.lastPathComponent) failed to open (\(error))")
+                AppLog.warning(
+                    .demuxer, "\(streamingName): \(wanted[index].url.lastPathComponent) failed to open (\(error))")
                 lane.close()
                 built[index] = nil
                 continue
@@ -629,7 +649,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         }
         AppLog.info(
             .demuxer,
-            "HLS client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"
+            "\(streamingName) client: \(lanes.count) lane(s), \(infos.count) stream(s)\(variants.isEmpty ? "" : ", \(variants.count) variant(s)")\(isLive ? ", live" : "")"
                 + (openingRate.map { ", opening \(Int($0 / 1000)) kbit/s" } ?? "")
         )
     }
@@ -686,7 +706,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         guard zip(found, slots).allSatisfy({ $0.count == $1.count }) else {
             AppLog.warning(
                 .demuxer,
-                "HLS: \(lane.label) has \(found.map(\.count)) pictures and sounds, not \(slots.map(\.count)) as the "
+                "\(streamingName): \(lane.label) has \(found.map(\.count)) pictures and sounds, not \(slots.map(\.count)) as the "
                     + "rung it was described as; left out")
             descriptions.withLock { for id in ids { $0[id] = .rejected } }
             return false
@@ -910,7 +930,7 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
                 if code == FFmpegErrorCode.eof || (lane.kind != .primary && code == HLSLane.held) { continue }
                 if code < 0 {
                     guard code != FFmpegErrorCode.exit, canDrop(lane) else { return code }
-                    AppLog.warning(.demuxer, "HLS: \(lane.label) failed (\(code)) and is left out")
+                    AppLog.warning(.demuxer, "\(streamingName): \(lane.label) failed (\(code)) and is left out")
                     lane.giveUp()
                     continue
                 }

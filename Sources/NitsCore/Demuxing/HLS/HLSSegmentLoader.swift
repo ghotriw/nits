@@ -77,6 +77,9 @@ final class HLSSegmentLoader: Sendable {
         HLSSegmentLoader(sharing: self, abort: abort, relay: relay)
     }
 
+    /// Whether this loader's requests give way now: the transport's abort or its own.
+    var isAborted: Bool { transport.shouldAbort() || abort?() == true }
+
     /// The segment's bytes, decrypted.
     func segment(_ segment: HLSSegment) throws(HLSSegmentLoadError) -> Data {
         var data = try download(segment.url, range: segment.byteRange)

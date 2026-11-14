@@ -17,12 +17,15 @@ enum HLSPlaylistSourceError: Error, Equatable {
     case load(HLSSegmentLoadError)
     /// It loaded, but does not read as a playlist.
     case unreadable(HLSPlaylistError)
+    /// It reads, as what the client does not play (yet): the reason. The stream may be opened otherwise.
+    case unsupported(String)
 
     /// FFmpeg's error for it (`AVERROR_EXIT` for an abort).
     var code: Int32 {
         switch self {
         case .load(let error): HLSSegmentReader.code(for: error)
         case .unreadable: -EIO
+        case .unsupported: -ENOSYS
         }
     }
 }
