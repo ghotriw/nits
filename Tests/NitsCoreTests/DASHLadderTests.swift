@@ -7,7 +7,8 @@ import os
 @testable import NitsCore
 
 /// A DASH ladder (the `dashLadder` preset: three rungs with B-frames, a keyframe at each second) played from
-/// `TestHTTPServer` as the resolver's manifest of it: FFmpeg's DASH demuxer lists the rungs as variants, and the
+/// `TestHTTPServer` as the resolver's manifest of it: the input (the client, or FFmpeg's DASH demuxer for what the client
+/// refuses; `NITS_DASH_INPUT` forces either) lists the rungs as variants, and the
 /// demuxer switches between them without losing or repeating a picture. Need FFmpeg built with libxml2, else they do
 /// nothing.
 @Suite("DASH ladder", .serialized, .hostDependent, .networkServer)
@@ -47,24 +48,28 @@ struct DASHLadderTests {
         }
         return times
     }
-
     /// Every switch cuts the pictures at its keyframe (a second a group of 25): the pictures come as the old rung's plain
     /// run has them up to it, and as the new one's from it on, in the order they decode (the rungs are encoded alike but
     /// not identically: B-frames fall in other places). Not a picture handed on before one that decodes earlier.
+    /// `first` and the switches name variants of `demuxer`, each a rung by its bandwidth (the inputs number them apart).
     private static func expectOrderOfSwitches(
-        _ times: [Double], from first: Int, switches: [(rung: Int, seconds: Double)], server: TestHTTPServer,
-        _ comment: Comment
+        _ times: [Double], from first: Int, switches: [(variant: Int, seconds: Double)], of demuxer: MediaDemuxer,
+        server: TestHTTPServer, _ comment: Comment
     ) throws {
+        func rung(_ variant: Int) throws -> Int {
+            let bandwidth = try #require(demuxer.variants.first { $0.id == variant }?.bandwidth)
+            return try #require(SyntheticTestMediaFactory.dashLadderRungs.firstIndex { $0.bitrate == bandwidth })
+        }
         var expected: [Double] = []
-        var rung = first
+        var variant = first
         var position = 0
-        for next in switches + [(rung: first, seconds: Double(count))] {
-            let plain = try #require(MediaDemuxer(url: manifest(for: server, rungs: [rung])))
+        for next in switches + [(variant: first, seconds: Double(count))] {
+            let plain = try #require(MediaDemuxer(url: manifest(for: server, rungs: [try rung(variant)])))
             let reference = presentationTimes(of: plain)
             let boundary = next.seconds == Double(count) ? reference.count : Int(next.seconds.rounded()) * 25
             expected += reference[min(position, reference.count)..<min(boundary, reference.count)]
             position = boundary
-            rung = next.rung
+            variant = next.variant
         }
         #expect(times == expected, "\(comment): not the order the pictures decode in; \(switches)")
     }
@@ -123,7 +128,7 @@ struct DASHLadderTests {
         demuxer.startReadAhead(limits: .init(seconds: 1.5))
         let lowest = try #require(demuxer.variants.last)
         let highest = try #require(demuxer.variants.first)
-        let switches = OSAllocatedUnfairLock<[(rung: Int, seconds: Double)]>(initialState: [])
+        let switches = OSAllocatedUnfairLock<[(variant: Int, seconds: Double)]>(initialState: [])
         demuxer.onVariantChanged = { change in switches.withLock { $0.append((change.variant.id, change.seconds)) } }
 
         var times = Self.presentationTimes(of: demuxer, upTo: 50)
@@ -138,11 +143,11 @@ struct DASHLadderTests {
         #expect(demuxer.selectedVariantId == lowest.id)
         #expect(switches.withLock { $0.count } == 3, "Three switches were made")
         try Self.expectOrderOfSwitches(
-            times, from: highest.id, switches: switches.withLock { $0 }, server: server, "read ahead")
+            times, from: highest.id, switches: switches.withLock { $0 }, of: demuxer, server: server, "read ahead")
     }
 
     @Test(
-        "Captions in the pictures are read across a switch: the keyframe it splices at, and what was held for it, too")
+        "Captions in the pictures are read across a switch, at the keyframe it splices at")
     func keepsCaptionsAcrossASwitch() throws {
         guard av_find_input_format("dash") != nil,
             let first = SyntheticTestMediaFactory.ensureMedia(preset: .dashLadderCaptions)
@@ -161,8 +166,9 @@ struct DASHLadderTests {
         let track = try #require(demuxer.subtitleTracks.first, "The captions of the pictures are a track")
         demuxer.selectSubtitleTrack(trackId: track.id)
         demuxer.setAdaptiveBitrate(false)
-        // Read just ahead of the pictures taken, so that the switch is asked for before the first second ends: it
-        // splices at the keyframe of the second, where the end of the first caption is.
+        // Read just ahead of the pictures taken, so that the switch is asked for early: FFmpeg's demuxer splices at the
+        // keyframe of the second (holding what it read past it), the client at the start of the next segment it has not
+        // downloaded (the second or the third). Each is where a caption ends.
         demuxer.startReadAhead(limits: .init(seconds: 0.3))
         let lowest = try #require(demuxer.variants.last)
         let splice = OSAllocatedUnfairLock<Double?>(initialState: nil)
@@ -172,10 +178,10 @@ struct DASHLadderTests {
         let times = Self.presentationTimes(of: demuxer)
         // The last segment of the preset holds two seconds (see `dashLadderCaptions`): 7 s of pictures in all.
         #expect(times.count == 7 * 30 - 10, "\(times.count) pictures")
-        // At the keyframe of the first second, where the end of the first caption is.
+        let spliced = splice.withLock { $0 } ?? -1
         #expect(
-            abs((splice.withLock { $0 } ?? -1) - 1.0) < 0.05, "Spliced at \(String(describing: splice.withLock { $0 }))"
-        )
+            spliced > 0.95 && spliced < 2.05 && abs(spliced - spliced.rounded()) < 0.05,
+            "Spliced at \(spliced), not at the keyframe of the first or second second")
         #expect(demuxer.selectedVariantId == lowest.id, "The switch was made")
 
         let cues = demuxer.getLiveSubtitleDocument().cues.sorted { $0.startTime < $1.startTime }
@@ -221,7 +227,7 @@ struct DASHLadderTests {
         demuxer.setAdaptiveBitrate(false)
         let lowest = try #require(demuxer.variants.last)
         let highest = try #require(demuxer.variants.first)
-        let switches = OSAllocatedUnfairLock<[(rung: Int, seconds: Double)]>(initialState: [])
+        let switches = OSAllocatedUnfairLock<[(variant: Int, seconds: Double)]>(initialState: [])
         demuxer.onVariantChanged = { change in switches.withLock { $0.append((change.variant.id, change.seconds)) } }
         var times = Self.presentationTimes(of: demuxer, upTo: 40)
         demuxer.selectVariant(id: lowest.id)
@@ -232,7 +238,7 @@ struct DASHLadderTests {
         #expect(demuxer.selectedVariantId == highest.id, "Up")
         Self.expectEveryPictureOnce(times, count: Self.pictures, "on demand, down and up")
         try Self.expectOrderOfSwitches(
-            times, from: highest.id, switches: switches.withLock { $0 }, server: server, "on demand")
+            times, from: highest.id, switches: switches.withLock { $0 }, of: demuxer, server: server, "on demand")
     }
 
     @Test("A seek during a switch, and one after the end, play from the variant that plays")
@@ -264,7 +270,7 @@ struct DASHLadderTests {
 /// reads ahead and a stand-in for playback takes pictures in real time.
 @Suite("DASH adaptive bitrate", .serialized, .realtimePlayback, .backstopTimeLimit)
 struct DASHAdaptiveBitrateTests {
-    @Test("A slow network brings the picture down to the rung it carries, and not below it, without stalling")
+    @Test("A slow network brings the picture down to the rung it carries, not below it once played, without stalling")
     func followsTheNetwork() async throws {
         guard let server = try DASHLadderTests.server() else { return }
         defer { server.stop() }
@@ -276,7 +282,9 @@ struct DASHAdaptiveBitrateTests {
         // Opening reads the start of every rung (FFmpeg's DASH demuxer opens them all), unthrottled here: those
         // transfers say nothing of the network playback meets.
         _ = demuxer.network?.transferMeter?.take()
-        // 0.5 Mbit/s carries the 0.35 Mbit/s rung (80 % of it is 0.4), not the 0.8 one it starts on.
+        // 0.5 Mbit/s carries the 0.35 Mbit/s rung (80 % of it is 0.4), not the 0.8 one it starts on. The client may give
+        // the top rung's download up for the lowest and come back up to the one carried, as for HLS.
+        let since = Date()
         server.setLinkRate(500_000 / 8)
         demuxer.startReadAhead(limits: .init(seconds: 3))
         let consumer = AdaptiveBitrateTests.RealtimeConsumer(demuxer, startAhead: 2.5)
@@ -286,8 +294,13 @@ struct DASHAdaptiveBitrateTests {
             await AdaptiveBitrateTests.waitUntil(timeout: .seconds(20)) { consumer.playedWidth == 320 },
             "Playing \(String(describing: consumer.playedWidth)); the variant is \(String(describing: demuxer.selectedVariantId))"
         )
-        #expect(consumer.stalled < 1.5, "Stalled \(consumer.stalled) s")
-        #expect(!consumer.pictures.contains { $0.width == 160 }, "Went below the rung the network carries")
+        if demuxer.input is HLSInput {
+            AdaptiveBitrateTests.expectCameDownWithoutStalling(consumer, to: 320, demuxer: demuxer, since: since)
+        } else {
+            // FFmpeg's DASH demuxer (until step 8 of `.agents/dash-client/PLAN.md`): no download given up.
+            #expect(consumer.stalled < 1.5, "Stalled \(consumer.stalled) s")
+            #expect(!consumer.pictures.contains { $0.width == 160 }, "Went below the rung the network carries")
+        }
         #expect(demuxer.isAdaptiveBitrateEnabled, "The network chose, not the viewer")
     }
 }

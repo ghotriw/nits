@@ -483,3 +483,33 @@ struct DASHPlaylistsTests {
         #expect(Self.refusal(data)?.contains("DRM") == true)
     }
 }
+
+extension DASHPlaylistsTests {
+    @Test("A demuxer's location names the source: an inline manifest with the address it came from or without, a .mpd")
+    func sourceOfALocation() throws {
+        let text = "<MPD>https://signed.example/videoplayback?sig=secret</MPD>"
+        let told = MediaURL.inlineDASHManifest(text, source: Self.url)
+        #expect(MediaURL.isInlineDASHManifest(told))
+        let contents = try #require(MediaURL.inlineDASHManifestContents(told))
+        #expect(contents.source == Self.url)
+        #expect(String(decoding: contents.manifest, as: UTF8.self) == text)
+        // Neither the manifest nor its address (which may be signed too) is logged.
+        let logged = MediaURL.loggable(told)
+        #expect(!logged.contains("cdn.example") && !logged.contains("secret"), "\(logged)")
+
+        let withSource = try #require(DASHPlaylists(media: told))
+        #expect(withSource.address == Self.url && !withSource.allowsFiles)
+        // Without its address, relative addresses are relative to the master's key: none is served.
+        let bare = try #require(DASHPlaylists(media: MediaURL.inlineDASHManifest(text)))
+        #expect(bare.address == bare.masterURL && !bare.allowsFiles)
+
+        let network = try #require(DASHPlaylists(media: "https://cdn.example/a/.mpd"))
+        #expect(network.address.absoluteString == "https://cdn.example/a/.mpd" && !network.allowsFiles)
+        let upper = try #require(DASHPlaylists(media: "HTTPS://cdn.example/a/manifest.mpd"))
+        #expect(upper.address.absoluteString == "https://cdn.example/a/manifest.mpd" && !upper.allowsFiles)
+        let file = try #require(DASHPlaylists(media: "/tmp/show/manifest.MPD"))
+        #expect(file.address.isFileURL && file.allowsFiles)
+        #expect(DASHPlaylists(media: "https://cdn.example/a/master.m3u8") == nil)
+        #expect(DASHPlaylists(media: "data:text/plain;base64,AAAA") == nil)
+    }
+}

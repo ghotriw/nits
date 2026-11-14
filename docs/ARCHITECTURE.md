@@ -108,8 +108,14 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
 - A DASH manifest (`.mpd`) is resolved by the engine's own `DASHManifestResolver`, asked before the host's
   (`MediaResolverChain`; it ends in `.mpd`, a name like Unified Streaming's `/.mpd` too). It downloads the manifest
-  with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`): FFmpeg's DASH
-  demuxer opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,
+  with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`), with the
+  address it came from after redirects (`MediaURL.inlineDASHManifest(_:source:)`, a `source` parameter of the `data:`
+  URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, or one at a `.mpd` address, with
+  the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
+  refuses with a reason (`HLSPlaylistSourceError.unsupported`: one file per representation, live, several periods, …)
+  goes on to FFmpeg's DASH demuxer, any other failure is the opening's (`NITS_DASH_INPUT=client` / `ffmpeg` forces
+  either, for tests). The rewriting is for FFmpeg's DASH demuxer, which
+  opens every representation at once, fails for one it can't read (TTML), plays the first picture it lists and,
   in a timeline that repeats a segment to the end (`r="-1"`), seeks to the second segment. So it keeps the ladder of
   one codec and range (the preferred one, `VideoCodecPreference`; a ladder plays as one, `MediaDemuxer.variants`; the
   best picture of each other codec is in `ResolvedMedia.videoFormats`, each a manifest of its own with its ladder,
@@ -546,9 +552,10 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
 - **HLS.** `HLSInput` opens a playlist (one request for each playlist, a probe of the top rung, the link's rate),
   reads its segments, renditions and live window, and splices a variant switch at the read position: see "The client"
   and "Variant switches" in `docs/HLS.md`.
-- **DASH variants.** A DASH manifest's ladder (`DASHManifest.ladder`: the pictures of the best one's codec and range,
-  the manifest written with every rung) is the demuxer's variants: FFmpeg's DASH demuxer has one program and a stream
-  for each representation, the picture ones with `variant_bitrate` (`dashVariants`), the sounds the manifest's own.
+- **DASH variants** (FFmpeg's DASH demuxer, for what the client refuses; the client's are HLS's). A DASH manifest's
+  ladder (`DASHManifest.ladder`: the pictures of the best one's codec and range, the manifest written with every
+  rung) is the demuxer's variants: FFmpeg's DASH demuxer has one program and a stream for each representation, the
+  picture ones with `variant_bitrate` (`dashVariants`), the sounds the manifest's own.
   Its segments are served by `HTTPSessionTransport` as HLS's, which `AdaptiveBitrateLogic` measures. A switch is the
   same splice, with one difference: FFmpeg's DASH demuxer reads the representation whose last picture presents
   earliest, so with B-frames the new variant, catching up from the start of its segment, runs ahead of the old by the

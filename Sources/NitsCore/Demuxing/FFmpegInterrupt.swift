@@ -75,6 +75,11 @@ public final class FFmpegInterrupt: Sendable {
         state.withLock { $0.lastError = (code, message) }
     }
 
+    /// Forgets the error recorded: what was tried and given up for another way of opening is not the opening's error.
+    func clearError() {
+        state.withLock { $0.lastError = nil }
+    }
+
     /// Points `ctx`'s interrupt callback at this object. FFmpeg only takes a C callback with an
     /// unretained pointer, so the caller must keep `self` alive for as long as `ctx` is open.
     func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {

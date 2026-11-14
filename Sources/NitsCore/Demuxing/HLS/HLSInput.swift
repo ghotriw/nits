@@ -228,9 +228,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
         let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
-        func fail(_ message: String, code: Int32 = -EIO) {
+        func fail(_ message: String, code: Int32 = -EIO, level: LogLevel = .error) {
             interrupt.recordError(code: code, message: message)
-            AppLog.error(.demuxer, "\(streamingName): \(message) for '\(MediaURL.loggable(url))'")
+            AppLog.log(level, category: .demuxer) { "\(streamingName): \(message) for '\(MediaURL.loggable(url))'" }
         }
 
         let parsed: HLSPlaylist
@@ -240,7 +240,9 @@ final class HLSInput: DemuxerInput, @unchecked Sendable {
             switch error {
             case .load(let reason): fail("playlist failed to load (\(reason))", code: error.code)
             case .unreadable(let reason): fail("not a playlist (\(reason))", code: error.code)
-            case .unsupported(let reason): fail("not played by the client: \(reason)", code: error.code)
+            // Not the opening's failure yet: the stream may be opened otherwise (`MediaDemuxer.init`), which logs it.
+            case .unsupported(let reason):
+                fail("not played by the client: \(reason)", code: error.code, level: .notice)
             }
             return nil
         }

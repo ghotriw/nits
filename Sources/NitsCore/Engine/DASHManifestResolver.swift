@@ -140,12 +140,15 @@ struct DASHManifestResolver: MediaResolver {
                 manifest.setIndex(index, for: request)
             }
         }
+        // Each manifest written for the demuxer carries the address it came from: its relative addresses, its headers.
+        let inline = { (text: String) in MediaURL.inlineDASHManifest(text, source: finalURL) }
         // HDR10 and SDR of one size and codec would differ in the menu by their bitrates only. Dolby Vision says it in
         // its name.
         func format(_ video: DASHManifest.Video, text: String?) -> VideoFormat? {
             text.map { text in
                 VideoFormat(
-                    id: video.id, url: MediaURL.inlineDASHManifest(text), width: video.width, height: video.height,
+                    id: video.id, url: inline(text), width: video.width,
+                    height: video.height,
                     frameRate: video.frameRate,
                     codec: video.isHDR && video.codec != "Dolby Vision" ? "\(video.codec) HDR" : video.codec,
                     bitrate: video.bandwidth)
@@ -154,7 +157,7 @@ struct DASHManifestResolver: MediaResolver {
         // A ladder of pictures that can follow the network plays as one: the demuxer lists the rungs as variants and
         // the quality menu is theirs. What the viewer may choose besides is the codec (and range): the best picture of
         // each, which plays with the ladder of its own. A stream without a ladder offers its pictures.
-        let ladder = manifest.ladderText().map(MediaURL.inlineDASHManifest)
+        let ladder = manifest.ladderText().map(inline)
         let hasLadder = manifest.codecGroups.contains { manifest.ladder(of: $0).count > 1 }
         let formats: [VideoFormat]
         if hasLadder {
@@ -164,7 +167,10 @@ struct DASHManifestResolver: MediaResolver {
         } else {
             formats = manifest.videos.compactMap { format($0, text: manifest.text(videoID: $0.id)) }
         }
-        guard let path = ladder ?? formats.first?.url ?? manifest.text().map(MediaURL.inlineDASHManifest) else {
+        guard
+            let path = ladder ?? formats.first?.url
+                ?? manifest.text().map(inline)
+        else {
             return nil
         }
         AppLog.info(

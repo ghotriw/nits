@@ -35,19 +35,47 @@ public enum MediaURL {
     /// The location of a DASH manifest given inline, as a `data:` URL (`inlineDASHManifest(_:)`): FFmpeg's DASH demuxer
     /// reads the manifest from it, and the media segments it lists from the network.
     public static func isInlineDASHManifest(_ path: String) -> Bool {
-        path.range(of: inlineDASHPrefix, options: [.anchored, .caseInsensitive]) != nil
+        guard path.range(of: inlineDASHPrefix, options: [.anchored, .caseInsensitive]) != nil,
+            let comma = path.firstIndex(of: ",")
+        else { return false }
+        return path[..<comma].lowercased().hasSuffix(";base64")
     }
 
-    private static let inlineDASHPrefix = "data:application/dash+xml;base64,"
+    private static let inlineDASHPrefix = "data:application/dash+xml;"
+    /// The parameter of an inline manifest that tells the address it came from (FFmpeg's `data:` ignores it).
+    private static let inlineDASHSourceParameter = "source="
 
     /// `manifest` (the text of an MPD) as a location the demuxer opens. For a manifest built here, e.g. from the
-    /// segments a site's extractor lists, whose own file would have to be kept somewhere and cleaned up.
-    package static func inlineDASHManifest(_ manifest: String) -> String {
-        inlineDASHPrefix + Data(manifest.utf8).base64EncodedString()
+    /// segments a site's extractor lists, whose own file would have to be kept somewhere and cleaned up. `source`: the
+    /// address the manifest was read from (after redirects), when it was (`inlineDASHManifestContents`).
+    package static func inlineDASHManifest(_ manifest: String, source: URL? = nil) -> String {
+        var parameters = ""
+        if let source,
+            let escaped = source.absoluteString.addingPercentEncoding(withAllowedCharacters: .inlineDASHSource)
+        {
+            parameters = inlineDASHSourceParameter + escaped + ";"
+        }
+        return inlineDASHPrefix + parameters + "base64," + Data(manifest.utf8).base64EncodedString()
+    }
+
+    /// The manifest an inline one holds (`inlineDASHManifest(_:source:)`), and the address it was read from when told.
+    /// Nil for any other location, or one whose text can't be decoded.
+    static func inlineDASHManifestContents(_ path: String) -> (manifest: Data, source: URL?)? {
+        guard isInlineDASHManifest(path), let comma = path.firstIndex(of: ","),
+            let manifest = Data(base64Encoded: String(path[path.index(after: comma)...]))
+        else { return nil }
+        let parameters = path[path.index(path.startIndex, offsetBy: inlineDASHPrefix.count)..<comma]
+        let source = parameters.split(separator: ";").lazy.compactMap { parameter -> URL? in
+            guard parameter.hasPrefix(inlineDASHSourceParameter) else { return nil }
+            return parameter.dropFirst(inlineDASHSourceParameter.count).removingPercentEncoding.flatMap(
+                URL.init(string:))
+        }.first
+        return (manifest, source)
     }
 
     /// `path` as written to the log: an inline manifest holds the streams' signed URLs, kilobytes of them.
     public static func loggable(_ path: String) -> String {
+        // Nor the address it came from: a site's may be signed too.
         isInlineDASHManifest(path) ? "inline DASH manifest (\(path.utf8.count) bytes)" : path
     }
 
@@ -187,4 +215,11 @@ public enum MediaURL {
         }
         return false
     }
+}
+
+extension CharacterSet {
+    /// What an inline DASH manifest's `source` parameter keeps as it is: not the `data:` URL's own separators (`;`, `,`)
+    /// nor `%`, whatever else an address has.
+    fileprivate static let inlineDASHSource = CharacterSet.urlQueryAllowed.subtracting(
+        CharacterSet(charactersIn: ";,%&=+"))
 }

@@ -29,13 +29,55 @@ struct DASHPlaylists: HLSPlaylistSource {
     private let store: Store
     /// How many callers wait for a read of the manifest another one is making (tests).
     var waitingReaders: Int { store.waiting }
+    /// Why the manifest was refused (`HLSPlaylistSourceError.unsupported`), once a read of it was: what the client does
+    /// not play yet, which may be opened otherwise. Nil before a read, after one that played or failed otherwise.
+    var refusal: String? { store.refusal }
+
+    /// Its segments may be local files: a manifest read from a file.
+    let allowsFiles: Bool
 
     /// The manifest at `address`, or `inline` (the resolver's, which came from `address`).
     init(address: URL, inline: Data? = nil) {
-        self.address = address
         let id = UUID().uuidString.lowercased()
+        self.init(id: id, address: address, inline: inline)
+    }
+
+    /// An inline manifest whose address is not told (one built from what a site lists): its addresses are absolute, and
+    /// the relative ones fail, as relative to the master's key.
+    init(inline: Data) {
+        let id = UUID().uuidString.lowercased()
+        self.init(id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline)
+    }
+
+    private init(id: String, address: URL, inline: Data?) {
+        self.address = address
         masterURL = URL(string: "\(Self.scheme)://\(id)/")!
+        allowsFiles = inline == nil && address.isFileURL
         store = Store(id: id, address: address, inline: inline)
+    }
+
+    /// The manifest a demuxer is asked to open at `path`: an inline one (`MediaURL.inlineDASHManifest`), or one at an
+    /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other.
+    init?(media path: String) {
+        if let inline = MediaURL.inlineDASHManifestContents(path) {
+            if let source = inline.source {
+                self.init(address: source, inline: inline.manifest)
+            } else {
+                self.init(inline: inline.manifest)
+            }
+            return
+        }
+        let normalized = MediaURL.normalizeMediaPath(path)
+        let isNetwork = MediaURL.isNetworkURL(normalized)
+        guard var address = isNetwork ? URL(string: normalized) : URL(fileURLWithPath: normalized),
+            address.lastPathComponent.lowercased().hasSuffix(".mpd")
+        else { return nil }
+        // `HTTPS://`: the client's requests know a network address by its scheme in lower case.
+        if isNetwork, var components = URLComponents(url: address, resolvingAgainstBaseURL: false) {
+            components.scheme = components.scheme?.lowercased()
+            address = components.url ?? address
+        }
+        self.init(address: address)
     }
 
     func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader) throws(HLSPlaylistSourceError)
@@ -248,6 +290,13 @@ extension DASHPlaylists {
         static let waitStep: DispatchTimeInterval = .milliseconds(50)
 
         var waiting: Int { state.withLock { $0.waiting } }
+
+        var refusal: String? {
+            state.withLock { state in
+                guard case .unsupported(let reason) = state.failure?.error else { return nil }
+                return reason
+            }
+        }
 
         init(id: String, address: URL, inline: Data?) {
             self.id = id

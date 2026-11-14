@@ -625,7 +625,16 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
-    /// Opens `url`: with `HLSInput` when it is an HLS playlist, else with FFmpeg (`FFmpegInput`).
+    /// Which input plays a DASH manifest: the client, falling back on FFmpeg's demuxer for what it refuses (`auto`), or
+    /// either alone, to run the DASH suites against each (`NITS_DASH_INPUT=client` / `ffmpeg`; tests only).
+    enum DASHInputChoice: String {
+        case auto, client, ffmpeg
+    }
+    nonisolated static let dashInput =
+        ProcessInfo.processInfo.environment["NITS_DASH_INPUT"].flatMap(DASHInputChoice.init(rawValue:)) ?? .auto
+
+    /// Opens `url`: with `HLSInput` when it is an HLS playlist or a DASH manifest the client plays, else with FFmpeg
+    /// (`FFmpegInput`).
     ///
     /// - Parameters:
     ///   - httpRequestSize: What a network input's HTTP requests ask for (`MediaLoadRequest.httpRequestSize`).
@@ -652,6 +661,28 @@ public final class MediaDemuxer: @unchecked Sendable {
                 input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
                 audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
             return
+        }
+        // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play yet (the source's
+        // refusal, with its reason) is left to FFmpeg's DASH demuxer; any other failure is the opening's.
+        if liveHistory == nil, Self.dashInput != .ffmpeg, let playlists = DASHPlaylists(media: url) {
+            if let input = HLSInput(
+                master: playlists.masterURL, playlists: playlists, source: playlists.address.absoluteString,
+                allowsFiles: playlists.allowsFiles, headers: headers, interrupt: interrupt, streamingName: "DASH")
+            {
+                self.init(
+                    input: input, interruptContext: interrupt, ownsInterruptContext: interruptContext == nil,
+                    audioOnly: audioOnly, liveHistory: nil, liveWindowState: windowState)
+                return
+            }
+            // Asked of the source itself, not read off the interrupt's last error, which another failure (or an earlier
+            // attempt on the same context) may have written.
+            guard let refusal = playlists.refusal, Self.dashInput != .client else {
+                if interruptContext == nil { interrupt.cancel() }
+                return nil
+            }
+            // FFmpeg's failure, not the refusal, is the opening's if it fails too.
+            interrupt.clearError()
+            AppLog.info(.demuxer, "DASH: left to FFmpeg's demuxer (\(refusal))")
         }
         let origin = liveHistory?.origin ?? 0
         let opened = FFmpegInput(
