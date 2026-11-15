@@ -70,3 +70,45 @@ package enum CodecFamily {
         }
     }
 }
+
+extension CodecFamily {
+    /// The audio codecs the sounds' order is of (`AudioCodecPreference` in `NitsCore`), as ranked by default: lossless
+    /// first, then Opus over AAC, then the Dolby and DTS ones (the channels are counted before the codec, so a 5.1 never
+    /// loses to a stereo track of a better codec).
+    package static let audioFamilies = ["flac", "alac", "opus", "aac", "eac3", "ac3", "dts", "vorbis", "mp3"]
+
+    /// The audio codec of a list (its first entry) by family (`audioFamilies`); nil for a codec not among them.
+    package static func audio(in codecs: String) -> String? {
+        let entry =
+            codecs.split(separator: ",").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        let parts = entry.split(separator: ".").map(String.init)
+        switch parts.first {
+        case "mp4a":
+            switch parts.dropFirst().first {
+            case "40": return "aac"
+            case "69", "6b": return "mp3"
+            case "a5": return "ac3"
+            case "a6": return "eac3"
+            case "a9", "aa", "ab", "ac": return "dts"
+            default: return nil
+            }
+        case "ac-3": return "ac3"
+        case "ec-3": return "eac3"
+        case "opus": return "opus"
+        case "vorbis": return "vorbis"
+        case "flac": return "flac"
+        case "mp3": return "mp3"
+        case "alac": return "alac"
+        case "dtsc", "dtsh", "dtse", "dtsl", "dtsx": return "dts"
+        default: return nil
+        }
+    }
+
+    /// Lower is more preferred in `order`; a codec not in it (or not known) last.
+    package static func audioRank(of codecs: String?, in order: [String]) -> Int {
+        guard let codecs, let family = audio(in: codecs), let index = order.firstIndex(of: family) else {
+            return order.count
+        }
+        return index
+    }
+}

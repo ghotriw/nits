@@ -125,7 +125,10 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   picture of each other codec in `ResolvedMedia.videoFormats` (each its address with its own choice, which the format
   menu switches to as for a video site), pictures that are files the client reads no index of (one without an index range) played as
   files with their sounds added (`PlaybackInputs`; a sound of segments is the address with `#nits-audio`). A manifest it
-  can't handle (live, several periods, unreadable) returns `nil`: the address is the client's as it is. Codec families
+  can't handle (live, several periods, unreadable) returns `nil`: the address is the client's as it is. The sound of a language is chosen by role, decodability, channels, then the user's order of audio codecs
+  (`AudioCodecPreference`, told to the client in `#nits-acodecs` when it is not the default; Opus over AAC, so the bitrate of
+  a VBR codec does not decide) and last the bitrate; a manifest the client opens itself (live, several periods) uses the
+  default order. Codec families
   are read by `CodecFamily`, shared with HLS. The segments' requests carry the source's headers (the client's transport).
 - A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
   into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers, the page's

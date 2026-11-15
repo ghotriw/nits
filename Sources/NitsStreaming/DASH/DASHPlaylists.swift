@@ -309,7 +309,9 @@ package struct DASHPlaylists: PlaylistSource {
         _ presentation: DASHPresentation, id: String, selection: DASHSelection = DASHSelection()
     ) throws(PlaylistSourceError) -> Built {
         var videos = presentation.representations.filter { $0.kind == .video }
-        var sounds = bestSounds(presentation.representations.filter { $0.kind == .audio })
+        var sounds = bestSounds(
+            presentation.representations.filter { $0.kind == .audio },
+            order: selection.audioCodecs.isEmpty ? CodecFamily.audioFamilies : selection.audioCodecs)
         if let audio = selection.audio {
             // A sound alone: the manifest's other streams are the picture's file, or another sound's.
             guard let chosen = presentation.representations.first(where: { $0.kind == .audio && $0.id == audio })
@@ -667,15 +669,23 @@ package struct DASHPlaylists: PlaylistSource {
     }
 
     /// The best sound of each language, the main one's first: the main track over one without a role over a commentary
-    /// or a description, then a codec told to be decoded over one not told, then the higher bitrate. Sounds the build
-    /// cannot decode (AC-4, MPEG-H) are left out.
-    static func bestSounds(_ sounds: [DASHPresentation.Representation]) -> [DASHPresentation.Representation] {
+    /// or a description, then a codec told to be decoded over one not told, then more channels (one that tells none counts as stereo),
+    /// then the codec `order` prefers (a
+    /// bitrate says nothing of the quality across codecs: Opus at 116 kbit/s is no worse than AAC at 129), then the higher
+    /// bitrate. Sounds the build cannot decode (AC-4, MPEG-H) are left out.
+    static func bestSounds(
+        _ sounds: [DASHPresentation.Representation], order: [String] = CodecFamily.audioFamilies
+    ) -> [DASHPresentation.Representation] {
         var best: [String: (sound: DASHPresentation.Representation, rank: [Int])] = [:]
         var languages: [String] = []
         for sound in sounds {
             let decodable = sound.codecs.flatMap(CodecFamily.canDecodeAudio(in:))
             guard decodable != false else { continue }
-            let rank = [sound.roleRank, decodable == true ? 1 : 0, sound.bandwidth]
+            let rank = [
+                sound.roleRank, decodable == true ? 1 : 0, sound.channels == 0 ? 2 : sound.channels,
+                -CodecFamily.audioRank(of: sound.codecs, in: order),
+                sound.bandwidth,
+            ]
             let language = sound.language ?? ""
             if let held = best[language] {
                 if held.rank.lexicographicallyPrecedes(rank) { best[language] = (sound, rank) }

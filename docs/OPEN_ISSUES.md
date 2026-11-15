@@ -182,8 +182,8 @@ Accepted for now, noted for later.
   Shaka's tos-ttml (2026-11-15, VP9 WebM beside H.264 MP4, both `SegmentBase` with the start told): the VP9 ladder of 7
   is a format of its own in the menu and plays by hand; behind the stand's shaping proxy (`scripts/hls-stand/`, Wi-Fi,
   RTT 33 ms; 400 kbit/s from 20 to 50 s) its ABR came down to 223k at once and back to 2121k 0.5 s after the link did,
-  stalled 0 s, as the H.264 ladder did (back in three steps over 6 s); the sound is the manifest's AAC, not its Opus
-  (`bestSounds`). The picture changes a read-ahead (~30 s) after the decision, both ways. Not measured: seeks in a VP9
+  stalled 0 s, as the H.264 ladder did (back in three steps over 6 s); the sound was the manifest's AAC by bitrate,
+  now Opus by the audio codec order (`bestSounds`, `AudioCodecPreference`). The picture changes a read-ahead (~30 s) after the decision, both ways. Not measured: seeks in a VP9
   ladder. A `SegmentBase` without `indexRange` is no longer refused: the client reads the file's start for the `sidx` or
   `Cues` (`SingleFileLayout`; a start of more than 1 MiB, an index of more than 1 MiB, a `sidx` before the `moov`, a
   `Segment` of unknown size, a file with no index are refused with the reason). A non-fragmented MP4 in a bare

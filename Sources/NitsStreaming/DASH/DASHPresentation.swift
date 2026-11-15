@@ -63,6 +63,8 @@ package struct DASHPresentation: Sendable {
         /// A WebM (`mimeType`): a ladder keeps to one container, as a switch from clusters to fragments is one the demuxer
         /// has no splice for.
         package var isWebM = false
+        /// The sound's channels (`DASHElements.channelCount`); 0 when the manifest tells none.
+        package var channels = 0
     }
 
     /// What a dynamic manifest tells besides its segments (ISO/IEC 23009-1 5.3.1.2).
@@ -354,7 +356,8 @@ extension DASHPresentation {
                         roleRank: DASHElements.roleRank(of: element, in: set), set: setIndex,
                         initSection: told.initSection, presentationTimeOffset: told.presentationTimeOffset,
                         segments: told.segments, index: told.index, numbersByTime: told.numbersByTime,
-                        isWebM: value("mimeType")?.lowercased().hasSuffix("/webm") == true))
+                        isWebM: value("mimeType")?.lowercased().hasSuffix("/webm") == true,
+                        channels: kind == "audio" ? DASHElements.channelCount(of: element, in: set) : 0))
             }
         }
         read.representations = representations

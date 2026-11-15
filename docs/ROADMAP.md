@@ -391,6 +391,8 @@ flowchart TD
     → Preferred Video Codecs, an order (HEVC, H.264, AV1, VP9, VP8 by default) with a switch for each (`VideoCodecPreference`,
     `PlayerConfiguration.videoCodecs`); a size comes first, then HDR, then the codec, then the bitrate. A ladder plays
     as one (the Quality menu), the best picture of each other codec is in a Format menu and plays with its own ladder.
+  - [x] The sound of a language, likewise (2026-11-15): Settings → Preferred Audio Codecs (`AudioCodecPreference`,
+    `PlayerConfiguration.audioCodecs`); role, decodability, channels, then the codec (Opus over AAC by default), then the bitrate.
     Not yet: the same order for HLS; AV1 first only where the chip
     decodes it; the codec in the names of the Quality menu's rungs.
   - [x] Manifests of single files (`BaseURL` and `SegmentBase`, the on-demand profile: Shaka's demo assets) are no

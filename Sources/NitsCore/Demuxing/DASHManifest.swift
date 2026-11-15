@@ -46,6 +46,8 @@ package struct DASHManifest {
     private let root: XMLTreeElement
     private let periodIndex: Int
     private let manifestURL: URL
+    /// The order of audio codecs the sounds are chosen by, told to the client with each address (`DASHSelection`).
+    private let audioCodecs: AudioCodecPreference
     /// The pictures played, the best first.
     package let videos: [Video]
     private let videoPlaces: [String: Place]
@@ -71,7 +73,11 @@ package struct DASHManifest {
     ///   - data: The manifest.
     ///   - url: Where it came from, after redirects: what its relative addresses are relative to.
     ///   - codecs: Which codec is preferred among the pictures of a size.
-    package init?(data: Data, url: URL, codecs: VideoCodecPreference = VideoCodecPreference()) {
+    ///   - audioCodecs: Which codec is preferred among the sounds of a language.
+    package init?(
+        data: Data, url: URL, codecs: VideoCodecPreference = VideoCodecPreference(),
+        audioCodecs: AudioCodecPreference = AudioCodecPreference()
+    ) {
         guard let root = XMLTreeElement.parse(data, limit: Self.sizeLimit), root.localName == "MPD",
             (root.attribute("type") ?? "static") == "static"
         else { return nil }
@@ -81,10 +87,13 @@ package struct DASHManifest {
         guard periods.count == 1, case .element(let period) = root.children[periods[0]] else { return nil }
         self.root = root
         self.manifestURL = url
+        self.audioCodecs = audioCodecs
         self.periodIndex = periods[0]
 
         var pictures: [(video: Video, place: Place, isKnownCodec: Bool)] = []
-        var sounds: [(place: Place, language: String, bandwidth: Int, role: Int, isKnownCodec: Bool)] = []
+        var sounds:
+            [(place: Place, language: String, bandwidth: Int, role: Int, isKnownCodec: Bool, channels: Int, rank: Int)] =
+                []
         var hasProtected = false
         var usedIDs = Set<String>()
         var ids: [Place: String] = [:]
@@ -117,7 +126,9 @@ package struct DASHManifest {
                     sounds.append(
                         (
                             place, set.attribute("lang") ?? representation.attribute("lang") ?? "", bandwidth,
-                            DASHElements.roleRank(of: representation, in: set), canDecode == true
+                            DASHElements.roleRank(of: representation, in: set), canDecode == true,
+                            DASHElements.channelCount(of: representation, in: set),
+                            audioCodecs.rank(ofFamily: value("codecs").flatMap(CodecFamily.audio(in:)))
                         ))
                     continue
                 }
@@ -181,17 +192,30 @@ package struct DASHManifest {
 
         // The best audio of each language, the main one's language first. Of a language: the main track over one
         // without a role over a commentary or a description (a higher bitrate does not make those the sound of the
-        // language), then a codec told to be decoded over one that is not told, then the higher bitrate.
-        var bestSound: [String: (place: Place, bandwidth: Int, role: Int, isKnownCodec: Bool)] = [:]
+        // language), then a codec told to be decoded over one that is not told, then more channels (one that tells none counts as stereo), then the codec the user prefers (a bitrate says nothing
+        // of the quality across codecs), then the higher bitrate.
+        var bestSound:
+            [String: (place: Place, bandwidth: Int, role: Int, isKnownCodec: Bool, channels: Int, rank: Int)] = [:]
         var languages: [String] = []
         for sound in sounds {
             if let current = bestSound[sound.language] {
-                let held = [current.role, current.isKnownCodec ? 1 : 0, current.bandwidth]
-                if held.lexicographicallyPrecedes([sound.role, sound.isKnownCodec ? 1 : 0, sound.bandwidth]) {
-                    bestSound[sound.language] = (sound.place, sound.bandwidth, sound.role, sound.isKnownCodec)
+                let held = [
+                    current.role, current.isKnownCodec ? 1 : 0, current.channels == 0 ? 2 : current.channels,
+                    -current.rank, current.bandwidth,
+                ]
+                if held.lexicographicallyPrecedes([
+                    sound.role, sound.isKnownCodec ? 1 : 0, sound.channels == 0 ? 2 : sound.channels, -sound.rank,
+                    sound.bandwidth,
+                ]
+                ) {
+                    bestSound[sound.language] = (
+                        sound.place, sound.bandwidth, sound.role, sound.isKnownCodec, sound.channels, sound.rank
+                    )
                 }
             } else {
-                bestSound[sound.language] = (sound.place, sound.bandwidth, sound.role, sound.isKnownCodec)
+                bestSound[sound.language] = (
+                    sound.place, sound.bandwidth, sound.role, sound.isKnownCodec, sound.channels, sound.rank
+                )
                 languages.append(sound.language)
             }
         }
@@ -200,13 +224,20 @@ package struct DASHManifest {
 
     }
 
+    /// The order of audio codecs to put in an address: only one that is not the client's own default.
+    private var audioCodecsToTell: [String] {
+        audioCodecs == AudioCodecPreference() ? [] : audioCodecs.order
+    }
+
     /// The address that plays the picture `videoID` (the best one when nil): the manifest's own, with the choice in its
     /// fragment (`DASHSelection`), which the client reads; for a manifest of sound alone, its own address. Nil when the
     /// picture is none of `videos`.
     package func address(videoID: String? = nil) -> String? {
-        if videoID == nil, videos.isEmpty { return DASHSelection().address(of: manifestURL) }
+        if videoID == nil, videos.isEmpty {
+            return DASHSelection(audioCodecs: audioCodecsToTell).address(of: manifestURL)
+        }
         guard let id = videoID ?? videos.first?.id, videoPlaces[id] != nil else { return nil }
-        return DASHSelection(video: id).address(of: manifestURL)
+        return DASHSelection(video: id, audioCodecs: audioCodecsToTell).address(of: manifestURL)
     }
 
     /// The pictures that can follow the network as one: those of the best one's codec and range (HDR or not), as

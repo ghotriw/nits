@@ -195,3 +195,82 @@ extension VideoCodecPreferenceTests {
         #expect(noStart.address(videoID: "hi") != nil)
     }
 }
+
+/// The order of audio codecs (`AudioCodecPreference`) and the sound a DASH manifest plays.
+@Suite("Audio codec preference")
+struct AudioCodecPreferenceTests {
+    /// AAC at a higher bitrate than Opus: what YouTube's speech videos offer.
+    private static func manifest(audioCodecs: AudioCodecPreference) -> DASHManifest? {
+        DASHManifest(
+            data: DASHManifestTests.mpd(
+                period: """
+                    <AdaptationSet contentType="audio" lang="en">
+                    <Representation id="aac" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="129000"><BaseURL>a.m4a</BaseURL></Representation>
+                    <Representation id="opus" mimeType="audio/webm" codecs="opus" bandwidth="116000"><BaseURL>a.webm</BaseURL></Representation>
+                    </AdaptationSet>
+                    """),
+            url: DASHManifestTests.url, audioCodecs: audioCodecs)
+    }
+
+    @Test("The order is stored, completed and shifted")
+    func order() {
+        #expect(AudioCodecPreference().rank(ofFamily: "opus") < AudioCodecPreference().rank(ofFamily: "aac"))
+        var preference = AudioCodecPreference(stored: "mp3, bogus,aac,mp3")
+        #expect(Array(preference.order.prefix(2)) == ["mp3", "aac"])
+        #expect(Set(preference.order) == Set(AudioCodecPreference.defaultOrder))
+        preference.shift("aac", by: -5)
+        #expect(preference.order.first == "aac")
+        #expect(AudioCodecPreference(stored: preference.stored) == preference)
+    }
+
+    @Test(
+        "More channels win over the codec: a 5.1 AAC beats a stereo Opus and a stereo AC-3; stereo ones go by the order"
+    )
+    func channels() throws {
+        let manifest = try #require(
+            DASHManifest(
+                data: DASHManifestTests.mpd(
+                    period: """
+                        <AdaptationSet contentType="audio" lang="en">
+                        <Representation id="surround" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="384000"><AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="6"/><BaseURL>s.m4a</BaseURL></Representation>
+                        <Representation id="opus" mimeType="audio/webm" codecs="opus" bandwidth="116000"><AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/><BaseURL>o.webm</BaseURL></Representation>
+                        <Representation id="ac3" mimeType="audio/mp4" codecs="ac-3" bandwidth="192000"><AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/><BaseURL>c.mp4</BaseURL></Representation>
+                        </AdaptationSet>
+                        """),
+                url: DASHManifestTests.url))
+        #expect(manifest.sounds().first?.path.contains("s.m4a") == true)
+        let stereo = try #require(
+            DASHManifest(
+                data: DASHManifestTests.mpd(
+                    period: """
+                        <AdaptationSet contentType="audio" lang="en">
+                        <Representation id="opus" mimeType="audio/webm" codecs="opus" bandwidth="116000"><BaseURL>o.webm</BaseURL></Representation>
+                        <Representation id="ec3" mimeType="audio/mp4" codecs="ec-3" bandwidth="192000"><AudioChannelConfiguration schemeIdUri="urn:dolby:dash:audio_channel_configuration:2011" value="A000"/><BaseURL>e.mp4</BaseURL></Representation>
+                        </AdaptationSet>
+                        """),
+                url: DASHManifestTests.url))
+        // Dolby's A000 is L and R; an unlisted count is stereo too.
+        #expect(stereo.sounds().first?.path.contains("o.webm") == true)
+        // CICP's 5.1.4 (16) is ten channels, more than the 7.1 (12) beside it.
+        let cicp = try #require(
+            DASHManifest(
+                data: DASHManifestTests.mpd(
+                    period: """
+                        <AdaptationSet contentType="audio" lang="en">
+                        <Representation id="a" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="500000"><AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="12"/><BaseURL>seven.m4a</BaseURL></Representation>
+                        <Representation id="b" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="400000"><AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="16"/><BaseURL>ten.m4a</BaseURL></Representation>
+                        </AdaptationSet>
+                        """),
+                url: DASHManifestTests.url))
+        #expect(cicp.sounds().first?.path.contains("ten.m4a") == true)
+    }
+
+    @Test("The codec chosen decides over the bitrate, in the manifest and in what the client is told")
+    func chooses() throws {
+        let opusFirst = try #require(Self.manifest(audioCodecs: AudioCodecPreference()))
+        #expect(opusFirst.sounds().first?.path.contains("a.webm") == true)
+        let aacFirst = try #require(Self.manifest(audioCodecs: AudioCodecPreference(order: ["aac"])))
+        #expect(aacFirst.sounds().first?.path.contains("a.m4a") == true)
+        #expect(aacFirst.address()?.contains("nits-acodecs=aac") == true)
+    }
+}

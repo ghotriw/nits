@@ -27,6 +27,45 @@ package enum DASHElements {
         return roles.allSatisfy { $0 == "dub" } ? 1 : 0
     }
 
+    /// The channels a sound has as its `AudioChannelConfiguration` tells (on the representation or its set); 0 when it
+    /// tells none or a scheme not known. The count itself (`urn:mpeg:dash:23003:3:…:2011`), a CICP index
+    /// (`urn:mpeg:mpegB:cicp:ChannelConfiguration`), or Dolby's mask of speakers in hex (`urn:dolby:dash:…`).
+    package static func channelCount(of representation: XMLTreeElement, in set: XMLTreeElement) -> Int {
+        let configurations =
+            representation.elements(named: "AudioChannelConfiguration")
+            + set.elements(named: "AudioChannelConfiguration")
+        for configuration in configurations {
+            guard let scheme = configuration.attribute("schemeIdUri")?.lowercased(),
+                let value = configuration.attribute("value")?.trimmingCharacters(in: .whitespaces)
+            else { continue }
+            let count: Int?
+            if scheme.contains("dolby") {
+                count = Int(value, radix: 16).map(dolbyChannelCount(mask:))
+            } else if scheme.contains("cicp") {
+                count = Int(value).flatMap { cicpChannels[$0] }
+            } else {
+                count = Int(value)
+            }
+            if let count, count > 0 { return count }
+        }
+        return 0
+    }
+
+    /// The channels of CICP's ChannelConfiguration (ISO/IEC 23091-3) indexes.
+    private static let cicpChannels = [
+        1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 8, 8: 2, 9: 3, 10: 4, 11: 7, 12: 8, 13: 24, 14: 8, 15: 12, 16: 10,
+        17: 12, 18: 14, 19: 12, 20: 14,
+    ]
+
+    /// The speakers of a Dolby mask (ETSI TS 102 366 annex G.3: 0xF801 is 5.1): a bit a speaker, six of them a pair.
+    private static func dolbyChannelCount(mask: Int) -> Int {
+        let pairs = 0x0400 | 0x0200 | 0x0040 | 0x0020 | 0x0010 | 0x0004
+        return (0..<16).reduce(0) { total, bit in
+            guard mask & (1 << bit) != 0 else { return total }
+            return total + (pairs & (1 << bit) != 0 ? 2 : 1)
+        }
+    }
+
     /// An adaptation set of I-frames for fast forward, not a picture to play.
     package static func isTrickMode(_ set: XMLTreeElement) -> Bool {
         (set.elements(named: "EssentialProperty") + set.elements(named: "SupplementalProperty")).contains {

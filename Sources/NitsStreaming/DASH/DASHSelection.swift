@@ -10,15 +10,20 @@ package struct DASHSelection: Equatable, Sendable {
     package var video: String?
     /// The sound to play alone (a representation's id): a sound told by segments beside a picture played as a file.
     package var audio: String?
+    /// The order of audio codecs (`CodecFamily.audioFamilies`, most preferred first) that picks the sound of a language
+    /// among the manifest's; empty for the client's own default.
+    package var audioCodecs: [String] = []
 
     private static let videoKey = "nits-video"
     private static let audioKey = "nits-audio"
+    private static let audioCodecsKey = "nits-acodecs"
 
-    var isEmpty: Bool { video == nil && audio == nil }
+    var isEmpty: Bool { video == nil && audio == nil && audioCodecs.isEmpty }
 
-    package init(video: String? = nil, audio: String? = nil) {
+    package init(video: String? = nil, audio: String? = nil, audioCodecs: [String] = []) {
         self.video = video
         self.audio = audio
+        self.audioCodecs = audioCodecs
     }
 
     /// The choice an address's fragment holds; empty for an address with none or a fragment that is not this one's.
@@ -29,6 +34,7 @@ package struct DASHSelection: Equatable, Sendable {
             switch part[..<equals] {
             case Self.videoKey: video = value
             case Self.audioKey: audio = value
+            case Self.audioCodecsKey: audioCodecs = (value ?? "").split(separator: ",").map(String.init)
             default: break
             }
         }
@@ -47,6 +53,11 @@ package struct DASHSelection: Equatable, Sendable {
         }
         if let audio, let escaped = audio.addingPercentEncoding(withAllowedCharacters: allowed) {
             parts.append("\(Self.audioKey)=\(escaped)")
+        }
+        if !audioCodecs.isEmpty,
+            let escaped = audioCodecs.joined(separator: ",").addingPercentEncoding(withAllowedCharacters: allowed)
+        {
+            parts.append("\(Self.audioCodecsKey)=\(escaped)")
         }
         if !parts.isEmpty { components.percentEncodedFragment = parts.joined(separator: "&") }
         return components.string ?? manifest.absoluteString

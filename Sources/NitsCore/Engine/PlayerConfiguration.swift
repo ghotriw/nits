@@ -143,6 +143,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
 
     /// The order of video codecs among the pictures of a size a manifest offers (DASH).
     public var videoCodecs: VideoCodecPreference
+    /// The order of audio codecs among the sounds of a language a manifest offers (DASH).
+    public var audioCodecs: AudioCodecPreference
     /// Encoding of subtitle files that have no byte order mark and aren't UTF-8; `nil` lets `TextFileEncoding` detect
     /// it (default).
     public var subtitleEncoding: String.Encoding?
@@ -202,6 +204,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         networkThumbnailPolicy: NetworkThumbnailPolicy = PlayerConfiguration.defaultNetworkThumbnailPolicy,
         trackLanguages: TrackLanguagePreferences = TrackLanguagePreferences(),
         videoCodecs: VideoCodecPreference = VideoCodecPreference(),
+        audioCodecs: AudioCodecPreference = AudioCodecPreference(),
         subtitleEncoding: String.Encoding? = nil,
         historyExcludedFolders: [ExcludedFolder] = [],
         historyExcludedDomains: [String] = []
@@ -244,6 +247,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.networkThumbnailPolicy = networkThumbnailPolicy
         self.trackLanguages = trackLanguages
         self.videoCodecs = videoCodecs
+        self.audioCodecs = audioCodecs
         self.subtitleEncoding = subtitleEncoding
         self.historyExcludedFolders = historyExcludedFolders
         self.historyExcludedDomains = historyExcludedDomains
@@ -301,6 +305,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let keyNetworkThumbnailPolicy = "Nits.networkThumbnailPolicy"
     public static let keyAudioLanguages = "Nits.audioLanguages"
     public static let keyVideoCodecs = "Nits.videoCodecs"
+    public static let keyAudioCodecs = "Nits.audioCodecs"
     public static let keySubtitleLanguages = "Nits.subtitleLanguages"
     public static let keyForcedSubtitleSelection = "Nits.forcedSubtitleSelection"
     public static let keySubtitlesWithKnownAudio = "Nits.subtitlesWithKnownAudio"
@@ -414,6 +419,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         if let codecs = userDefaults.string(forKey: keyVideoCodecs) {
             config.videoCodecs = VideoCodecPreference(stored: codecs)
         }
+        if let codecs = userDefaults.string(forKey: keyAudioCodecs) {
+            config.audioCodecs = AudioCodecPreference(stored: codecs)
+        }
         if let languages = userDefaults.string(forKey: keyAudioLanguages) {
             config.trackLanguages.audioLanguages = TrackLanguagePreferences.languages(fromStored: languages)
         }
@@ -483,6 +491,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
             TrackLanguagePreferences.storedValue(of: trackLanguages.subtitleLanguages),
             forKey: Self.keySubtitleLanguages)
         userDefaults.set(videoCodecs.stored, forKey: Self.keyVideoCodecs)
+        userDefaults.set(audioCodecs.stored, forKey: Self.keyAudioCodecs)
         userDefaults.set(trackLanguages.forcedSubtitles.rawValue, forKey: Self.keyForcedSubtitleSelection)
         userDefaults.set(trackLanguages.subtitlesWithKnownAudio.rawValue, forKey: Self.keySubtitlesWithKnownAudio)
         userDefaults.set(

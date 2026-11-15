@@ -14,6 +14,8 @@ package struct DASHManifestResolver: MediaResolver {
     package var session: URLSession = .shared
     /// Which codec is preferred among the pictures of a size (`VideoCodecPreference`).
     package var codecs = VideoCodecPreference()
+    /// Which codec is preferred among the sounds of a language (`AudioCodecPreference`).
+    package var audioCodecs = AudioCodecPreference()
 
     package func order(for url: URL) -> MediaResolutionOrder? {
         // The name's end, not its extension: Unified Streaming's manifest is `…/.mpd`, a name that has none.
@@ -47,7 +49,7 @@ package struct DASHManifestResolver: MediaResolver {
             request.setValue(value, forHTTPHeaderField: name)
         }
         guard let (data, finalURL) = await download(request),
-            let manifest = DASHManifest(data: data, url: finalURL, codecs: codecs)
+            let manifest = DASHManifest(data: data, url: finalURL, codecs: codecs, audioCodecs: audioCodecs)
         else {
             // A load that was replaced or stopped ends this early; nothing was left to the demuxer.
             if !Task.isCancelled { AppLog.info(.engine, "DASH: '\(url.absoluteString)' is left to the demuxer") }
@@ -127,7 +129,8 @@ package struct DASHManifestResolver: MediaResolver {
 /// What a load asks to turn an address into streams: the engine's own resolvers first, then the host's.
 struct MediaResolverChain: MediaResolver {
     var codecs = VideoCodecPreference()
-    var builtIn: [any MediaResolver] { [DASHManifestResolver(codecs: codecs)] }
+    var audioCodecs = AudioCodecPreference()
+    var builtIn: [any MediaResolver] { [DASHManifestResolver(codecs: codecs, audioCodecs: audioCodecs)] }
     var host: (any MediaResolver)?
 
     func order(for url: URL) -> MediaResolutionOrder? {
@@ -140,21 +143,24 @@ struct MediaResolverChain: MediaResolver {
             return try await resolver.resolve(url, headers: headers)
         }
         guard let found = try await host?.resolve(url, headers: headers) else { return nil }
-        return Self.offeringChoices(of: found, codecs: codecs)
+        return Self.offeringChoices(of: found, codecs: codecs, audioCodecs: audioCodecs)
     }
 
     /// A host's manifest that names its files by keys (`ResolvedMedia.files`, inline) gets what an `.mpd` of the network
     /// does (`DASHManifestResolver`): the pictures of each codec to choose from, the codec `codecs` prefers first, each
     /// choice the manifest's own location with the picture in its fragment (`DASHSelection`). The manifest is the host's
     /// and stays as it made it; one that cannot be read, or plays as files, is returned as it is.
-    static func offeringChoices(of media: ResolvedMedia, codecs: VideoCodecPreference) -> ResolvedMedia {
+    static func offeringChoices(
+        of media: ResolvedMedia, codecs: VideoCodecPreference,
+        audioCodecs: AudioCodecPreference = AudioCodecPreference()
+    ) -> ResolvedMedia {
         guard media.files != nil, media.liveHistory == nil, media.videoFormats.isEmpty,
             let data = StreamingURL.inlineDASHManifestContents(media.path)
         else { return media }
         // What the choices' addresses are made against: no address, as the manifest has none of its own.
         let placeholder = URL(string: "https://\(StreamAddresses.host)/manifest.mpd")!
-        let resolver = DASHManifestResolver(codecs: codecs)
-        guard let manifest = DASHManifest(data: data, url: placeholder, codecs: codecs),
+        let resolver = DASHManifestResolver(codecs: codecs, audioCodecs: audioCodecs)
+        guard let manifest = DASHManifest(data: data, url: placeholder, codecs: codecs, audioCodecs: audioCodecs),
             let offered = try? resolver.resolved(manifest, url: placeholder, headers: media.headers),
             offered.path.hasPrefix(placeholder.absoluteString), offered.audioFiles.isEmpty
         else { return media }

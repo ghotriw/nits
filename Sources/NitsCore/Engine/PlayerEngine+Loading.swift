@@ -308,7 +308,8 @@ extension PlayerEngine {
         var liveHistory: LiveHistory?
         var files: MediaFiles?
         var fallback: ResolvedFallback?
-        let resolver: (any MediaResolver)? = MediaResolverChain(codecs: configuration.videoCodecs, host: mediaResolver)
+        let resolver: (any MediaResolver)? = MediaResolverChain(
+            codecs: configuration.videoCodecs, audioCodecs: configuration.audioCodecs, host: mediaResolver)
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
         let order =
             preResolved != nil ? MediaResolutionOrder.beforeOpening : pageURL.flatMap { resolver?.order(for: $0) }

@@ -603,6 +603,7 @@ public struct SettingsView: View {
             }
 
             VideoCodecsSettingsSection(onChange: notifyChange)
+            AudioCodecsSettingsSection(onChange: notifyChange)
 
             Section {
                 VStack(alignment: .leading, spacing: 6) {
