@@ -21,6 +21,8 @@ final class YouTubeLiveSource: LiveSegmentSource {
         var urls: [String: String]
         var renewal: (id: Int, task: Task<Bool, Never>)?
         var renewals = 0
+        /// The id of the last renewal begun, failed ones too: a late waiter of a failed one must not end the next.
+        var lastRenewalID = 0
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -65,10 +67,9 @@ final class YouTubeLiveSource: LiveSegmentSource {
         refresher.withLock { $0 = task }
     }
 
-    deinit {
-        refresher.withLock { $0 }?.cancel()
-        state.withLock { $0.renewal?.task.cancel() }
-    }
+    // A renewal under way holds the source (its task, and the waiters' `blocking` work), so it is never cancelled here:
+    // it ends on its own, within yt-dlp's limit.
+    deinit { refresher.withLock { $0 }?.cancel() }
 
     /// Seconds between one renewal ahead of expiry and the next, at the least.
     static let minimumRefreshInterval = 60.0
@@ -139,7 +140,8 @@ final class YouTubeLiveSource: LiveSegmentSource {
     private func renewShared() async -> Bool {
         let (id, task): (Int, Task<Bool, Never>) = state.withLock { current in
             if let running = current.renewal { return running }
-            let id = current.renewals + 1
+            current.lastRenewalID += 1
+            let id = current.lastRenewalID
             let task = Task { [self] () -> Bool in
                 do {
                     let fresh = try await renew()

@@ -80,7 +80,7 @@ manifest's playlists (`DASHPlaylists`) and the index of each of its single files
 ask while one is read wait for it (`DASHPlaylists.Store`, a `DispatchSemaphore` in steps of 50 ms, each giving way to its own loader's abort), on the
 opening's and the lanes' threads, which block on a playlist's load anyway. `YouTubeFormatSource.renewAddresses` (the
 addresses of a YouTube video's manifest) waits the same way on a request's thread: for a fresh signature to settle (the CDN refuses
-it for ~2 s), a `DispatchSemaphore` in steps of 50 ms giving way to `shouldAbort`, and for a renewal it reuses
+it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore` in steps of 50 ms giving way to `shouldAbort`, and for a renewal it reuses
 `YouTubeLiveSource.blocking` (yt-dlp, up to 90 s). Not a pattern for other code.
 
 ## Layer boundaries

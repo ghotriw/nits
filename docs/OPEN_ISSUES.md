@@ -194,14 +194,16 @@ Accepted for now, noted for later.
   size of the index): an MP4's `sidx` comes right after its `moov` (init 700–750 bytes, `sidx` 296 bytes to 2.5 KB, 100 KB
   for 10 hours), a WebM's `Cues` right after `Tracks` (init 220–330 bytes, cues 0.4–2.3 KB, 156 KB for 10 hours); the
   first 1536 bytes hold both for all but the long ones, which need one more request. Played once, an ordinary 4K video:
-  8 AV1 rungs (144p–2160p), opened in 5.5 s with the old 4 s wait for a fresh signature (now 2.5 s: yt-dlp 2.7 s, the
-  rest the opening), a seek landed in 0.37 s, the sound the original's. Not measured or not played: ABR on these
+  8 AV1 rungs (144p–2160p), opened in 5.5 s with the old 4 s wait for a fresh signature (then 2.5 s, now 5 s, waited only
+  when refused: yt-dlp 2.7 s, the rest the opening), a seek landed in 0.37 s, the sound the original's. Not measured or not played: ABR on these
   rungs, opening times of the VP9 / H.264 groups, an HDR10 or dubbed video played, the YouTube clients' other formats
   (SABR-only ones are not listed by yt-dlp and never offered), a video of hours (the index of 100–150 KB on the opening's
   path). The 5.1 sounds (`258`, `328`, `380`) are listed with the rest and the best sound of the language, by bitrate,
   is the one that plays: a video with 5.1 plays it. Thumbnails come from the picture file of the fallback (the manifest's keys are no addresses the generator can open), when the
-  network policy allows them. A first request for a fresh signature is refused for ~2 s (measured: refused up to 1.5
-  and 2 s, accepted from 2 and 2.5 s, two runs): the opening waits it out in the source.
+  network policy allows them. A first request for a fresh signature is refused for its first seconds (measured: refused up
+  to 1.5 and 2 s, accepted from 2 and 2.5 s, two runs; on 2026-11-15 every request still refused at 2.9 s, twice, and
+  accepted a second later): the source waits until the addresses are 5 s old (renewed ones too), the engine's retries
+  of the opening cover the rest.
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest

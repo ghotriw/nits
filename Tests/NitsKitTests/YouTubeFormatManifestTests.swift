@@ -182,9 +182,12 @@ struct YouTubeFormatManifestTests {
         #expect(source.renewAddresses(shouldAbort: { false }))
         #expect(ContinuousClock.now - began >= .milliseconds(250), "Waited for the address to settle")
         #expect(calls.withLock { $0 } == 0 && source.address(forKey: "a")?.absoluteString.hasSuffix("sig=1") == true)
-        // Once it is older than that, the refusal is of a bad address: yt-dlp is asked.
+        // Once it is older than that, the refusal is of a bad address: yt-dlp is asked, and the renewed address is waited
+        // for the same way before the loader asks it.
+        let renewing = ContinuousClock.now
         #expect(source.renewAddresses(shouldAbort: { false }))
         #expect(calls.withLock { $0 } == 1 && source.address(forKey: "a")?.absoluteString.hasSuffix("sig=2") == true)
+        #expect(ContinuousClock.now - renewing >= .milliseconds(250), "Waited for the renewed address to settle")
         // The wait gives way to an abort.
         let fresh = YouTubeFormatSource(urls: [:], settling: .seconds(30)) { [:] }
         #expect(!fresh.renewAddresses(shouldAbort: { true }))
