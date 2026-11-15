@@ -1,6 +1,6 @@
 # HLS client and adaptive bitrate
 
-Nits reads HLS with a client of its own (`Sources/NitsCore/Demuxing/HLS/`): playlists, segments, discontinuities,
+Nits reads HLS with a client of its own (the `NitsStreaming` target, `Sources/NitsStreaming/`): playlists, segments, discontinuities,
 live windows and renditions are its, and FFmpeg only demuxes each segment (its HLS demuxer is not built). Adaptive
 bitrate (`AdaptiveBitrateLogic`) chooses the variant of an HLS ladder and of a DASH manifest alike.
 
@@ -19,34 +19,34 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
 
 ## The client
 
-- **HLS opening.** `HLSInput` loads the master and every media playlist it needs at once (one request each, on
+- **HLS opening.** `StreamingInput` loads the multivariant playlist and every media playlist it needs at once (one request each, on
   `HTTPSessionTransport`), and probes lanes to describe their streams: the start of a lane's first segment, streamed
-  (`HLSSegmentBody`) through an `AVIOContext` of ours into FFmpeg's analysis, which reads what it needs of it
-  (`HLSLane.probe`). The probe's requests are the opening's (`HTTPSessionTransport.open(opening:)`: no adaptive-bitrate
+  (`SegmentBody`) through an `AVIOContext` of ours into FFmpeg's analysis, which reads what it needs of it
+  (`StreamingLane.probe`). The probe's requests are the opening's (`HTTPSessionTransport.open(opening:)`: no adaptive-bitrate
   sample, but a measure of the link). A probe's segment is kept by its lane once the streams are described
-  (`HLSLane.startBody`): the run that starts there replays it and goes on with the same download, and a lane that is not
+  (`StreamingLane.startBody`): the run that starts there replays it and goes on with the same download, and a lane that is not
   read drops it and downloads nothing more. The rung probed to start on is asked for whole and not held
   (`HTTPSessionInput.Opening.start`): its download is the start of playback, and what it brings after the opening a
   sample as any segment's; the others are held to a 256 KB buffer, asked for in pieces of it (`.held`), as they are
   read only as far as FFmpeg's analysis goes. FFmpeg's own HLS demuxer probed every variant one request after
   another, and Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one.
-  Here only the variants that switch with the best one (`HLSInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
+  Here only the variants that switch with the best one (`StreamingInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
   `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded at all, and of such a ladder only the
   top rung is probed, with the audio renditions beside it (hls.js and ExoPlayer read the start variant alone):
-  - *Clones.* The other rungs are described as the top (`HLSInput.cloneCandidates`): its table streams copied, the
+  - *Clones.* The other rungs are described as the top (`StreamingInput.cloneCandidates`): its table streams copied, the
     picture of the size the rung's `RESOLUTION` tells (0, unknown, without one). A rung whose `CODECS` tell other sound
     muxed into it is probed itself. A clone's variant is `pending` (`DemuxerInput.variantDescription(id:)`) until its
     first run: that run's streams replace the description in the table, the table's time base kept
-    (`HLSInput.redescribe`, `HLSLane.describeFirstRun`), or, of other kinds or numbers, make it `rejected` and the lane
-    reads nothing (`HLSLane.rejected`). Its runs are analysed as briefly as the top's (`HLSLane.analyzesAs`).
+    (`StreamingInput.redescribe`, `StreamingLane.describeFirstRun`), or, of other kinds or numbers, make it `rejected` and the lane
+    reads nothing (`StreamingLane.rejected`). Its runs are analysed as briefly as the top's (`StreamingLane.analyzesAs`).
   - *The demuxer* starts only on a described variant (`adoptVariants`), and checks a switch to a pending one once its
     first read described it (`verifyVariantSwitchTarget`, in `readPacket`): rejected, or not `canSwitch` with the
     variant played, the switch is given up and the variant never chosen again (`VariantSelection.rejected`, out of
     adaptive bitrate and `selectVariant`). A seek during a switch to a variant still pending has the input probe it at
     the target (`describeVariant(id:at:)`), under `lock`, before it splices: its decoders are made from the table.
-  - *A slow answer.* A top that has not answered in `HLSInput.answerLimit` (4 s; the request's own timeout is 10 s of
+  - *A slow answer.* A top that has not answered in `StreamingInput.answerLimit` (4 s; the request's own timeout is 10 s of
     silence) has the next rung down probed beside it (`ProbeRace`); the first to answer describes the ladder, the other's
-    requests are stopped (`HLSSegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
+    requests are stopped (`SegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
     left out, and the next rung down is probed. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
   - *A slow link* (`openingLinkRate`): the rung it starts on is probed too, before the demuxer chooses (the same rule,
     `AdaptiveBitrateLogic.openingRung`), and the next one down when that probe fails; the download of the rung probed
@@ -60,17 +60,17 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
     download goes on past its probe, and the opening waits for it (about a second at most at the limit); transfers that
     end first give the rate of what came (`rateOfWhatCame`, over half a second of transfer at least).
   A ladder `ladder(of:)` keeps whole (a rung that tells no codecs) has every rung probed side by side. A media playlist
-  given alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`HLSLane.startBody`), so
+  given alone is opened whole, as one lane. The first segment of the run a lane reads is kept (`StreamingLane.startBody`), so
   the demuxer's rewind to the start after its opening scan replays what was read and goes on with the same download.
-  `HLSInput.read` hands out the packet of the lane read that decodes first, so every lane holds its next packet (at a
+  `StreamingInput.read` hands out the packet of the lane read that decodes first, so every lane holds its next packet (at a
   time two variants share, the one a switch catches up first: its keyframe splices before the old variant's picture of
   that time is handed out); a subtitle rendition's lane loads no segment that starts after the picture's and sound's
-  next packet (`HLSLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
+  next packet (`StreamingLane.fill(before:)`): its cues are sparse, and a stretch without them would otherwise load a segment after
   another to find the next cue before any packet came out, or wait at a live edge while the picture's packets were ready.
   A playlist URL (`.m3u8`, `.m3u`) opens this way, over HTTP(S) or as a saved manifest (a file whose text is an HLS
   manifest); an address with no extension is asked for its first bytes (`SniffedPlaylist.sniff`, one small range
   request) and opens this way when they say `#EXTM3U`. A playlist served over HTTP(S) never reads a local file, whatever
-  it lists (`HLSSegmentLoader.allowsFiles`).
+  it lists (`SegmentLoader.allowsFiles`).
 - **Renditions** (`EXT-X-MEDIA` audio and subtitles) are playlists of their own, downloaded while one of their
   streams isn't discarded. Only the video, audio track and subtitle track selected are read (`applyStreamSelection`):
   on opening, at a variant switch (the new variant's video and the rendition of the selected audio track, not all its
@@ -82,18 +82,18 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
 ## Timeline and discontinuities
 
 A stream with ad insertions or splices may restart its timestamps (from zero, or another base) or jump at a
-discontinuity. The client reads the tag: a **run** of segments (`HLSSegmentReader`) is one byte stream into one
+discontinuity. The client reads the tag: a **run** of segments (`SegmentReader`) is one byte stream into one
 FFmpeg container demuxer (`mpegts`, `mov`, …), and a run ends at a discontinuity, an init-section change or a gap, where
 the lane starts the next with a demuxer of its own. The packets are moved onto the playlist's timeline by one offset
-per discontinuity sequence, which all the lanes share (`HLSTimestampAnchors`, as hls.js's `initPTS[cc]` and ExoPlayer's
+per discontinuity sequence, which all the lanes share (`TimestampAnchors`, as hls.js's `initPTS[cc]` and ExoPlayer's
 `TimestampAdjusterProvider`): the picture's first run in a sequence anchors it, where the playlist's durations put its
 first segment minus the timestamp of its first picture (else its first stream's, else its first packet); every later
 run of that sequence, of any lane and from any segment (a seek, a variant switched to, an audio rendition), takes it.
 The variants' lanes are read first, and a rendition's run of a sequence not anchored yet waits until the picture is a
-target duration past its start (`HLSLane.waitsForAnchor`), so the picture anchors whichever lane reaches a break first;
+target duration past its start (`StreamingLane.waitsForAnchor`), so the picture anchors whichever lane reaches a break first;
 past the wait (numbers that don't match across playlists) a sound run anchors it. The sequence numbers are the server's
 when it says them (`EXT-X-DISCONTINUITY-SEQUENCE`, which RFC 8216 makes the same across a stream's playlists), also
-after a late reload that missed segments (`HLSTimeline.startRun`), so every lane keys the same sequence alike.
+after a late reload that missed segments (`StreamingTimeline.startRun`), so every lane keys the same sequence alike.
 Packed audio (raw AAC, AC-3, MP3 segments) has timestamps from the run's first sample: its time on the media's clock is
 the first segment's ID3 `PRIV` timestamp (`HLSPackedAudioTag`); without one it is placed by its playlist alone and
 neither takes nor sets the shared offsets. The media's timestamps then place every run against the
@@ -110,17 +110,17 @@ its segment). The demuxer's timeline is therefore the playlist's: the engine, th
 (`readAheadState` against `consumedSeconds`) and the packet cache see one, and the cache's `searchFloor` (a timestamp
 going back) is a safety for what the client does not cover (a file of segments cut and joined, an MPEG-TS with a
 reset). Segments of a live playlist that expired while the read was behind are skipped by the model
-(`HLSTimeline.next(after:)` answers `.expired(resumingAt:)`), and what follows is placed where the playlist puts it
+(`StreamingTimeline.next(after:)` answers `.expired(resumingAt:)`), and what follows is placed where the playlist puts it
 (`expiredSegmentsKeepTheTimeline`). The places of the segments are the playlist's durations summed, corrected from the
 media as hls.js does from a fragment's PTS (`updateFragPTSDTS`): the reader reports where the first picture of each
 segment of a run is (the first packet of its reference stream whose `pos` lies in the segment's bytes,
-`HLSSegmentReader.noteSegmentStart`), `HLSTimeline.measure` takes it, and the entries between two measured places have
+`SegmentReader.noteSegmentStart`), `StreamingTimeline.measure` takes it, and the entries between two measured places have
 their durations scaled to fit, the others follow as listed (an integer `EXTINF` of a 6.006 s segment no longer drifts the
 places). A seek chooses its segment by these places. The first segment of a run is measured as the run opens, from the
 streams' start times before any packet is read, and when it turns out not to hold the target the lane restarts the run at
-the segment that does (`HLSLane.segmentStarted`, `startRun`): nothing has been handed out by then, so a restart can't
+the segment that does (`StreamingLane.segmentStarted`, `startRun`): nothing has been handed out by then, so a restart can't
 roll the sound back. The segments after the first are measured by `pos` as they are read and only refine the places.
-Entries are told apart across a restart by `HLSTimeline.Entry.epoch`, not by their place, which a measure moves. The
+Entries are told apart across a restart by `StreamingTimeline.Entry.epoch`, not by their place, which a measure moves. The
 rendition aligned to the stream's start (`streamStart`) keeps the old zero when a measure moves the first entry. A
 server that keeps its timestamps is not touched by any of it. The tests need no particular FFmpeg build.
 
@@ -148,7 +148,7 @@ as corrupt, plays: every run has a demuxer of its own. What breaks still leave i
 What the engine makes of a live window (`LiveStream`: the edge, seeks into the window, recovery, the UI) is any live
 stream's; see "Live streams" in `docs/ARCHITECTURE.md`. The playlist side is the client's:
 
-- **The window comes from the client.** `HLSInput` keeps the playlist as a model (`HLSTimeline`: segments on the
+- **The window comes from the client.** `StreamingInput` keeps the playlist as a model (`StreamingTimeline`: segments on the
   playlist's timeline, reloads merged by media sequence) and tells its window from it (`liveWindow`, after each
   `read`: the playlist is reloaded inside it): the first segment listed to the end of the last, with `hasSlid` (the
   playlist had slid when it was read: the start moves from the first load on) and `hasEnded` (`EXT-X-ENDLIST`: the last
@@ -185,7 +185,7 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
 **Adaptive bitrate** (`AdaptiveBitrateLogic`, `MediaDemuxer+AdaptiveBitrate.swift`) chooses the variant while
   reading ahead, until one is chosen by hand.
 
-- *Requests* go through `URLSession` (`HTTPSessionTransport`), not FFmpeg's HTTP: `HLSSegmentLoader` asks for each
+- *Requests* go through `URLSession` (`HTTPSessionTransport`), not FFmpeg's HTTP: `SegmentLoader` asks for each
   playlist, init section, key and segment, and for a DASH demuxer `FFmpegIOByteCounter`'s `io_open` hands FFmpeg an
   `AVIOContext` of a task's own (`HTTPSessionInput`). The call waits for the answer's headers; the body comes into a
   buffer while the reader reads at its own pace (suspended past 32 MB unread). The session keeps the connections open,
@@ -266,7 +266,7 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
   steady 25 Mbit/s link's estimate dipped to 20 for a second (23 to 20.7 with 0.1 of latency) and took 18.9 down 8
   to 13 s after the step. A variant reached by a step down has no such hold: with 0.15 of latency a second of 18.9
   costs 0.99 s of wall time at 22.4 Mbit/s, and leaving it is right.
-- *Start on a slow link*: an HLS opening's probes (`HLSInput.openingLinkRate`, bodies only) follow
+- *Start on a slow link*: an HLS opening's probes (`StreamingInput.openingLinkRate`, bodies only) follow
   the CDN's answer as much as the link (4.8 to 62 Mbit/s on fast links, 17–24 on a true 25, 1.6–1.9 on 2), so it
   proves a link slow and never fast. Under 3 Mbit/s (`slowLinkLimit`, below the lowest read on a fast link), past the slow
   start (see "HLS opening"), the start is the highest variant within `safety` of it (as DASH's `OpeningLimit.throughput`
@@ -347,23 +347,29 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   segments still arrive whole (AES-128 is decrypted in one call; streaming decryption is open).
 - **One request at a time per lane.** Over HTTP/1.1 the next segment's body comes with its answer and halved the rate of
   the one read (a live stream at 1.5 Mbit/s: the read-ahead empty for 7 s).
-- **A target of its own (`NitsHLS`) later, not a repository** (2026-11-11): no second consumer, the interface still
-  moves (ABR's fixes touch it), and a repository would drag FFmpeg's dependency build and its LGPL terms along. First
-  the shared pieces move down (HTTP transport, `NetworkTransferMeter`, `TimestampUnwrapper`, `AVStreamTable`), then the
-  client stops naming `MediaDemuxer`; the FFmpeg boundary stays (the client hands out `AVPacket`s). A repository only
-  with a second consumer.
+- **A target of its own, `NitsStreaming`, not a repository** (decided 2026-11-11, done 2026-11-15, after the DASH client): a
+  repository would drag FFmpeg's dependency build and its LGPL terms along. *Chosen:* one target for HLS and DASH over one
+  core (the DASH client was the second consumer; "NitsHLS" would have been drawn again), `package` API imported by
+  `NitsCore` alone (`internal import`; a lint keeps `NitsUI` / `NitsKit` from it, as SwiftPM shows `package` symbols to every
+  target that can see the module), and the boundary with FFmpeg where it was: the client hands out `AVPacket`s, so the target
+  depends on `CFFmpeg`. `DemuxerInput` stays in `NitsCore` as the demuxer's contract; the client has its own API and the
+  conformance is an extension there. *Turned down:* a separate "network" target without FFmpeg (nobody wants it); the
+  resolver's side of DASH (`DASHManifest`, `SegmentedDASHManifest`, `LiveHistory`) in the target (`NitsKit` builds those, and it
+  cannot import the client); a re-export of the client (a second module for hosts). The model's names are neutral where both
+  formats share them (`StreamingPlaylist`, `MultivariantPlaylist` for what HLS called the master playlist, `MediaPlaylist`,
+  `SegmentLoader`, `StreamingLane`, ...); what reads or writes m3u8 keeps `HLS`.
 - **A DASH client of our own before the target** (2026-11-14): it is the second consumer of the segment machinery
   (loader, reader, lanes, ABR's segments in flight), so a target drawn around HLS alone would be drawn again.
-  *Chosen:* DASH as a second way into the client's model, an MPD told as a master and media playlists (Shaka does the
+  *Chosen:* DASH as a second way into the client's model, an MPD told as a multivariant and media playlists (Shaka does the
   converse, HLS into its DASH-like model): the client plays playlists, not their text. *Turned down:* a common engine
   with a timeline, segment and timestamp protocol per format: nearly all of the client is already format-free, and the
   protocols would be drawn for a client not yet written. Order: the client's types free of `MediaDemuxer` (done
   2026-11-14: the input's variant types and `FFmpegErrorCode` stand on their own, one opening-rung rule in
-  `AdaptiveBitrateLogic`); where playlists come from apart from the client (done 2026-11-14: `HLSPlaylistSource`, the
+  `AdaptiveBitrateLogic`); where playlists come from apart from the client (done 2026-11-14: `PlaylistSource`, the
   opening's and a live lane's reloads; `HLSServedPlaylists` for HLS); the DASH client as such a source
   (`DASHPlaylists`: static and live MPDs, periods as discontinuities, a live history; done 2026-11-14, what it refuses is the
   opening's failure with its reason), extending the model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
-  and its patches gone (step 8, 2026-11-14); the target last, around both, with the model's names made neutral.
+  and its patches gone (step 8, 2026-11-14); the target last, around both, with the model's names made neutral (done 2026-11-15).
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
   play, content steering, interstitials (the primary plays).
 
@@ -437,7 +443,7 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   keyframe-aligned at one boundary: a 1.1 s hole). *Not built:* (b) for the start, needed 0 times of 3; waits for a stream
   with 2–6 s GOPs that shows it.
 - **The switch is made at the packet boundary, not inside the wait** (second opinion, 2026-11-12): the check fires inside
-  `HLSInput.read`'s loop; only stopping the bytes is done there, and the interrupt passes as a yield (no new lane code,
+  `StreamingInput.read`'s loop; only stopping the bytes is done there, and the interrupt passes as a yield (no new lane code,
   which every caller of `fill` would have to know).
 - **Captions are decoded as pictures are handed out, not as they are read** (5b-0b): a cut tail had already reached the
   closed-caption decoder, whose screens build on each other; neither rolling the cues back nor deduplicating them mends it.
@@ -512,7 +518,7 @@ and AVC ladders, 8 s segments; Nits plays its AVC + AC-3 ladder, top 1920×1080 
 (4K AV1 at 39 Mbit/s, 4 s segments, keyframes every 2 s), `adv_dv_atmos` (Dolby Vision, lowest rung 5186k),
 `img_bipbop_adv_example_ts`, and JW Player's AES-128 `oceans_aes`. Real streams checked end to end (2026-11-13, all
 clean): those Apple examples, Apple's interstitial sample, JW's AES with tracks, Mux DAI, Google DAI, YouTube live through
-its HLS master.
+its HLS multivariant playlist.
 
 ### Results
 
@@ -551,7 +557,7 @@ where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
 1. *Done 2026-11-14:* a drop with a partly built buffer. On the stand (15 → 1.5 Mbit/s) a drop at 5–30 s stalls
    nothing; one at 3 s, with nothing of the segment queued, stalled 29.4 s and now 4.3 s (*With nothing of the segment
    queued* in "Decisions"). Left from it:
-   - A lane opening a run reports no progress (`HLSLane.isOpening`): the read thread stood 9 s in a switch's opening of
+   - A lane opening a run reports no progress (`StreamingLane.isOpening`): the read thread stood 9 s in a switch's opening of
      an MPEG-TS segment at 8 KB/s in a test and checked no download meanwhile. fMP4 opens on its init section and did
      not show it on the stand.
    - With a thin buffer `choose` asks for the next segment with no room for the buffer (5.6 Mbit/s on an estimate of
@@ -568,7 +574,7 @@ where it had fallen only to 12.6–14.1 Mbit/s. Open, in this order:
    stays on 480; without the check it probes up to 640. *Closed:* the burst of latency right after a switch (2026-11-07, latency share 15 → 100 ms/s, which took ABR off a
    rung twice) was seen through FFmpeg's HLS demuxer, before the client; never reproduced, and the client's nine
    switches of 2026-11-13 peaked at 25–54 ms/s. Look again only if a step up is left right after it on a steady link.
-3. Then a DASH client as a source of playlists for the client (`HLSPlaylistSource`), and only then a target of its own
+3. Then a DASH client as a source of playlists for the client (`PlaylistSource`), and only then a target of its own
    (see "Decisions": "A DASH client of our own before the target").
 
 Decisions without a date: (b) AES-128 measures no link rate at the opening and its probes download whole segments
@@ -587,7 +593,7 @@ its audio group).
   when no keyframe spacing is known (the rest of the segment: a picture standing while a separate sound plays on). A
   sound muxed into the old rung has the same hole.
 - **A link between 3 Mbit/s and the best variant's bandwidth starts on the best variant.** Only an opening rate under
-  3 Mbit/s starts lower (`HLSInput.openingLinkRate`, `slowLinkLimit`): the rate follows the CDN's answers as much as the
+  3 Mbit/s starts lower (`StreamingInput.openingLinkRate`, `slowLinkLimit`): the rate follows the CDN's answers as much as the
   link (4.8 Mbit/s on a fast one, before the opening skipped TCP's slow start), so a higher limit would start low on fast links. A start segment that will not arrive in time is given up
   past half its duration for a lower variant's (see *Giving a download up* in "Adaptive bitrate"): on 3.5 Mbit/s
   with 207 ms the start on 10 Mbit/s was given up at 4 s with no stall (5.5 s before). What is left is that half a
@@ -646,13 +652,13 @@ its audio group).
     (`VTDecompressionSessionCanAcceptFormatDescription`): PlayOn's stream alternates its SPS (timing in the VUI), and
     made a session each time (3 in 40 s before, 1 after; 2026-11-06, on the patch, not rerun on the client).
   - fMP4/CMAF with a new `EXT-X-MAP` at the break: FFmpeg's mov sub-demuxer skipped the later `moov`, so the stream kept
-    the first section's `avcC` (until 2026-11-11 a patch passed the new one on). The client's `HLSLane.attachNewExtradata`
+    the first section's `avcC` (until 2026-11-11 a patch passed the new one on). The client's `StreamingLane.attachNewExtradata`
     puts the extradata of a run whose init section differs from the lane's last (`lastExtradata`) on its first video key
     frame as `NEW_EXTRADATA`, and the size follows (`HLSDiscontinuityFMP4Tests`, also after a seek back into the first
     stretch). Only H.264 and HEVC (the sets come from `NEW_EXTRADATA` in `refreshVideoFormat`); AV1 and VP9 keep the
     open's `av1C` / `vpcC`; audio extradata that changes with the section (another AAC configuration) is not taken by the
     audio path. A run's streams are matched to the table by kind and by order among the streams of that kind
-    (`HLSLane.slotIndex`), not by codec: a stream of another codec in the same place is handed to the decoder made for
+    (`StreamingLane.slotIndex`), not by codec: a stream of another codec in the same place is handed to the decoder made for
     the first, and a stream more than the first run had is dropped. Not run on a real stream.
   - Not checked for fMP4 with a new `EXT-X-MAP`: a ladder of variants. Going back to a variant whose init section the lane
     read last compares equal to `lastExtradata`, so no side data comes; whether `spliceVariantVideo` then builds the
@@ -664,7 +670,7 @@ its audio group).
   - A separate audio rendition with its own playlist and breaks (synthetic: video-only variant plus an `EXT-X-MEDIA`
     playlist, fMP4, init sections renewed in both): the sound starts at the 4 s the playlists put it at, has no gap over
     100 ms, and the second stretch keeps the first's lead within 20 ms (`audioRenditionMeetsThePicture`). The client
-    shares one offset per discontinuity sequence across its lanes (`HLSTimestampAnchors`): the picture is at the 4 s of
+    shares one offset per discontinuity sequence across its lanes (`TimestampAnchors`): the picture is at the 4 s of
     the break and the sound keeps the lead its timestamps give it (the AAC priming, 21 ms; the preset's sound is moved
     by the picture's reordering, as a packager's would be), and a rendition whose durations differ from the picture's
     keeps its place (`audioRenditionSharesThePicturesOffset`).
@@ -675,13 +681,13 @@ its audio group).
       seek opens both again; the log says "anchored anew". hls.c and the client before kept an offset per playlist, with
       the same effect whenever the playlists' durations disagreed.
     - A seek chooses the segment by the timeline's places and lands by the timestamps. The places are corrected from the
-      media (`HLSTimeline.measure`, hls.js's `updateFragPTSDTS`): the reader tells where the first picture of each segment
-      is (`HLSSegmentReader.Anchoring.onSegmentStart`: the first packet of the reference stream whose `pos` falls in the
+      media (`StreamingTimeline.measure`, hls.js's `updateFragPTSDTS`): the reader tells where the first picture of each segment
+      is (`SegmentReader.Anchoring.onSegmentStart`: the first packet of the reference stream whose `pos` falls in the
       segment's bytes), and the entries between two measured ones have their durations scaled to fit, those outside
       follow as listed. A seek whose first segment turns out not to hold the target (listed durations too long or too
       short, so the segment started after it or ended before it) restarts, as the run opens (the first segment is measured from
       the start times before any packet is read), at the one the corrected timeline picks
-      (`HLSLane.segmentStarted`, at most twice; `seekCorrectsTheTimelineFromTheMedia`). What is not corrected: a place
+      (`StreamingLane.segmentStarted`, at most twice; `seekCorrectsTheTimelineFromTheMedia`). What is not corrected: a place
       nothing has been read near (a seek far from every segment read still chooses by the listed sums, and costs the
       restart above), a measure further than a target duration from the entry (the media's clock jumped: the offset
       decides, as before), a run whose streams have no start time (its first segment is then measured by `pos` after
@@ -750,7 +756,7 @@ its audio group).
     before the first picture (`currentFramePTS` is -1 until one is shown), which the check skips now; the first message
     was not kept. A live stream's window starts at 0 as it opens and everything after is positive (the engine reads
     `currentFramePTS >= 0` as "a picture is there": a seek into a negative part of the window once stood the clock):
-    `HLSInput`'s `timelineOrigin` is 0 and its zero is the first segment listed at the first load (a negative start is
+    `StreamingInput`'s `timelineOrigin` is 0 and its zero is the first segment listed at the first load (a negative start is
     not the origin: the `FFmpegInput.timelineOrigin(of:)` of MPEG-TS/PS and `EmbeddedSubtitleReader` is a different
     path); an EVENT playlist starts at 0 too (`eventPlaylistStartsAtZero`). Not covered: a live ladder with breaks
     (single variant only; see Ladders), a stream whose timestamps jump on without a break, audio of a rendition with its
@@ -764,7 +770,7 @@ its audio group).
 - **Advertisement segments on streams of their own: done by the client, not on every kind of stream.** Mux's Deltatre
   DAI stream (`test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8`: ads of 720x408, `METHOD=NONE` among
   AES-128 segments, MPEG-TS with their own PMT) lost the 180 s of ads to FFmpeg's HLS demuxer (the picture stood at
-  36.2 s). Through `HLSInput` (2026-11-11) every run of segments has a demuxer of its own, and the stream plays to its
+  36.2 s). Through `StreamingInput` (2026-11-11) every run of segments has a demuxer of its own, and the stream plays to its
   end: 6651 pictures, 266 s, the position never going back. Not covered: a run whose streams differ in number or type
   from the first run's (they are mapped by order and type, as the run before's), and the picture's size change in
   a stream whose parameter sets are not in band.

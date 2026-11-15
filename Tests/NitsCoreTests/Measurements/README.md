@@ -18,7 +18,7 @@ ten minutes without one before it, and a series throws away its first (warm-up) 
 | `ABR start measurement` (`ABRStartMeasurement.swift`) | Start on a slow link: opening, time to the first picture, stalls, the width over time. Synthetic ladder behind `TestHTTPServer` at a rate | `NITS_MEASURE_START` | `NITS_LINK_KBPS` ("1500,600"), `NITS_MEASURE_START_SECONDS` (60) |
 | `ABR start measurement, real stream` (same file) | The opening's prefetch rate (wait and bodies told apart) against the estimate playback reaches; when the picture changes against when ABR decided | `NITS_MEASURE_START_URL` | `NITS_MEASURE_START_SECONDS` (25; 90-120 on a slow link), `NITS_MEASURE_LABEL` (e.g. "RTT+150 cold"), `NITS_MEASURE_START_KBPS` (start on the switchable variant nearest that bandwidth, adaptive bitrate on) |
 | `HLS opening measurement` (`HLSOpeningMeasurement.swift`) | Where the opening of a real HLS stream goes (master, media playlists, each rung's probe, the first run's `find_stream_info`, first picture), and a run opened by a seek to 40 % | `NITS_MEASURE_OPEN_URL` (comma-separated) | `NITS_MEASURE_OPEN_N` (runs after the warm-up run 0, 5), `NITS_MEASURE_LABEL` |
-| `Live window cost measurement` (`LiveWindowCostMeasurement.swift`) | What a reload of a day-long live window (17 280 segments of 5 s) costs a lane: building the playlist (an address per segment or one shared) and `HLSTimeline.reload`. Run in release too: `swift test -c release -Xswiftc -enable-testing` | `NITS_MEASURE_LIVE_WINDOW` | `NITS_MEASURE_LIVE_WINDOW_SEGMENTS` (17280) |
+| `Live window cost measurement` (`LiveWindowCostMeasurement.swift`) | What a reload of a day-long live window (17 280 segments of 5 s) costs a lane: building the playlist (an address per segment or one shared) and `StreamingTimeline.reload`. Run in release too: `swift test -c release -Xswiftc -enable-testing` | `NITS_MEASURE_LIVE_WINDOW` | `NITS_MEASURE_LIVE_WINDOW_SEGMENTS` (17280) |
 | `Real stream playback measurement` (`RealStreamMeasurement.swift`) | Whether a real stream (HLS, DASH, a file over HTTP) plays through the engine: opening, playback against the wall clock, time not playing, dropped frames, variant changes, seeks to 40 % and 10 % (live: 30 s back, then the edge), the log's warnings and errors | `NITS_MEASURE_PLAY_URL` | `NITS_MEASURE_PLAY_SECONDS` (15) |
 
 Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/examples/`): `bipbop_adv_example_hevc/master.m3u8`
@@ -31,10 +31,10 @@ Streams used so far (`https://devstreaming-cdn.apple.com/videos/streaming/exampl
   start. A seek back every 10 s of playhead leaves almost no net progress, so the network is barely used (nothing to
   adapt to): keep `NITS_MEASURE_ABR_SEEK_EVERY` at 30 or more for ABR to move.
 - `ABRStart` real stream: `prefetch=[...]` is the client's log line when the opening ends (`HLS client: ... opening N kbit/s`,
-  `HLSInput.openingLinkRate`'s source); `asked=` is when each switch began (its log line, `WxH@kbit/s@s`), `decided=`
+  `StreamingInput.openingLinkRate`'s source); `asked=` is when each switch began (its log line, `WxH@kbit/s@s`), `decided=`
   when the read position's variant changed (the splice, which may be much later: labels are widths), `shown=` what the picture was.
 - `HLSOpening`: `rtt=` is `ping`'s average. The `[open]` and `[seek]` lines are the client's own (debug level): `HLS opening:` splits
-  `HLSInput.init` (playlists `count/time`, probes `count/time` side by side, `describe` the rest); each `HLS run:` is a run
+  `StreamingInput.init` (playlists `count/time`, probes `count/time` side by side, `describe` the rest); each `HLS run:` is a run
   of segments: `probe`, `reposition` (the opening's start, a seek, a rewind; `+replay` reuses the kept first segment),
   `switch`, `next`, with `init=` (init section), `answer=` (first bytes), `open=` / `analyze=` (`avformat_open_input` /
   `find_stream_info`), `bytes=` handed to the demuxer by the end of the analysis, `firstPacket=` from the run's start, or

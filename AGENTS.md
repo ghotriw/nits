@@ -68,11 +68,11 @@ The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go th
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /
 `io_close2`) take an unretained `Unmanaged` pointer, as FFmpeg has no other way to pass context
 (`FFmpegInterrupt`, `FFmpegIOByteCounter`). The object must outlive the context: `FFmpegInput` holds it and closes the context first. The
-`AVIOContext`s `HLSSegmentReader` makes for each run of segments are Nits' own and read through a Swift closure.
+`AVIOContext`s `SegmentReader` makes for each run of segments are Nits' own and read through a Swift closure.
 
 So does blocking a thread, which FFmpeg's reads do by nature: `YouTubeLiveSource` waits for yt-dlp and the network on a
-`DispatchSemaphore` (`blocking`, up to 90 s). `HLSLane` waits for a live playlist's next segment the same way, on a
-`DispatchSemaphore` in steps of 50 ms (`HLSInput`, Nits' own HLS client). Both run on the thread of the demuxer's read (or of its opening, a pool
+`DispatchSemaphore` (`blocking`, up to 90 s). `StreamingLane` waits for a live playlist's next segment the same way, on a
+`DispatchSemaphore` in steps of 50 ms (`StreamingInput`, Nits' own HLS and DASH client). Both run on the thread of the demuxer's read (or of its opening, a pool
 thread, as every FFmpeg call is), and give way to a seek or a close at once (`shouldAbort`). The opening of an HLS stream waits
 the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in steps of 50 ms, then the probes' threads) and for the link's rate (`HTTPSessionTransport.waitForOpeningRate`, steps of 20 ms; `skipSlowStart` for a round trip's metrics, 100 ms at most), as
 it already blocks its thread on the playlists and the probes side by side; its requests give way to an abort too. A DASH
@@ -84,6 +84,17 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
 
 - `NitsCore` (engine) never imports SwiftUI or knows about views. `PlayerEngine` is `@Observable`
   and `@MainActor`; UI observes it directly, no wrapper view-models.
+- `NitsStreaming` is the HTTP adaptive streaming client for HLS and DASH (`Sources/NitsStreaming/`: `Client/` the format-free
+  engine, `HLS/` and `DASH/` the reading of each format) and knows nothing of `NitsCore`. Its whole API is `package`,
+  and only `NitsCore` imports it, as `internal import NitsStreaming` (never `public`, never re-exported): a host, `NitsUI` and
+  `NitsKit` reach the client through `NitsCore`'s public API. SwiftPM would let any target that depends on `NitsCore`
+  import it too, so `./scripts/format.sh lint` allows the import only in `NitsCore`, `NitsStreaming` and tests. What
+  `NitsCore` tells the client it tells in the client's own types, converted in `NitsCore` (`StreamingLiveWindow` → `LiveWindow`,
+  `LiveHistory` / `LiveSegmentSource` → `StreamHistory` / `StreamHistorySource`); what the demuxer needs of an input is
+  `StreamingInput+DemuxerInput.swift`. The client logs through `StreamingLog`, which is silent until `NitsCore` installs
+  `AppLog` as its sink: every place of `NitsCore` that makes a client object (not only the engine: thumbnails, the duration
+  probe, the subtitle reader) calls `StreamingLogBridge.install()` first. It does not hold what a resolver builds for it (`DASHManifest`,
+  `SegmentedDASHManifest`, `LiveHistory`'s address helpers forward to `StreamHistory`): `NitsKit` uses those.
 - `NitsKit` owns windows, menus and NowPlaying. `NitsUI` is declarative views plus
   `PlayerUIState` for transient UI state.
 - UI changes must not require changes to decoding, shaders or A/V sync.
@@ -107,7 +118,7 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   platform only has go in `Sources/NitsCore/Platform/<os>/`, implementing a protocol in `Platform/` (`VideoHost`,
   `AudioOutputRoute`, `DisplaySleepAssertion`) or repeating an interface every platform has (`PlatformScreen`); the
   engine keeps the policy (e.g. the HDR-screen threshold, from the host's EDR headroom). `./scripts/format.sh lint`
-  enforces it. See "Platform layer" in `docs/ARCHITECTURE.md`.
+  enforces it, and the same for `NitsStreaming` (it builds for the same platforms). See "Platform layer" in `docs/ARCHITECTURE.md`.
 - Hot loops that must run optimized in Debug too (SIMD pixel conversion, DSP) go in `NitsKernels`, the only
   target built with `-O` in Debug; keep its functions non-`@inlinable`.
 
@@ -206,8 +217,8 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   selection never wait for the network: never call them holding `queueLock`, never take `lock` from the main thread.
   An HLS variant switch rewrites the stream description (`timebase`, `formatDescription`, `audioTimebase`, …) on the
   reading thread: once reading ahead, read it through `readingDescription`.
-  The HLS client's HTTP(S) requests go through `URLSession` (`HTTPSessionTransport`), which measures each
-  request's transfer apart from its answer for adaptive bitrate; keep them one at a time (`HLSSegmentLoader` asks for
+  The streaming client's HTTP(S) requests go through `URLSession` (`HTTPSessionTransport`), which measures each
+  request's transfer apart from its answer for adaptive bitrate; keep them one at a time (`SegmentLoader` asks for
   the next segment only when the one read is through): over HTTP/1.1 the next segment's body comes with its answer and
   halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
@@ -223,7 +234,7 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   timestamp going back (a discontinuity) moves `searchFloor`: nothing before it is searched, but it still plays; the
   cache refuses while the cursor is before it or the video and audio have met different numbers of breaks.
 - **A live HLS stream has a window, not a duration** (`MediaInfo.duration` stays 0). The demuxer reads the window from
-  the input after `read` (`publishLiveWindow`, `HLSInput.liveWindow()`, told from its playlist model): never from
+  the input after `read` (`publishLiveWindow`, `StreamingInput.liveWindow()`, told from its playlist model): never from
   another thread, never by parsing playlists in the demuxer. Seeks of a live stream go through `LiveStream.clamp` (`clampedSeekTarget`) and `seek` yields the input to
   itself (`lockIO(yielding:)`), as the read-ahead waits at the edge holding `lock`. A live stream's duration is never
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
@@ -234,20 +245,20 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
   `headPollInterval`), and the window is the input's like any live playlist's. The timeline is rebased to zero, and
   `MediaInfo.timelineOrigin` is the stream's time at that zero (`LiveHistory.origin`), so a position is saved as its time
   plus the origin. The manifest names the streams by keys (`LiveHistory.streamAddress`); the loader asks the source for each
-  segment's signed address at the request (`HLSPlaylistSource.address(of:)`) and renews it once on a 403 (`renewAddresses`):
+  segment's signed address at the request (`PlaylistSource.address(of:)`) and renews it once on a 403 (`renewAddresses`):
   never put a signed address in the manifest or a playlist. Once the head stood still for `segmentWaitLimit` the source decides
   if the stream is over: if it is, the playlist ends after the head's segment (`hasEnded`); if not, the wait has no limit
-  (`HLSMediaPlaylist.updatePeriod` keeps the lane from calling it stuck). A segment listed that the server does not serve is
+  (`MediaPlaylist.updatePeriod` keeps the lane from calling it stuck). A segment listed that the server does not serve is
   skipped by the lane like any other (a hole in time), which is why the head's own segment is not listed until the end.
   Background: "Live streams" in `docs/ARCHITECTURE.md`.
-- **HLS is Nits' own client** (`Demuxing/HLS/`: `HLSPlaylist`, `HLSTimeline`, `HLSSegmentLoader`, `HLSSegmentReader`,
-  `HLSLane`, `HLSInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
+- **HLS and DASH are Nits' own client** (`Sources/NitsStreaming/`: `StreamingPlaylist`, `StreamingTimeline`, `SegmentLoader`, `SegmentReader`,
+  `StreamingLane`, `StreamingInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
   the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
-  A playlist served over HTTP(S) never reads a local file (`HLSSegmentLoader.allowsFiles`). The client plays playlists,
-  not their text: they come from an `HLSPlaylistSource` (`HLSServedPlaylists` for HLS), the way another manifest (DASH)
+  A playlist served over HTTP(S) never reads a local file (`SegmentLoader.allowsFiles`). The client plays playlists,
+  not their text: they come from a `PlaylistSource` (`HLSServedPlaylists` for HLS), the way another manifest (DASH)
   comes into it. A segment with `isGap` (`EXT-X-GAP`; a DASH period with no sound beside others that have some, which
-  `DASHPresentation.merge` keeps in its place so the sound after it is) is never requested: `HLSLane` steps over it as a
+  `DASHPresentation.merge` keeps in its place so the sound after it is) is never requested: `StreamingLane` steps over it as a
   run of its own, and anything that picks a segment by time or number goes through `readable`. Background: "Timeline and
   discontinuities" in `docs/HLS.md`.
 - **`MediaDemuxer` reads through a `DemuxerInput`** (`Demuxing/Input/`): the queues, read-ahead, packet cache, track
@@ -275,6 +286,8 @@ opening's and the lanes' threads, which block on a playlist's load anyway. Not a
 - Never reference personal media or absolute user paths. Media is generated by
   `SyntheticTestMediaFactory` (FFmpeg `lavfi`, cached in `$TMPDIR/NitsSyntheticMedia/`); add a
   `Preset` for new codec/container/channel/HDR coverage.
+- The client's own tests (parsers, the timeline, adaptive bitrate; no server, no media) are `NitsStreamingTests`, which depends on
+  `NitsStreaming` alone. Tests that serve media or play it, and the ones that join the client to `NitsCore`, stay in `NitsCoreTests`.
 - Mark suites that play media in real time `.realtimePlayback`, and ones that depend on the host otherwise
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
   skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only

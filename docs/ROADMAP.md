@@ -227,7 +227,7 @@ flowchart TD
 > Support modern adaptive web media streams with multi-rendition quality switching.
 
 - [x] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
-  Built on FFmpeg's HLS demuxer, which parses master playlists and exposes each variant as an `AVProgram` (its
+  Built on FFmpeg's HLS demuxer, which parses multivariant playlists and exposes each variant as an `AVProgram` (its
   `BANDWIDTH` as `variant_bitrate`). A client of our own (as VLC's and GStreamer's) is left for DASH / LL-HLS.
   - [x] Variant selection: `MediaDemuxer.variants`, the highest bandwidth played, the other variants' streams
     discarded (`AVDISCARD_ALL`) so their segments aren't downloaded; their audio no longer lists as extra tracks.
@@ -270,7 +270,7 @@ flowchart TD
     `https://devstreaming-cdn.apple.com/videos/streaming/examples/` (`av1-sample/av1-sample.m3u8`,
     `adv_dv_atmos/main.m3u8`, `bipbop_adv_example_hevc/master.m3u8`), big ladders, slow to open (below). On Emby,
     check the opening's prefetch too (`HLSPlaylistPrefetcher`): it sends the source's headers through URLSession,
-    and cookies a master's answer sets stay its own; `TestHTTPServer` checks neither.
+    and cookies a multivariant playlist's answer sets stay its own; `TestHTTPServer` checks neither.
   - [ ] Live streams keep connections too: a connection per segment takes a handshake and TCP's slow start a
     request, which at 180 ms of round trip took half a second per second of media for VOD (`docs/ARCHITECTURE.md`).
     Live opens one per segment for the read-ahead thread to tell the wait at the edge by `io_open`; it needs another
@@ -294,7 +294,7 @@ flowchart TD
   - [x] AV1 / VP9 variants switch: their description comes from the new variant's `av1C` / `vpcC` (the splice asked
     for H.264 parameter sets and gave every switch up).
   - [ ] Thumbnails and seek previews of HLS read the lowest variant only.
-  - [x] **Faster opening of big ladders.** FFmpeg's HLS demuxer reads every playlist of a master and probes every
+  - [x] **Faster opening of big ladders.** FFmpeg's HLS demuxer reads every playlist of a multivariant playlist and probes every
     video and audio one (init section and first segment), a request after another: Apple's examples, a program per
     tier and audio group (54–99 programs), took 47 s (bipbop advanced), 58 s (AV1) and 142 s (Dolby Vision / Atmos)
     to open on 2026-10-22; small ladders (3cat, Mux) 1.5–3 s. `HLSPlaylistPrefetcher` downloads all of it side by

@@ -91,7 +91,7 @@ rm -rf "ffmpeg-$FFMPEG_VERSION"
 tar -xf "ffmpeg-$FFMPEG_VERSION.tar.xz"
 cd "ffmpeg-$FFMPEG_VERSION"
 
-# FFmpeg is built as released. HLS and DASH are read by Nits' own clients (`HLSInput`), with FFmpeg only demuxing each
+# FFmpeg is built as released. HLS and DASH are read by Nits' own clients (`StreamingInput`), with FFmpeg only demuxing each
 # segment: its HLS demuxer is not built (`--disable-demuxer=hls` below), its DASH demuxer too (`--disable-demuxer=dash`), so
 # nothing can fall back on either.
 FFMPEG_CONFIGURE_FLAGS=(

@@ -114,8 +114,8 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   plays. The demuxer opens an inline manifest (a site's), one at a `.mpd` address, or one
   at another network address whose first bytes are a manifest's root (`SniffedPlaylist`, asked after FFmpeg failed
   to open it, as for an HLS playlist under another name), with
-  the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
-  refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods whose reload tells
+  the client (`DASHPlaylists` into `StreamingInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
+  refuses with a reason (`PlaylistSourceError.unsupported`: a live manifest of several periods whose reload tells
   no period to play, one file (`SegmentBase`) in a manifest of several, DRM, a manifest over 8 MB, …) is the opening's
   failure, the reason in its error: nothing falls back on FFmpeg, whose DASH demuxer is not built
   (`--disable-demuxer=dash`). The client plays what the choice names: the picture and the ladder of its codec and range
@@ -140,7 +140,7 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as `Process` is macOS-only), runs the yt-dlp
   installed on the system rather than a bundled one, which would age with the sites: `YTDLPLocator` searches `PATH`
   and the package managers' directories an app opened from the Finder lacks, and runs it with them on its `PATH`
-  (Deno, for YouTube). Its formats exclude DASH manifests; HLS opens from its master
+  (Deno, for YouTube). Its formats exclude DASH manifests; HLS opens from its multivariant playlist
   playlist (`manifest_url`), for its variants and adaptive bitrate. Segments of one URL (YouTube's recording of a live
   stream that just ended, `http_dash_segments`) are the last choice of the selector: `SegmentedDASHManifest` makes a
   manifest of them, given to the demuxer inline (`MediaURL.inlineDASHManifest`, a `data:` URL), which the DASH client
@@ -228,7 +228,7 @@ adaptive bitrate). What the demuxer has to read around is told as traits (`Demux
 between keyframes), not by the format's name.
 
 Streams are described as `AVStream`s, which every decoder is made from. `FFmpegInput` is FFmpeg's `avformat_open_input`
-on a file or a network file, with the bytes it reads counted (`FFmpegIOByteCounter`). `HLSInput` (`Demuxing/HLS/`) is Nits' own HLS and DASH client (a manifest is told to it by an `HLSPlaylistSource`, `DASHPlaylists` for an MPD): playlists, segments,
+on a file or a network file, with the bytes it reads counted (`FFmpegIOByteCounter`). `StreamingInput` (the `NitsStreaming` target, made a `DemuxerInput` by `StreamingInput+DemuxerInput.swift`) is Nits' own HLS and DASH client (a manifest is told to it by a `PlaylistSource`, `DASHPlaylists` for an MPD): playlists, segments,
 discontinuities, live windows and renditions are its; FFmpeg only demuxes each segment, and its own HLS demuxer is not
 built (see `docs/HLS.md`). An input that demuxes by other means keeps its
 streams in an `AVStreamTable`.
@@ -314,7 +314,7 @@ discontinuity can't hide every following frame. Container quirks:
   Thumbnails and embedded subtitle extraction apply the same origin.
   After probing parameter sets at open, these formats rewind to byte 0: a timestamp rewind can land past
   the first packet and lose the keyframe that starts the file.
-- **HLS** needs no rebase: `HLSInput`'s timeline is the playlist's, zero at the first segment listed when the playlist
+- **HLS** needs no rebase: `StreamingInput`'s timeline is the playlist's, zero at the first segment listed when the playlist
   was first loaded (a live window opens at 0, and the segments listed before the one reading begins at are placed before
   the packets read), and a seek takes targets on it. `timelineOrigin(of:)` is for FFmpeg's own formats: only a positive
   start (MPEG-TS / MPEG-PS) is rebased.
@@ -542,9 +542,9 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
   queued is read for up to the byte limit, as in mpv: video that ends (or starts) further than the limit from its
   audio would otherwise stop the thread for good, with no end of input.
 - **Sources.** A URL, and a saved HLS manifest of network media (`MediaURL.isNetworkSource`). A saved manifest is read
-  by `HLSInput` as any playlist: its relative addresses are files, the absolute ones go over the network. Other
+  by `StreamingInput` as any playlist: its relative addresses are files, the absolute ones go over the network. Other
   sources are FFmpeg's, opened with the network options (`MediaURL.applySourceOptions`).
-- **HLS.** `HLSInput` opens a playlist (one request for each playlist, a probe of the top rung, the link's rate),
+- **HLS.** `StreamingInput` opens a playlist (one request for each playlist, a probe of the top rung, the link's rate),
   reads its segments, renditions and live window, and splices a variant switch at the read position: see "The client"
   and "Variant switches" in `docs/HLS.md`.
 - **DASH variants** are the client's, as HLS's: a manifest's ladder (the pictures of the best one's codec and range) is
@@ -559,8 +559,8 @@ reads wait on the feeders. So a network source is read ahead, as mpv's demuxer c
 
 ### Discontinuities in HLS (`EXT-X-DISCONTINUITY`)
 
-How the client puts every run of segments on the playlist's timeline (`HLSTimestampAnchors`, a sequence's offset
-shared by all lanes), places the segments from the media (`HLSTimeline.measure`) and follows a change of the picture's
+How the client puts every run of segments on the playlist's timeline (`TimestampAnchors`, a sequence's offset
+shared by all lanes), places the segments from the media (`StreamingTimeline.measure`) and follows a change of the picture's
 size at a break is in "Timeline and discontinuities" in `docs/HLS.md`. The demuxer sees one timeline; its packet
 cache's `searchFloor` is a safety for what the client does not cover.
 
@@ -571,7 +571,7 @@ live stream. It has no duration (`MediaInfo.duration` is 0, so everything keyed 
 media, history, resume, thumbnails); what is played is a **window**, `LiveWindow`, from the first segment its playlist
 lists to the end of the last. Both ends move with real time.
 
-- **The window comes from the input.** `HLSInput` tells it after each `read` (`liveWindow`; see "Live playlists" in
+- **The window comes from the input.** `StreamingInput` tells it after each `read` (`liveWindow`; see "Live playlists" in
   `docs/HLS.md`), `MediaDemuxer.publishLiveWindow` reads it on the reading thread into `liveWindowState`, a lock of its
   own like `readAheadState`, with the time it first saw the window (`LiveReport.loadedAt`: the load's, which the
   engine, reading it much later after a pause, moves the window on from). Only the variant playing's playlist sets it.
@@ -615,7 +615,7 @@ HLS playlist holds an hour at most (30 s where the broadcaster has no DVR), but 
 numbered segments of one URL (`…&sq=N`) the server keeps for days; so are those of a premiere on the air (`source=yt_premiere_broadcast`, which the server numbers and times the same way). The resolver builds a manifest of them
 (`SegmentedDASHManifest`, `YouTubeLiveHistory`) and tells the demuxer, with `LiveHistory`, where the stream's time stands.
 
-- **The window is the playlist's, as for any live stream.** The history is the DASH client's alone (`HLSInput` told the
+- **The window is the playlist's, as for any live stream.** The history is the DASH client's alone (`StreamingInput` told the
   manifest as playlists, `DASHHistory` in `DASHPlaylists`): the static manifest the resolver made goes a day past the head,
   and what is listed is the segments up to the one before the head the source tells (below), from where the window has
   slid to (the segments whose time has passed since the first load count as expired, as the engine slides its window), so
@@ -644,7 +644,7 @@ numbered segments of one URL (`…&sq=N`) the server keeps for days; so are thos
   (`YouTubeLiveHistory.futureSegments`), and names a stream by a key, never by its signed address
   (`https://live.nits.invalid/<format id>?sq=N`, `LiveHistory.streamAddress`): the loader asks the source
   (`LiveSegmentSource`, YouTube's is `YouTubeLiveSource`) for the real address of each segment at its request
-  (`HLSPlaylistSource.address(of:)`), so the signature, which expires in about six hours, is renewed in one place: ahead
+  (`PlaylistSource.address(of:)`), so the signature, which expires in about six hours, is renewed in one place: ahead
   of its `expire` by a margin (yt-dlp is asked for the page again), and at once when a segment is refused (403, once:
   `renewAddresses`). What a playlist lists of the day is the segments up to **the one before the head** (the newest the
   server reports, less one), so a segment the CDN reports and does not serve yet is never listed, and the lane's rule for
