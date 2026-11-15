@@ -474,19 +474,18 @@ struct DASHManifestTests {
 }
 
 extension DASHManifestTests {
-    /// A WebM file of `id` (its index is its `Cues`, which the client does not read).
+    /// A WebM file of `id` with no index range: the client reads no index of it, so it plays as a file.
     static func webmFile(_ id: String, _ width: Int, _ height: Int, bandwidth: Int) -> String {
         video(
             id, width, height, codecs: "vp09.00.40.08", bandwidth: bandwidth,
             inside:
-                #"<BaseURL>\#(id).webm</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+                #"<BaseURL>\#(id).webm</BaseURL>"#
         ).replacingOccurrences(of: "video/mp4", with: "video/webm")
     }
 
     static let fileSound = """
         <AdaptationSet contentType="audio" lang="en"><Representation id="en" mimeType="audio/webm" codecs="opus" \
-        bandwidth="1"><BaseURL>en.webm</BaseURL><SegmentBase indexRange="300-400"><Initialization range="0-299"/>\
-        </SegmentBase></Representation></AdaptationSet>
+        bandwidth="1"><BaseURL>en.webm</BaseURL></Representation></AdaptationSet>
         """
     static let segmentedSound = """
         <AdaptationSet contentType="audio" lang="uk"><SegmentTemplate media="uk/$Number$.m4s" duration="4"/>\
@@ -527,6 +526,49 @@ extension DASHManifestTests {
         // A sound of segments is the manifest's address with it as the choice: no picture, no other sound.
         #expect(Self.soundIDs(files) == ["file:en.webm", "uk"])
         #expect(sounds.last?.path == "https://cdn.example/show/dash/manifest.mpd?token=abc#nits-audio=uk")
+    }
+}
+
+extension DASHManifestTests {
+    @Test(
+        "A WebM with an index but no start from byte 0 plays as a file; one with it is a rung, apart from MP4 of its codec"
+    )
+    func webmIndexNeedsItsStart() throws {
+        func webm(_ id: String, initialization: String) -> String {
+            Self.video(
+                id, 1920, 1080, codecs: "vp09.00.40.08", bandwidth: 3_000_000,
+                inside:
+                    #"<BaseURL>\#(id).webm</BaseURL><SegmentBase indexRange="800-1500">\#(initialization)</SegmentBase>"#
+            ).replacingOccurrences(of: "video/mp4", with: "video/webm")
+        }
+        let noStart = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"# + webm("w", initialization: "") + "</AdaptationSet>"
+                ),
+                url: Self.url))
+        #expect(noStart.playsAsFiles)
+        let late = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"#
+                        + webm("w", initialization: #"<Initialization range="10-799"/>"#) + "</AdaptationSet>"),
+                url: Self.url))
+        #expect(late.playsAsFiles)
+        let mp4 = Self.video(
+            "m", 1920, 1080, codecs: "vp09.00.40.08", bandwidth: 2_000_000,
+            inside:
+                #"<BaseURL>m.mp4</BaseURL><SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+        )
+        let mixed = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period: #"<AdaptationSet contentType="video">"#
+                        + webm("w", initialization: #"<Initialization range="0-799"/>"#) + mp4 + "</AdaptationSet>"),
+                url: Self.url))
+        #expect(!mixed.playsAsFiles && mixed.videos.count == 2)
+        #expect(mixed.ladder.isEmpty, "A WebM and an MP4 do not switch with each other")
+        #expect(mixed.codecGroups.count == 2)
     }
 }
 
@@ -576,5 +618,30 @@ extension DASHManifestTests {
         #expect(sounds.map(\.language) == ["en", "de"])
         #expect(Self.soundIDs(manifest) == ["file:en.webm", "de"])
         #expect(sounds[1].path.hasSuffix("#nits-audio=de"))
+    }
+}
+
+extension DASHManifestTests {
+    @Test("A WebM's start is read from any level and must be of the file itself, as the client reads it")
+    func webmStartAtAnyLevel() throws {
+        func picture(set: String, representation: String) -> DASHManifest? {
+            let video = Self.video(
+                "w", 1920, 1080, codecs: "vp09.00.40.08", bandwidth: 3_000_000,
+                inside:
+                    #"<BaseURL>w.webm</BaseURL><SegmentBase indexRange="800-1500">\#(representation)</SegmentBase>"#
+            ).replacingOccurrences(of: "video/mp4", with: "video/webm")
+            return DASHManifest(
+                data: Self.mpd(period: #"<AdaptationSet contentType="video">\#(set)"# + video + "</AdaptationSet>"),
+                url: Self.url)
+        }
+        // Of the set: the client merges the levels, so it reads the file.
+        let atSet = try #require(
+            picture(set: #"<SegmentBase><Initialization range="0-799"/></SegmentBase>"#, representation: ""))
+        #expect(!atSet.playsAsFiles)
+        // Of another file: the client refuses it, so the picture is a file.
+        let elsewhere = try #require(
+            picture(
+                set: "", representation: #"<Initialization sourceURL="init.webm" range="0-799"/>"#))
+        #expect(elsewhere.playsAsFiles)
     }
 }

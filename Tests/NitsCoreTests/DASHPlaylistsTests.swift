@@ -307,7 +307,9 @@ struct DASHPlaylistsTests {
 
     // MARK: - Refusals
 
-    @Test("What is not played yet is refused with its reason: live, periods, one WebM file, offsets that differ")
+    @Test(
+        "What is not played yet is refused with its reason: live, periods, a file without segments, offsets that differ"
+    )
     func refusals() throws {
         let video =
             #"<AdaptationSet contentType="video">\#(Self.template)\#(Self.video("v", 640, 360, bandwidth: 1))</AdaptationSet>"#
@@ -337,10 +339,10 @@ struct DASHPlaylistsTests {
         #expect(
             reason(
                 Self.mpd(
-                    #"<AdaptationSet contentType="video">\#(Self.video("v", 640, 360, bandwidth: 1, inside: #"<BaseURL>v.webm</BaseURL><SegmentBase indexRange="800-999"/>"#, attributes: #"mimeType="video/webm""#))</AdaptationSet>"#
+                    #"<AdaptationSet contentType="video">\#(Self.video("v", 640, 360, bandwidth: 1, inside: #"<BaseURL>v.webm</BaseURL>"#, attributes: #"mimeType="video/webm""#))</AdaptationSet>"#
                         // A sound it plays does not make it a stream of sound alone.
                         + #"<AdaptationSet contentType="audio"><SegmentTemplate media="a$Number$.m4s" duration="4"/><Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>"#
-                ))?.contains("WebM") == true)
+                ))?.contains("no segments") == true)
         let offsets = Self.mpd(
             video + """
                 <AdaptationSet contentType="audio"><SegmentTemplate timescale="1000" presentationTimeOffset="500" \
@@ -355,9 +357,9 @@ struct DASHPlaylistsTests {
         // Pictures whose every sound is left out are not played silent; one sound played beside it is enough.
         let webMSound = """
             <AdaptationSet contentType="audio"><Representation id="w" codecs="opus" bandwidth="1" mimeType="audio/webm">\
-            <BaseURL>a.webm</BaseURL><SegmentBase indexRange="800-999"/></Representation></AdaptationSet>
+            <BaseURL>a.webm</BaseURL></Representation></AdaptationSet>
             """
-        #expect(reason(Self.mpd(video + webMSound))?.contains("WebM") == true)
+        #expect(reason(Self.mpd(video + webMSound))?.contains("no segments") == true)
         let mp4Sound = """
             <AdaptationSet contentType="audio"><SegmentTemplate media="a$Number$.m4s" duration="4"/>\
             <Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>

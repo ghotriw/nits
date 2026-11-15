@@ -71,7 +71,7 @@ struct DASHManifestResolver: MediaResolver {
                     bitrate: video.bandwidth)
             }
         }
-        // Pictures that are all files the client reads no index of (WebM's): each a file, the sound added (PLAN.md, 3b).
+        // Pictures that are all files the client reads no index of (none with an index range): each a file, the sound added.
         if manifest.playsAsFiles {
             let formats = manifest.videos.compactMap { format($0, url: manifest.file(videoID: $0.id)?.absoluteString) }
             if let first = formats.first {

@@ -123,7 +123,7 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   otherwise) with the best sound of each language, or one sound alone; with no choice, the manifest as it is. What the
   resolver keeps of the manifest is the menu: the pictures best first (`VideoCodecPreference` orders the codecs), the best
   picture of each other codec in `ResolvedMedia.videoFormats` (each its address with its own choice, which the format
-  menu switches to as for a video site), pictures that are files the client reads no index of (WebM's `Cues`) played as
+  menu switches to as for a video site), pictures that are files the client reads no index of (one without an index range) played as
   files with their sounds added (`PlaybackInputs`; a sound of segments is the address with `#nits-audio`). A manifest it
   can't handle (live, several periods, unreadable) returns `nil`: the address is the client's as it is. Codec families
   are read by `CodecFamily`, shared with HLS. The segments' requests carry the source's headers (the client's transport).

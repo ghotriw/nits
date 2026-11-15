@@ -264,7 +264,12 @@ package struct DASHPlaylists: PlaylistSource {
     static func pictures(
         of videos: [DASHPresentation.Representation], selection: DASHSelection
     ) throws(PlaylistSourceError) -> [DASHPresentation.Representation] {
-        guard let id = selection.video else { return videos }
+        guard let id = selection.video else {
+            // The manifest as it is, but one container: the ladder is built from the pictures' codecs, which a WebM and an
+            // MP4 share, and its rungs must not switch across containers (the best picture's is kept).
+            guard let best = videos.max(by: { $0.bandwidth < $1.bandwidth }) else { return videos }
+            return videos.filter { $0.isWebM == best.isWebM }
+        }
         guard let chosen = videos.first(where: { $0.id == id }) else {
             throw .unsupported("the picture '\(id)' the address names is not in the manifest")
         }
@@ -272,7 +277,8 @@ package struct DASHPlaylists: PlaylistSource {
             [video.codecs.flatMap(CodecFamily.video(in:)), video.supplementalCodecs.flatMap(CodecFamily.video(in:))]
         }
         let rungs = videos.filter {
-            family($0) == family(chosen) && $0.videoRange == chosen.videoRange && $0.bandwidth > 0
+            family($0) == family(chosen) && $0.videoRange == chosen.videoRange && $0.isWebM == chosen.isWebM
+                && $0.bandwidth > 0
         }
         return chosen.bandwidth > 0 && rungs.count > 1 ? rungs : [chosen]
     }
@@ -449,7 +455,7 @@ package struct DASHPlaylists: PlaylistSource {
         }
         let representation = entry.representation
         return try store.value(loader: loader) { loader throws(PlaylistSourceError) in
-            let index = try readIndex(location, loader: loader)
+            let index = try readIndex(location, initSection: representation.initSection, loader: loader)
             // A switch or a seek lands on a segment's start: a picture's must be a keyframe. A sound's index may leave
             // it unsaid.
             if representation.kind == .video && !index.startsWithSAP {
@@ -462,20 +468,51 @@ package struct DASHPlaylists: PlaylistSource {
         }
     }
 
+    private static func indexBytes(
+        of location: DASHPresentation.IndexLocation, offset: Int64, length: Int64, loader: SegmentLoader
+    ) throws(PlaylistSourceError) -> Data {
+        guard let range = ByteRange(offset: offset, length: length) else {
+            throw .unsupported("an index past the end of what a file holds")
+        }
+        do {
+            return try loader.bytes(of: location.url, range: range)
+        } catch {
+            throw .load(error)
+        }
+    }
+
+    private static func refusal(_ error: SegmentIndex.Failure) -> PlaylistSourceError {
+        switch error {
+        case .unreadable(let reason): .unsupported("an index it cannot read: \(reason)")
+        }
+    }
+
+    /// The index of a WebM file: its `Cues` (the index range), read with the file's start (`initSection`, from its first
+    /// byte), which tells where the Segment's data is, from where the cues' positions count.
+    private static func readCues(
+        _ location: DASHPresentation.IndexLocation, initSection: InitSection?, loader: SegmentLoader
+    ) throws(PlaylistSourceError) -> SegmentIndex {
+        guard let initSection else { throw .unsupported("a WebM file without its initialization") }
+        let cues = try indexBytes(
+            of: location, offset: location.range.offset, length: location.range.length, loader: loader)
+        let header: Data
+        do { header = try loader.initSection(initSection) } catch { throw .load(error) }
+        do throws(SegmentIndex.Failure) {
+            return try MatroskaCues.read(
+                header: header, cues: cues, cuesOffset: location.isExternal ? nil : location.range.offset)
+        } catch {
+            throw refusal(error)
+        }
+    }
+
     /// The index at `location`: its range, then each box a reference points to outside the bytes read, as many as
     /// `SegmentIndex.requestLimit` allows and `SegmentIndex.sizeLimit` bytes in all.
     static func readIndex(
-        _ location: DASHPresentation.IndexLocation, loader: SegmentLoader
+        _ location: DASHPresentation.IndexLocation, initSection: InitSection?, loader: SegmentLoader
     ) throws(PlaylistSourceError) -> SegmentIndex {
+        if location.format == .webm { return try readCues(location, initSection: initSection, loader: loader) }
         func bytes(_ offset: Int64, _ length: Int64) throws(PlaylistSourceError) -> Data {
-            guard let range = ByteRange(offset: offset, length: length) else {
-                throw .unsupported("an index past the end of what a file holds")
-            }
-            do {
-                return try loader.bytes(of: location.url, range: range)
-            } catch {
-                throw .load(error)
-            }
+            try indexBytes(of: location, offset: offset, length: length, loader: loader)
         }
         var chunks = [(offset: location.range.offset, data: try bytes(location.range.offset, location.range.length))]
         var total = Int64(chunks[0].data.count)
@@ -485,8 +522,7 @@ package struct DASHPlaylists: PlaylistSource {
             do throws(SegmentIndex.Failure) {
                 reading = try SegmentIndex.read(chunks, external: location.isExternal)
             } catch {
-                guard case .unreadable(let reason) = error else { throw .unsupported("an index it cannot read") }
-                throw .unsupported("an index it cannot read: \(reason)")
+                throw Self.refusal(error)
             }
             switch reading {
             case .index(let index): return index

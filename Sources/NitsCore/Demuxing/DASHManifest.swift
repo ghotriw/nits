@@ -29,8 +29,8 @@ package struct DASHManifest {
         /// (Dolby Vision's on an HDR10 base) and the transfer (PQ, HLG, or neither).
         package var group = ""
         /// Its media is segments, so that the demuxer can seek in it and switch to it at a position: a template, a list,
-        /// or one MP4 file with its index (`SegmentBase`), whose segments the client's source reads from the index. One
-        /// file without an index the client reads (WebM's is its `Cues`) is read from its start to either.
+        /// or one file with its index (`SegmentBase`: an MP4's `sidx`, a WebM's `Cues`), whose segments the client's
+        /// source reads from the index. One file without an index range is read from its start to either.
         package var isSegmented = true
     }
 
@@ -128,7 +128,9 @@ package struct DASHManifest {
                     || (DASHElements.hdrTransfer(of: representation) != nil)
                 let supplemental = value("scte214:supplementalCodecs").flatMap(CodecFamily.video)
                 let range = DASHElements.hdrTransfer(of: representation) ?? DASHElements.hdrTransfer(of: set)
-                let group = "\(family ?? "")|\(supplemental ?? "")|\(range?.rawValue ?? "")"
+                // A WebM and an MP4 of one codec do not switch with each other (`DASHPlaylists.pictures`).
+                let isWebM = value("mimeType")?.lowercased().hasSuffix("/webm") == true
+                let group = "\(family ?? "")|\(supplemental ?? "")|\(range?.rawValue ?? "")" + (isWebM ? "|webm" : "")
                 pictures.append(
                     (
                         Video(
@@ -156,11 +158,10 @@ package struct DASHManifest {
             if ra != rb { return ra < rb }
             return a.bandwidth > b.bandwidth
         }
-        // Files the client reads no index of (a WebM file's is its `Cues`: not `isSegmented`) play as files when the
+        // Files the client reads no index of (one without an index range: not `isSegmented`) play as files when the
         // manifest has no other picture (`playsAsFiles`). Beside pictures the client reads they are left out, before the
         // duplicates are (a file must not take the place of the same picture told otherwise): as files, their formats
-        // would share the page's added sound (`ResolvedMedia.audioFiles`) with a manifest that carries its own. The
-        // client reading `Cues` would make them pictures of the manifest again: then this goes (PLAN.md, 3b).
+        // would share the page's added sound (`ResolvedMedia.audioFiles`) with a manifest that carries its own.
         if pictures.contains(where: \.video.isSegmented) { pictures.removeAll { !$0.video.isSegmented } }
         // Each is offered; one that a second adaptation set lists again (the same size, codec and bitrate) once.
         var seenKeys: Set<String> = []
@@ -222,13 +223,20 @@ package struct DASHManifest {
         }) {
             return true
         }
+        // A WebM's cues count from its Segment's data, which only its start tells: the client reads one that says where
+        // that start is (an `Initialization` from the file's first byte), else it plays as a file.
         let isWebM = nodes.lazy.compactMap { $0.attribute("mimeType") }.first?.lowercased().hasSuffix("/webm") == true
-        return !isWebM
-            && nodes.contains { node in
-                node.elements(named: "SegmentBase").contains {
-                    $0.attribute("indexRange") != nil || !$0.elements(named: "RepresentationIndex").isEmpty
-                }
+        // As the client reads it (`DASHPresentation.oneFile`): an `Initialization` of any level, of the file itself.
+        let hasStart = nodes.flatMap { $0.elements(named: "SegmentBase") }.flatMap {
+            $0.elements(named: "Initialization")
+        }
+        .contains { $0.attribute("range")?.hasPrefix("0-") == true && $0.attribute("sourceURL") == nil }
+        return nodes.contains { node in
+            node.elements(named: "SegmentBase").contains {
+                ($0.attribute("indexRange") != nil || !$0.elements(named: "RepresentationIndex").isEmpty)
+                    && (!isWebM || hasStart)
             }
+        }
     }
 
     /// The ladder of `video`'s codec and range, the best first. Fewer than two is no ladder, nor is one of pictures that
@@ -268,7 +276,7 @@ package struct DASHManifest {
 
     // MARK: - Files
 
-    /// The pictures are all files the client reads no index of (a WebM file's `Cues`, a file without an index range):
+    /// The pictures are all files the client reads no index of (a file without an index range):
     /// each plays as a file (`file(videoID:)`), its sound added (`sounds`), without adaptive bitrate; a seek is one in a
     /// network file. Not when the manifest has a picture the client reads: those files are then left out.
     package var playsAsFiles: Bool { !videos.isEmpty && !videos.contains(where: \.isSegmented) }

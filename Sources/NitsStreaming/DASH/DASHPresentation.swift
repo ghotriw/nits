@@ -60,6 +60,9 @@ package struct DASHPresentation: Sendable {
         /// Its segments are told by a timeline of a live manifest: the manifest moves the timeline's first entry as it
         /// slides without telling the number it now has, so the source numbers the segments by their times (`LiveNumbers`).
         package var numbersByTime = false
+        /// A WebM (`mimeType`): a ladder keeps to one container, as a switch from clusters to fragments is one the demuxer
+        /// has no splice for.
+        package var isWebM = false
     }
 
     /// What a dynamic manifest tells besides its segments (ISO/IEC 23009-1 5.3.1.2).
@@ -95,12 +98,19 @@ package struct DASHPresentation: Sendable {
     /// How far back a live window reaches at most, seconds (the history a stream may be given, as a day of YouTube's).
     static let maxHistory = 24.0 * 3600
 
-    /// The index of a representation that is one MP4 file (`SegmentBase`): its `indexRange` (or `RepresentationIndex`),
+    /// The index of a representation that is one file (`SegmentBase`): its `indexRange` (or `RepresentationIndex`),
     /// read by the source when the representation's playlist is asked for (dash.js and shaka-player read it then, not
     /// with the manifest).
     package struct IndexLocation: Sendable, Equatable {
+        /// What the index is: an MP4's `sidx`, or a WebM's `Cues`.
+        package enum Format: Sendable, Equatable {
+            case mp4
+            case webm
+        }
+
         /// The file.
         var media: URL
+        var format: Format = .mp4
         /// Where the index is: the file, or a file of its own (`RepresentationIndex@sourceURL`).
         package var url: URL
         package var range: ByteRange
@@ -341,7 +351,8 @@ extension DASHPresentation {
                         language: value("lang"),
                         roleRank: DASHElements.roleRank(of: element, in: set), set: setIndex,
                         initSection: told.initSection, presentationTimeOffset: told.presentationTimeOffset,
-                        segments: told.segments, index: told.index, numbersByTime: told.numbersByTime))
+                        segments: told.segments, index: told.index, numbersByTime: told.numbersByTime,
+                        isWebM: value("mimeType")?.lowercased().hasSuffix("/webm") == true))
             }
         }
         read.representations = representations
@@ -689,14 +700,12 @@ extension DASHPresentation {
     /// A representation that is one file (`SegmentBase`): where its index is, its `indexRange` or a
     /// `RepresentationIndex` (its `range`, and a `sourceURL` for an index in a file of its own, as shaka-player reads
     /// it). Its initialization is its `Initialization`, else the bytes before the index (the `ftyp` and `moov` an MP4
-    /// file of this profile starts with; dash.js looks for the `moov` in them). An MP4 file only: a WebM one's index is
-    /// its `Cues`, which the client does not read.
+    /// file of this profile starts with; dash.js looks for the `moov` in them). An MP4 file's index is its `sidx`, a
+    /// WebM file's (by its `mimeType`) its `Cues`; a WebM's start up to its `Tracks` is the initialization either way.
     private static func oneFile(
         _ information: Information, base: URL, mimeType: String?
     ) throws(DASHPresentationError) -> Told {
-        if let mimeType, mimeType.lowercased().hasSuffix("/webm") {
-            throw .unsupported("a WebM file (its index, Cues, is not read)")
-        }
+        let format: IndexLocation.Format = mimeType?.lowercased().hasSuffix("/webm") == true ? .webm : .mp4
         var indexURL = base
         var rangeText = information.attributes["indexRange"]
         if let element = information.representationIndex {
@@ -716,6 +725,13 @@ extension DASHPresentation {
             throw .unsupported("an index of \(range.length) bytes")
         }
         var initSection = try initSection(information.initialization, base: base)
+        if format == .webm {
+            // The cues' positions count from the Segment's data, read from the file's start (`MatroskaCues`): the
+            // start is told, and it is the file's own. Bytes before an index that follows the media are the media.
+            guard let told = initSection, told.url == base, told.byteRange?.offset == 0 else {
+                throw .unsupported("a WebM file without its initialization from the file's start")
+            }
+        }
         if initSection == nil {
             guard indexURL == base, range.offset > 0 else { throw .unsupported("one file without its initialization") }
             initSection = InitSection(url: base, byteRange: ByteRange(offset: 0, length: range.offset))
@@ -723,7 +739,7 @@ extension DASHPresentation {
         return Told(
             initSection: initSection,
             presentationTimeOffset: Double(information.presentationTimeOffset) / Double(information.timescale),
-            index: IndexLocation(media: base, url: indexURL, range: range))
+            index: IndexLocation(media: base, format: format, url: indexURL, range: range))
     }
 
     // MARK: - Times

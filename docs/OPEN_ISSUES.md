@@ -173,13 +173,14 @@ Accepted for now, noted for later.
   limitations (the start on a middle link, the estimate after a slow segment, a rung at the edge flapping, what breaks
   leave, subtitle renditions, advertisements on streams of their own, variant switches at the edges, AES-128) are kept
   there, with the open work in order.
-- **DASH: WebM pictures beside pictures the client reads are left out.** The client reads no WebM index (`Cues`), so a
-  WebM picture plays only as a file (`DASHManifest.playsAsFiles`), and only when the manifest has no other picture:
-  beside MP4 ones of an index or a template they leave the format menu, even when larger or of the preferred codec (a VP9
-  file to 2160p beside H.264 segments to 1080p: 1080p H.264 only). A `Cues` reader beside `SegmentIndex` brings them
-  back as rungs of the ladder, and `playsAsFiles` and the added sounds go with it; the open part is the reading, a WebM
-  segment being a bare `Cluster` that FFmpeg's Matroska demuxer takes only after the init. Not needed to drop
-  dashdec (done); worth it once such a manifest turns up.
+- **DASH: a WebM file's `Cues` are read, not yet measured on a real manifest.** `MatroskaCues` makes the same
+  `SegmentIndex` an MP4's `sidx` does, so a WebM picture or sound of `SegmentBase` is a rung of the ladder like an MP4
+  one (tested on FFmpeg's VP9 / Opus with the cues first, a seek asking for its cluster). Not read: a `Segment` of
+  unknown size, a file with one cue and no `Duration`, an `Initialization` that does not start at byte 0 (all refused as the
+  playlist is read, so the manifest does not play: the manifest cannot tell them before; only a WebM with no `Initialization`
+  from byte 0 is played as a file). A WebM and an MP4 of one codec are two groups: the ladder never switches the container.
+  To check on a real YouTube / Shaka manifest of VP9 beside H.264: the ladder's
+  numbering across the codecs' groups, and that `playsAsFiles` now only means a file with no index range.
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest
