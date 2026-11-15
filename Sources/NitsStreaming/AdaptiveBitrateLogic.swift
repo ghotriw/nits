@@ -217,13 +217,17 @@ package struct AdaptiveBitrateLogic: Sendable {
     /// As hls.js's `_abandonRulesCheck` does, the estimate learns of it: what the download brought since its first answer
     /// is a sample (weighed by its seconds: it is the slow link's), and an estimate on which the target fits `upSafety`
     /// (hls.js's `abrBandWidthUpFactor`; its test, not whether a variant above the target would) is set to what keeps the
-    /// target and no more (`resetEstimator(nextLoadLevelBitrate)`). Nothing is set with no estimate (nothing measured), nor
-    /// while the latency alone takes `safety` (`choose` goes by that then). Else the estimate of the fast link before the drop, which a few seconds of
+    /// target and no more (`resetEstimator(nextLoadLevelBitrate)`). Nothing is set with no estimate before the download's
+    /// (nothing measured but the slow link itself, which the sample already is: whether that sample reaches
+    /// `minimumMeasurement` is a matter of a few tenths of a second, and setting the estimate by it would make the
+    /// stream climb back at 18 s or at 36 s on the same link), nor while the latency alone takes `safety` (`choose` goes by
+    /// that then). Else the estimate of the fast link before the drop, which a few seconds of
     /// a slow one hardly move, took the stream back up to the variant given up (measured: 1920p chosen again 2 to 20 s
     /// after its download was given up on a 2 Mbit/s link, and its next segment ran the buffer from 40 s down to 9.5 s).
     package mutating func noteAbandoned(
         at time: Double, download: Download? = nil, targetBandwidth: Int? = nil, abandonedBandwidth: Int? = nil
     ) {
+        let hadEstimate = estimate != nil
         if let download, download.measuredBytes > 0, download.transferring > 0 {
             addSample(bytes: download.measuredBytes, seconds: download.transferring, media: 0, at: time)
         }
@@ -231,7 +235,7 @@ package struct AdaptiveBitrateLogic: Sendable {
         detour = abandonedBandwidth.map { Detour(ceiling: $0, time: time) }
         // The target fits `safety` with the latency's share, as `choose` reckons, and nothing higher fits `upSafety`.
         let share = config.safety - (latencyShare ?? 0)
-        if let targetBandwidth, targetBandwidth > 0, share > 0,
+        if hadEstimate, let targetBandwidth, targetBandwidth > 0, share > 0,
             estimate.map({ $0 * config.upSafety > Double(targetBandwidth) }) ?? false
         {
             setEstimate(Double(targetBandwidth) / share, at: time)

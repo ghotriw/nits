@@ -372,6 +372,18 @@ struct AdaptiveBitrateAbandonedStepTests {
         #expect(abs(after - 500_000 / logic.config.safety) > 1_000, "Not set to the target's")
     }
 
+    @Test("With nothing measured before, the download's own sample stands: the slow link is not set to the target's")
+    func firstSampleIsKept() throws {
+        // 1.4 Mbit/s for a second and a half, and no estimate before: the sample is the link, whatever it weighs.
+        var logic = AdaptiveBitrateLogic()
+        let download = AdaptiveBitrateLogic.Download(
+            variant: 2, duration: 6, bytes: 262_500, length: 3_750_000, elapsed: 1.6, firstAnswer: 0.1,
+            transferring: 1.5, measuredBytes: 262_500)
+        logic.noteAbandoned(at: 2, download: download, targetBandwidth: 460_000)
+        let estimate = try #require(logic.estimate)
+        #expect(abs(estimate - 1_400_000) < 1_000, "Estimate \(estimate)")
+    }
+
     @Test("Nothing measured, no estimate is made up")
     func noEstimateIsMadeUp() {
         // No sample before, and the download brought nothing past its opening: still nothing measured.
