@@ -306,6 +306,8 @@ extension PlayerEngine {
         var chaptersFromResolver: [MediaChapter] = []
         var buttonsFromResolver: [PlaybackActionButton] = []
         var liveHistory: LiveHistory?
+        var files: MediaFiles?
+        var fallback: ResolvedFallback?
         let resolver: (any MediaResolver)? = MediaResolverChain(codecs: configuration.videoCodecs, host: mediaResolver)
         let pageURL = MediaURL.isNetworkURL(path) ? URL(string: path) : nil
         let order =
@@ -370,6 +372,8 @@ extension PlayerEngine {
                 }
             historyKey = resolved.historyKey ?? path
             liveHistory = resolved.liveHistory
+            files = resolved.files
+            fallback = resolved.fallback
             chaptersFromResolver = resolved.chapters
             buttonsFromResolver = resolved.actionButtons
             if request.title?.isEmpty ?? true, let title = resolved.title, !title.isEmpty {
@@ -387,6 +391,7 @@ extension PlayerEngine {
         func openSource() async -> MediaDemuxer? {
             let (sourcePath, sourceHeaders, requestSize) = (source.path, source.headers, source.httpRequestSize)
             let history = liveHistory
+            let files = files
             // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
             var isNetwork = MediaURL.isNetworkURL(sourcePath) || MediaURL.isInlineDASHManifest(sourcePath)
             if !isNetwork {
@@ -402,7 +407,7 @@ extension PlayerEngine {
                     guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
                     return MediaDemuxer(
                         url: sourcePath, headers: sourceHeaders, httpRequestSize: requestSize,
-                        interruptContext: interruptContext, liveHistory: history)
+                        interruptContext: interruptContext, liveHistory: history, files: files)
                 }.value
                 if let opened {
                     if isNetwork {
@@ -437,11 +442,32 @@ extension PlayerEngine {
         if endIfSuperseded() { return }
         // A stream the resolver gave that didn't open (expired since `preResolved`, or a CDN session that didn't
         // answer on the first resolution) is asked for once more.
+        // A manifest with the files it was made of to fall back on is not asked for again unless its addresses were
+        // refused as expired: a second yt-dlp and a second wait would come before the fallback for a refusal that is not one.
         if newDemuxer == nil, resolvedSource != nil, resolver != nil, pageURL != nil,
-            !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false)
+            !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false),
+            fallback == nil || (interruptContext.lastError.map { Self.isForbiddenError($0.code) } ?? false)
         {
             AppLog.info(.engine, "The streams of '\(path)' didn't open: asking the resolver again")
             known = nil
+            switch await resolve() {
+            case .ended: return
+            case .declined: break
+            case .resolved:
+                newDemuxer = await openSource()
+                if endIfSuperseded() { return }
+            }
+        }
+        // A manifest the client refused (an index it cannot read, a stream it does not play): the files it was made of play
+        // as the resolver first gave them, as they did before it made one.
+        if newDemuxer == nil, let plain = fallback?.media,
+            !(interruptContext.lastError.map { Self.isTransientNetworkError($0.code) } ?? false)
+        {
+            AppLog.warning(
+                .engine,
+                "The manifest of '\(path)' didn't open (\(interruptContext.lastError?.message ?? "no reason")): playing its files as they are"
+            )
+            known = plain
             switch await resolve() {
             case .ended: return
             case .declined: break
@@ -551,6 +577,7 @@ extension PlayerEngine {
             historyKey: historyKey,
             headers: source.headers,
             httpRequestSize: source.httpRequestSize,
+            thumbnailMedia: fallback?.media,
             subtitleFiles: source.subtitleFiles,
             saved: saved,
             readSubtitleFiles: subtitleFiles,
@@ -943,7 +970,8 @@ extension PlayerEngine {
     func applyLoadedDemuxer(
         _ demuxer: MediaDemuxer, inputs: PlaybackInputs, path: String, sourcePath: String, historyKey: String,
         headers: [String: String],
-        httpRequestSize: Int? = nil, subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
+        httpRequestSize: Int? = nil, thumbnailMedia: ResolvedMedia? = nil,
+        subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
         saved savedTracks: PlaybackPreferences?, readSubtitleFiles: MediaSubtitleFiles,
         requestedStartTime: Double?,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
@@ -1017,11 +1045,14 @@ extension PlayerEngine {
             if let resolvedTitle { playlist.updateCurrentItemTitle(resolvedTitle) }
         }
         if demuxer.hasVideo {
+            // A manifest the resolver made has no thumbnails of its own (its files are named by keys the generator cannot
+            // resolve): the picture's file of the streams it made it from has.
+            let thumbnails = thumbnailMedia.flatMap { MediaURL.isInlineDASHManifest(sourcePath) ? $0 : nil }
             thumbnailManager.prepareThumbnails(
-                for: sourcePath,
+                for: thumbnails?.path ?? sourcePath,
                 duration: demuxer.durationSeconds,
-                headers: headers,
-                httpRequestSize: httpRequestSize,
+                headers: thumbnails?.headers ?? headers,
+                httpRequestSize: thumbnails.map(\.httpRequestSize) ?? httpRequestSize,
                 networkPolicy: configuration.networkThumbnailPolicy
             )
         }

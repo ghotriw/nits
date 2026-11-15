@@ -145,6 +145,12 @@ public struct ResolvedMedia: Sendable, Equatable {
     /// Set when `path` is a live stream's past and present as segments the resolver numbered (a manifest of its own),
     /// not a playlist the demuxer reads the window of: the demuxer plays it as live, on a timeline from zero.
     public var liveHistory: LiveHistory?
+    /// What a manifest that names its files by keys (`MediaFileKey`) is told their signed addresses by. Set by a resolver
+    /// of this package (NitsKit's yt-dlp), not part of the API hosts use.
+    package var files: MediaFiles?
+    /// What plays when `path` cannot be opened (a manifest the client refuses): the streams a resolver gave before it made
+    /// the manifest.
+    package var fallback: ResolvedFallback?
 
     public init(
         path: String, headers: [String: String] = [:], audioFiles: [MediaLoadRequest.AudioFile] = [],

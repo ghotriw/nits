@@ -29,6 +29,10 @@ struct YTDLPInfo: Decodable, Sendable {
         /// listing of a just ended live stream, each `url` the format's with `&sq=N`. Only the count is read.
         var targetDuration: Double?
         var fragments: [Fragment]?
+        /// "SDR", "HDR10", "HLG", "DV" of a picture; yt-dlp's ranking of a sound's language (the original is the highest).
+        var dynamicRange: String?
+        var languagePreference: Int?
+        var hasDRM: Bool?
 
         struct Fragment: Decodable, Sendable {
             var fragmentCount: Int?
@@ -40,6 +44,9 @@ struct YTDLPInfo: Decodable, Sendable {
 
         enum CodingKeys: String, CodingKey {
             case url, `protocol`, vcodec, acodec, language, ext, fragments
+            case dynamicRange = "dynamic_range"
+            case languagePreference = "language_preference"
+            case hasDRM = "has_drm"
             case formatNote = "format_note"
             case formatID = "format_id"
             case abr, tbr, width, height, fps
@@ -583,5 +590,19 @@ struct YTDLPInfo: Decodable, Sendable {
         let note = format.formatNote ?? ""
         if note.contains("original") { return "\(name), original" }
         return note.contains("dubbed") ? "\(name), dubbed" : name
+    }
+}
+
+extension YTDLPInfo {
+    /// The manifest of all the files a YouTube video lists (`YouTubeFormatManifest`); nil for any other page, a live stream, or
+    /// a page without both a picture and a sound to make one of.
+    func fileManifest() -> YouTubeFormatManifest? {
+        guard extractorKey == "Youtube", isLive != true, !choseIncompleteFormats, let formats,
+            // The files `-f` chose are files: not the HLS playlist a live stream fell back to, and no format of the page is a
+            // live stream's incomplete one (a segment the server ends after a few seconds).
+            requestedFormats?.allSatisfy({ $0.protocol == "https" }) == true,
+            !formats.contains(where: { $0.formatNote?.contains("incomplete") == true })
+        else { return nil }
+        return YouTubeFormatManifest(formats: formats)
     }
 }

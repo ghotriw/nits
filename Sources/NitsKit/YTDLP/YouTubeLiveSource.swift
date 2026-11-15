@@ -116,7 +116,7 @@ final class YouTubeLiveSource: LiveSegmentSource {
     /// Steps of 50 ms let `shouldAbort` (a seek or a close wants the thread) end the wait, and it ends at ninety seconds; `nil`
     /// then. The work is a task of the system's pool, so this is for the threads of FFmpeg's reads, not for the pool's own
     /// (in a pool of one thread such a wait would be for a task with no thread to run on).
-    private static func blocking<T: Sendable>(
+    static func blocking<T: Sendable>(
         shouldAbort: () -> Bool, _ work: @escaping @Sendable () async -> T
     ) -> T? {
         let result = OSAllocatedUnfairLock<T?>(initialState: nil)

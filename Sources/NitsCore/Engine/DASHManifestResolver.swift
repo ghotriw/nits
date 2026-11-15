@@ -10,12 +10,12 @@ internal import NitsStreaming
 /// itself.
 ///
 /// Asked for addresses ending in `.mpd` only.
-struct DASHManifestResolver: MediaResolver {
-    var session: URLSession = .shared
+package struct DASHManifestResolver: MediaResolver {
+    package var session: URLSession = .shared
     /// Which codec is preferred among the pictures of a size (`VideoCodecPreference`).
-    var codecs = VideoCodecPreference()
+    package var codecs = VideoCodecPreference()
 
-    func order(for url: URL) -> MediaResolutionOrder? {
+    package func order(for url: URL) -> MediaResolutionOrder? {
         // The name's end, not its extension: Unified Streaming's manifest is `…/.mpd`, a name that has none.
         guard url.lastPathComponent.lowercased().hasSuffix(".mpd") else { return nil }
         return .beforeOpening
@@ -41,7 +41,7 @@ struct DASHManifestResolver: MediaResolver {
         return (data, http.url ?? request.url!)
     }
 
-    func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
+    package func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
         var request = URLRequest(url: url, timeoutInterval: 15)
         for (name, value) in StreamingURL.sanitizedHeaders(headers) {
             request.setValue(value, forHTTPHeaderField: name)
@@ -53,6 +53,11 @@ struct DASHManifestResolver: MediaResolver {
             if !Task.isCancelled { AppLog.info(.engine, "DASH: '\(url.absoluteString)' is left to the demuxer") }
             return nil
         }
+        return try resolved(manifest, url: url, headers: headers)
+    }
+
+    /// What `manifest`, read from `url`, offers to choose from (see the type): the streams to play it with.
+    package func resolved(_ manifest: DASHManifest, url: URL, headers: [String: String]) throws -> ResolvedMedia? {
         guard !manifest.videos.isEmpty || manifest.hasAudio else {
             if manifest.hasProtectedStreams { throw MediaResolutionError("Its streams are protected (DRM)") }
             return nil
@@ -134,6 +139,38 @@ struct MediaResolverChain: MediaResolver {
         for resolver in builtIn where resolver.order(for: url) != nil {
             return try await resolver.resolve(url, headers: headers)
         }
-        return try await host?.resolve(url, headers: headers)
+        guard let found = try await host?.resolve(url, headers: headers) else { return nil }
+        return Self.offeringChoices(of: found, codecs: codecs)
+    }
+
+    /// A host's manifest that names its files by keys (`ResolvedMedia.files`, inline) gets what an `.mpd` of the network
+    /// does (`DASHManifestResolver`): the pictures of each codec to choose from, the codec `codecs` prefers first, each
+    /// choice the manifest's own location with the picture in its fragment (`DASHSelection`). The manifest is the host's
+    /// and stays as it made it; one that cannot be read, or plays as files, is returned as it is.
+    static func offeringChoices(of media: ResolvedMedia, codecs: VideoCodecPreference) -> ResolvedMedia {
+        guard media.files != nil, media.liveHistory == nil, media.videoFormats.isEmpty,
+            let data = StreamingURL.inlineDASHManifestContents(media.path)
+        else { return media }
+        // What the choices' addresses are made against: no address, as the manifest has none of its own.
+        let placeholder = URL(string: "https://\(StreamAddresses.host)/manifest.mpd")!
+        let resolver = DASHManifestResolver(codecs: codecs)
+        guard let manifest = DASHManifest(data: data, url: placeholder, codecs: codecs),
+            let offered = try? resolver.resolved(manifest, url: placeholder, headers: media.headers),
+            offered.path.hasPrefix(placeholder.absoluteString), offered.audioFiles.isEmpty
+        else { return media }
+        let base = String(media.path.prefix { $0 != "#" })
+        func inline(_ address: String) -> String {
+            let fragment = URLComponents(string: address)?.percentEncodedFragment
+            return fragment.map { base + "#" + $0 } ?? base
+        }
+        var chosen = media
+        chosen.path = inline(offered.path)
+        chosen.videoFormats = offered.videoFormats.map { format in
+            var format = format
+            format.url = inline(format.url)
+            return format
+        }
+        chosen.selectedVideoFormatID = offered.selectedVideoFormatID
+        return chosen
     }
 }

@@ -58,10 +58,10 @@ public final class YTDLPResolver: MediaResolver {
 
     /// yt-dlp asked for a live stream's page again, as the history was made from it: what the source asks it for after the
     /// load (a renewed signature, whether the stream is over).
-    private func liveInfo(of page: URL, headers: [String: String]) async throws -> YTDLPInfo {
+    private func liveInfo(of page: URL, headers: [String: String], liveHistory: Bool = true) async throws -> YTDLPInfo {
         guard let executable = locator.executable() else { throw MediaResolutionError("yt-dlp is gone") }
         let output = try await YTDLPProcess.run(
-            executable, arguments: Self.arguments(for: page, headers: headers, liveHistory: true),
+            executable, arguments: Self.arguments(for: page, headers: headers, liveHistory: liveHistory),
             path: locator.processPath(for: executable), timeout: timeout)
         guard output.status == 0 else { throw Self.error(in: output.stderr) }
         return try JSONDecoder().decode(YTDLPInfo.self, from: output.stdout)
@@ -75,6 +75,15 @@ public final class YTDLPResolver: MediaResolver {
             throw MediaResolutionError("yt-dlp does not say if the stream is on the air")
         }
         return !isLive
+    }
+
+    /// New signed addresses of the files of a video's manifest (`YouTubeFormatManifest`), by their keys, from yt-dlp asked
+    /// for the page again. The files the page still lists are renewed; none is an error.
+    func formatAddresses(of page: URL, headers: [String: String]) async throws -> [String: String] {
+        let info = try await liveInfo(of: page, headers: headers, liveHistory: false)
+        let urls = YouTubeFormatManifest.addresses(of: info.formats ?? [])
+        guard !urls.isEmpty else { throw MediaResolutionError("yt-dlp lists none of the video's files any more") }
+        return urls
     }
 
     /// New signed addresses of a live stream's streams, `keys` the ids of their formats, from yt-dlp asked for the page
@@ -257,7 +266,26 @@ public final class YTDLPResolver: MediaResolver {
                 chosen = hls
             }
         }
-        let resolved = try chosen.resolvedMedia(for: url, sponsorBlock: segments, liveHistory: history)
+        var resolved = try chosen.resolvedMedia(for: url, sponsorBlock: segments, liveHistory: history)
+        // A video of YouTube plays from a manifest of all its files (a ladder of each codec, the sound of each language) in
+        // place of the one picture and sound `-f` chose; those stay as what plays if the manifest does not open.
+        if let plain = resolved, history == nil, let manifest = chosen.fileManifest() {
+            let source = YouTubeFormatSource(urls: manifest.addresses) { [self] in
+                try await formatAddresses(of: url, headers: headers)
+            }
+            var media = plain
+            media.path = MediaURL.inlineDASHManifest(manifest.text)
+            media.audioFiles = []
+            media.httpRequestSize = nil
+            media.videoFormats = []
+            media.selectedVideoFormatID = nil
+            media.files = MediaFiles(source)
+            media.fallback = ResolvedFallback(plain)
+            resolved = media
+            AppLog.info(
+                .ytdlp, "\(url.absoluteString): a manifest of \(manifest.addresses.count) files, as the page lists them"
+            )
+        }
         AppLog.info(
             .ytdlp,
             "\(url.absoluteString) in \(elapsed): "
