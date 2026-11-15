@@ -338,8 +338,8 @@ flowchart TD
     (the order is the resolver's: `MediaResolverChain.offeringChoices`). The client finds the index of a file whose
     manifest gives none from its start (`SingleFileLayout`); the files are named by keys and their signed addresses
     renewed when refused (`YouTubeFormatSource`). Checked on one real video (4K, 8 rungs of AV1, 2026-11-15, one run); the
-    two-file path stays as the fallback. Not measured: opening times of the other codecs, ABR on YouTube's rungs, HDR and dubbed
-    videos played (their manifests are tested, not played).
+    two-file path stays as the fallback. A dubbed video (audio tracks switched) and an HDR one (HLG, AV1
+    ladder) played by hand. Not measured: opening times of the other codecs, ABR on YouTube's rungs.
   - [ ] yt-dlp's other DASH formats (a manifest's representations with lists of URLs): play the manifest
     (`manifest_url`), choosing its representations.
   - [x] Adaptive bitrate for DASH (`AdaptiveBitrateLogic` shared with HLS): the segments through
