@@ -53,4 +53,7 @@ package enum JoinRefusal: String, Sendable {
     case atDiscontinuity = "the segment is at a discontinuity"
     /// The next segment is at one: the segment itself is continuous, so this is cautious (kept apart to count it).
     case beforeDiscontinuity = "the segment is just before a discontinuity"
+    /// The two variants' segments are not numbered alike (a DASH picture whose boundaries are not the ladder's): the number
+    /// of one is not a place in the other.
+    case otherNumbering = "the variants' segments are not numbered alike"
 }

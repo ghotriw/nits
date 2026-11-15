@@ -77,8 +77,9 @@ protocol DemuxerInput: StreamDescriptions {
     /// (the demuxer splices what it reads again into what it had queued: `MediaDemuxer.admitRestarted`).
     func restartDownload(ofVariant id: Int, atSequence sequence: Int)
     /// Why variant `id` cannot read segment `sequence` from its start as the one a download given up leaves (nil: it can): it lists it,
-    /// and the segment is not at a discontinuity (timestamps that restart).
-    func canJoin(variant id: Int, sequence: Int) -> JoinRefusal?
+    /// and the segment is not at a discontinuity (timestamps that restart). `sequence` is a number of variant `source`, the
+    /// one whose download is given up: the two must number their segments alike.
+    func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal?
     /// The variant switched to next joins at segment `sequence` (nil: behind the picture, as a switch does).
     func joinNext(atSequence sequence: Int?)
 
@@ -120,7 +121,7 @@ extension DemuxerInput {
     func pollSegments(_ observer: (InFlightSegment) -> Void) {}
     func abandonDownload(ofVariant id: Int) {}
     func restartDownload(ofVariant id: Int, atSequence sequence: Int) {}
-    func canJoin(variant id: Int, sequence: Int) -> JoinRefusal? { .unsupported }
+    func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal? { .unsupported }
     func joinNext(atSequence sequence: Int?) {}
     func variantDescription(id: Int) -> VariantDescription { .described }
     func describeVariant(id: Int, at seconds: Double) -> VariantDescription { .described }

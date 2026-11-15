@@ -371,7 +371,9 @@ struct DASHPlaylistsTests {
 
     // MARK: - Multivariant and numbers
 
-    @Test("A ladder across sets is numbered by the best picture's segments; a rung of other boundaries is left out")
+    @Test(
+        "A ladder across sets is numbered by the best picture's segments; a rung of other boundaries stays, numbered on its own"
+    )
     func ladderNumbersByTime() throws {
         let built = try Self.playlists(
             Self.mpd(
@@ -390,12 +392,16 @@ struct DASHPlaylistsTests {
                 \(Self.video("odd", 1280, 720, bandwidth: 2_000_000))</AdaptationSet>
                 """))
         let multivariant = try Self.multivariant(built)
-        #expect(multivariant.variants.map(\.bandwidth) == [5_000_000, 800_000])
+        #expect(multivariant.variants.map(\.bandwidth) == [5_000_000, 800_000, 2_000_000])
         #expect(multivariant.variants.allSatisfy { $0.audioGroup == nil })
-        // Both numbered as the best one's: the lower rung's own numbers (1, 2, 3) would join a switch at another time.
-        #expect(built.told.map { $0.segments.map(\.sequence) } == [[100, 101, 102], [100, 101, 102]])
+        // The first two numbered as the best one's: the lower rung's own numbers (1, 2, 3) would join a switch at another time.
+        #expect(built.told.prefix(2).map { $0.segments.map(\.sequence) } == [[100, 101, 102], [100, 101, 102]])
         #expect(built.told[1].segments[0].url.absoluteString == "https://cdn.example/show/dash/lo/1.m4s")
         #expect(built.told[1].mediaSequence == 100 && built.told[1].hasEnded && built.told[1].type == .vod)
+        // The rung of other boundaries plays in the ladder (a switch by time needs none) with its own numbers, which
+        // say so: its number is no place in the others'.
+        #expect(built.told.map(\.hasOwnNumbers) == [false, false, true])
+        #expect(built.told[2].segments.first?.sequence == 1)
         #expect(multivariant.variants[1].resolution == VideoResolution(width: 640, height: 360))
     }
 

@@ -261,7 +261,9 @@ struct SingleFileDASHTests {
         }.count
     }
 
-    @Test("A ladder of files plays by its indexes: a rung of other boundaries is left out, each index is read once")
+    @Test(
+        "A ladder of files plays by its indexes: a rung of other boundaries stays, joined by time only; each index is read once"
+    )
     func ladder() async throws {
         guard let made = Self.make() else { return }
         defer { try? FileManager.default.removeItem(at: made.directory) }
@@ -275,7 +277,23 @@ struct SingleFileDASHTests {
 
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
         #expect(demuxer.input is StreamingInput)
-        #expect(demuxer.variants.count == 2, "\(demuxer.variants)")
+        #expect(demuxer.variants.count == 3, "\(demuxer.variants)")
+        // The rung of other boundaries (1.6 s segments) plays in the ladder, but its numbers are no place in the others':
+        // a download given up cannot be taken over at the same number by it, nor it by another. A switch by time needs none.
+        let input = try #require(demuxer.input as? StreamingInput)
+        let ids = demuxer.variants.map(\.id)
+        var refused = 0
+        var joinable = 0
+        for from in ids {
+            for to in ids where to != from {
+                switch input.canJoin(variant: to, sequence: 1, from: from) {
+                case .otherNumbering: refused += 1
+                case nil: joinable += 1
+                case .some(let other): Issue.record("\(from) to \(to): \(other.rawValue)")
+                }
+            }
+        }
+        #expect(refused == 4 && joinable == 2, "refused \(refused), joinable \(joinable)")
         #expect(abs(demuxer.durationSeconds - 20) < 0.1)
         for file in made.videos + [made.audio] {
             #expect(Self.indexRequests(server, file) == 1, "\(file.name)'s index")

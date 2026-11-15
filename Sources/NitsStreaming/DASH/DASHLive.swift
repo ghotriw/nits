@@ -255,6 +255,7 @@ extension DASHPlaylists {
         var playlist = MediaPlaylist(
             targetDuration: (representation.segments.map(\.duration).max() ?? 0).rounded(.up))
         playlist.hasIndependentSegments = true
+        playlist.hasOwnNumbers = entry.numbering == .offGrid
         let live = presentation.live
         // A manifest that turned static, or whose period has ended (another follows it: an ad break), is a recording now:
         // no segment will come.

@@ -89,6 +89,8 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         let lane: Int
         let audioLanes: [Int]
         let subtitleLanes: [Int]
+        /// Its segments' numbers are its own, not the ladder's (`MediaPlaylist.hasOwnNumbers`).
+        var hasOwnNumbers = false
     }
 
     private let table: AVStreamTable
@@ -329,10 +331,12 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
             if index == referenceIndex {
                 timeline = reference
             } else {
-                // A variant of the ladder shares the reference's sequence numbers; a rendition's need not.
+                // A variant of the ladder shares the reference's sequence numbers; a rendition's need not, nor a picture
+                // whose segments do not start where the reference's do (DASH).
                 guard
                     let aligned = StreamingTimeline(
-                        playlist, alignedTo: reference, sharesSequenceNumbers: wanted[index].kind == .primary)
+                        playlist, alignedTo: reference,
+                        sharesSequenceNumbers: wanted[index].kind == .primary && !playlist.hasOwnNumbers)
                 else { return nil }
                 timeline = aligned
             }
@@ -600,7 +604,8 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
                 Variant(
                     id: position + 1, bandwidth: entry.bandwidth, lane: video,
                     audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
-                    subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
+                    subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] },
+                    hasOwnNumbers: slots[entry.video].value?.hasOwnNumbers == true))
             if cloneLanes.contains(video) { descriptions.withLock { $0[position + 1] = .pending } }
         }
         let ms = StreamingOpeningMeasure.ms
@@ -857,9 +862,14 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         lanes[variant.lane].join(sequence: sequence)
     }
 
-    package func canJoin(variant id: Int, sequence: Int) -> JoinRefusal? {
+    package func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal? {
         guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane) else {
             return .noSegment
+        }
+        // The number is the source's: a picture numbered on its own (`MediaPlaylist.hasOwnNumbers`), either way, is no
+        // place in the other's. The switch by time does not need it.
+        if variant.hasOwnNumbers || variants.first(where: { $0.id == source })?.hasOwnNumbers == true {
+            return .otherNumbering
         }
         let lane = lanes[variant.lane]
         guard lane.kind == .primary, let entry = lane.timeline.entry(sequence: sequence), !entry.segment.isGap else {

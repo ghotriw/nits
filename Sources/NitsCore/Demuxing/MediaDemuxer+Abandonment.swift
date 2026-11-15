@@ -456,7 +456,7 @@ extension MediaDemuxer {
         guard adaptiveBitrate.pendingAbandon == nil else { return .refused(.switchUnderWay) }
         guard input.variantDescription(id: target) != .rejected else { return .refused(.rejected) }
         let joins = joinSequence ?? sequence
-        if let refusal = input.canJoin(variant: target, sequence: joins) { return .refused(.join(refusal)) }
+        if let refusal = input.canJoin(variant: target, sequence: joins, from: from) { return .refused(.join(refusal)) }
         adaptiveBitrate.pendingAbandon = PendingAbandon(
             from: from, target: target, sequence: sequence, start: start, cut: cut,
             joinSequence: joins == sequence ? nil : joins)

@@ -180,6 +180,15 @@ Accepted for now, noted for later.
   back as rungs of the ladder, and `playsAsFiles` and the added sounds go with it; the open part is the reading, a WebM
   segment being a bare `Cluster` that FFmpeg's Matroska demuxer takes only after the init. Not needed to drop
   dashdec (done); worth it once such a manifest turns up.
+- **DASH: no abandoning of a download on a ladder whose boundaries differ.** A picture whose segments do not start
+  where the best one's do plays in the ladder with numbers of its own (`MediaPlaylist.hasOwnNumbers`), and
+  `StreamingInput.canJoin` refuses a join by number to or from it (`otherNumbering`); the download then goes on and the
+  switch is the ordinary one, by time. On Shaka's Angel One the best picture (576p) is the odd one (segments at 11.52 s
+  where the four below have 11.76 s, from 8 s to 42.7 s), so the four below are refused: no abandoning there at all,
+  which is what cut a stall from 29.4 to 4.3 s on HLS. Fix: judge each segment, not the picture. `canJoin` takes the
+  time the given-up segment starts at (or ends at, for the next one) and answers the number of the target's segment that
+  starts there (within half a frame), which `joinNext` is told; it refuses only where the boundaries really differ, and
+  `hasOwnNumbers` / `.offGrid` go (the grid stays for aligning timelines). Changes the `DemuxerInput` API.
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest

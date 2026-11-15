@@ -14,12 +14,17 @@ import os
 /// as the manifest is. An index it cannot read refuses that representation with the reason; one that does not load is
 /// a failure of its playlist, as a playlist's load is.
 ///
-/// **Numbers.** The client switches between variants by segment number (`StreamingInput.canJoin(variant:sequence:)`), which
-/// HLS promises a ladder and DASH does not (`startNumber`, timelines per representation, each resolution in a set of its
-/// own). So the pictures that may switch with each other (one codec and range, as `StreamingInput.ladder(of:)` groups them)
-/// are numbered by time, from the segments of the best of them: a picture whose segments do not start where the best
-/// one's do (within half a frame) is left out, as a switch to it could not land on a segment boundary. For one file
-/// that is known once both indexes are read: its playlist is then refused, and the opening leaves its variant out.
+/// **Numbers.** An ordinary switch between variants is by time (`StreamingLane.catchUp`). The client takes a segment of
+/// another variant by its number only when a download is given up and the new variant reads the same segment
+/// (`StreamingInput.canJoin(variant:sequence:from:)`, `join(sequence:)`), which HLS promises a ladder the numbers for and
+/// DASH does not (`startNumber`, timelines per representation, each resolution in a set of its own). So the pictures
+/// that may switch with each other (one codec and range, as `StreamingInput.ladder(of:)` groups them)
+/// are numbered by time, from the segments of the best of them. A picture whose segments do not start where the best
+/// one's do (within half a frame) stays in the ladder with numbers of its own (`MediaPlaylist.hasOwnNumbers`): a switch
+/// by time (`StreamingLane.catchUp`) lands on the first segment after the position whatever its boundaries, and the
+/// demuxer cuts at a keyframe; only a download given up and taken over at the same segment needs equal numbers to be
+/// the same span of time, and `StreamingInput.canJoin` refuses it for such a picture. For one file that is known once
+/// both indexes are read.
 ///
 /// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`PlaylistSourceError.unsupported`) with
 /// the reason.
@@ -234,6 +239,9 @@ package struct DASHPlaylists: PlaylistSource {
         case ladder([Int])
         /// Those of the ladder's best picture, the entry at `reference`, for one of them whose segments an index tells.
         case on(reference: Int, tolerance: Double)
+        /// As its manifest says, for a picture of a ladder whose segments do not start where the best picture's do: it
+        /// plays in the ladder, but its numbers are no place in the others' (`MediaPlaylist.hasOwnNumbers`).
+        case offGrid
     }
 
     /// The numbers a picture's segments take, as `numberedPictures` tells them: the reference by itself.
@@ -241,6 +249,7 @@ package struct DASHPlaylists: PlaylistSource {
         case own
         case ladder([Int])
         case on(DASHPresentation.Representation, tolerance: Double)
+        case offGrid
     }
 
     /// One representation of the manifest: its id and its set.
@@ -302,7 +311,8 @@ package struct DASHPlaylists: PlaylistSource {
             let isOneFile = representation.index != nil
             return Entry(
                 representation: representation, numbering: numbering,
-                playlist: isOneFile || isLive ? nil : mediaPlaylist(representation, numbers: numbers),
+                playlist: isOneFile || isLive
+                    ? nil : mediaPlaylist(representation, numbers: numbers, hasOwnNumbers: numbering == .offGrid),
                 index: isOneFile ? Store() : nil, indexed: isOneFile ? Store() : nil, isEssential: isEssential)
         }
         func key(_ representation: DASHPresentation.Representation) -> URL {
@@ -338,6 +348,7 @@ package struct DASHPlaylists: PlaylistSource {
             switch picture.numbering {
             case .own: numbering = .own
             case .ladder(let numbers): numbering = .ladder(numbers)
+            case .offGrid: numbering = .offGrid
             case .on(let reference, let tolerance):
                 guard let position = pictures.firstIndex(where: { Self.isSame($0.representation, reference) }) else {
                     StreamingLog.warning("DASH: \(representation.id) is left out: its ladder's best is not played")
@@ -366,10 +377,11 @@ package struct DASHPlaylists: PlaylistSource {
     /// when it is a byte range, is its range's: no `bitrate` (`EXT-X-BITRATE` is for segments without one).
     static func mediaPlaylist(
         _ representation: DASHPresentation.Representation, segments: [DASHPresentation.Segment]? = nil,
-        numbers: [Int]?
+        numbers: [Int]?, hasOwnNumbers: Bool = false
     ) -> MediaPlaylist {
         let segments = segments ?? representation.segments
         var playlist = MediaPlaylist(targetDuration: (segments.map(\.duration).max() ?? 0).rounded(.up))
+        playlist.hasOwnNumbers = hasOwnNumbers
         playlist.type = .vod
         playlist.hasEnded = true
         playlist.hasIndependentSegments = true
@@ -406,23 +418,27 @@ package struct DASHPlaylists: PlaylistSource {
     ) throws(PlaylistSourceError) -> MediaPlaylist {
         let segments = try Self.segments(of: entry, periodDuration: built.periodDuration, loader: loader)
         var numbers: [Int]?
+        var hasOwnNumbers = false
         switch entry.numbering {
         case .own: break
+        case .offGrid: hasOwnNumbers = true
         case .ladder(let ladder): numbers = ladder
         case .on(let referenceIndex, let tolerance):
             let reference = built.entries[referenceIndex]
             let referenceSegments = try Self.segments(
                 of: reference, periodDuration: built.periodDuration, loader: loader)
-            guard let matched = Self.numbers(of: segments, on: referenceSegments, tolerance: tolerance) else {
+            if let matched = Self.numbers(of: segments, on: referenceSegments, tolerance: tolerance) {
+                numbers = matched
+            } else {
                 let video = entry.representation
                 StreamingLog.warning(
-                    "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its index's segments do "
+                    "DASH: \(video.id) (\(video.bandwidth) bit/s) is numbered on its own: its index's segments do "
                         + "not start where \(reference.representation.id)'s do")
-                throw .unsupported("its segments do not start where \(reference.representation.id)'s do")
+                hasOwnNumbers = true
             }
-            numbers = matched
         }
-        return Self.mediaPlaylist(entry.representation, segments: segments, numbers: numbers)
+        return Self.mediaPlaylist(
+            entry.representation, segments: segments, numbers: numbers, hasOwnNumbers: hasOwnNumbers)
     }
 
     /// The segments of `entry`: the manifest's, or those of its file's index, read once for every caller.
@@ -520,8 +536,9 @@ package struct DASHPlaylists: PlaylistSource {
 
     /// The pictures that are played, each with the numbers of its segments: in each group that switches together (codec,
     /// Dolby Vision's supplemental codec, range) those of the best picture (the highest bitrate), for the pictures whose
-    /// segments start where its own do. The others of the group are left out. `.own`: the best picture, or one alone in
-    /// its group, numbered as its manifest says. `.on`: a picture or its reference is one file, whose segments are told
+    /// segments start where its own do. The others of the group are `.offGrid`: played, numbered as their manifest says,
+    /// and refused by `StreamingInput.canJoin`. `.own`: the best picture, or one alone in its group, numbered as its
+    /// manifest says. `.on`: a picture or its reference is one file, whose segments are told
     /// once its index is read (`mediaPlaylist(_:of:loader:)`).
     static func numberedPictures(
         _ videos: [DASHPresentation.Representation], isLive: Bool = false
@@ -557,16 +574,17 @@ package struct DASHPlaylists: PlaylistSource {
             }
             let tolerance = reference.frameRate.map { 0.5 / max($0, 1) } ?? boundaryTolerance
             if isLive {
-                // Numbered by time at each listing (`livePlaylist`); the opening leaves out a picture whose boundaries
-                // are not the best one's where the windows overlap.
+                // Numbered by time at each listing (`livePlaylist`); a picture whose boundaries are not the best one's
+                // where the windows overlap is numbered on its own.
                 guard
                     numbers(
                         of: video.segments, byTimeOn: reference.segments, numbers: reference.segments.map(\.number),
                         tolerance: tolerance, isStrict: true) != nil
                 else {
                     StreamingLog.warning(
-                        "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its segments do not "
+                        "DASH: \(video.id) (\(video.bandwidth) bit/s) is numbered on its own: its segments do not "
                             + "start where \(reference.id)'s do")
+                    result.append((video, .offGrid))
                     continue
                 }
                 result.append((video, .on(reference, tolerance: tolerance)))
@@ -578,8 +596,9 @@ package struct DASHPlaylists: PlaylistSource {
             }
             guard let numbers = numbers(of: video.segments, on: reference.segments, tolerance: tolerance) else {
                 StreamingLog.warning(
-                    "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its segments do not start "
+                    "DASH: \(video.id) (\(video.bandwidth) bit/s) is numbered on its own: its segments do not start "
                         + "where \(reference.id)'s do")
+                result.append((video, .offGrid))
                 continue
             }
             result.append((video, .ladder(numbers)))
