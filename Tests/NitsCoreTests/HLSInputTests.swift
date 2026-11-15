@@ -262,10 +262,11 @@ struct HLSInputTests {
     func otherSoundToldIsProbed() throws {
         guard let stand = try Self.stand(.hlsMixedSoundLadder) else { return }
         defer { stand.server.stop() }
-        let master = try String(contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
+        let multivariant = try String(
+            contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
         stand.server.setResponder(forPath: "master.m3u8") {
             Data(
-                master.replacingOccurrences(
+                multivariant.replacingOccurrences(
                     of: "RESOLUTION=320x180,CODECS=\"avc1.64001e,mp4a.40.2\"",
                     with: "RESOLUTION=320x180,CODECS=\"avc1.64001e\""
                 ).utf8)
@@ -283,9 +284,10 @@ struct HLSInputTests {
         func candidates(_ lines: String) throws -> [Int] {
             let text = "#EXTM3U\n" + lines
             guard
-                case .master(let master) = try HLSPlaylist.parse(Data(text.utf8), url: URL(string: "http://h/m.m3u8")!)
+                case .multivariant(let multivariant) = try StreamingPlaylist.parse(
+                    Data(text.utf8), url: URL(string: "http://h/m.m3u8")!)
             else { return [] }
-            let listed = HLSInput.ladder(of: master)
+            let listed = HLSInput.ladder(of: multivariant)
             let plan = listed.enumerated().map {
                 (bandwidth: $1.bandwidth, video: $0, audio: [Int](), subtitles: [Int]())
             }
@@ -357,10 +359,11 @@ struct HLSInputTests {
         guard let stand = try Self.stand(.hlsVariants) else { return }
         defer { stand.server.stop() }
         // A HEVC variant and a variant with an audio group of its own, both below the AVC variants.
-        let master = try String(contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
+        let multivariant = try String(
+            contentsOf: stand.directory.appendingPathComponent("master.m3u8"), encoding: .utf8)
         stand.server.setResponder(forPath: "master.m3u8") {
             Data(
-                (master + """
+                (multivariant + """
                     #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="Other",URI="other_audio.m3u8"
                     #EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="hvc1.1.6.L93.B0,mp4a.40.2"
                     hevc.m3u8
@@ -372,9 +375,9 @@ struct HLSInputTests {
         let input = try #require(Self.open(stand, "master.m3u8"))
         let candidates = try #require(input.variantCandidates())
         // The muxer measures `BANDWIDTH` from the segments it made, which differ between FFmpeg builds: the AVC
-        // variants' are the generated master's own.
+        // variants' are the generated multivariant's own.
         // Read from the text, not by the parser under test; both above the variants added, which the ladder is to drop.
-        let generated = master.matches(of: /#EXT-X-STREAM-INF:BANDWIDTH=(\d+)/).compactMap { Int($0.1) }
+        let generated = multivariant.matches(of: /#EXT-X-STREAM-INF:BANDWIDTH=(\d+)/).compactMap { Int($0.1) }
         try #require(generated.count == 2 && generated.allSatisfy { $0 > 300_000 })
         #expect(candidates.map(\.bandwidth).sorted() == generated.sorted())
         let paths = stand.server.requests.map(\.path)
@@ -440,7 +443,7 @@ struct HLSInputTests {
         let input = try #require(
             HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
         let candidates = try #require(input.variantCandidates())
-        // The master lists the lower variant first: its subtitle lane comes before the top variant's in the master.
+        // The multivariant lists the lower variant first: its subtitle lane comes before the top variant's in the multivariant.
         let top = try #require(candidates.max { $0.bandwidth < $1.bandwidth })
         let subtitle = try #require(top.streams.subtitles.first)
         let kept = Set(top.streams.all).subtracting(top.streams.subtitles).union([subtitle])
@@ -604,7 +607,7 @@ struct HLSInputTests {
     /// each segment served with an ID3 tag whose `PRIV` time is `firstTicks` and on by the playlist's durations, wrapping
     /// at 33 bits as MPEG-TS time does (nil: no tag).
     private static func packedAudioInput(_ stand: Stand, firstTicks: Int64?, alone: Bool = false) throws -> HLSInput {
-        let master =
+        let multivariant =
             alone
             ? "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"\np.m3u8\n"
             : """
@@ -614,7 +617,7 @@ struct HLSInputTests {
             v.m3u8
 
             """
-        stand.server.setResponder(forPath: "master.m3u8") { Data(master.utf8) }
+        stand.server.setResponder(forPath: "master.m3u8") { Data(multivariant.utf8) }
         let listed = try String(contentsOf: stand.directory.appendingPathComponent("p.m3u8"), encoding: .utf8)
         let durations = listed.split(separator: "\n").filter { $0.hasPrefix("#EXTINF:") }.compactMap {
             Double($0.dropFirst("#EXTINF:".count).prefix { $0 != "," })
@@ -762,7 +765,7 @@ struct HLSInputTests {
 
     // MARK: Where the playlist is
 
-    @Test("A saved playlist is read from its directory: the file is the master, its segments files")
+    @Test("A saved playlist is read from its directory: the file is the multivariant, its segments files")
     func readsSavedPlaylist() throws {
         guard let stand = try Self.stand(.hlsVariants) else { return }
         defer { stand.server.stop() }

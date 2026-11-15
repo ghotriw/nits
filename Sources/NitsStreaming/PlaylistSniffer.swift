@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 
 /// What the first bytes of an address say it is, whatever its name: an HLS playlist or a DASH manifest.
 package enum SniffedPlaylist: Equatable {

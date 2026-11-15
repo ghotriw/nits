@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 
 /// What an MPD's elements say, read the same way by the resolver's manifest (`DASHManifest`) and the client's source
 /// (`DASHPresentation`).
@@ -37,7 +36,7 @@ package enum DASHElements {
 
     /// The transfer the manifest's properties tell (`TransferCharacteristics`, H.273): 16 PQ, 18 HLG; nil when they
     /// tell none of those.
-    package static func hdrTransfer(of element: XMLTreeElement) -> HLSVideoRange? {
+    package static func hdrTransfer(of element: XMLTreeElement) -> VideoRange? {
         for property in element.elements(named: "EssentialProperty") + element.elements(named: "SupplementalProperty")
         where property.attribute("schemeIdUri")?.hasSuffix("TransferCharacteristics") == true {
             switch property.attribute("value") {
@@ -120,9 +119,9 @@ package enum DASHElements {
     }
 
     /// "828-3067": the bytes from the first to the last, both included.
-    package static func byteRange(of text: String) -> HLSByteRange? {
+    package static func byteRange(of text: String) -> ByteRange? {
         let parts = text.split(separator: "-").compactMap { Int64($0) }
         guard parts.count == 2, parts[0] >= 0, parts[1] >= parts[0] else { return nil }
-        return HLSByteRange(offset: parts[0], length: parts[1] - parts[0] + 1)
+        return ByteRange(offset: parts[0], length: parts[1] - parts[0] + 1)
     }
 }

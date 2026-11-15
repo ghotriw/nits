@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 
 /// An MPD read for the client (`DASHPlaylists`): its pictures and sounds with their segments, each placed on the
 /// presentation's time. What the client does not play yet is refused with a reason (`DASHPresentationError.unsupported`),
@@ -13,7 +12,7 @@ internal import NitsStreaming
 package struct DASHPresentation: Sendable {
     package struct Segment: Sendable, Equatable {
         package var url: URL
-        package var byteRange: HLSByteRange?
+        package var byteRange: ByteRange?
         /// Seconds from the period's start (the presentation time less the `presentationTimeOffset`).
         package var start: Double
         package var duration: Double
@@ -23,7 +22,7 @@ package struct DASHPresentation: Sendable {
         package var period = 0
         /// Its period's initialization, in a representation of several periods (their inits differ); else the
         /// representation's.
-        package var initSection: HLSInitSection?
+        package var initSection: InitSection?
         /// Silence kept in its place: a period of a sound with none of its own (`merge`). Never requested.
         package var isGap = false
     }
@@ -45,13 +44,13 @@ package struct DASHPresentation: Sendable {
         package var height: Int?
         package var frameRate: Double?
         /// PQ or HLG as the manifest's properties tell; nil for neither.
-        package var videoRange: HLSVideoRange?
+        package var videoRange: VideoRange?
         package var language: String?
         /// `DASHElements.roleRank`.
         package var roleRank: Int
         /// The index of its adaptation set in the period.
         package var set: Int
-        package var initSection: HLSInitSection?
+        package var initSection: InitSection?
         /// The `presentationTimeOffset` in seconds: what its media's timestamps are ahead of the period's time.
         package var presentationTimeOffset: Double
         /// Empty for one file (`index`) until its index is read (`segments(from:of:)`).
@@ -104,7 +103,7 @@ package struct DASHPresentation: Sendable {
         var media: URL
         /// Where the index is: the file, or a file of its own (`RepresentationIndex@sourceURL`).
         package var url: URL
-        package var range: HLSByteRange
+        package var range: ByteRange
         /// The index is a file of its own: its offsets count from the start of the media file.
         package var isExternal: Bool { url != media }
     }
@@ -512,7 +511,7 @@ extension DASHPresentation {
             if let periodDuration { duration = min(duration, periodDuration - start) }
             segments.append(
                 Segment(
-                    url: location.media, byteRange: HLSByteRange(offset: entry.offset, length: entry.size),
+                    url: location.media, byteRange: ByteRange(offset: entry.offset, length: entry.size),
                     start: start, duration: duration, number: position + 1))
         }
         return segments
@@ -652,7 +651,7 @@ extension DASHPresentation {
 
     /// What a representation's segment information tells: its segments, or for one file where its index is.
     private struct Told {
-        package var initSection: HLSInitSection?
+        package var initSection: InitSection?
         /// Seconds.
         package var presentationTimeOffset: Double
         package var segments: [Segment] = []
@@ -719,7 +718,7 @@ extension DASHPresentation {
         var initSection = try initSection(information.initialization, base: base)
         if initSection == nil {
             guard indexURL == base, range.offset > 0 else { throw .unsupported("one file without its initialization") }
-            initSection = HLSInitSection(url: base, byteRange: HLSByteRange(offset: 0, length: range.offset))
+            initSection = InitSection(url: base, byteRange: ByteRange(offset: 0, length: range.offset))
         }
         return Told(
             initSection: initSection,
@@ -860,14 +859,14 @@ extension DASHPresentation {
 
     private static func templateSegments(
         _ information: Information, base: URL, id: String, bandwidth: Int, periodDuration: Double?, live: Live?
-    ) throws(DASHPresentationError) -> (HLSInitSection?, Double, [Segment]) {
+    ) throws(DASHPresentationError) -> (InitSection?, Double, [Segment]) {
         let timescale = information.timescale
         let offset = information.presentationTimeOffset
         let periodEnd = try periodEnd(information, periodDuration: periodDuration)
         guard let media = information.attributes["media"] else {
             throw .unsupported("a template without its media's address")
         }
-        let initialization: HLSInitSection?
+        let initialization: InitSection?
         // The template's `initialization` or an `Initialization` element, whichever the lower level tells.
         if let text = information.attributes["initialization"],
             (information.initializationAttributeLevel ?? -1) >= (information.initializationElementLevel ?? -1)
@@ -875,7 +874,7 @@ extension DASHPresentation {
             guard let address = expand(text, id: id, bandwidth: bandwidth),
                 let url = URL(string: address, relativeTo: base)?.absoluteURL
             else { throw .unsupported("an initialization address it cannot read") }
-            initialization = HLSInitSection(url: url)
+            initialization = InitSection(url: url)
         } else {
             initialization = try initSection(information.initialization, base: base)
         }
@@ -989,7 +988,7 @@ extension DASHPresentation {
 
     private static func listSegments(
         _ information: Information, base: URL, periodDuration: Double?
-    ) throws(DASHPresentationError) -> (HLSInitSection?, Double, [Segment]) {
+    ) throws(DASHPresentationError) -> (InitSection?, Double, [Segment]) {
         let timescale = information.timescale
         let offset = information.presentationTimeOffset
         let periodEnd = try periodEnd(information, periodDuration: periodDuration)
@@ -1017,7 +1016,7 @@ extension DASHPresentation {
             } else {
                 url = base
             }
-            var range: HLSByteRange?
+            var range: ByteRange?
             if let text = element.attribute("mediaRange") {
                 guard let parsed = DASHElements.byteRange(of: text) else {
                     throw .unsupported("a media range it cannot read (\(text))")
@@ -1036,7 +1035,7 @@ extension DASHPresentation {
     /// An `Initialization` element: its `sourceURL` (the representation's file without one) and its `range`.
     private static func initSection(
         _ element: XMLTreeElement?, base: URL
-    ) throws(DASHPresentationError) -> HLSInitSection? {
+    ) throws(DASHPresentationError) -> InitSection? {
         guard let element else { return nil }
         var url = base
         if let source = element.attribute("sourceURL") {
@@ -1045,13 +1044,13 @@ extension DASHPresentation {
             }
             url = resolved
         }
-        var range: HLSByteRange?
+        var range: ByteRange?
         if let text = element.attribute("range") {
             guard let parsed = DASHElements.byteRange(of: text) else {
                 throw .unsupported("an initialization range it cannot read (\(text))")
             }
             range = parsed
         }
-        return HLSInitSection(url: url, byteRange: range)
+        return InitSection(url: url, byteRange: range)
     }
 }

@@ -37,7 +37,8 @@ struct DASHClientTests {
         let interrupt = FFmpegInterrupt()
         guard
             let input = HLSInput(
-                master: source.masterURL, playlists: source, source: source.address.absoluteString, allowsFiles: false,
+                multivariant: source.multivariantURL, playlists: source, source: source.address.absoluteString,
+                allowsFiles: false,
                 headers: [:], interrupt: interrupt, streamingName: "DASH")
         else { return nil }
         return MediaDemuxer(
@@ -125,13 +126,15 @@ struct DASHClientTests {
             }
             return true
         }
-        let outcomes = OSAllocatedUnfairLock<[String: Result<Bool, HLSPlaylistSourceError>]>(initialState: [:])
+        let outcomes = OSAllocatedUnfairLock<[String: Result<Bool, PlaylistSourceError>]>(initialState: [:])
         let group = DispatchGroup()
         func ask(_ name: String, through reader: SegmentLoader) {
             group.enter()
             DispatchQueue.global().async {
-                let result = Result { () throws(HLSPlaylistSourceError) in
-                    if case .master = try source.playlist(at: source.masterURL, variables: [:], loader: reader) {
+                let result = Result { () throws(PlaylistSourceError) in
+                    if case .multivariant = try source.playlist(
+                        at: source.multivariantURL, variables: [:], loader: reader)
+                    {
                         return true
                     }
                     return false
@@ -221,6 +224,6 @@ struct DASHClientTests {
         #expect(MediaDemuxer(url: server.url("missing.mpd"), interruptContext: missing) == nil)
         let asked = server.requests.dropFirst(before).filter { $0.path.hasSuffix("missing.mpd") }
         #expect(asked.count == 1, "Asked once, not again by another demuxer: \(asked.count) requests")
-        #expect(missing.lastError?.code != HLSPlaylistSourceError.unsupported("").code, "The failure is the load's")
+        #expect(missing.lastError?.code != PlaylistSourceError.unsupported("").code, "The failure is the load's")
     }
 }

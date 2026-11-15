@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 import os
 
 /// A live stream given as the segments of its past (`StreamHistory`), told as a playlist that grows: the manifest the
@@ -23,7 +22,7 @@ package final class DASHHistory: Sendable {
     /// How many times `hasEnded` may fail to tell, with the server answering and its head standing still, before that is
     /// taken for the end of the stream.
     static let unknownRounds = 3
-    /// How long a playlist that is not over is not taken for stuck (`HLSMediaPlaylist.updatePeriod`): a day. The end is
+    /// How long a playlist that is not over is not taken for stuck (`MediaPlaylist.updatePeriod`): a day. The end is
     /// the source's to tell, not the lane's to guess.
     static let updatePeriod = 86_400.0
 
@@ -61,7 +60,7 @@ package final class DASHHistory: Sendable {
     /// `full`, the manifest's playlist of a representation (a day past the head), as it is now: from where the window
     /// has slid to, to the segment before the head (the head's, once the stream is over). The head is asked first, if
     /// it is time; `shouldAbort` gives way to a seek or a close.
-    func listing(of full: HLSMediaPlaylist, shouldAbort: () -> Bool) -> HLSMediaPlaylist {
+    func listing(of full: MediaPlaylist, shouldAbort: () -> Bool) -> MediaPlaylist {
         refresh(shouldAbort: shouldAbort)
         let (head, isEnded) = state.withLock { ($0.head, $0.isEnded) }
         var playlist = full
@@ -86,7 +85,7 @@ package final class DASHHistory: Sendable {
     }
 
     /// The index after the last segment numbered at most `number` (the numbers rise).
-    private static func index(after number: Int, in segments: [HLSSegment]) -> Int {
+    private static func index(after number: Int, in segments: [MediaSegment]) -> Int {
         var low = 0
         var high = segments.count
         while low < high {

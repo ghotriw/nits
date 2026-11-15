@@ -80,18 +80,18 @@ package struct HLSAttributeList: Sendable, Equatable {
     }
 
     /// A decimal resolution, `<width>x<height>`.
-    func resolution(_ name: String) -> HLSResolution? {
+    func resolution(_ name: String) -> VideoResolution? {
         guard let value = values[name] else { return nil }
         let parts = value.split(separator: "x", omittingEmptySubsequences: false)
         guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]), width > 0, height > 0 else {
             return nil
         }
-        return HLSResolution(width: width, height: height)
+        return VideoResolution(width: width, height: height)
     }
 }
 
 /// A byte range, `<length>[@<offset>]` (`EXT-X-BYTERANGE`, `EXT-X-MAP`'s `BYTERANGE`).
-package struct HLSByteRange: Sendable, Equatable, Hashable {
+package struct ByteRange: Sendable, Equatable, Hashable {
     package var offset: Int64
     package var length: Int64
 

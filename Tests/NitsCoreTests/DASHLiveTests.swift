@@ -179,9 +179,11 @@ struct DASHLiveTests {
     }
 
     /// The media playlist of the source's first picture.
-    static func media(_ source: DASHPlaylists, _ loader: SegmentLoader) throws -> HLSMediaPlaylist {
-        guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader),
-            let variant = master.variants.first,
+    static func media(_ source: DASHPlaylists, _ loader: SegmentLoader) throws -> MediaPlaylist {
+        guard
+            case .multivariant(let multivariant) = try source.playlist(
+                at: source.multivariantURL, variables: [:], loader: loader),
+            let variant = multivariant.variants.first,
             case .media(let media) = try source.playlist(at: variant.url, variables: [:], loader: loader)
         else { throw HLSPlaylistError.mixedTypes }
         return media
@@ -405,7 +407,7 @@ struct DASHLiveTests {
     }
 }
 
-extension HLSMediaPlaylist {
+extension MediaPlaylist {
     /// The date of the segment at `index`.
     fileprivate func programDateTime(of index: Int) -> Date? { segments[index].programDateTime }
 }

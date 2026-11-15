@@ -16,7 +16,7 @@ public enum MediaURL {
     }
 
     /// A saved HLS manifest whose media is on the network (`path` a file path, as `normalizeMediaPath`
-    /// leaves it). It is read ahead as a network source. Only the file's own text is looked at: a master
+    /// leaves it). It is read ahead as a network source. Only the file's own text is looked at: a multivariant
     /// playlist of saved media playlists, whose segments are on the network, isn't recognised.
     public static func isHLSManifestWithRemoteMedia(atPath path: String) -> Bool {
         let url = URL(fileURLWithPath: path)

@@ -176,7 +176,7 @@ extension MediaDemuxer {
                 found
             }
         // Its top, unless the link's rate is known: a DASH ladder is read side by side while it opens, and an HLS
-        // master's opening may prove the link slow. Then the rung it carries, not the top (its first segment,
+        // multivariant's opening may prove the link slow. Then the rung it carries, not the top (its first segment,
         // megabytes, downloaded before a switch could splice).
         // Only a variant described by its own read starts: the decoders are made from its streams before any is read
         // (`DemuxerInput.variantDescription`; the input describes the rung a slow link starts on).

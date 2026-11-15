@@ -1,277 +1,21 @@
 import Foundation
 
-/// An HLS playlist (RFC 8216 and its revision, draft-pantos-hls-rfc8216bis), read from its text: a master playlist,
-/// which lists the variants and renditions, or a media playlist, which lists one rendition's segments.
-///
-/// URIs are resolved against the address the playlist was served from (after redirects), which the reader gives.
-/// Read leniently, as players read real playlists: unknown tags and comments are skipped, a variant without a URI line
-/// is dropped, values are taken quoted or not, a missing `EXT-X-TARGETDURATION` is taken from the longest segment, an
-/// unknown duration (`EXTINF:-1`) is the target's, hints that don't read are skipped. What the timeline or decryption cannot
-/// do without (a byte range, a key's URI) fails the read.
-///
-/// Not read (out of scope): Low-Latency HLS (`EXT-X-PART`, `EXT-X-PRELOAD-HINT`, `EXT-X-SERVER-CONTROL`, `EXT-X-SKIP`),
-/// `EXT-X-I-FRAME-STREAM-INF`, `EXT-X-SESSION-DATA`, `EXT-X-CONTENT-STEERING`, `EXT-X-DATERANGE` (interstitials).
-package enum HLSPlaylist: Sendable, Equatable {
-    case master(HLSMasterPlaylist)
-    case media(HLSMediaPlaylist)
-
-    /// Reads a playlist served from `url`. `variables` are those a master playlist defined (`HLSMasterPlaylist.variables`),
-    /// for a media playlist's `EXT-X-DEFINE:IMPORT`.
-    package static func parse(_ data: Data, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
-        -> HLSPlaylist
-    {
-        guard let text = String(data: data, encoding: .utf8) else { throw .notText }
-        return try parse(text, url: url, variables: variables)
-    }
-
-    package static func parse(_ text: String, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
-        -> HLSPlaylist
-    {
-        var reader = HLSPlaylistReader(url: url, imported: variables)
-        return try reader.read(text)
-    }
-}
-
-package enum HLSPlaylistError: Error, Equatable {
-    /// Not UTF-8.
-    case notText
-    /// The first line is not `#EXTM3U`.
-    case notAPlaylist
-    /// Tags of both a master and a media playlist.
-    case mixedTypes
-    /// A tag or URI line the timeline cannot do without, malformed; `line` counts from 1.
-    case malformed(line: Int, tag: String)
-    /// A `{$name}` no `EXT-X-DEFINE` defined.
-    case undefinedVariable(line: Int, name: String)
-}
-
-// MARK: - Master playlist
-
-/// The variants and renditions a master (multivariant) playlist lists.
-package struct HLSMasterPlaylist: Sendable, Equatable {
-    var version: Int?
-    package var variants: [HLSVariant] = []
-    var renditions: [HLSRendition] = []
-    /// `EXT-X-SESSION-KEY`: keys the media playlists use, to load ahead.
-    var sessionKeys: [HLSKey] = []
-    /// `EXT-X-INDEPENDENT-SEGMENTS`: every segment of every media playlist decodes without the one before.
-    var hasIndependentSegments = false
-    package var start: HLSStart?
-    /// The variables the playlist defined (`EXT-X-DEFINE`), which its media playlists may import.
-    package var variables: [String: String] = [:]
-
-    /// The renditions of `type` in `group`.
-    func renditions(_ type: HLSRendition.Kind, group: String) -> [HLSRendition] {
-        renditions.filter { $0.type == type && $0.groupID == group }
-    }
-}
-
-/// `EXT-X-STREAM-INF`: a variant, the media playlist on the line that follows and the renditions it plays with.
-package struct HLSVariant: Sendable, Equatable {
-    package var url: URL
-    /// Peak bits a second; 0 when the playlist doesn't tell it.
-    package var bandwidth: Int
-    var averageBandwidth: Int?
-    var score: Double?
-    /// `CODECS`, as written ("avc1.64001f,mp4a.40.2").
-    package var codecs: String?
-    /// `SUPPLEMENTAL-CODECS` (Dolby Vision over HEVC: "dvh1.08.07/db4h").
-    package var supplementalCodecs: String?
-    var resolution: HLSResolution?
-    package var frameRate: Double?
-    package var videoRange: HLSVideoRange?
-    var hdcpLevel: String?
-    var audioGroup: String?
-    var videoGroup: String?
-    var subtitlesGroup: String?
-    /// `CLOSED-CAPTIONS`: a group, or `NONE` (`""`): none in any variant.
-    var closedCaptionsGroup: String?
-}
-
-package struct HLSResolution: Sendable, Equatable, Hashable {
-    package var width: Int
-    package var height: Int
-}
-
-package enum HLSVideoRange: String, Sendable, Equatable {
-    case sdr = "SDR"
-    case pq = "PQ"
-    case hlg = "HLG"
-}
-
-/// `EXT-X-MEDIA`: a rendition of a group, which variants name.
-package struct HLSRendition: Sendable, Equatable {
-    package enum Kind: String, Sendable, Equatable {
-        case audio = "AUDIO"
-        case video = "VIDEO"
-        case subtitles = "SUBTITLES"
-        case closedCaptions = "CLOSED-CAPTIONS"
-    }
-
-    package var type: Kind
-    var groupID: String
-    var name: String
-    /// Its media playlist; nil for one carried in the variant's own segments (and for closed captions).
-    package var url: URL?
-    package var language: String?
-    var associatedLanguage: String?
-    var isDefault = false
-    var autoselect = false
-    var isForced = false
-    /// Closed captions' channel (`CC1`, `SERVICE3`).
-    var instreamID: String?
-    /// Uniform type identifiers (`public.accessibility.describes-video`).
-    var characteristics: [String] = []
-    /// `CHANNELS` as written ("6", "16/JOC").
-    var channels: String?
-}
-
-/// `EXT-X-START`: where to start playing, from the start (`timeOffset` ≥ 0) or the end (< 0) of the playlist.
-package struct HLSStart: Sendable, Equatable {
-    var timeOffset: Double
-    var isPrecise = false
-}
-
-// MARK: - Media playlist
-
-/// A media playlist: one rendition's segments.
-package struct HLSMediaPlaylist: Sendable, Equatable {
-    package enum Kind: String, Sendable, Equatable {
-        /// Segments are only added, none removed (a stream recorded as it goes).
-        case event = "EVENT"
-        /// Finished, never changes.
-        case vod = "VOD"
-    }
-
-    var version: Int?
-    /// Seconds no segment's duration exceeds, rounded: a live playlist is reloaded about as often.
-    var targetDuration: Double
-    /// The media sequence number of the first segment listed.
-    package var mediaSequence = 0
-    /// The discontinuity sequence number of the first segment listed.
-    var discontinuitySequence = 0
-    /// The playlist says its discontinuity sequence (`EXT-X-DISCONTINUITY-SEQUENCE`): its numbers are the stream's, which
-    /// every playlist of it shares (RFC 8216 6.2.4), not counted from what this playlist lists.
-    var declaresDiscontinuitySequence = false
-    package var type: Kind?
-    /// `EXT-X-ENDLIST`: no segment will be added.
-    package var hasEnded = false
-    var isIFramesOnly = false
-    var hasIndependentSegments = false
-    package var start: HLSStart?
-    /// How far behind the live edge the stream is meant to be played, seconds, when its source says (DASH's
-    /// `suggestedPresentationDelay`; HLS's `HOLD-BACK` could fill it). Nil: the client's own margin.
-    var holdBack: Double?
-    /// How often the source says its playlist may change (DASH's `minimumUpdatePeriod`), seconds: a playlist is not taken
-    /// as stuck before this has passed, however short its segments are. Nil: the target duration.
-    package var updatePeriod: Double?
-    package var segments: [HLSSegment] = []
-
-    /// A playlist that can still change: live, or an event going on.
-    var isLive: Bool { !hasEnded && type != .vod }
-    /// The sum of the segments' durations.
-    package var duration: Double { segments.reduce(0) { $0 + $1.duration } }
-}
-
-/// A segment of a media playlist, with what applies to it of the tags before it.
-package struct HLSSegment: Sendable, Equatable {
-    package var url: URL
-    /// `EXTINF`'s duration, in seconds.
-    package var duration: Double
-    /// The media sequence number.
-    package var sequence: Int
-    /// The discontinuity sequence number: segments of one number make a run whose timestamps continue one another.
-    var discontinuitySequence: Int
-    /// `EXT-X-DISCONTINUITY` before it: its timestamps, encoding or format need not continue the segment before.
-    var isDiscontinuity = false
-    package var byteRange: HLSByteRange?
-    /// `EXT-X-MAP`: the init section its media needs (fragmented MP4's `moov`, a TS's PAT / PMT).
-    package var initSection: HLSInitSection?
-    /// The key it is encrypted with; nil when clear.
-    var key: HLSKey?
-    /// The date of its first sample: its own `EXT-X-PROGRAM-DATE-TIME`, or the latest one before it plus the durations
-    /// between, within a run (none after a discontinuity until a tag gives one).
-    var programDateTime: Date?
-    /// `EXT-X-GAP`: missing, not to be loaded.
-    package var isGap = false
-    /// `EXT-X-BITRATE`, kilobits a second.
-    var bitrate: Int?
-
-    /// The initialization vector of its AES-128 key: the key's own, or its media sequence number as a big-endian
-    /// 128-bit integer (RFC 8216 5.2).
-    var initializationVector: [UInt8]? {
-        guard let key else { return nil }
-        if let iv = key.initializationVector { return iv }
-        return HLSKey.initializationVector(sequence: sequence)
-    }
-}
-
-/// `EXT-X-MAP`.
-package struct HLSInitSection: Sendable, Equatable, Hashable {
-    package var url: URL
-    package var byteRange: HLSByteRange?
-    /// The key in effect where the tag stands, which the init section is encrypted with (RFC 8216bis 4.4.4.5).
-    var key: HLSKey?
-
-    /// The initialization vector of its AES-128 key: the key's own, which the RFC requires; without one, zero, as
-    /// hls.js reads it (FFmpeg takes the next segment's number, ExoPlayer refuses the playlist): the same in every
-    /// load, so the section is too.
-    var initializationVector: [UInt8]? {
-        guard let key else { return nil }
-        return key.initializationVector ?? HLSKey.initializationVector(sequence: 0)
-    }
-}
-
-/// `EXT-X-KEY` / `EXT-X-SESSION-KEY`.
-package struct HLSKey: Sendable, Equatable, Hashable {
-    package enum Method: Sendable, Equatable, Hashable {
-        case aes128
-        case sampleAES
-        case sampleAESCTR
-        case other(String)
-
-        package init(_ text: String) {
-            switch text {
-            case "AES-128": self = .aes128
-            case "SAMPLE-AES": self = .sampleAES
-            case "SAMPLE-AES-CTR": self = .sampleAESCTR
-            default: self = .other(text)
-            }
-        }
-    }
-
-    var method: Method
-    package var url: URL?
-    var initializationVector: [UInt8]?
-    /// `identity` when the tag names none.
-    var keyFormat = "identity"
-    var keyFormatVersions: [Int] = [1]
-
-    /// Whether Nits decrypts it: AES-128 of the whole segment, with a key served as it is.
-    var isDecryptable: Bool { method == .aes128 && keyFormat == "identity" && url != nil }
-
-    static func initializationVector(sequence: Int) -> [UInt8] {
-        let value = UInt64(truncatingIfNeeded: sequence)
-        return [UInt8](repeating: 0, count: 8) + (0..<8).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
-    }
-}
-
 // MARK: - Reading
 
-private struct HLSPlaylistReader {
+struct HLSPlaylistReader {
     package let url: URL
-    /// A master playlist's variables, which `EXT-X-DEFINE:IMPORT` takes.
+    /// A multivariant playlist's variables, which `EXT-X-DEFINE:IMPORT` takes.
     let imported: [String: String]
     package var variables: [String: String] = [:]
 
     var lineNumber = 0
-    var sawMasterTag = false
+    var sawMultivariantTag = false
     var sawMediaTag = false
 
     /// The playlist as read so far: tags of both kinds go to `media` until the end tells which it is (`version`,
-    /// `hasIndependentSegments` and `start` are the master's too).
-    var master = HLSMasterPlaylist()
-    var media = HLSMediaPlaylist(targetDuration: 0)
+    /// `hasIndependentSegments` and `start` are the multivariant's too).
+    var multivariant = MultivariantPlaylist()
+    var media = MediaPlaylist(targetDuration: 0)
     var targetDuration: Double?
     var pendingVariant: HLSAttributeList?
 
@@ -284,7 +28,7 @@ private struct HLSPlaylistReader {
     /// A discontinuity before a URI line skipped (no `EXTINF`): the next segment's.
     var carriedDiscontinuity = false
     var discontinuities = 0
-    package var initSection: HLSInitSection?
+    package var initSection: InitSection?
     /// The keys in effect, one per `KEYFORMAT`: a key tag replaces the one of its format (RFC 8216 4.3.2.4, as hls.js and
     /// ExoPlayer read it), `METHOD=NONE` all of them.
     var keys: [HLSKey] = []
@@ -298,8 +42,8 @@ private struct HLSPlaylistReader {
         "EXT-X-PLAYLIST-TYPE", "EXT-X-ENDLIST", "EXT-X-I-FRAMES-ONLY", "EXTINF", "EXT-X-BYTERANGE",
         "EXT-X-DISCONTINUITY", "EXT-X-KEY", "EXT-X-MAP", "EXT-X-PROGRAM-DATE-TIME", "EXT-X-GAP", "EXT-X-BITRATE",
     ]
-    /// Tags only a master playlist has, which tell its kind but aren't read.
-    static let masterOnlyTags: Set<Substring> = [
+    /// Tags only a multivariant playlist has, which tell its kind but aren't read.
+    static let multivariantOnlyTags: Set<Substring> = [
         "EXT-X-I-FRAME-STREAM-INF", "EXT-X-SESSION-DATA", "EXT-X-CONTENT-STEERING",
     ]
 
@@ -308,7 +52,7 @@ private struct HLSPlaylistReader {
         self.imported = imported
     }
 
-    package mutating func read(_ text: String) throws(HLSPlaylistError) -> HLSPlaylist {
+    package mutating func read(_ text: String) throws(HLSPlaylistError) -> StreamingPlaylist {
         var lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)[...]
         if let first = lines.first, first.hasPrefix("\u{FEFF}") {
             lines[lines.startIndex] = first.dropFirst()
@@ -326,8 +70,8 @@ private struct HLSPlaylistReader {
                 let name = line.dropFirst().prefix { $0 != ":" }
                 if name == "EXT-X-DEFINE" {
                     try define(HLSAttributeList(line.dropFirst("#EXT-X-DEFINE:".count)))
-                } else if Self.masterOnlyTags.contains(name) {
-                    sawMasterTag = true
+                } else if Self.multivariantOnlyTags.contains(name) {
+                    sawMultivariantTag = true
                 } else if Self.readTags.contains(name) {
                     try tag(substituted(line))
                 }
@@ -335,13 +79,13 @@ private struct HLSPlaylistReader {
                 try uriLine(substituted(line))
             }
         }
-        if sawMasterTag && sawMediaTag { throw .mixedTypes }
-        if sawMasterTag {
-            master.version = media.version
-            master.hasIndependentSegments = media.hasIndependentSegments
-            master.start = media.start
-            master.variables = variables
-            return .master(master)
+        if sawMultivariantTag && sawMediaTag { throw .mixedTypes }
+        if sawMultivariantTag {
+            multivariant.version = media.version
+            multivariant.hasIndependentSegments = media.hasIndependentSegments
+            multivariant.start = media.start
+            multivariant.variables = variables
+            return .multivariant(multivariant)
         }
         // Segments are numbered here: a server may write the sequence tags after them (FFmpeg reads them anywhere).
         // Never shorter than the longest segment, rounded to the nearest second as the RFC compares them (6.006 under a
@@ -421,17 +165,17 @@ private struct HLSPlaylistReader {
                 media.start = HLSStart(timeOffset: offset, isPrecise: attributes.bool("PRECISE") ?? false)
             }
 
-        // Master playlist.
+        // Multivariant playlist.
         case "EXT-X-STREAM-INF":
-            sawMasterTag = true
+            sawMultivariantTag = true
             pendingVariant = HLSAttributeList(value)
         case "EXT-X-MEDIA":
-            sawMasterTag = true
-            if let rendition = rendition(HLSAttributeList(value)) { master.renditions.append(rendition) }
+            sawMultivariantTag = true
+            if let rendition = rendition(HLSAttributeList(value)) { multivariant.renditions.append(rendition) }
         case "EXT-X-SESSION-KEY":
-            sawMasterTag = true
+            sawMultivariantTag = true
             // Keys to load ahead, a hint: a malformed one is skipped (the media playlist's own key tag decides).
-            if let key = try? key(HLSAttributeList(value), tag: name) { master.sessionKeys.append(key) }
+            if let key = try? key(HLSAttributeList(value), tag: name) { multivariant.sessionKeys.append(key) }
 
         // Media playlist.
         case "EXT-X-TARGETDURATION":
@@ -444,7 +188,7 @@ private struct HLSPlaylistReader {
         case "EXT-X-MEDIA-SEQUENCE":
             sawMediaTag = true
             guard let number = Int(value.trimmingCharacters(in: .whitespaces)),
-                (0...HLSPlaylist.largestSequence).contains(number)
+                (0...StreamingPlaylist.largestSequence).contains(number)
             else {
                 throw .malformed(line: lineNumber, tag: name)
             }
@@ -452,7 +196,7 @@ private struct HLSPlaylistReader {
         case "EXT-X-DISCONTINUITY-SEQUENCE":
             sawMediaTag = true
             guard let number = Int(value.trimmingCharacters(in: .whitespaces)),
-                (0...HLSPlaylist.largestSequence).contains(number)
+                (0...StreamingPlaylist.largestSequence).contains(number)
             else {
                 throw .malformed(line: lineNumber, tag: name)
             }
@@ -460,7 +204,7 @@ private struct HLSPlaylistReader {
             media.declaresDiscontinuitySequence = true
         case "EXT-X-PLAYLIST-TYPE":
             sawMediaTag = true
-            media.type = HLSMediaPlaylist.Kind(rawValue: value.trimmingCharacters(in: .whitespaces))
+            media.type = MediaPlaylist.Kind(rawValue: value.trimmingCharacters(in: .whitespaces))
         case "EXT-X-ENDLIST":
             sawMediaTag = true
             media.hasEnded = true
@@ -481,7 +225,7 @@ private struct HLSPlaylistReader {
             nextDuration = duration < 0 ? -1 : duration
         case "EXT-X-BYTERANGE":
             sawMediaTag = true
-            guard let range = HLSByteRange.parse(value) else { throw .malformed(line: lineNumber, tag: name) }
+            guard let range = ByteRange.parse(value) else { throw .malformed(line: lineNumber, tag: name) }
             nextByteRange = range
         case "EXT-X-DISCONTINUITY":
             sawMediaTag = true
@@ -501,19 +245,19 @@ private struct HLSPlaylistReader {
             guard let uri = attributes["URI"], let resolved = resolve(uri) else {
                 throw .malformed(line: lineNumber, tag: name)
             }
-            var range: HLSByteRange?
+            var range: ByteRange?
             if let text = attributes["BYTERANGE"] {
-                guard let parsed = HLSByteRange.parse(text),
-                    let placed = HLSByteRange(offset: parsed.offset ?? 0, length: parsed.length)
+                guard let parsed = ByteRange.parse(text),
+                    let placed = ByteRange(offset: parsed.offset ?? 0, length: parsed.length)
                 else { throw .malformed(line: lineNumber, tag: name) }
                 range = placed
             }
-            initSection = HLSInitSection(
+            initSection = InitSection(
                 url: resolved, byteRange: range, key: currentKey)
         case "EXT-X-PROGRAM-DATE-TIME":
             sawMediaTag = true
             // A date that doesn't read is skipped: the date of a segment is a nicety, not its place.
-            nextProgramDateTime = HLSPlaylist.date(value.trimmingCharacters(in: .whitespaces))
+            nextProgramDateTime = StreamingPlaylist.date(value.trimmingCharacters(in: .whitespaces))
         case "EXT-X-GAP":
             sawMediaTag = true
             nextIsGap = true
@@ -553,11 +297,11 @@ private struct HLSPlaylistReader {
         return key
     }
 
-    private func rendition(_ attributes: HLSAttributeList) -> HLSRendition? {
-        guard let type = attributes["TYPE"].flatMap(HLSRendition.Kind.init(rawValue:)),
+    private func rendition(_ attributes: HLSAttributeList) -> PlaylistRendition? {
+        guard let type = attributes["TYPE"].flatMap(PlaylistRendition.Kind.init(rawValue:)),
             let group = attributes["GROUP-ID"], let name = attributes["NAME"]
         else { return nil }
-        var rendition = HLSRendition(type: type, groupID: group, name: name)
+        var rendition = PlaylistRendition(type: type, groupID: group, name: name)
         if let uri = attributes["URI"], type != .closedCaptions {
             guard let resolved = resolve(uri) else { return nil }
             rendition.url = resolved
@@ -583,7 +327,7 @@ private struct HLSPlaylistReader {
         if let attributes = pendingVariant {
             pendingVariant = nil
             guard let resolved = resolve(line) else { return }
-            master.variants.append(variant(attributes, url: resolved))
+            multivariant.variants.append(variant(attributes, url: resolved))
             return
         }
         // What the tags before a URI line said is for that line only, segment or not; but for a discontinuity, which
@@ -604,19 +348,19 @@ private struct HLSPlaylistReader {
         nextIsDiscontinuity = isDiscontinuity || carriedDiscontinuity
         carriedDiscontinuity = false
         guard let resolved = resolve(line) else { throw .malformed(line: lineNumber, tag: "URI") }
-        var range: HLSByteRange?
+        var range: ByteRange?
         if let next = nextByteRange {
             // Without an offset, the range follows the previous segment's in the same resource (else starts it).
             let previous = media.segments.last.flatMap { $0.url == resolved ? $0.byteRange : nil }
             guard
-                let placed = HLSByteRange(
+                let placed = ByteRange(
                     offset: next.offset ?? previous.map { $0.range.upperBound } ?? 0, length: next.length)
             else { throw .malformed(line: lineNumber, tag: "EXT-X-BYTERANGE") }
             range = placed
         }
         if nextIsDiscontinuity { discontinuities += 1 }
         media.segments.append(
-            HLSSegment(
+            MediaSegment(
                 // Relative to the sequence tags, which the end of the read adds.
                 url: resolved, duration: duration, sequence: media.segments.count,
                 discontinuitySequence: discontinuities,
@@ -624,18 +368,18 @@ private struct HLSPlaylistReader {
                 programDateTime: nextProgramDateTime, isGap: nextIsGap, bitrate: range == nil ? bitrate : nil))
     }
 
-    private func variant(_ attributes: HLSAttributeList, url: URL) -> HLSVariant {
+    private func variant(_ attributes: HLSAttributeList, url: URL) -> PlaylistVariant {
         // `NONE` unquoted is the enumerated value; quoted, a group of that name.
         let closedCaptions = attributes["CLOSED-CAPTIONS"].map { value in
             value == "NONE" && !attributes.isQuoted("CLOSED-CAPTIONS") ? "" : value
         }
-        return HLSVariant(
+        return PlaylistVariant(
             url: url, bandwidth: attributes.integer("BANDWIDTH") ?? 0,
             averageBandwidth: attributes.integer("AVERAGE-BANDWIDTH"), score: attributes.float("SCORE"),
             codecs: attributes["CODECS"], supplementalCodecs: attributes["SUPPLEMENTAL-CODECS"],
             resolution: attributes.resolution("RESOLUTION"),
             frameRate: attributes.float("FRAME-RATE"),
-            videoRange: attributes["VIDEO-RANGE"].flatMap(HLSVideoRange.init(rawValue:)),
+            videoRange: attributes["VIDEO-RANGE"].flatMap(VideoRange.init(rawValue:)),
             hdcpLevel: attributes["HDCP-LEVEL"], audioGroup: attributes["AUDIO"],
             videoGroup: attributes["VIDEO"], subtitlesGroup: attributes["SUBTITLES"],
             closedCaptionsGroup: closedCaptions)
@@ -648,7 +392,7 @@ private struct HLSPlaylistReader {
 
 // MARK: - Limits
 
-extension HLSPlaylist {
+extension StreamingPlaylist {
     /// The largest media or discontinuity sequence number read (2^53): a larger one is malformed, and numbers stay far
     /// from overflowing as segments are counted on.
     static let largestSequence = 1 << 53
@@ -656,7 +400,7 @@ extension HLSPlaylist {
 
 // MARK: - Dates
 
-extension HLSPlaylist {
+extension StreamingPlaylist {
     private static let dateWithFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     private static let dateWithoutFraction = Date.ISO8601FormatStyle()
 

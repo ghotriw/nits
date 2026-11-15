@@ -80,7 +80,7 @@ package struct HLSTimestampMap: Sendable, Equatable {
 /// first may be far into its segment. A WebVTT rendition has no timestamps of its own, and its cues take the offset of
 /// the sequence they are in (`cueOffset`); cues of a sequence nobody anchored (a subtitle playlist without the breaks
 /// the picture's has) take the offset the picture is read with.
-package final class HLSTimestampAnchors: Sendable {
+package final class TimestampAnchors: Sendable {
     package enum Role: Sendable {
         /// A variant's run: anchors, and is the offset cues fall back on.
         case picture

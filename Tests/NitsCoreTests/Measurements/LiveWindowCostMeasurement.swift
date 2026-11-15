@@ -14,14 +14,14 @@ struct LiveWindowCostMeasurement {
     static let shared = URL(string: "https://live.nits.invalid/137")!
 
     /// The window `first..<first + count`, every segment 5 s; `addressed`: each with an address of its own.
-    static func playlist(first: Int, count: Int, addressed: Bool) -> HLSMediaPlaylist {
-        var playlist = HLSMediaPlaylist(targetDuration: 5)
+    static func playlist(first: Int, count: Int, addressed: Bool) -> MediaPlaylist {
+        var playlist = MediaPlaylist(targetDuration: 5)
         playlist.mediaSequence = first
         playlist.segments.reserveCapacity(count)
         for number in first..<(first + count) {
             let url = addressed ? URL(string: base + String(number))! : shared
             playlist.segments.append(
-                HLSSegment(url: url, duration: 5, sequence: number, discontinuitySequence: 0))
+                MediaSegment(url: url, duration: 5, sequence: number, discontinuitySequence: 0))
         }
         return playlist
     }
@@ -46,7 +46,7 @@ struct LiveWindowCostMeasurement {
             var worst = Duration.zero
             for round in 1...rounds {
                 // The window slides by one: one segment expires, one is added.
-                var playlist: HLSMediaPlaylist!
+                var playlist: MediaPlaylist!
                 build += clock.measure {
                     playlist = Self.playlist(first: 1000 + round, count: count, addressed: addressed)
                 }

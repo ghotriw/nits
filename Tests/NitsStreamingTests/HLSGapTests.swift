@@ -17,12 +17,12 @@ struct HLSGapTests {
             "\(gaps.contains(index) ? "#EXT-X-GAP\n" : "")#EXTINF:4,\nsegment\(index).ts\n"
         }.joined()
         let text = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\(segments)\(hasEnded ? "#EXT-X-ENDLIST\n" : "")"
-        guard case .media(let playlist) = try HLSPlaylist.parse(text, url: url) else { throw CancellationError() }
+        guard case .media(let playlist) = try StreamingPlaylist.parse(text, url: url) else { throw CancellationError() }
         return HLSLane(
             kind: .audio, url: url, timeline: HLSTimeline(playlist), variables: [:], playlists: HLSServedPlaylists(),
             loader: SegmentLoader(
                 transport: HTTPSessionTransport(source: url.absoluteString, headers: [:]) { false }),
-            anchors: HLSTimestampAnchors(), shouldAbort: { abort.withLock { $0 } })
+            anchors: TimestampAnchors(), shouldAbort: { abort.withLock { $0 } })
     }
 
     @Test("A gap at the start, in the middle or at the end: the segment read is the first that is not one")

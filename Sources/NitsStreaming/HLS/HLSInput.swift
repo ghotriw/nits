@@ -1,6 +1,5 @@
 import CFFmpeg
 import Foundation
-internal import NitsStreaming
 import os
 
 /// An HLS stream read by Nits' own client, not FFmpeg's `hls.c`: the playlists are parsed and placed on a timeline
@@ -83,7 +82,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         let title: String
     }
 
-    /// A variant of a master playlist: the lane of its playlist, and the renditions it plays with.
+    /// A variant of a multivariant playlist: the lane of its playlist, and the renditions it plays with.
     private struct Variant {
         package let id: Int
         package let bandwidth: Int
@@ -97,12 +96,12 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     private let interrupt: FFmpegInterrupt
     private var lanes: [HLSLane] = []
     /// The lanes as `read` visits them: the variants' first, so that the picture's run anchors its sequence's timestamps
-    /// (`HLSTimestampAnchors`) after a seek, and the subtitle renditions' last, read only as far as the others are.
+    /// (`TimestampAnchors`) after a seek, and the subtitle renditions' last, read only as far as the others are.
     private var readOrder: [HLSLane] = []
     private var infos: [StreamInfo] = []
     /// How to read each subtitle rendition outside playback, by table stream; set once at the end of `init`.
     private var subtitleSources: [Int: HLSSubtitleWindowSource] = [:]
-    /// The variants of a master playlist (none for a media playlist), in the order it lists them.
+    /// The variants of a multivariant playlist (none for a media playlist), in the order it lists them.
     private var variants: [Variant] = []
     private let meter: TransferAccount
     /// The timeline's seconds of the last picture handed out: where a lane read again starts.
@@ -136,9 +135,9 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     }
 
     /// Whether the stream is read over the network: any address it loads is HTTP(S), a playlist, an init section, a key
-    /// or a segment. A saved master's text alone (`MediaURL.isNetworkSource`) misses saved media playlists that list
+    /// or a segment. A saved multivariant's text alone (`MediaURL.isNetworkSource`) misses saved media playlists that list
     /// segments on the network.
-    static func readsOverNetwork(playlists: [URL], loaded: [HLSMediaPlaylist]) -> Bool {
+    static func readsOverNetwork(playlists: [URL], loaded: [MediaPlaylist]) -> Bool {
         func isNetwork(_ url: URL?) -> Bool {
             url?.scheme.map { ["http", "https"].contains($0.lowercased()) } ?? false
         }
@@ -157,10 +156,10 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     private struct Wanted {
         package var url: URL
         var kind: HLSLane.Kind
-        var rendition: HLSRendition?
+        var rendition: PlaylistRendition?
     }
 
-    /// Opens the stream at `url`, a master or a media playlist. Nil when it can't (recorded on `interrupt`).
+    /// Opens the stream at `url`, a multivariant or a media playlist. Nil when it can't (recorded on `interrupt`).
     /// `answerLimit`: how long the top rung's probe waits for an answer before the next rung down is probed beside it.
     package convenience init?(
         url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
@@ -168,18 +167,19 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     ) {
         let url = StreamingURL.normalizeMediaPath(address)
         let isLocal = !HTTPSessionTransport.serves(url)
-        guard let masterURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
+        guard let multivariantURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
         self.init(
-            master: masterURL, playlists: HLSServedPlaylists(), source: url, allowsFiles: isLocal, headers: headers,
+            multivariant: multivariantURL, playlists: HLSServedPlaylists(), source: url, allowsFiles: isLocal,
+            headers: headers,
             interrupt: interrupt, answerLimit: answerLimit)
     }
 
-    /// Opens the stream whose master (or only media) playlist `playlists` answers at `masterURL`: an HLS server's, or
+    /// Opens the stream whose multivariant (or only media) playlist `playlists` answers at `multivariantURL`: an HLS server's, or
     /// another manifest's told as playlists (`DASHPlaylists`). `source`: the address the stream was asked by, which scopes
     /// the requests' headers and cookies (`HTTPSessionTransport`); `allowsFiles`: its segments may be local files (a
     /// saved playlist), which a `source` served over HTTP(S) never allows.
     package init?(
-        master masterURL: URL, playlists: any HLSPlaylistSource, source url: String, allowsFiles: Bool,
+        multivariant multivariantURL: URL, playlists: any PlaylistSource, source url: String, allowsFiles: Bool,
         headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = HLSInput.answerLimit,
         streamingName: String = "HLS"
     ) {
@@ -201,9 +201,9 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
             StreamingLog.log(level) { "\(streamingName): \(message) for '\(StreamingURL.loggable(url))'" }
         }
 
-        let parsed: HLSPlaylist
-        do throws(HLSPlaylistSourceError) {
-            parsed = try playlists.playlist(at: masterURL, variables: [:], loader: loader)
+        let parsed: StreamingPlaylist
+        do throws(PlaylistSourceError) {
+            parsed = try playlists.playlist(at: multivariantURL, variables: [:], loader: loader)
         } catch {
             switch error {
             case .load(let reason): fail("playlist failed to load (\(reason))", code: error.code)
@@ -214,28 +214,28 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
             }
             return nil
         }
-        let masterLoaded = ContinuousClock.now
+        let multivariantLoaded = ContinuousClock.now
 
-        // The playlists the stream is read from: the media playlist itself, or the master's variants and the renditions
+        // The playlists the stream is read from: the media playlist itself, or the multivariant's variants and the renditions
         // they play with (each address once: variants differing in their audio group share a playlist).
         var wanted: [Wanted] = []
         var variables: [String: String] = [:]
-        /// Each variant of the master: its bandwidth and the positions in `wanted` of its playlist and renditions.
+        /// Each variant of the multivariant: its bandwidth and the positions in `wanted` of its playlist and renditions.
         var plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])] = []
         /// The variants of `plan`, in its order.
-        var listed: [HLSVariant] = []
+        var listed: [PlaylistVariant] = []
         switch parsed {
         case .media:
-            wanted = [Wanted(url: masterURL, kind: .primary, rendition: nil)]
-        case .master(let master):
-            variables = master.variables
-            listed = Self.ladder(of: master)
+            wanted = [Wanted(url: multivariantURL, kind: .primary, rendition: nil)]
+        case .multivariant(let multivariant):
+            variables = multivariant.variables
+            listed = Self.ladder(of: multivariant)
             guard !listed.isEmpty else {
-                fail("the master playlist lists no variant")
+                fail("the multivariant playlist lists no variant")
                 return nil
             }
             var positions: [String: Int] = [:]
-            func position(of url: URL, kind: HLSLane.Kind, rendition: HLSRendition?) -> Int {
+            func position(of url: URL, kind: HLSLane.Kind, rendition: PlaylistRendition?) -> Int {
                 let key = "\(kind):\(url.absoluteString)"
                 if let known = positions[key] { return known }
                 wanted.append(Wanted(url: url, kind: kind, rendition: rendition))
@@ -246,14 +246,14 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 let video = position(of: variant.url, kind: .primary, rendition: nil)
                 var audio: [Int] = []
                 if let group = variant.audioGroup {
-                    for rendition in master.renditions(.audio, group: group) {
+                    for rendition in multivariant.renditions(.audio, group: group) {
                         guard let renditionURL = rendition.url else { continue }
                         audio.append(position(of: renditionURL, kind: .audio, rendition: rendition))
                     }
                 }
                 var subtitles: [Int] = []
                 if let group = variant.subtitlesGroup {
-                    for rendition in master.renditions(.subtitles, group: group) {
+                    for rendition in multivariant.renditions(.subtitles, group: group) {
                         guard let renditionURL = rendition.url else { continue }
                         subtitles.append(position(of: renditionURL, kind: .subtitle, rendition: rendition))
                     }
@@ -265,7 +265,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         // Fetched side by side: each is a round trip.
         let requests = wanted
         let imported = variables
-        let slots = requests.map { _ in Slot<HLSMediaPlaylist>() }
+        let slots = requests.map { _ in Slot<MediaPlaylist>() }
         let failures = requests.map { _ in Slot<Int32>() }
         let problems = requests.map { _ in Slot<String>() }
         DispatchQueue.concurrentPerform(iterations: requests.count) { index in
@@ -273,7 +273,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 slots[index].set(media)
                 return
             }
-            do throws(HLSPlaylistSourceError) {
+            do throws(PlaylistSourceError) {
                 let playlist = try playlists.playlist(at: requests[index].url, variables: imported, loader: loader)
                 if case .media(let media) = playlist { slots[index].set(media) }
             } catch {
@@ -287,7 +287,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
         let playlistsLoaded = ContinuousClock.now
         isNetworkSource = Self.readsOverNetwork(
-            playlists: [masterURL] + requests.map(\.url), loaded: slots.compactMap(\.value))
+            playlists: [multivariantURL] + requests.map(\.url), loaded: slots.compactMap(\.value))
 
         // The reference the others are aligned to, and where reading starts: the top of the ladder that loaded.
         let referenceIndex: Int
@@ -322,7 +322,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         durationSeconds = isLive ? 0 : reference.end - reference.start
 
         // The offsets of the timestamps, shared by every lane: a sequence's first run anchors it, the others take it.
-        let anchors = HLSTimestampAnchors()
+        let anchors = TimestampAnchors()
         var built: [HLSLane?] = wanted.indices.map { index in
             guard let playlist = slots[index].value, !playlist.segments.isEmpty else { return nil }
             let timeline: HLSTimeline
@@ -342,11 +342,11 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         }
 
         // Each lane opened at the segment that holds the start, to learn its streams. One playlist alone is read from its
-        // first segment at once; a master's lanes are probed (the start of the segment only) and the ones the demuxer
+        // first segment at once; a multivariant's lanes are probed (the start of the segment only) and the ones the demuxer
         // chooses are started afterwards. Of a ladder whose rungs tell one codec, range and groups (`cloneCandidates`)
         // one rung is probed, the top (hls.js and ExoPlayer read the start variant alone), and the others are described
         // as it: clones, whose first read describes them for good (`redescribe`). The audio renditions are probed beside
-        // it (small, and nothing in the master describes them), and so is a rung whose `CODECS` tells other sound muxed
+        // it (small, and nothing in the multivariant describes them), and so is a rung whose `CODECS` tells other sound muxed
         // into it. A top that has not answered in `answerLimit` has the next rung down probed beside it, and the first to
         // answer describes the ladder (`raceForModel`).
         let isProbing = !plan.isEmpty
@@ -604,10 +604,10 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         }
         let ms = HLSOpeningMeasure.ms
         let ended = ContinuousClock.now
-        let playlistsLoad = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - masterLoaded))"
+        let playlistsLoad = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - multivariantLoaded))"
         let probes = "\(isProbing ? "probes" : "firstRun")=\(opened)/\(ms(probed - playlistsLoaded))"
         StreamingLog.info(
-            "\(HLSOpeningMeasure.opening) master=\(ms(masterLoaded - began)) \(playlistsLoad) \(probes) "
+            "\(HLSOpeningMeasure.opening) multivariant=\(ms(multivariantLoaded - began)) \(playlistsLoad) \(probes) "
                 + "clones=\(cloneLanes.count) describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         if isProbing {
             let told = openingRate.map { "\(Int($0 / 1000))kbit/s" } ?? "-"
@@ -633,7 +633,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// rung that tells another is probed itself. Empty for a ladder of one rung, or one `ladder(of:)` kept whole (a rung
     /// that tells no codecs): every rung is probed then.
     static func cloneCandidates(
-        plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])], listed: [HLSVariant], top: Int,
+        plan: [(bandwidth: Int, video: Int, audio: [Int], subtitles: [Int])], listed: [PlaylistVariant], top: Int,
         isOpen: (Int) -> Bool
     ) -> [Int] {
         guard plan.count == listed.count, listed.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil }),
@@ -652,7 +652,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
     /// The sound `CODECS` tells muxed into a variant's own segments: its audio entries, when the variant names no audio
     /// group (with one, the sound is the group's, and the rungs of a ladder share their groups).
-    static func muxedSound(_ variant: HLSVariant) -> [String] {
+    static func muxedSound(_ variant: PlaylistVariant) -> [String] {
         guard variant.audioGroup == nil, let codecs = variant.codecs else { return [] }
         let text = ["wvtt", "stpp", "c608", "c708", "tx3g"]
         return codecs.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter {
@@ -706,9 +706,11 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// the others, and the renditions only they refer to, are never loaded or probed: Apple's AV1 example, 13 tiers × 5
     /// audio groups, probes 13 pictures and 2 sounds instead of 13 and 10; a ladder of two codecs, one.
     /// `MediaDemuxer.canSwitch` decides more finely once probed. All are kept when a variant doesn't tell its codecs.
-    static func ladder(of master: HLSMasterPlaylist) -> [HLSVariant] {
-        let withPicture = master.variants.filter { $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil }
-        let candidates = withPicture.isEmpty ? master.variants : withPicture
+    static func ladder(of multivariant: MultivariantPlaylist) -> [PlaylistVariant] {
+        let withPicture = multivariant.variants.filter {
+            $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil
+        }
+        let candidates = withPicture.isEmpty ? multivariant.variants : withPicture
         guard let best = candidates.max(by: { $0.bandwidth < $1.bandwidth }),
             candidates.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil })
         else { return candidates }
@@ -719,10 +721,10 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     private struct LadderKey: Equatable {
         let codec: String?
         let supplementalCodec: String?
-        let range: HLSVideoRange?
+        let range: VideoRange?
         let groups: [String?]
 
-        package init(_ variant: HLSVariant) {
+        package init(_ variant: PlaylistVariant) {
             codec = variant.codecs.flatMap(CodecFamily.video)
             supplementalCodec = variant.supplementalCodecs.flatMap(CodecFamily.video)
             range = variant.videoRange
@@ -746,7 +748,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     }
 
     /// What an `EXT-X-MEDIA` tells of the rendition's stream: language, name, default / forced.
-    private static func describe(rendition: HLSRendition?, in added: UnsafeMutablePointer<AVStream>) {
+    private static func describe(rendition: PlaylistRendition?, in added: UnsafeMutablePointer<AVStream>) {
         guard let rendition else { return }
         if let language = rendition.language { _ = av_dict_set(&added.pointee.metadata, "language", language, 0) }
         _ = av_dict_set(&added.pointee.metadata, "title", rendition.name, 0)

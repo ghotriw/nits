@@ -313,14 +313,16 @@ struct SingleFileDASHTests {
         let source = DASHPlaylists(address: address)
         let loader = SegmentLoader(
             transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false }, allowsFiles: true)
-        guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)
+        guard
+            case .multivariant(let multivariant) = try source.playlist(
+                at: source.multivariantURL, variables: [:], loader: loader)
         else {
-            Issue.record("Not a master")
+            Issue.record("Not a multivariant")
             return
         }
-        #expect(master.variants.count == 2)
-        var playlists: [HLSMediaPlaylist] = []
-        for variant in master.variants {
+        #expect(multivariant.variants.count == 2)
+        var playlists: [MediaPlaylist] = []
+        for variant in multivariant.variants {
             guard case .media(let media) = try source.playlist(at: variant.url, variables: [:], loader: loader) else {
                 Issue.record("Not a media playlist")
                 return
@@ -332,7 +334,7 @@ struct SingleFileDASHTests {
         #expect(high.segments.allSatisfy { $0.url.lastPathComponent == "v.mp4" })
         #expect(
             high.segments.first?.initSection?.byteRange
-                == HLSByteRange(offset: 0, length: made.videos[0].index.lowerBound))
+                == ByteRange(offset: 0, length: made.videos[0].index.lowerBound))
         #expect(high.segments.first?.byteRange?.offset == made.videos[0].index.upperBound + 1)
         // End to end, up to the boxes after the last fragment (`mfra`).
         let ranges = high.segments.compactMap(\.byteRange)
@@ -360,7 +362,7 @@ extension SegmentIndexTests {
     /// The playlist of `file` (its index at `range`, its initialization the bytes before it) as the source tells it, or
     /// the reason it refuses it.
     private static func playlist(of file: Data, indexRange range: ClosedRange<Int>) throws -> Result<
-        HLSMediaPlaylist, HLSPlaylistSourceError
+        MediaPlaylist, PlaylistSourceError
     > {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "NitsSegmentIndex-\(UUID().uuidString)", isDirectory: true)
@@ -379,10 +381,11 @@ extension SegmentIndexTests {
         let source = DASHPlaylists(address: address)
         let loader = SegmentLoader(
             transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false }, allowsFiles: true)
-        do throws(HLSPlaylistSourceError) {
-            guard case .media(let media) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)
+        do throws(PlaylistSourceError) {
+            guard
+                case .media(let media) = try source.playlist(at: source.multivariantURL, variables: [:], loader: loader)
             else {
-                return .failure(.unsupported("a master"))
+                return .failure(.unsupported("a multivariant"))
             }
             return .success(media)
         } catch {
@@ -404,7 +407,7 @@ extension SegmentIndexTests {
         #expect(media.segments.prefix(2).map(\.duration) == [1, 1])
         let c2Media = Int64(100 + root.count + c1.count + 500 + c2.count)
         #expect(media.segments.compactMap(\.byteRange?.offset).last == c2Media + 1499)
-        #expect(media.segments.first?.initSection?.byteRange == HLSByteRange(offset: 0, length: 100))
+        #expect(media.segments.first?.initSection?.byteRange == ByteRange(offset: 0, length: 100))
 
         // A chain of more boxes than the bound: each past the range is a request.
         let count = SegmentIndex.requestLimit + 3
@@ -437,7 +440,8 @@ extension SingleFileDASHTests {
         // The client alone opens the picture and goes on without the sound; the source tells why.
         let interrupt = FFmpegInterrupt()
         let input = HLSInput(
-            master: source.masterURL, playlists: source, source: source.address.absoluteString, allowsFiles: false,
+            multivariant: source.multivariantURL, playlists: source, source: source.address.absoluteString,
+            allowsFiles: false,
             headers: [:], interrupt: interrupt, streamingName: "DASH")
         #expect(input != nil)
         input?.close()
@@ -454,7 +458,7 @@ extension SegmentIndexTests {
         let index = try #require(SegmentIndex.parse(Self.sidx([(10, 1000), (10, 1000), (10, 1000)]), at: 0))
         let location = DASHPresentation.IndexLocation(
             media: URL(string: "https://cdn.example/a.mp4")!, url: URL(string: "https://cdn.example/a.mp4")!,
-            range: try #require(HLSByteRange(offset: 0, length: 1)))
+            range: try #require(ByteRange(offset: 0, length: 1)))
         let representation = DASHPresentation.Representation(
             id: "a", kind: .audio, bandwidth: 1, roleRank: 1, set: 0, presentationTimeOffset: 1.5, segments: [],
             index: location)

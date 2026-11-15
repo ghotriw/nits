@@ -14,16 +14,16 @@ package struct HLSSubtitleWindowSource: Sendable {
     package let timeline: HLSTimeline
     package let variables: [String: String]
     /// Where the stream's playlists come from, as the opening read them.
-    package let playlists: any HLSPlaylistSource
-    package let anchors: HLSTimestampAnchors
-    /// The cookies the stream's own session holds (the master's answer set them), which the read's session takes over.
+    package let playlists: any PlaylistSource
+    package let anchors: TimestampAnchors
+    /// The cookies the stream's own session holds (the multivariant's answer set them), which the read's session takes over.
     package let cookies: @Sendable () -> [HTTPCookie]
 }
 
 extension HLSSubtitleWindowSource {
     /// The part of `range` that can be read and placed rightly, and the `limit` a lane is read to (no segment that starts
     /// after it is loaded). Cues are placed by the offset of their discontinuity sequence
-    /// (`HLSTimestampAnchors.subtitleShift`); a sequence nobody has anchored would give them the picture's current
+    /// (`TimestampAnchors.subtitleShift`); a sequence nobody has anchored would give them the picture's current
     /// offset: wrong times, which the merge would take as read. So the read starts at the first segment at or after
     /// `range.lowerBound` whose sequence is anchored (a cue that runs across the boundary is repeated in the WebVTT
     /// segment that follows) and ends before the first segment after it whose sequence is not (the one that starts at

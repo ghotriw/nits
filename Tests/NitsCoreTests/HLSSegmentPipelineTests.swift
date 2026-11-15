@@ -16,10 +16,10 @@ struct HLSSegmentPipelineTests {
         let loader: SegmentLoader
         let transport: HTTPSessionTransport
 
-        func playlist(_ name: String) throws -> HLSMediaPlaylist {
+        func playlist(_ name: String) throws -> MediaPlaylist {
             let url = try #require(URL(string: server.url(name)))
             let data = try Data(contentsOf: directory.appendingPathComponent(name))
-            guard case .media(let media) = try HLSPlaylist.parse(data, url: url) else {
+            guard case .media(let media) = try StreamingPlaylist.parse(data, url: url) else {
                 throw TestError.notMedia
             }
             return media
@@ -70,7 +70,7 @@ struct HLSSegmentPipelineTests {
 
     /// A reader of the segments from `index` that share `playlist`'s first one's init section and discontinuity.
     private static func reader(
-        _ stand: Stand, _ playlist: HLSMediaPlaylist, from index: Int = 0, start: Double
+        _ stand: Stand, _ playlist: MediaPlaylist, from index: Int = 0, start: Double
     ) throws(SegmentReaderError) -> SegmentReader {
         let first = playlist.segments[index]
         var cursor = index + 1
@@ -96,7 +96,7 @@ struct HLSSegmentPipelineTests {
         #expect(try stand.loader.segment(segment) == file)
 
         var ranged = segment
-        ranged.byteRange = HLSByteRange(offset: 188, length: 376)
+        ranged.byteRange = ByteRange(offset: 188, length: 376)
         #expect(try stand.loader.segment(ranged) == file.subdata(in: 188..<564))
 
         var behavior = TestHTTPServer.Behavior()

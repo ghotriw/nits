@@ -83,12 +83,12 @@ private final class TestClock: Sendable {
 @Suite("Live history playlists")
 struct DASHHistoryListingTests {
     /// A day of 5 s segments numbered from `first`, as the resolver's manifest lists.
-    private static func playlist(first: Int = 10, count: Int = 100) -> HLSMediaPlaylist {
-        var playlist = HLSMediaPlaylist(targetDuration: 5)
+    private static func playlist(first: Int = 10, count: Int = 100) -> MediaPlaylist {
+        var playlist = MediaPlaylist(targetDuration: 5)
         playlist.type = .vod
         playlist.hasEnded = true
         playlist.segments = (0..<count).map { index in
-            HLSSegment(
+            MediaSegment(
                 url: URL(string: "https://live.nits.invalid/v?sq=\(first + index)")!, duration: 5,
                 sequence: first + index, discontinuitySequence: 0)
         }

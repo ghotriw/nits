@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 
 /// Chooses the HLS variant to read next from the network throughput and the read-ahead (seconds of media read past
 /// the packets taken). Pure: the demuxer feeds it samples and times (`MediaDemuxer+AdaptiveBitrate.swift`).

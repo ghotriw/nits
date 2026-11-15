@@ -10,8 +10,8 @@ import Testing
 @Suite("HLS over HTTP", .hostDependent, .networkServer)
 struct HLSOverHTTPTests {
     private static func server() throws -> TestHTTPServer? {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return nil }
-        return try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return nil }
+        return try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
     }
 
     /// Segments of a variant (`v0_001.ts` is the first variant's second segment).
@@ -23,13 +23,13 @@ struct HLSOverHTTPTests {
     func serverBasics() async throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
-        let master = try #require(URL(string: server.url("master.m3u8")))
+        let multivariant = try #require(URL(string: server.url("master.m3u8")))
 
-        let (body, response) = try await URLSession.shared.data(from: master)
+        let (body, response) = try await URLSession.shared.data(from: multivariant)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(String(decoding: body, as: UTF8.self).hasPrefix("#EXTM3U"))
 
-        var ranged = URLRequest(url: master)
+        var ranged = URLRequest(url: multivariant)
         ranged.setValue("bytes=1-6", forHTTPHeaderField: "Range")
         let (part, partResponse) = try await URLSession.shared.data(for: ranged)
         #expect((partResponse as? HTTPURLResponse)?.statusCode == 206)
@@ -39,7 +39,7 @@ struct HLSOverHTTPTests {
         #expect((try await URLSession.shared.data(from: missing).1 as? HTTPURLResponse)?.statusCode == 404)
 
         server.setBehavior(.init(failure: .status(503)), forPaths: { $0 == "master.m3u8" })
-        #expect((try await URLSession.shared.data(from: master).1 as? HTTPURLResponse)?.statusCode == 503)
+        #expect((try await URLSession.shared.data(from: multivariant).1 as? HTTPURLResponse)?.statusCode == 503)
         #expect(server.requests.map(\.path) == ["master.m3u8", "master.m3u8", "missing.ts", "master.m3u8"])
     }
 
@@ -96,7 +96,7 @@ struct HLSOverHTTPTests {
         #expect((resumedAt ?? 0) > 0, "\(asked.map { $0.range ?? "whole" })")
     }
 
-    @Test("Segments are asked for uncompressed, with the cookies the master's answer set")
+    @Test("Segments are asked for uncompressed, with the cookies the multivariant's answer set")
     func requestsAsFFmpegDoes() throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
@@ -142,7 +142,7 @@ struct HLSOverHTTPTests {
 
     }
 
-    @Test("A saved master whose saved media playlist lists segments on the network is a network source")
+    @Test("A saved multivariant whose saved media playlist lists segments on the network is a network source")
     func savedMasterOfSavedPlaylistOfNetworkSegments() throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
@@ -158,13 +158,13 @@ struct HLSOverHTTPTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try saved.joined(separator: "\n").write(
             to: directory.appendingPathComponent("v1.m3u8"), atomically: true, encoding: .utf8)
-        // The master names no address on the network: only its media playlist's segments are.
-        let master = directory.appendingPathComponent("master.m3u8").path
+        // The multivariant names no address on the network: only its media playlist's segments are.
+        let multivariant = directory.appendingPathComponent("master.m3u8").path
         try "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nv1.m3u8\n".write(
-            toFile: master, atomically: true, encoding: .utf8)
-        #expect(!MediaURL.isNetworkSource(master))
+            toFile: multivariant, atomically: true, encoding: .utf8)
+        #expect(!MediaURL.isNetworkSource(multivariant))
 
-        let demuxer = try #require(MediaDemuxer(url: master))
+        let demuxer = try #require(MediaDemuxer(url: multivariant))
         #expect(demuxer.isNetworkSource)
         demuxer.startReadAhead()
         var pictures = 0
@@ -177,8 +177,8 @@ struct HLSOverHTTPTests {
 @Suite("HLS renditions over HTTP", .hostDependent, .networkServer)
 struct HLSRenditionTests {
     private static func open() throws -> (TestHTTPServer, MediaDemuxer, opened: Int)? {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return nil }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return nil }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         return (server, demuxer, server.requests.count)
     }
@@ -195,11 +195,11 @@ struct HLSRenditionTests {
 
     @Test("Renditions are named by their NAME, and an audio description isn't chosen on load")
     func namesAndAudioDescriptions() throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         // English, listed first and `DEFAULT=YES`, as an audio description (Apple lists theirs so, `DEFAULT=NO`).
-        let text = try String(contentsOfFile: master, encoding: .utf8)
+        let text = try String(contentsOfFile: multivariant, encoding: .utf8)
         server.setResponder(forPath: "master.m3u8") {
             Data(
                 text.replacingOccurrences(
@@ -253,10 +253,10 @@ struct HLSRenditionTests {
         #expect(!fetched.isEmpty, "\(fetched)")
     }
 
-    @Test("A read of a rendition outside playback sends the cookies the master's answer set")
+    @Test("A read of a rendition outside playback sends the cookies the multivariant's answer set")
     func renditionReadSendsCookies() throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         server.setBehavior(.init(setCookie: "token=abc; Path=/"), forPaths: { $0 == "master.m3u8" })
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -294,8 +294,8 @@ struct HLSRenditionTests {
 
     @Test("An audio track selected during a variant switch is the one read after it")
     func audioTrackSelectedDuringSwitch() throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
-        let demuxer = try #require(MediaDemuxer(url: master))
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let demuxer = try #require(MediaDemuxer(url: multivariant))
         let low = try #require(demuxer.variants.last)
         // Mid-GOP (30 frames): the switch waits for the new variant's keyframe at 2 s.
         for _ in 0..<45 { _ = demuxer.nextVideoSample() }
@@ -314,8 +314,8 @@ struct HLSRenditionTests {
 
     @Test("A variant switch enables the new variant's video only: the renditions selected stay as they are")
     func variantSwitchKeepsRenditions() throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
-        let demuxer = try #require(MediaDemuxer(url: master))
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let demuxer = try #require(MediaDemuxer(url: multivariant))
         let low = try #require(demuxer.variants.last)
         #expect(low.isSwitchable)
         var pictures = 0
@@ -369,8 +369,8 @@ extension HLSOverHTTPTests {
 struct HLSOverHTTPPlaybackTests {
     @Test("The engine plays an HLS URL read ahead, and a switch reads the new variant from the current frame")
     func playsAndSwitches() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
@@ -393,8 +393,8 @@ struct HLSOverHTTPPlaybackTests {
 
     @Test("During a seek, a variant read further ahead waits for playback; the one read at the target shows at once")
     func variantChangesDuringSeek() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
@@ -423,8 +423,8 @@ struct HLSOverHTTPPlaybackTests {
 
     @Test("Selecting an HLS subtitle rendition reads it from the current frame, and its cues show")
     func subtitleRenditionShows() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsRenditions) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
@@ -443,8 +443,8 @@ struct HLSOverHTTPPlaybackTests {
 
     @Test("Choosing the variant playing keeps it: adaptive bitrate stops, without a seek")
     func choosingPlayingVariantStopsAdapting() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let engine = PlayerEngine.makeForTesting()
         defer { engine.stop() }
@@ -500,8 +500,8 @@ struct HLSStartPositionTests {
 
     @Test("While playback is positioned at a start time, the engine says so, and stops saying so once it plays")
     func reportsStartingPlayback() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         // The segments take their time, so the start position is not reached in the blink of a local file's.
         server.setBehavior(.init(delay: .milliseconds(700)), forPaths: { $0.hasSuffix(".ts") })

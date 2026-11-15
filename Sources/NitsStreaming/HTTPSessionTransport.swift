@@ -1,6 +1,5 @@
 import CFFmpeg
 import Foundation
-internal import NitsStreaming
 import os
 
 /// Reads the HTTP(S) inputs of Nits' HLS and DASH client through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
@@ -79,7 +78,7 @@ package final class HTTPSessionTransport: Sendable {
     /// in which a fresh connection carries a window a round trip whatever the link (at 180 ms of round trip a single
     /// probe brought its first 256 KB at 3.4–5.2 Mbit/s on a fat link, 2.6–2.8 by its first half second). As many bytes
     /// as a link at `limit` carries in two round trips, `slowStartBytes` at least; the round trip is one measured to
-    /// `host` (`NetworkTransferMeter.roundTrip(host:)`: the master's and playlists' requests set up its connections),
+    /// `host` (`NetworkTransferMeter.roundTrip(host:)`: the multivariant's and playlists' requests set up its connections),
     /// none for another host. Before the opening's transfers start. Returns the round trip it took, for the log.
     ///
     /// A request's metrics may come after its body was read through: those still to come for `host`

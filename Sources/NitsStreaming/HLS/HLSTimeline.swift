@@ -13,7 +13,7 @@ import Foundation
 package struct HLSTimeline: Sendable, Equatable {
     /// A segment and where it starts on the timeline, in seconds.
     package struct Entry: Sendable, Equatable {
-        var segment: HLSSegment
+        var segment: MediaSegment
         package var start: Double
         /// `start` was read off the media (`measure`), not only summed from durations.
         var isMeasured = false
@@ -57,9 +57,9 @@ package struct HLSTimeline: Sendable, Equatable {
     /// The segments the playlist lists, in order.
     private(set) var entries: [Entry]
     private(set) var targetDuration: Double
-    /// How far behind the edge the source says to play (`HLSMediaPlaylist.holdBack`); the latest load's.
+    /// How far behind the edge the source says to play (`MediaPlaylist.holdBack`); the latest load's.
     private(set) var holdBack: Double?
-    /// The source's update period (`HLSMediaPlaylist.updatePeriod`), the latest load's.
+    /// The source's update period (`MediaPlaylist.updatePeriod`), the latest load's.
     private(set) var updatePeriod: Double?
     private(set) var hasEnded: Bool
     /// The playlist could change when first loaded: it has a live window (`liveWindow`).
@@ -82,7 +82,7 @@ package struct HLSTimeline: Sendable, Equatable {
     private var epoch = 0
 
     /// Places `playlist`'s segments from `start`.
-    init(_ playlist: HLSMediaPlaylist, start: Double = 0) {
+    init(_ playlist: MediaPlaylist, start: Double = 0) {
         targetDuration = playlist.targetDuration
         holdBack = playlist.holdBack
         updatePeriod = playlist.updatePeriod
@@ -101,7 +101,7 @@ package struct HLSTimeline: Sendable, Equatable {
     ///
     /// Nil for an empty playlist or reference: there is nothing to align, and the segments a reload brings would be
     /// placed from the reference's start, not where they belong. Made from the first load that lists segments.
-    init?(_ playlist: HLSMediaPlaylist, alignedTo reference: HLSTimeline, sharesSequenceNumbers: Bool) {
+    init?(_ playlist: MediaPlaylist, alignedTo reference: HLSTimeline, sharesSequenceNumbers: Bool) {
         guard !playlist.segments.isEmpty, !reference.isEmpty else { return nil }
         self.init(
             playlist,
@@ -184,10 +184,10 @@ package struct HLSTimeline: Sendable, Equatable {
     ///
     /// Nothing changes (false) for a segment the window doesn't list, or listed under another address (`url`: a reload
     /// that renumbered), for a start further than a target duration from where the timeline puts it (the media's clock
-    /// jumped: its offset is `HLSTimestampAnchors`' to decide, not a correction of the span) and for one that would
+    /// jumped: its offset is `TimestampAnchors`' to decide, not a correction of the span) and for one that would
     /// scale a span by more than half or double.
     @discardableResult
-    mutating func measure(sequence: Int, url: URL, byteRange: HLSByteRange?, start observed: Double) -> Bool {
+    mutating func measure(sequence: Int, url: URL, byteRange: ByteRange?, start observed: Double) -> Bool {
         guard let first = firstSequence, sequence >= first, sequence - first < entries.count else { return false }
         let index = sequence - first
         // By path and byte range: a CDN that signs addresses anew at each reload changes the query only, while a renumbering
@@ -261,7 +261,7 @@ package struct HLSTimeline: Sendable, Equatable {
     /// window). Neither is merged: a restart can't be told from a lagging edge by the playlist alone, so the caller
     /// decides (`restart`), as ExoPlayer reports a reset or a stuck playlist and lets the player act.
     @discardableResult
-    mutating func reload(_ playlist: HLSMediaPlaylist) -> ReloadChange {
+    mutating func reload(_ playlist: MediaPlaylist) -> ReloadChange {
         let wasEnded = hasEnded
         let change = merge(playlist)
         return change == .unchanged && wasEnded != hasEnded ? .updated(added: 0, expired: 0) : change
@@ -270,7 +270,7 @@ package struct HLSTimeline: Sendable, Equatable {
     /// Places `playlist`'s segments after the window as a run of their own, whatever their numbers: the caller took a
     /// `.stale` or `.reset` playlist as a restart of the stream.
     @discardableResult
-    mutating func restart(_ playlist: HLSMediaPlaylist) -> ReloadChange {
+    mutating func restart(_ playlist: MediaPlaylist) -> ReloadChange {
         guard let last = entries.last else { return reload(playlist) }
         // A server that restarted numbers from the start again: its numbers no longer say where the stream is.
         return startRun(of: playlist, after: last, gap: 0, keepsNumbers: false)
@@ -283,7 +283,7 @@ package struct HLSTimeline: Sendable, Equatable {
     /// duration, the two don't overlap and dates don't align them (hls.js's bound).
     static let longestDateOffset = 60.0
 
-    private mutating func merge(_ playlist: HLSMediaPlaylist) -> ReloadChange {
+    private mutating func merge(_ playlist: MediaPlaylist) -> ReloadChange {
         let segments = playlist.segments
         guard let oldFirst = entries.first, let oldLast = entries.last else {
             // Nothing was listed: the new segments start where the timeline does, and the first that are listed tell
@@ -368,12 +368,12 @@ package struct HLSTimeline: Sendable, Equatable {
     ///
     /// A new run (a reader reads it apart from what was before). Numbered as the server numbers it when it says its
     /// discontinuity sequence (`declaresDiscontinuitySequence`, `keepsNumbers`), as the numbers are what the stream's
-    /// playlists share, and the timestamps' offsets with them (`HLSTimestampAnchors`): a lane not read for a while that
+    /// playlists share, and the timestamps' offsets with them (`TimestampAnchors`): a lane not read for a while that
     /// numbered on its own would take another lane's offset at the next real break. Else as a discontinuity after the old
     /// last: missed segments may have held one, which a server that doesn't keep the tag wouldn't tell (the numbers of
     /// such a server are the lane's own anyway).
     private mutating func startRun(
-        of playlist: HLSMediaPlaylist, after last: Entry, gap: Double, keepsNumbers: Bool = true
+        of playlist: MediaPlaylist, after last: Entry, gap: Double, keepsNumbers: Bool = true
     ) -> ReloadChange {
         accept(playlist)
         guard let first = playlist.segments.first else { return .unchanged }
@@ -390,7 +390,7 @@ package struct HLSTimeline: Sendable, Equatable {
     }
 
     /// Takes what a reload tells of the whole playlist.
-    private mutating func accept(_ playlist: HLSMediaPlaylist) {
+    private mutating func accept(_ playlist: MediaPlaylist) {
         targetDuration = playlist.targetDuration
         holdBack = playlist.holdBack
         updatePeriod = playlist.updatePeriod
@@ -399,13 +399,13 @@ package struct HLSTimeline: Sendable, Equatable {
 
     /// A playlist that lists the stream from its start: finished (VOD) or an event, or one whose first segment is the
     /// stream's (media sequence 0, or 1, as some servers number from). A finished live window that had slid is not.
-    static func listsFromStreamStart(_ playlist: HLSMediaPlaylist) -> Bool {
+    static func listsFromStreamStart(_ playlist: MediaPlaylist) -> Bool {
         playlist.type == .vod || playlist.type == .event || playlist.mediaSequence <= 1
     }
 
     // MARK: Placing
 
-    private func corrected(_ segments: [HLSSegment]) -> [HLSSegment] {
+    private func corrected(_ segments: [MediaSegment]) -> [MediaSegment] {
         guard discontinuityCorrection != 0 else { return segments }
         return segments.map { segment in
             var segment = segment
@@ -414,7 +414,7 @@ package struct HLSTimeline: Sendable, Equatable {
         }
     }
 
-    private static func place(_ segments: [HLSSegment], from start: Double, epoch: Int) -> [Entry] {
+    private static func place(_ segments: [MediaSegment], from start: Double, epoch: Int) -> [Entry] {
         var cursor = start
         return segments.map { segment in
             defer { cursor += segment.duration }
@@ -429,7 +429,7 @@ package struct HLSTimeline: Sendable, Equatable {
     /// - else, for a variant of the reference's ladder (`sharesSequenceNumbers`), by media sequence number;
     /// - else, both live, at the same live edge; both finished, at the same end.
     static func alignedStart(
-        of playlist: HLSMediaPlaylist, to reference: HLSTimeline, sharesSequenceNumbers: Bool
+        of playlist: MediaPlaylist, to reference: HLSTimeline, sharesSequenceNumbers: Bool
     ) -> Double {
         guard !playlist.segments.isEmpty, !reference.isEmpty else { return reference.start }
         if listsFromStreamStart(playlist), let origin = reference.streamStart { return origin }

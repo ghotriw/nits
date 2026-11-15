@@ -48,9 +48,9 @@ struct DASHPlaylistsTests {
         try DASHPlaylists.build(try parse(data), id: "test")
     }
 
-    static func master(_ built: DASHPlaylists.Built) throws -> HLSMasterPlaylist {
-        guard let master = built.master else { throw HLSPlaylistError.mixedTypes }
-        return master
+    static func multivariant(_ built: DASHPlaylists.Built) throws -> MultivariantPlaylist {
+        guard let multivariant = built.multivariant else { throw HLSPlaylistError.mixedTypes }
+        return multivariant
     }
 
     // MARK: - Segments
@@ -126,10 +126,10 @@ struct DASHPlaylistsTests {
                 """))
         let video = try #require(presentation.representations.first)
         #expect(video.initSection?.url.absoluteString == "https://cdn.example/show/dash/v.mp4")
-        #expect(video.initSection?.byteRange == HLSByteRange(offset: 0, length: 800))
+        #expect(video.initSection?.byteRange == ByteRange(offset: 0, length: 800))
         #expect(
             video.segments.map(\.byteRange) == [
-                HLSByteRange(offset: 800, length: 1200), HLSByteRange(offset: 2000, length: 1000),
+                ByteRange(offset: 800, length: 1200), ByteRange(offset: 2000, length: 1000),
             ])
         #expect(video.segments.map(\.start) == [0, 5])
         #expect(video.segments.map(\.duration) == [5, 5])
@@ -369,7 +369,7 @@ struct DASHPlaylistsTests {
         #expect(throws: DASHPresentationError.unreadable) { try Self.parse(Data("<html/>".utf8)) }
     }
 
-    // MARK: - Master and numbers
+    // MARK: - Multivariant and numbers
 
     @Test("A ladder across sets is numbered by the best picture's segments; a rung of other boundaries is left out")
     func ladderNumbersByTime() throws {
@@ -389,14 +389,14 @@ struct DASHPlaylistsTests {
                 <SegmentTimeline><S t="0" d="5000" r="-1"/></SegmentTimeline></SegmentTemplate>\
                 \(Self.video("odd", 1280, 720, bandwidth: 2_000_000))</AdaptationSet>
                 """))
-        let master = try Self.master(built)
-        #expect(master.variants.map(\.bandwidth) == [5_000_000, 800_000])
-        #expect(master.variants.allSatisfy { $0.audioGroup == nil })
+        let multivariant = try Self.multivariant(built)
+        #expect(multivariant.variants.map(\.bandwidth) == [5_000_000, 800_000])
+        #expect(multivariant.variants.allSatisfy { $0.audioGroup == nil })
         // Both numbered as the best one's: the lower rung's own numbers (1, 2, 3) would join a switch at another time.
         #expect(built.told.map { $0.segments.map(\.sequence) } == [[100, 101, 102], [100, 101, 102]])
         #expect(built.told[1].segments[0].url.absoluteString == "https://cdn.example/show/dash/lo/1.m4s")
         #expect(built.told[1].mediaSequence == 100 && built.told[1].hasEnded && built.told[1].type == .vod)
-        #expect(master.variants[1].resolution == HLSResolution(width: 640, height: 360))
+        #expect(multivariant.variants[1].resolution == VideoResolution(width: 640, height: 360))
     }
 
     @Test("Pictures of another codec are a group of their own, numbered as their manifest says")
@@ -410,7 +410,7 @@ struct DASHPlaylistsTests {
                 </AdaptationSet>
                 """))
         #expect(built.told.map { $0.segments.map(\.sequence) } == [[5, 6, 7], [5, 6, 7]])
-        #expect(try Self.master(built).variants.map(\.codecs) == ["avc1.4d401f", "hvc1.2.4.L120"])
+        #expect(try Self.multivariant(built).variants.map(\.codecs) == ["avc1.4d401f", "hvc1.2.4.L120"])
     }
 
     private static let twoCodecs = Self.mpd(
@@ -430,8 +430,8 @@ struct DASHPlaylistsTests {
         let presentation = try Self.parse(Self.twoCodecs)
         func variants(_ selection: DASHSelection) throws -> [String?] {
             let built = try DASHPlaylists.build(presentation, id: "t", selection: selection)
-            #expect(try Self.master(built).renditions.count == 1, "The sound stays")
-            return try Self.master(built).variants.map(\.codecs)
+            #expect(try Self.multivariant(built).renditions.count == 1, "The sound stays")
+            return try Self.multivariant(built).variants.map(\.codecs)
         }
         #expect(try variants(DASHSelection()).count == 4, "No choice: the manifest as it is")
         #expect(try variants(DASHSelection(video: "hevc-hi")) == ["hvc1.2.4.L120", "hvc1.2.4.L120"])
@@ -447,8 +447,8 @@ struct DASHPlaylistsTests {
             \(Self.video("a", 1920, 1080, bandwidth: 0))\(Self.video("b", 960, 540, bandwidth: 0))</AdaptationSet>
             """)
         let built = try DASHPlaylists.build(try Self.parse(data), id: "t", selection: DASHSelection(video: "b"))
-        #expect(try Self.master(built).variants.map(\.resolution?.height) == [540])
-        #expect(throws: HLSPlaylistSourceError.self) {
+        #expect(try Self.multivariant(built).variants.map(\.resolution?.height) == [540])
+        #expect(throws: PlaylistSourceError.self) {
             try DASHPlaylists.build(try Self.parse(data), id: "t", selection: DASHSelection(video: "missing"))
         }
     }
@@ -466,8 +466,8 @@ struct DASHPlaylistsTests {
         let best = try DASHPlaylists.build(presentation, id: "t")
         #expect(best.entries.map(\.representation.id) == ["en-hi", "v"])
         let chosen = try DASHPlaylists.build(presentation, id: "t", selection: DASHSelection(audio: "en-lo"))
-        #expect(chosen.master == nil && chosen.entries.map(\.representation.id) == ["en-lo"])
-        #expect(throws: HLSPlaylistSourceError.self) {
+        #expect(chosen.multivariant == nil && chosen.entries.map(\.representation.id) == ["en-lo"])
+        #expect(throws: PlaylistSourceError.self) {
             try DASHPlaylists.build(presentation, id: "t", selection: DASHSelection(audio: "v"))
         }
     }
@@ -494,11 +494,11 @@ struct DASHPlaylistsTests {
                         role: #"<Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>"#)
                     + #"<AdaptationSet contentType="text" lang="uk"><Representation id="t" mimeType="application/ttml+xml" bandwidth="1"/></AdaptationSet>"#
             ))
-        let master = try Self.master(built)
-        #expect(master.renditions.map(\.language) == ["uk", "en"])
-        #expect(master.renditions.map(\.isDefault) == [true, false])
-        #expect(master.renditions.allSatisfy { $0.type == .audio && $0.groupID == "a" })
-        #expect(master.variants.map(\.audioGroup) == ["a"])
+        let multivariant = try Self.multivariant(built)
+        #expect(multivariant.renditions.map(\.language) == ["uk", "en"])
+        #expect(multivariant.renditions.map(\.isDefault) == [true, false])
+        #expect(multivariant.renditions.allSatisfy { $0.type == .audio && $0.groupID == "a" })
+        #expect(multivariant.variants.map(\.audioGroup) == ["a"])
         #expect(built.told[1].segments[0].url.lastPathComponent == "1.m4s")
         #expect(built.told[1].segments[0].url.deletingLastPathComponent().lastPathComponent == "en-high")
     }
@@ -509,14 +509,14 @@ struct DASHPlaylistsTests {
             Self.mpd(
                 #"<AdaptationSet contentType="audio"><SegmentTemplate media="$Number$.m4s" duration="4"/><Representation id="a" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>"#
             ))
-        #expect(built.master == nil, "A master")
+        #expect(built.multivariant == nil, "A multivariant")
         #expect(built.media.first??.segments.count == 3)
     }
 
     // MARK: - The source
 
     @Test(
-        "Keys of the source's own: the master, each playlist by its index; another source's or an unknown one is not served"
+        "Keys of the source's own: the multivariant, each playlist by its index; another source's or an unknown one is not served"
     )
     func keys() throws {
         let data = Self.mpd(
@@ -525,14 +525,16 @@ struct DASHPlaylistsTests {
         let source = DASHPlaylists(address: Self.url, inline: data)
         let transport = HTTPSessionTransport(source: Self.url.absoluteString, headers: [:]) { false }
         let loader = SegmentLoader(transport: transport)
-        #expect(source.masterURL.scheme == "nits-dash")
-        guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)
+        #expect(source.multivariantURL.scheme == "nits-dash")
+        guard
+            case .multivariant(let multivariant) = try source.playlist(
+                at: source.multivariantURL, variables: [:], loader: loader)
         else {
-            Issue.record("not a master")
+            Issue.record("not a multivariant")
             return
         }
-        let variant = try #require(master.variants.first)
-        #expect(variant.url.absoluteString.hasPrefix(source.masterURL.absoluteString + "0/"))
+        let variant = try #require(multivariant.variants.first)
+        #expect(variant.url.absoluteString.hasPrefix(source.multivariantURL.absoluteString + "0/"))
         #expect(variant.url.lastPathComponent == "v 1")
         guard case .media(let media) = try source.playlist(at: variant.url, variables: [:], loader: loader) else {
             Issue.record("not a media playlist")
@@ -540,11 +542,11 @@ struct DASHPlaylistsTests {
         }
         #expect(media.segments.count == 3)
         let other = DASHPlaylists(address: Self.url, inline: data)
-        #expect(throws: HLSPlaylistSourceError.load(.notServed(variant.url))) {
+        #expect(throws: PlaylistSourceError.load(.notServed(variant.url))) {
             try other.playlist(at: variant.url, variables: [:], loader: loader)
         }
-        let unknown = source.masterURL.appendingPathComponent("9")
-        #expect(throws: HLSPlaylistSourceError.load(.notServed(unknown))) {
+        let unknown = source.multivariantURL.appendingPathComponent("9")
+        #expect(throws: PlaylistSourceError.load(.notServed(unknown))) {
             try source.playlist(at: unknown, variables: [:], loader: loader)
         }
     }
@@ -715,9 +717,9 @@ extension DASHPlaylistsTests {
         let logged = MediaURL.loggable(told)
         #expect(!logged.contains("secret"), "\(logged)")
 
-        // An inline manifest tells no address: relative addresses are relative to the master's key, none is served.
+        // An inline manifest tells no address: relative addresses are relative to the multivariant's key, none is served.
         let bare = try #require(DASHPlaylists(media: told))
-        #expect(bare.address == bare.masterURL && !bare.allowsFiles && bare.selection.isEmpty)
+        #expect(bare.address == bare.multivariantURL && !bare.allowsFiles && bare.selection.isEmpty)
 
         // The fragment is the choice, not a part of the address the requests go to.
         let chosen = try #require(
@@ -739,5 +741,5 @@ extension DASHPlaylistsTests {
 
 extension DASHPlaylists.Built {
     /// The playlists the manifest tells (none here is one file, told by its index).
-    var told: [HLSMediaPlaylist] { media.compactMap { $0 } }
+    var told: [MediaPlaylist] { media.compactMap { $0 } }
 }

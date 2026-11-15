@@ -8,14 +8,14 @@ import Testing
 @Suite("HLS timeline")
 struct HLSTimelineTests {
     static let base = URL(string: "https://cdn.example.com/live/index.m3u8")!
-    static let noon = HLSPlaylist.date("2026-11-10T12:00:00Z")!
+    static let noon = StreamingPlaylist.date("2026-11-10T12:00:00Z")!
 
     /// A media playlist of `durations` from media sequence `sequence`; `discontinuities` are the indices of segments
     /// a discontinuity comes before; `dated` gives the first segment a date that many seconds after noon.
     static func playlist(
         _ durations: [Double], sequence: Int = 0, discontinuitySequence: Int? = nil, discontinuities: Set<Int> = [],
         dated: Double? = nil, type: String? = nil, ended: Bool = false, name: String = "s"
-    ) throws -> HLSMediaPlaylist {
+    ) throws -> MediaPlaylist {
         var text = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:\(sequence)\n"
         if let discontinuitySequence { text += "#EXT-X-DISCONTINUITY-SEQUENCE:\(discontinuitySequence)\n" }
         if let type { text += "#EXT-X-PLAYLIST-TYPE:\(type)\n" }
@@ -27,7 +27,7 @@ struct HLSTimelineTests {
             text += "#EXTINF:\(duration),\n\(name)\(sequence + index).ts\n"
         }
         if ended { text += "#EXT-X-ENDLIST\n" }
-        guard case .media(let playlist) = try HLSPlaylist.parse(text, url: base) else {
+        guard case .media(let playlist) = try StreamingPlaylist.parse(text, url: base) else {
             throw HLSPlaylistError.mixedTypes
         }
         return playlist
@@ -409,7 +409,7 @@ struct HLSTimelineTests {
     /// An entry read before, of `sequence`, from `start`.
     static func entry(_ sequence: Int, start: Double, duration: Double = 6) -> HLSTimeline.Entry {
         HLSTimeline.Entry(
-            segment: HLSSegment(
+            segment: MediaSegment(
                 url: base.appending(path: "s\(sequence).ts"), duration: duration, sequence: sequence,
                 discontinuitySequence: 0),
             start: start)
@@ -418,7 +418,7 @@ struct HLSTimelineTests {
 
 extension HLSTimeline {
     /// `init(_:alignedTo:sharesSequenceNumbers:)` for a playlist the test knows lists segments.
-    init(_ playlist: HLSMediaPlaylist, testAlignedTo reference: HLSTimeline, sharesSequenceNumbers: Bool) {
+    init(_ playlist: MediaPlaylist, testAlignedTo reference: HLSTimeline, sharesSequenceNumbers: Bool) {
         guard let timeline = HLSTimeline(playlist, alignedTo: reference, sharesSequenceNumbers: sharesSequenceNumbers)
         else { preconditionFailure("an empty playlist or reference") }
         self = timeline

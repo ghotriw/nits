@@ -1,6 +1,5 @@
 import CFFmpeg
 import Foundation
-internal import NitsStreaming
 
 package enum SegmentReaderError: Error, Equatable {
     case load(SegmentLoadError)
@@ -26,7 +25,7 @@ package enum SegmentReaderError: Error, Equatable {
 /// a seek is a new reader too: no `av_seek_frame`.
 ///
 /// **Timeline.** `timelineOffset` moves the media's own timestamps onto the playlist's. A reader with `anchoring` takes
-/// the offset its stream's lanes share for the run's discontinuity sequence (`HLSTimestampAnchors`), or anchors it; one
+/// the offset its stream's lanes share for the run's discontinuity sequence (`TimestampAnchors`), or anchors it; one
 /// without (a probe, a thumbnail, a test) anchors itself. Anchoring puts the run's first segment at `start`, where the
 /// first picture's presentation time (else the first stream's) was. One offset covers the run, so the timestamps drift
 /// only as much as the encoder's clock does. A WebVTT rendition has no timestamps of its own, and takes the offset of
@@ -40,7 +39,7 @@ package enum SegmentReaderError: Error, Equatable {
 /// Not thread-safe: one thread reads, and closes.
 package final class SegmentReader {
     private let loader: SegmentLoader
-    private let next: () -> HLSSegment?
+    private let next: () -> MediaSegment?
     private let start: Double
     private let timelineShift: ((Int) -> Double?)?
     private let anchoring: Anchoring?
@@ -51,15 +50,15 @@ package final class SegmentReader {
 
     /// The offsets a reader shares with the stream's other runs: `anchors`' for the run's discontinuity `sequence`,
     /// taken when they put its first packet within `tolerance` seconds of where the playlist does, as the reader's
-    /// `role` may (`HLSTimestampAnchors.Role`).
+    /// `role` may (`TimestampAnchors.Role`).
     package struct Anchoring {
-        package let anchors: HLSTimestampAnchors
+        package let anchors: TimestampAnchors
         package let sequence: Int
         let tolerance: Double
-        let role: HLSTimestampAnchors.Role
+        let role: TimestampAnchors.Role
         /// Told where the media puts each segment of the run: its sequence, and the time of its first picture (else its
         /// first stream's sound) on the timeline (`HLSTimeline.measure`). Not for a run that has no timestamps of its own.
-        var onSegmentStart: ((HLSSegment, Double) -> Void)?
+        var onSegmentStart: ((MediaSegment, Double) -> Void)?
     }
 
     /// Container formats of elementary audio (packed audio), whose timestamps are counted from the run's first sample:
@@ -69,7 +68,7 @@ package final class SegmentReader {
     private var packedTimestamp: Int64?
     /// The init section's length and the run's first segment, where `segmentStarts` begins.
     private var initBytes: Int64 = 0
-    private var firstSegment: HLSSegment?
+    private var firstSegment: MediaSegment?
 
     private var context: UnsafeMutablePointer<AVFormatContext>?
     private var io: SegmentIO?
@@ -93,7 +92,7 @@ package final class SegmentReader {
     private var soundEnds: [Int: Int64] = [:]
     /// Where each segment's bytes start in what the context has read (init section and segments as one stream), for the
     /// segments whose packets may still come: a packet's `pos` says which it is from (`noteSegmentStart`).
-    private var segmentStarts: [(offset: Int64, segment: HLSSegment, number: Int)] = []
+    private var segmentStarts: [(offset: Int64, segment: MediaSegment, number: Int)] = []
     /// Bytes handed to the context so far.
     private var delivered: Int64 = 0
     /// The number (place in the run) of the last segment that told where it starts.
@@ -147,10 +146,10 @@ package final class SegmentReader {
     /// first segment's first bytes came (its init section's before them): the server answers, whatever the analysis
     /// then takes.
     init(
-        loader: SegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
+        loader: SegmentLoader, first: MediaSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
         anchoring: Anchoring? = nil, probe: HTTPSessionInput.Opening? = nil, knownVideoDelay: Int? = nil,
         firstBody: SegmentBody? = nil, onAnswer: (() -> Void)? = nil,
-        next: @escaping () -> HLSSegment?
+        next: @escaping () -> MediaSegment?
     ) throws(SegmentReaderError) {
         self.loader = loader
         self.start = start
@@ -610,7 +609,7 @@ package final class SegmentReader {
     /// context) is where the media puts the segment's start: told once for each segment, as it is read. A packet of
     /// no known place (`pos` unset) tells nothing.
     private func noteSegmentStart(
-        of packet: AVPacket, stream: UnsafeMutablePointer<AVStream>, _ notify: (HLSSegment, Double) -> Void
+        of packet: AVPacket, stream: UnsafeMutablePointer<AVStream>, _ notify: (MediaSegment, Double) -> Void
     ) {
         if referenceStream == nil {
             let all = streams

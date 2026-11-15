@@ -78,7 +78,7 @@ package struct StreamHistory: Sendable {
     }
 
     /// The host of the addresses the manifest names, which no DNS knows: the client asks the source for the address of
-    /// each (`HLSPlaylistSource.address(of:)`).
+    /// each (`PlaylistSource.address(of:)`).
     package static let host = "live.nits.invalid"
 
     /// What a manifest names the stream `key` by: the address its segments are asked for (with `sq=N`) through the

@@ -157,8 +157,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A slow network brings the variant down to one it carries, and a fast one back up, without stalling")
     func followsTheNetwork() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         #expect(demuxer.variants.map(\.width) == [640, 480, 320])
@@ -192,8 +192,8 @@ struct AdaptiveBitrateTests {
         "A low variant's small segments, slow to be answered, don't hold it there, on connections new or kept",
         arguments: [true, false])
     func latencyIsNoTransfer(closesConnection: Bool) async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
@@ -226,8 +226,8 @@ struct AdaptiveBitrateTests {
     /// (0.95 of 1.05 Mbit/s < 1.08) and playback went on down to the lowest.
     @Test("The two transfers of a switch share the link: the estimate stays the link's, the variant it carries stays")
     func switchOverlapIsNoCollapse() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         #expect(demuxer.variants.map(\.width) == [640, 480, 320])
@@ -250,8 +250,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A link the opening's prefetch proves slow starts on the variant it carries, not the best")
     func slowLinkStartsLower() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         // 1.5 Mbit/s carries the 0.97 Mbit/s variant (480), not the 2.66 one (640) the ladder's best is.
         server.setLinkRate(1_500_000 / 8)
@@ -263,8 +263,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A fast link measures from the low variant's small segments, and steps up to what it carries at once")
     func fastLinkMeasuresSmallSegments() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
@@ -289,8 +289,8 @@ struct AdaptiveBitrateTests {
 
     @Test("The latency share counts from the first segment read, and doesn't leap at the start")
     func latencyShareFromTheStart() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
@@ -321,8 +321,8 @@ struct AdaptiveBitrateTests {
         "A server slower to answer than its segments last brings the variant down, however fast the link",
         arguments: [false, true])
     func slowAnswersComeDown(closesConnection: Bool) async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()
@@ -362,8 +362,8 @@ struct AdaptiveBitrateTests {
 
     @Test("At a live stream's edge, waiting for the next segment doesn't bring the variant down")
     func liveEdgeKeepsVariant() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         Self.serveLive(server)
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -384,8 +384,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A live stream on a slow link still comes down to the variant the link carries")
     func liveSlowLinkComesDown() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         Self.serveLive(server)
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -407,8 +407,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A live stream's server slow to answer isn't taken for waiting at its edge")
     func liveSlowAnswersComeDown() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         Self.serveLive(server)
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -428,8 +428,8 @@ struct AdaptiveBitrateTests {
 
     @Test("A live stream's playlist slow to answer isn't taken for waiting at its edge")
     func liveSlowPlaylistIsNoEdge() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         Self.serveLive(server)
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -452,8 +452,8 @@ struct AdaptiveBitrateTests {
     /// step up on the estimate may take it, a probe past the estimate's reach may not (`isReadAheadReal`).
     @Test("At a live stream's edge, the raised read-ahead is no full one to probe a step up from")
     func liveEdgeDoesNotProbe() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         Self.serveLive(server)
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -503,8 +503,8 @@ struct AdaptiveBitrateTests {
 
     @Test("Choosing a variant turns adaptive bitrate off")
     func manualChoiceSticks() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.adaptiveBitrateConfig = Self.config()

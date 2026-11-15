@@ -93,8 +93,8 @@ struct AbandonDownloadTests {
 
     @Test("A top variant's segment on a link that cannot carry it is given up for a lower one's, and playback goes on")
     func givesUpAHeavySegment() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         // Opened on a fast link: it starts on the top variant (640 wide).
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
@@ -143,8 +143,8 @@ struct AbandonDownloadTests {
 
     @Test("With the read-ahead full the lower variant reads the segment given up, not the one before it")
     func joinsAtTheSegmentWithAFullBuffer() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         // Off until the link slows: a start on a loaded machine (the HTTP suites together on a pool of one thread) can be
@@ -206,9 +206,9 @@ struct AbandonDownloadTests {
         expectContinuous(consumer)
     }
 
-    /// The name the segments of `hlsLadder`'s rung `width` wide start with ("v2" for `v2_005.ts`), from its master playlist.
-    private func segmentPrefix(ofWidth width: Int, master: String) throws -> String {
-        let lines = try String(contentsOfFile: master, encoding: .utf8).split(separator: "\n").map(String.init)
+    /// The name the segments of `hlsLadder`'s rung `width` wide start with ("v2" for `v2_005.ts`), from its multivariant playlist.
+    private func segmentPrefix(ofWidth width: Int, multivariant: String) throws -> String {
+        let lines = try String(contentsOfFile: multivariant, encoding: .utf8).split(separator: "\n").map(String.init)
         let index = try #require(lines.firstIndex { $0.contains("RESOLUTION=\(width)x") })
         let uri = try #require(lines[(index + 1)...].first { !$0.isEmpty && !$0.hasPrefix("#") })
         return String(uri.prefix { $0 != "." })
@@ -218,8 +218,8 @@ struct AbandonDownloadTests {
     /// the switch joining the segment after it: the rule's first verdict on that segment once the switch began gives it up,
     /// for a rung no higher than `to`, which reads it from its start, and playback runs on past the cut.
     private func expectSwitchGivesWay(from fromWidth: Int, to toWidth: Int, linkRate: Int) async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.abandonsDownloads = false
@@ -242,7 +242,7 @@ struct AbandonDownloadTests {
             _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(10)) { demuxer.selectedVariantId == from.id }
         }
         try #require(demuxer.selectedVariantId == from.id, "Not on the \(fromWidth) wide rung")
-        let fromPrefix = try segmentPrefix(ofWidth: fromWidth, master: master)
+        let fromPrefix = try segmentPrefix(ofWidth: fromWidth, multivariant: multivariant)
         let since = Date()
         let slowedAt = ContinuousClock.now
         server.setLinkRate(linkRate / 8)
@@ -286,7 +286,7 @@ struct AbandonDownloadTests {
         let target = try #require(demuxer.variants.first { $0.id == targetId })
         #expect(target.bandwidth < from.bandwidth && target.bandwidth <= to.bandwidth, "Given up for: \(line)")
         // The segment given up is read from its start by the rung given up for.
-        let targetPrefix = try segmentPrefix(ofWidth: target.width, master: master)
+        let targetPrefix = try segmentPrefix(ofWidth: target.width, multivariant: multivariant)
         let given = String(format: "_%03d.ts", sequence)
         let byTarget = { server.requests.filter { $0.time >= slowedAt && $0.path.hasPrefix(targetPrefix + "_") } }
         _ = await AdaptiveBitrateTests.waitUntil(timeout: .seconds(8)) {
@@ -321,8 +321,8 @@ struct AbandonDownloadTests {
 
     @Test("A switch that took a download over and is given up reads it again without repeating what it had queued")
     func restartsWhatTheCancelledSwitchTookOver() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         demuxer.abandonsDownloads = true
@@ -401,8 +401,8 @@ struct AbandonDownloadTests {
         _ playlist: String, rung prefix: String, audioAhead: Double?, servedOver: Int = 6, keepsHistory: Bool = true,
         configure: (MediaDemuxer) -> Void = { _ in }
     ) throws -> InsideSetup? {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadderShortGOP) else { return nil }
-        let root = URL(fileURLWithPath: master).deletingLastPathComponent()
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadderShortGOP) else { return nil }
+        let root = URL(fileURLWithPath: multivariant).deletingLastPathComponent()
         let server = try TestHTTPServer(root: root)
         let demuxer = try #require(MediaDemuxer(url: server.url(playlist)))
         #expect(demuxer.variants.map(\.width) == [640, 480, 320])
@@ -700,8 +700,8 @@ struct AbandonDownloadTests {
 
     @Test("On by default; turned off, nothing is given up")
     func isOnByDefault() async throws {
-        guard let master = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
-        let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
         // On unless the environment turns it off: when it says nothing, on.

@@ -130,10 +130,10 @@ public enum SyntheticTestMediaFactory {
         /// `captionsC608MOV` in a fragment a second (`frag_keyframe+empty_moov`): its `moov` lists no sample, and FFmpeg
         /// reads every fragment of a seekable file without a complete `sidx` at opening
         case captionsC608FragmentedMOV
-        /// HLS master playlist (6s, 2s segments, MPEG-TS) with two muxed H.264 + AAC variants: 320x180 at ~300 kbit/s
-        /// listed first, then 640x360 at ~900 kbit/s. Made as a directory; `filename` is its master playlist
+        /// HLS multivariant playlist (6s, 2s segments, MPEG-TS) with two muxed H.264 + AAC variants: 320x180 at ~300 kbit/s
+        /// listed first, then 640x360 at ~900 kbit/s. Made as a directory; `filename` is its multivariant playlist
         case hlsVariants
-        /// HLS master playlist (40s, 2s segments, MPEG-TS) with three constant-bitrate H.264 + AAC variants, so a
+        /// HLS multivariant playlist (40s, 2s segments, MPEG-TS) with three constant-bitrate H.264 + AAC variants, so a
         /// segment's size matches its `BANDWIDTH`: 320x180 at ~0.43 Mbit/s, 480x270 at ~0.97, 640x360 at ~2.66
         case hlsLadder
         /// `hlsLadder` in 6 s segments of three 2 s GOPs each (30 s, keyframes at every even second in every rung), so a
@@ -144,14 +144,14 @@ public enum SyntheticTestMediaFactory {
         /// A media playlist (12s, MPEG-TS) of a 4s and an 8s segment with `EXT-X-DISCONTINUITY` between them, each made on its own
         /// and starting at the same timestamps: the second segment's go back. Made as a directory; `filename` is the playlist
         case hlsDiscontinuity
-        /// `hlsDiscontinuity` as a master playlist of two variants (320x180 and 640x360, 4 s + 4 s each, a discontinuity
+        /// `hlsDiscontinuity` as a multivariant playlist of two variants (320x180 and 640x360, 4 s + 4 s each, a discontinuity
         /// between the segments, the timestamps of each starting again), to switch variant after the break. Made as a
-        /// directory; `filename` is its master playlist
+        /// directory; `filename` is its multivariant playlist
         case hlsDiscontinuityLadder
-        /// HLS master playlist (6 s, 2 s segments, MPEG-TS) of three H.264 rungs of one picture whose sound differs:
+        /// HLS multivariant playlist (6 s, 2 s segments, MPEG-TS) of three H.264 rungs of one picture whose sound differs:
         /// `v0` 320x180 without sound, `v1` 480x270 with AAC at 44.1 kHz, `v2` 640x360 with AAC at 48 kHz (the top). The
-        /// master (`filename`) lists every rung with `CODECS` "avc1.64001e,mp4a.40.2", as if they were muxed alike; a test
-        /// serves another master to tell otherwise
+        /// multivariant (`filename`) lists every rung with `CODECS` "avc1.64001e,mp4a.40.2", as if they were muxed alike; a test
+        /// serves another multivariant to tell otherwise
         case hlsMixedSoundLadder
         /// `hlsDiscontinuity` with the second segment bigger than the first and a third like it: 4 s at 320x180, a
         /// discontinuity, 4 s at 640x360 (an advertisement in another encoding), a discontinuity, 4 s at 320x180 again.
@@ -177,13 +177,13 @@ public enum SyntheticTestMediaFactory {
         /// `EXT-X-DISCONTINUITY`, the timestamps of each starting again, picture and sound muxed. `filename` is the playlist
         case hlsDiscontinuityFMP4
         /// `hlsDiscontinuityFMP4` with the sound in an audio rendition (`EXT-X-MEDIA`) of its own: a playlist, init sections
-        /// and breaks of its own, the picture alone in the variant. `filename` is the master playlist
+        /// and breaks of its own, the picture alone in the variant. `filename` is the multivariant playlist
         case hlsDiscontinuityFMP4AudioRendition
         /// `hlsDiscontinuityFMP4AudioRendition` with the `flashClick` pattern: two 6 s stretches (320x180, then 640x360) of a
         /// white frame and a click at every whole second of the stretch, so on the playlist's timeline too if the break keeps
         /// the picture and the sound together. The sound is FLAC (no encoder delay) and starts at 0; the picture, reordered by
         /// the encoder, at 2 frames (67 ms), and the sound, encoded apart, is moved as far: the timestamps of both say what
-        /// plays together. `filename` is the master playlist
+        /// plays together. `filename` is the multivariant playlist
         case hlsDiscontinuityFlashClick
         /// `hlsVariants` in fragmented MP4 segments: parameter sets only in each variant's `avcC`, none in band
         case hlsVariantsFMP4
@@ -192,7 +192,7 @@ public enum SyntheticTestMediaFactory {
         /// `hlsVariantsFMP4` with each variant in one file, read in byte ranges (`EXT-X-BYTERANGE`), as Apple's
         /// examples are
         case hlsVariantsSingleFile
-        /// HLS master playlist (6s) with two H.264 variants (320x180, 640x360) and their audio and subtitles as
+        /// HLS multivariant playlist (6s) with two H.264 variants (320x180, 640x360) and their audio and subtitles as
         /// renditions (`EXT-X-MEDIA`) both share: English and Ukrainian AAC, two WebVTT subtitle playlists in one group
         case hlsRenditions
         /// Four one-second segments (4s) of an H.264 picture (320x180, 25 fps, keyframe each) and AAC audio, as segments
@@ -214,7 +214,7 @@ public enum SyntheticTestMediaFactory {
             self == .captionsH264TS || self == .captionsH264MKV || self == .captionsH264TSLastStep
         }
 
-        /// Presets made as a directory of playlists and segments, `filename` being the master playlist.
+        /// Presets made as a directory of playlists and segments, `filename` being the multivariant playlist.
         var isHLS: Bool {
             [
                 .hlsVariants, .hlsVariantsFMP4, .hlsVariantsAV1, .hlsVariantsSingleFile, .hlsRenditions, .hlsLadder,
@@ -704,7 +704,7 @@ public enum SyntheticTestMediaFactory {
                     atPath: directory.appendingPathComponent("v\(variant).m3u8").path, contents: Data(playlist.utf8))
             else { return false }
         }
-        let master = """
+        let multivariant = """
             #EXTM3U
             #EXT-X-VERSION:3
             #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS="avc1.640015,mp4a.40.2"
@@ -714,7 +714,7 @@ public enum SyntheticTestMediaFactory {
 
             """
         return FileManager.default.createFile(
-            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(multivariant.utf8))
     }
 
     /// `hlsLadderShortGOP`: the ladder of `hlsLadder` (constant bitrate, the same picture scaled) in 6 s segments with a
@@ -739,9 +739,9 @@ public enum SyntheticTestMediaFactory {
                 "-sc_threshold", "0", "-force_key_frames", "expr:gte(t,n_forced*2)", "-x264-params", "nal-hrd=cbr",
                 "-c:a", "aac", "-b:a", "64k",
             ] + rates
-        let hls = { (prefix: String, master: String) in
+        let hls = { (prefix: String, multivariant: String) in
             [
-                "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod", "-master_pl_name", master,
+                "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod", "-master_pl_name", multivariant,
                 "-hls_segment_filename", file("\(prefix)%v_%03d.ts"),
             ]
         }
@@ -778,7 +778,7 @@ public enum SyntheticTestMediaFactory {
             ]
             guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
         }
-        let master = """
+        let multivariant = """
             #EXTM3U
             #EXT-X-VERSION:3
             #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=320x180,CODECS="avc1.64001e,mp4a.40.2"
@@ -790,7 +790,7 @@ public enum SyntheticTestMediaFactory {
 
             """
         return FileManager.default.createFile(
-            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(multivariant.utf8))
     }
 
     /// Two 4 s fragmented-MP4 stretches, each made on its own (so it has an init section of its own and timestamps from
@@ -862,7 +862,7 @@ public enum SyntheticTestMediaFactory {
             else { return false }
         }
         guard separate else { return true }
-        let master = """
+        let multivariant = """
             #EXTM3U
             #EXT-X-VERSION:7
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Sound",DEFAULT=YES,AUTOSELECT=YES,URI="a.m3u8"
@@ -871,7 +871,7 @@ public enum SyntheticTestMediaFactory {
 
             """
         return FileManager.default.createFile(
-            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(master.utf8))
+            atPath: directory.appendingPathComponent("master.m3u8").path, contents: Data(multivariant.utf8))
     }
 
     /// A media playlist of two MPEG-TS segments, 4 s and 8 s: each is encoded on its own so both start at the same
@@ -947,7 +947,7 @@ public enum SyntheticTestMediaFactory {
             atPath: directory.appendingPathComponent("media.m3u8").path, contents: Data(playlist.utf8))
     }
 
-    /// FFmpeg arguments writing an HLS preset's master playlist, media playlists and segments into `directory`.
+    /// FFmpeg arguments writing an HLS preset's multivariant playlist, media playlists and segments into `directory`.
     private static func hlsArguments(for preset: Preset, in directory: URL, subtitlesPath: String) -> [String] {
         let file = { (name: String) in directory.appendingPathComponent(name).path }
         let isSingleFile = preset == .hlsVariantsSingleFile
@@ -1141,7 +1141,7 @@ public enum SyntheticTestMediaFactory {
     }
 
     /// Lists every file of the media made in `directory`, so a later run can tell whole media from what macOS left
-    /// of it: it empties `$TMPDIR`'s files not used for three days, and the entry point (the master playlist) is
+    /// of it: it empties `$TMPDIR`'s files not used for three days, and the entry point (the multivariant playlist) is
     /// read by every run while the segments are not, so it outlives them.
     private static func writeManifest(of directory: URL) {
         guard

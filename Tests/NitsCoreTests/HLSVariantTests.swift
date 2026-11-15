@@ -10,7 +10,7 @@ import os
 
 @Suite("HLS Variants")
 struct HLSVariantTests {
-    @Test("A master playlist plays its highest-bandwidth variant and discards the others' streams")
+    @Test("A multivariant playlist plays its highest-bandwidth variant and discards the others' streams")
     func selectsHighestVariant() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))

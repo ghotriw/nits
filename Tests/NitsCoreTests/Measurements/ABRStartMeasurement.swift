@@ -12,11 +12,11 @@ struct ABRStartMeasurement {
         "Start on a slow link", .timeLimit(.minutes(10)),
         .enabled(if: ProcessInfo.processInfo.environment["NITS_MEASURE_START"] != nil))
     func measure() async throws {
-        let master = try #require(SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder))
+        let multivariant = try #require(SyntheticTestMediaFactory.ensureMedia(preset: .hlsLadder))
         let rates = (ProcessInfo.processInfo.environment["NITS_LINK_KBPS"] ?? "1500,600").split(separator: ",")
             .compactMap { Int($0) }
         for kbps in rates {
-            let server = try TestHTTPServer(root: URL(fileURLWithPath: master).deletingLastPathComponent())
+            let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
             defer { server.stop() }
             server.setLinkRate(kbps * 1000 / 8)
             let openStart = ContinuousClock.now

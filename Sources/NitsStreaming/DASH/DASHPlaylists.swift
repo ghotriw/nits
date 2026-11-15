@@ -1,9 +1,8 @@
 import Foundation
-internal import NitsStreaming
 import os
 
-/// A DASH manifest (MPD) told to the client as HLS playlists (`HLSPlaylistSource`): its pictures as the variants of a
-/// master playlist, the best sound of each language as an audio rendition, each representation's segments as a media
+/// A DASH manifest (MPD) told to the client as HLS playlists (`PlaylistSource`): its pictures as the variants of a
+/// multivariant playlist, the best sound of each language as an audio rendition, each representation's segments as a media
 /// playlist. The client plays them as it plays HLS's (`HLSInput`); see `.agents/dash-client/PLAN.md`.
 ///
 /// **Addresses.** The playlists are named by keys of the source's own (`nits-dash://<source>/…`), never fetched: the
@@ -22,14 +21,14 @@ import os
 /// one's do (within half a frame) is left out, as a switch to it could not land on a segment boundary. For one file
 /// that is known once both indexes are read: its playlist is then refused, and the opening leaves its variant out.
 ///
-/// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`HLSPlaylistSourceError.unsupported`) with
+/// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`PlaylistSourceError.unsupported`) with
 /// the reason.
-package struct DASHPlaylists: HLSPlaylistSource {
+package struct DASHPlaylists: PlaylistSource {
     /// The scheme of the keys.
     static let scheme = "nits-dash"
 
-    /// The key of the master playlist: what `HLSInput` opens.
-    let masterURL: URL
+    /// The key of the multivariant playlist: what `HLSInput` opens.
+    let multivariantURL: URL
     /// Where the manifest came from (after redirects; an inline one tells none): its relative addresses are
     /// relative to it, and the requests' headers are scoped by it.
     package let address: URL
@@ -44,7 +43,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     let live = LiveState()
     /// How many callers wait for a read of the manifest another one is making (tests).
     var waitingReaders: Int { manifest.waiting }
-    /// Why the stream was refused (`HLSPlaylistSourceError.unsupported`): what the client does not play yet, which may
+    /// Why the stream was refused (`PlaylistSourceError.unsupported`): what the client does not play yet, which may
     /// be opened otherwise. The manifest's refusal, or that of the index of a picture or sound the stream is not played
     /// without (`Entry.isEssential`), which the opening may have gone on without (the default sound's): asked after an
     /// opening that succeeded too. Nil before a read, after one that played or failed otherwise.
@@ -69,7 +68,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// An inline manifest whose address is not told (one built from what a site lists): its addresses are absolute, and
-    /// the relative ones fail, as relative to the master's key.
+    /// the relative ones fail, as relative to the multivariant's key.
     package init(inline: Data) {
         let id = UUID().uuidString.lowercased()
         self.init(id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline, clock: { Date() })
@@ -85,7 +84,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
         self.id = id
         self.address = address
         self.inline = inline
-        masterURL = URL(string: "\(Self.scheme)://\(id)/")!
+        multivariantURL = URL(string: "\(Self.scheme)://\(id)/")!
         allowsFiles = inline == nil && address.isFileURL
     }
 
@@ -130,27 +129,27 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// which another failure (or an earlier attempt on the same context) may have written.
     package func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> HLSInput? {
         let input = HLSInput(
-            master: masterURL, playlists: self, source: address.absoluteString, allowsFiles: allowsFiles,
+            multivariant: multivariantURL, playlists: self, source: address.absoluteString, allowsFiles: allowsFiles,
             headers: headers, interrupt: interrupt, streamingName: "DASH")
         guard let input else { return nil }
         guard let refusal else { return input }
         input.close()
         interrupt.recordError(
-            code: HLSPlaylistSourceError.unsupported(refusal).code,
+            code: PlaylistSourceError.unsupported(refusal).code,
             message: "DASH: not played by the client: \(refusal)")
         return nil
     }
 
     package func playlist(at url: URL, variables: [String: String], loader: SegmentLoader)
-        throws(HLSPlaylistSourceError)
-        -> HLSPlaylist
+        throws(PlaylistSourceError)
+        -> StreamingPlaylist
     {
         guard url.scheme == Self.scheme, url.host == id else { throw .load(.notServed(url)) }
-        let built = try manifest.value(loader: loader) { loader throws(HLSPlaylistSourceError) in
+        let built = try manifest.value(loader: loader) { loader throws(PlaylistSourceError) in
             try read(loader: loader)
         }
         if url.path.isEmpty || url.path == "/" {
-            if let master = built.master { return .master(master) }
+            if let multivariant = built.multivariant { return .multivariant(multivariant) }
             return .media(try mediaPlaylist(0, of: built, loader: loader))
         }
         guard let index = url.pathComponents.dropFirst().first.flatMap({ Int($0) }),
@@ -169,7 +168,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
         history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
-    private func read(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> Built {
+    private func read(loader: SegmentLoader) throws(PlaylistSourceError) -> Built {
         let data: Data
         let servedFrom: URL
         if let inline {
@@ -199,17 +198,17 @@ package struct DASHPlaylists: HLSPlaylistSource {
 
     // MARK: - Building
 
-    /// The playlists of a presentation: the master (nil with no picture: the stream is the one sound's playlist, the
+    /// The playlists of a presentation: the multivariant (nil with no picture: the stream is the one sound's playlist, the
     /// first entry's), and an entry for each representation played, at its index in the keys.
     package struct Built: Sendable {
-        var master: HLSMasterPlaylist?
+        var multivariant: MultivariantPlaylist?
         var entries: [Entry]
         /// The period's length, when told: the segments an index lists end with it.
         var periodDuration: Double?
         /// The manifest is dynamic: its playlists are listed at the clock of each ask (`livePlaylist`), none built here.
         var isLive = false
         /// The playlists told by the manifest alone, at their index; nil for one file, told by its index once read.
-        var media: [HLSMediaPlaylist?] { entries.map(\.playlist) }
+        var media: [MediaPlaylist?] { entries.map(\.playlist) }
     }
 
     /// A representation played.
@@ -217,11 +216,11 @@ package struct DASHPlaylists: HLSPlaylistSource {
         var representation: DASHPresentation.Representation
         var numbering: Numbering
         /// Its playlist, when the manifest tells its segments.
-        var playlist: HLSMediaPlaylist?
+        var playlist: MediaPlaylist?
         /// The read of its index, for one file (`DASHPresentation.Representation.index`).
         var index: Store<[DASHPresentation.Segment]>?
         /// Its playlist built from the index once (or why it is refused), for one file.
-        var indexed: Store<HLSMediaPlaylist>?
+        var indexed: Store<MediaPlaylist>?
         /// The stream is not played without it: a picture numbered as its manifest says (a ladder's best, one alone), the
         /// default sound. A rung of the ladder or another language is left out instead.
         var isEssential: Bool
@@ -256,7 +255,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// range, each with a bitrate told; a ladder of two or more), else it alone. All of them without a choice.
     static func pictures(
         of videos: [DASHPresentation.Representation], selection: DASHSelection
-    ) throws(HLSPlaylistSourceError) -> [DASHPresentation.Representation] {
+    ) throws(PlaylistSourceError) -> [DASHPresentation.Representation] {
         guard let id = selection.video else { return videos }
         guard let chosen = videos.first(where: { $0.id == id }) else {
             throw .unsupported("the picture '\(id)' the address names is not in the manifest")
@@ -272,7 +271,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
 
     static func build(
         _ presentation: DASHPresentation, id: String, selection: DASHSelection = DASHSelection()
-    ) throws(HLSPlaylistSourceError) -> Built {
+    ) throws(PlaylistSourceError) -> Built {
         var videos = presentation.representations.filter { $0.kind == .video }
         var sounds = bestSounds(presentation.representations.filter { $0.kind == .audio })
         if let audio = selection.audio {
@@ -314,21 +313,21 @@ package struct DASHPlaylists: HLSPlaylistSource {
         }
 
         if pictures.isEmpty, let sound = sounds.first {
-            // Sound alone: its playlist is the stream (the other languages wait for the master to carry them).
+            // Sound alone: its playlist is the stream (the other languages wait for the multivariant to carry them).
             return Built(
-                master: nil, entries: [entry(sound, numbering: .own, isEssential: true)],
+                multivariant: nil, entries: [entry(sound, numbering: .own, isEssential: true)],
                 periodDuration: presentation.periodDuration, isLive: isLive)
         }
-        var master = HLSMasterPlaylist()
-        master.hasIndependentSegments = true
+        var multivariant = MultivariantPlaylist()
+        multivariant.hasIndependentSegments = true
         for sound in sounds {
             let url = key(sound)
-            entries.append(entry(sound, numbering: .own, isEssential: master.renditions.isEmpty))
-            master.renditions.append(
-                HLSRendition(
-                    type: .audio, groupID: "a", name: sound.language ?? "audio \(master.renditions.count + 1)",
+            entries.append(entry(sound, numbering: .own, isEssential: multivariant.renditions.isEmpty))
+            multivariant.renditions.append(
+                PlaylistRendition(
+                    type: .audio, groupID: "a", name: sound.language ?? "audio \(multivariant.renditions.count + 1)",
                     url: url,
-                    language: sound.language, isDefault: master.renditions.isEmpty, autoselect: true))
+                    language: sound.language, isDefault: multivariant.renditions.isEmpty, autoselect: true))
         }
         // A picture numbered on another's is told the entry of that one: the pictures' entries follow the sounds' in
         // their order.
@@ -349,18 +348,18 @@ package struct DASHPlaylists: HLSPlaylistSource {
             let url = key(representation)
             let isEssential = if case .own = numbering { true } else { false }
             entries.append(entry(representation, numbering: numbering, isEssential: isEssential))
-            master.variants.append(
-                HLSVariant(
+            multivariant.variants.append(
+                PlaylistVariant(
                     url: url, bandwidth: representation.bandwidth, codecs: representation.codecs,
                     supplementalCodecs: representation.supplementalCodecs,
                     resolution: representation.width.flatMap { width in
-                        representation.height.map { HLSResolution(width: width, height: $0) }
+                        representation.height.map { VideoResolution(width: width, height: $0) }
                     },
                     frameRate: representation.frameRate, videoRange: representation.videoRange,
                     audioGroup: sounds.isEmpty ? nil : "a"))
         }
         return Built(
-            master: master, entries: entries, periodDuration: presentation.periodDuration, isLive: isLive)
+            multivariant: multivariant, entries: entries, periodDuration: presentation.periodDuration, isLive: isLive)
     }
 
     /// Segments as a finished media playlist; `numbers`: those the ladder gave them, else their own. A segment's size,
@@ -368,14 +367,14 @@ package struct DASHPlaylists: HLSPlaylistSource {
     static func mediaPlaylist(
         _ representation: DASHPresentation.Representation, segments: [DASHPresentation.Segment]? = nil,
         numbers: [Int]?
-    ) -> HLSMediaPlaylist {
+    ) -> MediaPlaylist {
         let segments = segments ?? representation.segments
-        var playlist = HLSMediaPlaylist(targetDuration: (segments.map(\.duration).max() ?? 0).rounded(.up))
+        var playlist = MediaPlaylist(targetDuration: (segments.map(\.duration).max() ?? 0).rounded(.up))
         playlist.type = .vod
         playlist.hasEnded = true
         playlist.hasIndependentSegments = true
         playlist.segments = segments.enumerated().map { index, segment in
-            HLSSegment(
+            MediaSegment(
                 url: segment.url, duration: segment.duration, sequence: numbers?[index] ?? segment.number,
                 discontinuitySequence: segment.period, byteRange: segment.byteRange,
                 initSection: segment.isGap ? nil : segment.initSection ?? representation.initSection,
@@ -389,22 +388,22 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// has (and the index of the picture it is numbered on), and built once.
     private func mediaPlaylist(
         _ index: Int, of built: Built, loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
+    ) throws(PlaylistSourceError) -> MediaPlaylist {
         if built.isLive { return try livePlaylist(index, of: built, loader: loader) }
         let entry = built.entries[index]
         if let history, let playlist = entry.playlist {
             return history.listing(of: playlist, shouldAbort: { loader.isAborted })
         }
         if let playlist = entry.playlist { return playlist }
-        guard let indexed = entry.indexed else { throw .load(.notServed(masterURL)) }
-        return try indexed.value(loader: loader) { loader throws(HLSPlaylistSourceError) in
+        guard let indexed = entry.indexed else { throw .load(.notServed(multivariantURL)) }
+        return try indexed.value(loader: loader) { loader throws(PlaylistSourceError) in
             try Self.indexedPlaylist(of: entry, in: built, loader: loader)
         }
     }
 
     private static func indexedPlaylist(
         of entry: Entry, in built: Built, loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
+    ) throws(PlaylistSourceError) -> MediaPlaylist {
         let segments = try Self.segments(of: entry, periodDuration: built.periodDuration, loader: loader)
         var numbers: [Int]?
         switch entry.numbering {
@@ -429,12 +428,12 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// The segments of `entry`: the manifest's, or those of its file's index, read once for every caller.
     private static func segments(
         of entry: Entry, periodDuration: Double?, loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> [DASHPresentation.Segment] {
+    ) throws(PlaylistSourceError) -> [DASHPresentation.Segment] {
         guard let store = entry.index, let location = entry.representation.index else {
             return entry.representation.segments
         }
         let representation = entry.representation
-        return try store.value(loader: loader) { loader throws(HLSPlaylistSourceError) in
+        return try store.value(loader: loader) { loader throws(PlaylistSourceError) in
             let index = try readIndex(location, loader: loader)
             // A switch or a seek lands on a segment's start: a picture's must be a keyframe. A sound's index may leave
             // it unsaid.
@@ -452,9 +451,9 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// `SegmentIndex.requestLimit` allows and `SegmentIndex.sizeLimit` bytes in all.
     static func readIndex(
         _ location: DASHPresentation.IndexLocation, loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> SegmentIndex {
-        func bytes(_ offset: Int64, _ length: Int64) throws(HLSPlaylistSourceError) -> Data {
-            guard let range = HLSByteRange(offset: offset, length: length) else {
+    ) throws(PlaylistSourceError) -> SegmentIndex {
+        func bytes(_ offset: Int64, _ length: Int64) throws(PlaylistSourceError) -> Data {
+            guard let range = ByteRange(offset: offset, length: length) else {
                 throw .unsupported("an index past the end of what a file holds")
             }
             do {
@@ -530,7 +529,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
         struct Group: Hashable {
             var codec: String?
             var supplemental: String?
-            var range: HLSVideoRange?
+            var range: VideoRange?
         }
         // `HLSInput.ladder(of:)` keeps every variant as one ladder when one of those with a picture (a size or a picture's
         // codec told; all, when none is) tells no codec it knows: then all the pictures are numbered as one group, or a
@@ -615,12 +614,12 @@ extension DASHPlaylists {
             /// The read going on, by its number.
             var reading: Int?
             var reads = 0
-            var failure: (read: Int, error: HLSPlaylistSourceError)?
+            var failure: (read: Int, error: PlaylistSourceError)?
             var waiting = 0
         }
         private enum Step {
             case done(Value)
-            case failed(HLSPlaylistSourceError)
+            case failed(PlaylistSourceError)
             case read(Int)
             case wait(Int)
         }
@@ -643,7 +642,7 @@ extension DASHPlaylists {
             state = OSAllocatedUnfairLock(initialState: State(value: value))
         }
 
-        /// The reason of the last read's refusal (`HLSPlaylistSourceError.unsupported`).
+        /// The reason of the last read's refusal (`PlaylistSourceError.unsupported`).
         var refusal: String? {
             state.withLock { state in
                 guard case .unsupported(let reason) = state.failure?.error else { return nil }
@@ -652,8 +651,8 @@ extension DASHPlaylists {
         }
 
         func value(
-            loader: SegmentLoader, read: (SegmentLoader) throws(HLSPlaylistSourceError) -> Value
-        ) throws(HLSPlaylistSourceError) -> Value {
+            loader: SegmentLoader, read: (SegmentLoader) throws(PlaylistSourceError) -> Value
+        ) throws(PlaylistSourceError) -> Value {
             var waitingFor: Int?
             while true {
                 let waited = waitingFor
@@ -680,8 +679,8 @@ extension DASHPlaylists {
                     _ = changed.wait(timeout: .now() + Self.waitStep)
                     state.withLock { $0.waiting -= 1 }
                 case .read(let number):
-                    let outcome: Result<Value, HLSPlaylistSourceError>
-                    do throws(HLSPlaylistSourceError) {
+                    let outcome: Result<Value, PlaylistSourceError>
+                    do throws(PlaylistSourceError) {
                         outcome = .success(try read(loader))
                     } catch {
                         outcome = .failure(error)

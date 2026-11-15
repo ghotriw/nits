@@ -385,7 +385,7 @@ struct HLSDiscontinuityFMP4Tests {
         // The first picture of the second stretch is the first of the larger size; its sound is the first packet that
         // does not follow on from the one before (the packets of a stretch are contiguous, the break is not). The
         // picture starts where the playlists put the break (4 s): the timestamps' offset of each stretch is anchored by
-        // the picture, and the sound takes it (`HLSTimestampAnchors`).
+        // the picture, and the sound takes it (`TimestampAnchors`).
         let firstPicture = try #require(video.filter { $0.width == 640 }.map(\.seconds).min())
         let firstOfSecond = try #require(
             audio.indices.dropFirst().first {

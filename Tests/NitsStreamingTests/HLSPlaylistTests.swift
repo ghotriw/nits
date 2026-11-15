@@ -3,21 +3,21 @@ import Testing
 
 @testable import NitsStreaming
 
-/// `HLSPlaylist`: master and media playlists read from their text (RFC 8216 / 8216bis).
+/// `StreamingPlaylist`: multivariant and media playlists read from their text (RFC 8216 / 8216bis).
 @Suite("HLS playlist")
 struct HLSPlaylistTests {
     static let base = URL(string: "https://cdn.example.com/show/master.m3u8?token=abc")!
 
-    static func master(_ text: String, url: URL = base) throws -> HLSMasterPlaylist {
-        guard case .master(let playlist) = try HLSPlaylist.parse(text, url: url) else {
-            Issue.record("not a master playlist")
+    static func multivariant(_ text: String, url: URL = base) throws -> MultivariantPlaylist {
+        guard case .multivariant(let playlist) = try StreamingPlaylist.parse(text, url: url) else {
+            Issue.record("not a multivariant playlist")
             throw HLSPlaylistError.mixedTypes
         }
         return playlist
     }
 
-    static func media(_ text: String, url: URL = base, variables: [String: String] = [:]) throws -> HLSMediaPlaylist {
-        guard case .media(let playlist) = try HLSPlaylist.parse(text, url: url, variables: variables) else {
+    static func media(_ text: String, url: URL = base, variables: [String: String] = [:]) throws -> MediaPlaylist {
+        guard case .media(let playlist) = try StreamingPlaylist.parse(text, url: url, variables: variables) else {
             Issue.record("not a media playlist")
             throw HLSPlaylistError.mixedTypes
         }
@@ -35,7 +35,7 @@ struct HLSPlaylistTests {
         #expect(list.integer("BANDWIDTH") == 1_280_000)
         #expect(list["CODECS"] == "avc1.4d401f,mp4a.40.2")
         #expect(list["SUPPLEMENTAL-CODECS"] == "dvh1.08.07/db4h")
-        #expect(list.resolution("RESOLUTION") == HLSResolution(width: 1920, height: 1080))
+        #expect(list.resolution("RESOLUTION") == VideoResolution(width: 1920, height: 1080))
         #expect(list.float("FRAME-RATE") == 29.97)
         #expect(list.hexadecimal("IV") == [0x1A, 0x2B])
         // An enumerated string isn't a quoted one.
@@ -51,21 +51,21 @@ struct HLSPlaylistTests {
 
     @Test("Byte ranges: a length and an optional offset")
     func byteRanges() {
-        #expect(HLSByteRange.parse("1000@200").map { [$0.length, $0.offset ?? -1] } == [1000, 200])
-        #expect(HLSByteRange.parse("1000").map { [$0.length, $0.offset ?? -1] } == [1000, -1])
-        #expect(HLSByteRange.parse("1000@") == nil)
-        #expect(HLSByteRange.parse("-5") == nil)
-        #expect(HLSByteRange.parse("1@2@3") == nil)
+        #expect(ByteRange.parse("1000@200").map { [$0.length, $0.offset ?? -1] } == [1000, 200])
+        #expect(ByteRange.parse("1000").map { [$0.length, $0.offset ?? -1] } == [1000, -1])
+        #expect(ByteRange.parse("1000@") == nil)
+        #expect(ByteRange.parse("-5") == nil)
+        #expect(ByteRange.parse("1@2@3") == nil)
         // Past Int64.max.
-        #expect(HLSByteRange.parse("10@9223372036854775800") == nil)
-        #expect(HLSByteRange(offset: Int64.max, length: 1) == nil)
+        #expect(ByteRange.parse("10@9223372036854775800") == nil)
+        #expect(ByteRange(offset: Int64.max, length: 1) == nil)
     }
 
-    // MARK: Master playlists
+    // MARK: Multivariant playlists
 
-    @Test("A master playlist: variants with their attributes, renditions of groups, URIs resolved against it")
+    @Test("A multivariant playlist: variants with their attributes, renditions of groups, URIs resolved against it")
     func masterPlaylist() throws {
-        let playlist = try Self.master(
+        let playlist = try Self.multivariant(
             """
             #EXTM3U
             #EXT-X-VERSION:7
@@ -96,7 +96,7 @@ struct HLSPlaylistTests {
         #expect(uhd.url.absoluteString == "https://cdn.example.com/show/video/2160p.m3u8")
         #expect(uhd.bandwidth == 8_000_000 && uhd.averageBandwidth == 6_000_000 && uhd.score == 2.5)
         #expect(uhd.codecs == "hvc1.2.4.L150.B0,mp4a.40.2" && uhd.supplementalCodecs == "dvh1.08.07/db4h")
-        #expect(uhd.resolution == HLSResolution(width: 3840, height: 2160) && uhd.frameRate == 23.976)
+        #expect(uhd.resolution == VideoResolution(width: 3840, height: 2160) && uhd.frameRate == 23.976)
         #expect(uhd.videoRange == .pq && uhd.hdcpLevel == "TYPE-1")
         #expect(uhd.audioGroup == "aac" && uhd.subtitlesGroup == "subs" && uhd.closedCaptionsGroup == "cc")
         let low = playlist.variants[1]
@@ -126,7 +126,7 @@ struct HLSPlaylistTests {
 
     @Test("A rendition without a URI is carried in the variant's segments")
     func muxedRendition() throws {
-        let playlist = try Self.master(
+        let playlist = try Self.multivariant(
             """
             #EXTM3U
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Main",DEFAULT=YES
@@ -216,7 +216,7 @@ struct HLSPlaylistTests {
         #expect(playlist.segments.map(\.discontinuitySequence) == [7, 7, 8, 9, 9])
         #expect(playlist.segments.map(\.isDiscontinuity) == [false, false, true, true, false])
         #expect(playlist.segments.map(\.isGap) == [false, false, false, false, true])
-        let noon = try #require(HLSPlaylist.date("2026-11-10T12:00:00Z"))
+        let noon = try #require(StreamingPlaylist.date("2026-11-10T12:00:00Z"))
         #expect(
             playlist.segments.map(\.programDateTime) == [
                 noon, noon.addingTimeInterval(6), nil, noon.addingTimeInterval(17), noon.addingTimeInterval(23),
@@ -245,11 +245,11 @@ struct HLSPlaylistTests {
             """)
         #expect(
             playlist.segments.map(\.byteRange) == [
-                HLSByteRange(offset: 720, length: 1000), HLSByteRange(offset: 1720, length: 2000),
-                HLSByteRange(offset: 0, length: 500), nil,
+                ByteRange(offset: 720, length: 1000), ByteRange(offset: 1720, length: 2000),
+                ByteRange(offset: 0, length: 500), nil,
             ])
         let initSection = try #require(playlist.segments.first?.initSection)
-        #expect(initSection.byteRange == HLSByteRange(offset: 0, length: 720))
+        #expect(initSection.byteRange == ByteRange(offset: 0, length: 720))
         #expect(initSection.url.absoluteString == "https://cdn.example.com/show/main.mp4")
         #expect(playlist.segments.allSatisfy { $0.initSection == initSection })
     }
@@ -395,17 +395,17 @@ struct HLSPlaylistTests {
 
     // MARK: Variables
 
-    @Test("EXT-X-DEFINE: values, imports from the master, query parameters of the playlist's URL")
+    @Test("EXT-X-DEFINE: values, imports from the multivariant, query parameters of the playlist's URL")
     func variables() throws {
-        let master = try Self.master(
+        let multivariant = try Self.multivariant(
             """
             #EXTM3U
             #EXT-X-DEFINE:NAME="host",VALUE="https://media.example.com"
             #EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640028"
             {$host}/v1/index.m3u8
             """)
-        #expect(master.variants.first?.url.absoluteString == "https://media.example.com/v1/index.m3u8")
-        #expect(master.variables == ["host": "https://media.example.com"])
+        #expect(multivariant.variants.first?.url.absoluteString == "https://media.example.com/v1/index.m3u8")
+        #expect(multivariant.variables == ["host": "https://media.example.com"])
 
         let media = try Self.media(
             """
@@ -416,7 +416,7 @@ struct HLSPlaylistTests {
             #EXT-X-MAP:URI="{$host}/init.mp4?t={$token}"
             #EXTINF:4,
             {$host}/s1.m4s?t={$token}
-            """, variables: master.variables)
+            """, variables: multivariant.variables)
         #expect(media.segments.first?.url.absoluteString == "https://media.example.com/s1.m4s?t=abc")
         #expect(media.segments.first?.initSection?.url.absoluteString == "https://media.example.com/init.mp4?t=abc")
     }
@@ -453,18 +453,18 @@ struct HLSPlaylistTests {
     @Test("Sequence numbers past 2^53 are malformed, not an overflow")
     func hugeSequences() {
         #expect(throws: HLSPlaylistError.malformed(line: 2, tag: "EXT-X-MEDIA-SEQUENCE")) {
-            try HLSPlaylist.parse(
+            try StreamingPlaylist.parse(
                 "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:9223372036854775807\n#EXTINF:4,\na.ts\n#EXTINF:4,\nb.ts",
                 url: Self.base)
         }
         #expect(throws: HLSPlaylistError.malformed(line: 2, tag: "EXT-X-DISCONTINUITY-SEQUENCE")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:9007199254740993\n", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:9007199254740993\n", url: Self.base)
         }
     }
 
     @Test("Hints that don't read are skipped: EXT-X-START without an offset, a session key without a method")
     func malformedHints() throws {
-        let master = try Self.master(
+        let multivariant = try Self.multivariant(
             """
             #EXTM3U
             #EXT-X-START:PRECISE=YES
@@ -472,7 +472,7 @@ struct HLSPlaylistTests {
             #EXT-X-STREAM-INF:BANDWIDTH=1
             v.m3u8
             """)
-        #expect(master.start == nil && master.sessionKeys.isEmpty && master.variants.count == 1)
+        #expect(multivariant.start == nil && multivariant.sessionKeys.isEmpty && multivariant.variants.count == 1)
     }
 
     @Test("EXT-X-BITRATE doesn't apply to byte-range segments")
@@ -494,7 +494,7 @@ struct HLSPlaylistTests {
     @Test("A byte range carried past Int64.max fails the read instead of the app")
     func byteRangeOverflow() {
         #expect(throws: HLSPlaylistError.malformed(line: 7, tag: "EXT-X-BYTERANGE")) {
-            try HLSPlaylist.parse(
+            try StreamingPlaylist.parse(
                 "#EXTM3U\n#EXTINF:4,\n#EXT-X-BYTERANGE:9223372036854775806@1\na.ts\n#EXTINF:4,\n#EXT-X-BYTERANGE:10\na.ts",
                 url: Self.base)
         }
@@ -502,16 +502,17 @@ struct HLSPlaylistTests {
 
     @Test("Values written unquoted are read: renditions, keys, groups; CLOSED-CAPTIONS=\"NONE\" quoted is a group")
     func unquotedValues() throws {
-        let master = try Self.master(
+        let multivariant = try Self.multivariant(
             """
             #EXTM3U
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=aac,NAME=English,LANGUAGE=en,URI=audio/en.m3u8
             #EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=aac,CODECS=avc1.640028,CLOSED-CAPTIONS="NONE"
             v.m3u8
             """)
-        #expect(master.renditions(.audio, group: "aac").first?.url?.lastPathComponent == "en.m3u8")
-        #expect(master.variants.first?.audioGroup == "aac" && master.variants.first?.codecs == "avc1.640028")
-        #expect(master.variants.first?.closedCaptionsGroup == "NONE")
+        #expect(multivariant.renditions(.audio, group: "aac").first?.url?.lastPathComponent == "en.m3u8")
+        #expect(
+            multivariant.variants.first?.audioGroup == "aac" && multivariant.variants.first?.codecs == "avc1.640028")
+        #expect(multivariant.variants.first?.closedCaptionsGroup == "NONE")
 
         let media = try Self.media("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=key.bin\n#EXTINF:4,\na.ts\n")
         #expect(media.segments.first?.key?.isDecryptable == true)
@@ -531,7 +532,7 @@ struct HLSPlaylistTests {
         let dated = try Self.media(
             "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-PROGRAM-DATE-TIME:2026-11-10T12:00:00Z\n#EXTINF:-1,\na.ts\n#EXTINF:-1,\nb.ts\n"
         )
-        let noon = try #require(HLSPlaylist.date("2026-11-10T12:00:00Z"))
+        let noon = try #require(StreamingPlaylist.date("2026-11-10T12:00:00Z"))
         #expect(dated.segments.map(\.programDateTime) == [noon, noon.addingTimeInterval(6)])
     }
 
@@ -577,30 +578,35 @@ struct HLSPlaylistTests {
 
     @Test("What can't be read fails: not a playlist, mixed types, malformed durations and ranges, unknown variables")
     func errors() {
-        #expect(throws: HLSPlaylistError.notAPlaylist) { try HLSPlaylist.parse("#EXTINF:4,\na.ts", url: Self.base) }
-        #expect(throws: HLSPlaylistError.notAPlaylist) { try HLSPlaylist.parse("", url: Self.base) }
-        #expect(throws: HLSPlaylistError.notText) { try HLSPlaylist.parse(Data([0xff, 0xfe, 0xfd]), url: Self.base) }
+        #expect(throws: HLSPlaylistError.notAPlaylist) {
+            try StreamingPlaylist.parse("#EXTINF:4,\na.ts", url: Self.base)
+        }
+        #expect(throws: HLSPlaylistError.notAPlaylist) { try StreamingPlaylist.parse("", url: Self.base) }
+        #expect(throws: HLSPlaylistError.notText) {
+            try StreamingPlaylist.parse(Data([0xff, 0xfe, 0xfd]), url: Self.base)
+        }
         #expect(throws: HLSPlaylistError.mixedTypes) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n#EXTINF:4,\na.ts", url: Self.base)
+            try StreamingPlaylist.parse(
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n#EXTINF:4,\na.ts", url: Self.base)
         }
         #expect(throws: HLSPlaylistError.malformed(line: 2, tag: "EXT-X-TARGETDURATION")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXT-X-TARGETDURATION:inf\n#EXTINF:4,\na.ts", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXT-X-TARGETDURATION:inf\n#EXTINF:4,\na.ts", url: Self.base)
         }
         #expect(throws: HLSPlaylistError.malformed(line: 2, tag: "EXTINF")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXTINF:abc,\na.ts", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXTINF:abc,\na.ts", url: Self.base)
         }
         #expect(throws: HLSPlaylistError.malformed(line: 3, tag: "EXT-X-BYTERANGE")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXTINF:4,\n#EXT-X-BYTERANGE:x@1\na.ts", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXTINF:4,\n#EXT-X-BYTERANGE:x@1\na.ts", url: Self.base)
         }
         #expect(throws: HLSPlaylistError.undefinedVariable(line: 3, name: "nope")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXTINF:4,\n{$nope}/a.ts", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXTINF:4,\n{$nope}/a.ts", url: Self.base)
         }
         #expect(throws: HLSPlaylistError.undefinedVariable(line: 2, name: "host")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXT-X-DEFINE:IMPORT=\"host\"", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXT-X-DEFINE:IMPORT=\"host\"", url: Self.base)
         }
         // A key of any method but NONE needs its URI.
         #expect(throws: HLSPlaylistError.malformed(line: 2, tag: "EXT-X-KEY")) {
-            try HLSPlaylist.parse("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128\n#EXTINF:4,\na.ts", url: Self.base)
+            try StreamingPlaylist.parse("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128\n#EXTINF:4,\na.ts", url: Self.base)
         }
     }
 }

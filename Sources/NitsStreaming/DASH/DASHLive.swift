@@ -1,5 +1,4 @@
 import Foundation
-internal import NitsStreaming
 import os
 
 /// A dynamic MPD as playlists that slide: the clock the live edge is read off, the manifest fetched again when it says it
@@ -109,7 +108,7 @@ extension DASHPlaylists {
     /// descriptor that fails or is not understood is passed over for the next; an abort is the caller's.
     func clockOffset(
         of timings: [DASHPresentation.Live.Timing], loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> Double {
+    ) throws(PlaylistSourceError) -> Double {
         for timing in timings {
             let scheme = timing.scheme.replacingOccurrences(of: "urn:mpeg:dash:utc:", with: "")
                 .replacingOccurrences(of: ":2014", with: "").replacingOccurrences(of: ":2012", with: "")
@@ -147,7 +146,7 @@ extension DASHPlaylists {
     /// `periodStart` (the one played).
     func presentation(
         _ data: Data, servedFrom: URL, now: Date, periodStart: Double? = nil
-    ) throws(HLSPlaylistSourceError) -> DASHPresentation {
+    ) throws(PlaylistSourceError) -> DASHPresentation {
         do throws(DASHPresentationError) {
             return try DASHPresentation.parse(data, url: servedFrom, now: now, livePeriodStart: periodStart)
         } catch {
@@ -160,7 +159,7 @@ extension DASHPlaylists {
 
     /// The manifest as of now: the one held, or a fetch of it if its `minimumUpdatePeriod` has passed. Made by the first
     /// caller that finds it due, through its own loader; the others wait for it (`Store`).
-    private func fetched(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> Fetched {
+    private func fetched(loader: SegmentLoader) throws(PlaylistSourceError) -> Fetched {
         let host = clock()
         let (store, generation) = live.state.withLock { state -> (Store<Fetched>, Int) in
             if inline == nil, let current = state.fetch.current, let period = state.updatePeriod,
@@ -172,8 +171,8 @@ extension DASHPlaylists {
             return (state.fetch, state.generation)
         }
         let result: Fetched
-        do throws(HLSPlaylistSourceError) {
-            result = try store.value(loader: loader) { loader throws(HLSPlaylistSourceError) in
+        do throws(PlaylistSourceError) {
+            result = try store.value(loader: loader) { loader throws(PlaylistSourceError) in
                 let location = live.state.withLock { $0.location } ?? address
                 do throws(SegmentLoadError) {
                     let (data, servedFrom) = try loader.playlist(location)
@@ -195,7 +194,7 @@ extension DASHPlaylists {
 
     /// The presentation at the clock now, from the manifest as last fetched: shared by the asks that come together (the
     /// opening's, two lanes').
-    func snapshot(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> DASHPresentation {
+    func snapshot(loader: SegmentLoader) throws(PlaylistSourceError) -> DASHPresentation {
         let fetched = try fetched(loader: loader)
         let host = clock()
         let reused = live.state.withLock { state -> DASHPresentation? in
@@ -208,7 +207,7 @@ extension DASHPlaylists {
         let (offset, periodStart) = live.state.withLock { ($0.offset, $0.periodStart) }
         var used = fetched
         let presentation: DASHPresentation
-        do throws(HLSPlaylistSourceError) {
+        do throws(PlaylistSourceError) {
             // A manifest that comes to list a period after the one played (server-side ad insertion's break, told
             // before it comes or after) is read as the one played up to the next one's start: its segments end there, and
             // the playlist with them (`livePlaylist`'s `hasEnded`).
@@ -242,7 +241,7 @@ extension DASHPlaylists {
     /// The playlist of the entry at `index` as the clock now has it.
     func livePlaylist(
         _ index: Int, of built: Built, loader: SegmentLoader
-    ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
+    ) throws(PlaylistSourceError) -> MediaPlaylist {
         let presentation = try snapshot(loader: loader)
         let entry = built.entries[index]
         guard let representation = Self.representation(of: entry, in: presentation) else {
@@ -253,7 +252,7 @@ extension DASHPlaylists {
         guard numbers.count == representation.segments.count else {
             throw .unsupported("\(entry.representation.id) has no numbers yet: the ladder's best lists no segments")
         }
-        var playlist = HLSMediaPlaylist(
+        var playlist = MediaPlaylist(
             targetDuration: (representation.segments.map(\.duration).max() ?? 0).rounded(.up))
         playlist.hasIndependentSegments = true
         let live = presentation.live
@@ -268,7 +267,7 @@ extension DASHPlaylists {
         playlist.holdBack = live?.suggestedPresentationDelay.map { max($0, playlist.targetDuration) }
         playlist.updatePeriod = live?.minimumUpdatePeriod
         playlist.segments = representation.segments.enumerated().map { position, segment in
-            var listed = HLSSegment(
+            var listed = MediaSegment(
                 url: segment.url, duration: segment.duration, sequence: numbers[position], discontinuitySequence: 0,
                 byteRange: segment.byteRange, initSection: representation.initSection)
             listed.programDateTime = live?.date(at: segment.start)
@@ -289,7 +288,7 @@ extension DASHPlaylists {
     /// the nearest one where the best picture lists none: the edges of two windows are not the same moment).
     private func sequences(
         of index: Int, in built: Built, presentation: DASHPresentation
-    ) throws(HLSPlaylistSourceError) -> [Int] {
+    ) throws(PlaylistSourceError) -> [Int] {
         let entry = built.entries[index]
         guard let representation = Self.representation(of: entry, in: presentation) else {
             throw .unsupported("\(entry.representation.id) is no longer in the manifest")
