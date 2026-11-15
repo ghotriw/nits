@@ -125,7 +125,7 @@ extension MediaDemuxer {
         let playable: Double
         var cutOffset: Double?
         var hole: AdaptiveBitrateLogic.Hole?
-        var joinSequence = segment.sequence
+        var joinsNext = false
         switch place {
         case .ahead: (cut, playable) = (segment.start, segment.start)
         case .inside(let keyframe):
@@ -139,7 +139,7 @@ extension MediaDemuxer {
                     start: segment.start, duration: segment.duration, after: readPoint,
                     known: position.readKeyframes) : nil
             let end = segment.start + segment.duration
-            if expected == nil { joinSequence = segment.sequence + 1 }
+            if expected == nil { joinsNext = true }
             (cut, playable) = (expected ?? end, readPoint)
             hole = AdaptiveBitrateLogic.Hole(
                 reach: expected.map { $0 - segment.start } ?? 0, skipped: max((expected ?? end) - readPoint, 0))
@@ -181,7 +181,8 @@ extension MediaDemuxer {
         if abandonsDownloads {
             outcome = requestAbandon(
                 from: variant, to: target, sequence: segment.sequence, start: segment.start,
-                cut: place == .ahead ? nil : cut, joinSequence: joinSequence, download: download)
+                cut: place == .ahead ? nil : cut, joinStart: joinsNext ? segment.start + segment.duration : nil,
+                download: download)
         }
         guard adaptiveBitrate.abandonmentLog.record(outcome, variant: variant, sequence: segment.sequence) else {
             return
@@ -205,9 +206,11 @@ extension MediaDemuxer {
             verdict = "position inside the segment, no keyframe of it queued ahead of the sound handed out"
             if let hole, let cut {
                 verdict +=
-                    joinSequence == segment.sequence
+                    !joinsNext
                     ? "; cut in at the keyframe expected at \(format(cut)) s, a hole of \(format(hole.skipped)) s"
-                    : "; joins segment \(joinSequence) at \(format(cut)) s, a hole of \(format(hole.skipped)) s"
+                    // The target's number, once the give-up is taken (`pendingAbandon` is another's, or none, when refused).
+                    : "; joins \(outcome.isRequested ? adaptiveBitrate.pendingAbandon.map { "segment \($0.joinedSequence)" } ?? "the next segment" : "the next segment") at "
+                        + "\(format(cut)) s, a hole of \(format(hole.skipped)) s"
             }
         }
         // Sound muxed into the variant (TS) is cut with the picture: handed out past the cut, that keyframe will not do.
@@ -379,12 +382,13 @@ extension MediaDemuxer {
         /// at, or the keyframe expected past what is read when none is queued; nil when the segment is ahead of the
         /// position. For the log of the splice.
         var cut: Double? = nil
-        /// The segment the new variant reads from its start, when not `sequence`: the next one, with nothing of `sequence`
-        /// queued to cut at and no keyframe of it expected past what is read (`expectedHoleCut`); the rest of `sequence`
-        /// is skipped. A switch that does not come reads `sequence` again all the same.
-        var joinSequence: Int? = nil
-
-        var joinedSequence: Int { joinSequence ?? sequence }
+        /// The segment the new variant reads from its start, as the new variant numbers it: the one that starts where
+        /// `sequence` does, or the next one (`skipsRest`).
+        let joinedSequence: Int
+        /// The new variant joins at the segment after `sequence`, with nothing of `sequence` queued to cut at and no
+        /// keyframe of it expected past what is read (`expectedHoleCut`); the rest of `sequence` is skipped. A switch that
+        /// does not come reads `sequence` again all the same.
+        var skipsRest = false
     }
 
     /// Why a download the rule gives up is not.
@@ -437,12 +441,13 @@ extension MediaDemuxer {
     /// (`verifyVariantSwitchTarget`), and a switch that fails there is given up, the old variant read again. Refused, with the
     /// reason, when it cannot be done: a switch is spliced or took a download over itself (one not spliced yet is replaced),
     /// or another download given up waits for its switch, or `target` is rejected, or has not the segment
-    /// to read from its start (`DemuxerInput.canJoin`: a discontinuity, a live playlist that moved on, or not there yet).
-    /// `cut` is the keyframe the cut is expected at when the position is inside the segment; `joinSequence` the segment
-    /// the new variant reads from its start, when not `sequence` (`PendingAbandon.joinSequence`); `download` is what the
-    /// rule judged, which the estimate learns from (`AdaptiveBitrateLogic.noteAbandoned`).
+    /// to read from its start (`DemuxerInput.joinSegment`: no segment starting there, a discontinuity, a live playlist that
+    /// moved on, or not there yet). `cut` is the keyframe the cut is expected at when the position is inside the segment;
+    /// `joinStart` where the segment the new variant reads from its start begins, when not at `start`: the next one
+    /// (`PendingAbandon.skipsRest`); `download` is what the rule judged, which the estimate learns from
+    /// (`AdaptiveBitrateLogic.noteAbandoned`).
     func requestAbandon(
-        from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil, joinSequence: Int? = nil,
+        from: Int, to target: Int, sequence: Int, start: Double, cut: Double? = nil, joinStart: Double? = nil,
         download: AdaptiveBitrateLogic.Download? = nil
     ) -> AbandonOutcome {
         // A switch not spliced yet is replaced (`replaceableSwitch`; `beginRequestedVariantSwitch` gives it up): it joined
@@ -455,11 +460,19 @@ extension MediaDemuxer {
         }
         guard adaptiveBitrate.pendingAbandon == nil else { return .refused(.switchUnderWay) }
         guard input.variantDescription(id: target) != .rejected else { return .refused(.rejected) }
-        let joins = joinSequence ?? sequence
-        if let refusal = input.canJoin(variant: target, sequence: joins, from: from) { return .refused(.join(refusal)) }
+        // The target's segment that takes the one given up (or the next) over, by its own number: the same number in a
+        // ladder numbered alike, the one that starts there in a DASH ladder whose boundaries differ.
+        let joins: Int
+        switch input.joinSegment(
+            ofVariant: target, from: from, sequence: sequence, joinsNext: joinStart != nil,
+            startingAt: joinStart ?? start)
+        {
+        case .failure(let refusal): return .refused(.join(refusal))
+        case .success(let sequence): joins = sequence
+        }
         adaptiveBitrate.pendingAbandon = PendingAbandon(
-            from: from, target: target, sequence: sequence, start: start, cut: cut,
-            joinSequence: joins == sequence ? nil : joins)
+            from: from, target: target, sequence: sequence, start: start, cut: cut, joinedSequence: joins,
+            skipsRest: joinStart != nil)
         input.abandonDownload(ofVariant: from)
         let before = adaptiveBitrate.logic.estimate
         adaptiveBitrate.logic.noteAbandoned(

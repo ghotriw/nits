@@ -91,6 +91,8 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         let subtitleLanes: [Int]
         /// Its segments' numbers are its own, not the ladder's (`MediaPlaylist.hasOwnNumbers`).
         var hasOwnNumbers = false
+        /// Its frame rate, when the playlist tells it: the tolerance of a join by time.
+        var frameRate: Double?
     }
 
     private let table: AVStreamTable
@@ -605,7 +607,8 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
                     id: position + 1, bandwidth: entry.bandwidth, lane: video,
                     audioLanes: entry.audio.compactMap { laneOfWanted[$0] },
                     subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] },
-                    hasOwnNumbers: slots[entry.video].value?.hasOwnNumbers == true))
+                    hasOwnNumbers: slots[entry.video].value?.hasOwnNumbers == true,
+                    frameRate: plan.count == listed.count ? listed[position].frameRate : nil))
             if cloneLanes.contains(video) { descriptions.withLock { $0[position + 1] = .pending } }
         }
         let ms = StreamingOpeningMeasure.ms
@@ -862,26 +865,52 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         lanes[variant.lane].join(sequence: sequence)
     }
 
-    package func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal? {
-        guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane) else {
-            return .noSegment
+    /// How far apart the starts of two variants' segments may be and still be one boundary, when the frame rate is not
+    /// told (a frame at 25 fps); else half a frame, as the numbering of a DASH ladder takes it
+    /// (`DASHPlaylists.numberedPictures`).
+    static let joinTolerance = 0.04
+
+    package func joinSegment(
+        ofVariant id: Int, from source: Int, sequence: Int, joinsNext: Bool, startingAt time: Double
+    ) -> Result<Int, JoinRefusal> {
+        guard let variant = variants.first(where: { $0.id == id }), lanes.indices.contains(variant.lane),
+            let origin = variants.first(where: { $0.id == source }), lanes[variant.lane].kind == .primary
+        else { return .failure(.noSegment) }
+        let timeline = lanes[variant.lane].timeline
+        let entries = timeline.entries
+        let position: Int
+        if !variant.hasOwnNumbers, !origin.hasOwnNumbers {
+            // Numbered alike (HLS promises it a ladder, a DASH ladder on one grid is numbered so): the same number is the
+            // same span of time, which the times of the two lanes, one measured by the media and one summed from the
+            // playlist's rounded durations, may not say.
+            let number = joinsNext ? sequence + 1 : sequence
+            guard let first = timeline.firstSequence, number >= first, number - first < entries.count else {
+                return .failure(.noSegment)
+            }
+            position = number - first
+        } else {
+            // One of them numbered on its own (a DASH picture whose boundaries are not the ladder's): the segment that
+            // starts where the one given up does (or ends), else none.
+            let tolerance = (variant.frameRate ?? origin.frameRate).map { 0.5 / max($0, 1) } ?? Self.joinTolerance
+            // Outside what the variant lists: a live window that moved on, or one a reload behind.
+            guard let first = entries.first, time >= first.start - tolerance, time < timeline.end else {
+                return .failure(.noSegment)
+            }
+            // Inside it, a segment must start there: the variants of a DASH ladder may cut their segments elsewhere.
+            guard let found = entries.firstIndex(where: { abs($0.start - time) <= tolerance }) else {
+                return .failure(.noBoundary)
+            }
+            position = found
         }
-        // The number is the source's: a picture numbered on its own (`MediaPlaylist.hasOwnNumbers`), either way, is no
-        // place in the other's. The switch by time does not need it.
-        if variant.hasOwnNumbers || variants.first(where: { $0.id == source })?.hasOwnNumbers == true {
-            return .otherNumbering
-        }
-        let lane = lanes[variant.lane]
-        guard lane.kind == .primary, let entry = lane.timeline.entry(sequence: sequence), !entry.segment.isGap else {
-            return .noSegment
-        }
+        let entry = entries[position]
+        if entry.segment.isGap { return .failure(.noSegment) }
         // A segment at a discontinuity has timestamps that restart; one just before it is continuous, but the variants'
         // keyframes are not known to line up at the break the new lane reads on to.
-        if entry.segment.isDiscontinuity { return .atDiscontinuity }
-        if let next = lane.timeline.entry(sequence: sequence + 1), next.segment.isDiscontinuity {
-            return .beforeDiscontinuity
+        if entry.segment.isDiscontinuity { return .failure(.atDiscontinuity) }
+        if position + 1 < entries.count, entries[position + 1].segment.isDiscontinuity {
+            return .failure(.beforeDiscontinuity)
         }
-        return nil
+        return .success(entry.sequence)
     }
 
     package func joinNext(atSequence sequence: Int?) {

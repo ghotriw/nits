@@ -278,22 +278,38 @@ struct SingleFileDASHTests {
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
         #expect(demuxer.input is StreamingInput)
         #expect(demuxer.variants.count == 3, "\(demuxer.variants)")
-        // The rung of other boundaries (1.6 s segments) plays in the ladder, but its numbers are no place in the others':
-        // a download given up cannot be taken over at the same number by it, nor it by another. A switch by time needs none.
+        // The rung of other boundaries (1.6 s segments) plays in the ladder. A download given up is taken over by the same
+        // number between the two rungs of one grid, whatever the time says; to or from the other rung, by the segment that
+        // starts there (by the number it gives it): a 2 s segment's start is no boundary of the 1.6 s rung, and the reverse.
         let input = try #require(demuxer.input as? StreamingInput)
-        let ids = demuxer.variants.map(\.id)
-        var refused = 0
-        var joinable = 0
-        for from in ids {
-            for to in ids where to != from {
-                switch input.canJoin(variant: to, sequence: 1, from: from) {
-                case .otherNumbering: refused += 1
-                case nil: joinable += 1
-                case .some(let other): Issue.record("\(from) to \(to): \(other.rawValue)")
-                }
-            }
+        let pairs = demuxer.variants.map(\.id).flatMap { from in
+            demuxer.variants.map(\.id).filter { $0 != from }.map { (from: from, to: $0) }
         }
-        #expect(refused == 4 && joinable == 2, "refused \(refused), joinable \(joinable)")
+        func join(_ pair: (from: Int, to: Int), _ number: Int, next: Bool = false, at time: Double) -> Result<
+            Int, JoinRefusal
+        > {
+            input.joinSegment(
+                ofVariant: pair.to, from: pair.from, sequence: number, joinsNext: next, startingAt: time)
+        }
+        // 1 s is a boundary of none: by number it joins, by time it does not.
+        func ok(_ result: Result<Int, JoinRefusal>) -> Bool {
+            if case .success = result { true } else { false }
+        }
+        let sharing = pairs.filter { ok(join($0, 1, at: 1)) }
+        let others = pairs.filter { pair in !sharing.contains { $0 == pair } }
+        #expect(sharing.count == 2 && others.count == 4, "\(sharing) \(others)")
+        for pair in sharing {
+            #expect(try join(pair, 3, at: 99).get() == 3)
+            #expect(try join(pair, 3, next: true, at: 99).get() == 4)
+        }
+        for pair in others {
+            guard case .failure(let refusal) = join(pair, 1, at: 1) else { continue }
+            #expect(refusal == .noBoundary, "\(pair)")
+        }
+        // 3.2 s is a boundary of the 1.6 s rung alone (two joins end at it), 2 s of the others' (two start from it), 0 s of all.
+        #expect(others.filter { ok(join($0, 1, at: 3.2)) }.count == 2)
+        #expect(others.filter { ok(join($0, 1, at: 2)) }.count == 2)
+        #expect(others.filter { ok(join($0, 1, at: 0)) }.count == 4)
         #expect(abs(demuxer.durationSeconds - 20) < 0.1)
         for file in made.videos + [made.audio] {
             #expect(Self.indexRequests(server, file) == 1, "\(file.name)'s index")

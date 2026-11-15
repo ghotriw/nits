@@ -14,17 +14,15 @@ import os
 /// as the manifest is. An index it cannot read refuses that representation with the reason; one that does not load is
 /// a failure of its playlist, as a playlist's load is.
 ///
-/// **Numbers.** An ordinary switch between variants is by time (`StreamingLane.catchUp`). The client takes a segment of
-/// another variant by its number only when a download is given up and the new variant reads the same segment
-/// (`StreamingInput.canJoin(variant:sequence:from:)`, `join(sequence:)`), which HLS promises a ladder the numbers for and
+/// **Numbers.** An ordinary switch between variants is by time (`StreamingLane.catchUp`). A download given up is taken
+/// over by the same segment number of the new variant (`StreamingInput.joinSegment`), which HLS promises a ladder and
 /// DASH does not (`startNumber`, timelines per representation, each resolution in a set of its own). So the pictures
-/// that may switch with each other (one codec and range, as `StreamingInput.ladder(of:)` groups them)
-/// are numbered by time, from the segments of the best of them. A picture whose segments do not start where the best
-/// one's do (within half a frame) stays in the ladder with numbers of its own (`MediaPlaylist.hasOwnNumbers`): a switch
-/// by time (`StreamingLane.catchUp`) lands on the first segment after the position whatever its boundaries, and the
-/// demuxer cuts at a keyframe; only a download given up and taken over at the same segment needs equal numbers to be
-/// the same span of time, and `StreamingInput.canJoin` refuses it for such a picture. For one file that is known once
-/// both indexes are read.
+/// that may switch with each other (one codec and range, as `StreamingInput.ladder(of:)` groups them) are numbered by
+/// time, from the segments of the best of them. A picture whose segments do not start where the best one's do (within
+/// half a frame) stays in the ladder with numbers of its own (`MediaPlaylist.hasOwnNumbers`): a switch by time lands on
+/// the first segment after the position whatever its boundaries, the demuxer cuts at a keyframe, and a download given up
+/// is taken over to or from it by the segment that starts at the same time (DASH's durations are exact), and only where
+/// the boundaries meet (`JoinRefusal.noBoundary` elsewhere). For one file that is known once both indexes are read.
 ///
 /// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`PlaylistSourceError.unsupported`) with
 /// the reason.
@@ -240,7 +238,8 @@ package struct DASHPlaylists: PlaylistSource {
         /// Those of the ladder's best picture, the entry at `reference`, for one of them whose segments an index tells.
         case on(reference: Int, tolerance: Double)
         /// As its manifest says, for a picture of a ladder whose segments do not start where the best picture's do: it
-        /// plays in the ladder, but its numbers are no place in the others' (`MediaPlaylist.hasOwnNumbers`).
+        /// plays in the ladder, but its numbers are no place in the others' (`MediaPlaylist.hasOwnNumbers`: its timeline is
+        /// not placed by them).
         case offGrid
     }
 
@@ -537,7 +536,7 @@ package struct DASHPlaylists: PlaylistSource {
     /// The pictures that are played, each with the numbers of its segments: in each group that switches together (codec,
     /// Dolby Vision's supplemental codec, range) those of the best picture (the highest bitrate), for the pictures whose
     /// segments start where its own do. The others of the group are `.offGrid`: played, numbered as their manifest says,
-    /// and refused by `StreamingInput.canJoin`. `.own`: the best picture, or one alone in its group, numbered as its
+    /// and taken over from only where their boundaries meet (`StreamingInput.joinSegment`). `.own`: the best picture, or one alone in its group, numbered as its
     /// manifest says. `.on`: a picture or its reference is one file, whose segments are told
     /// once its index is read (`mediaPlaylist(_:of:loader:)`).
     static func numberedPictures(

@@ -43,8 +43,8 @@ package struct InFlightSegment: Sendable, Equatable {
     package let hasMuxedAudio: Bool
 }
 
-/// Why a variant cannot take over a segment whose download was given up (`DemuxerInput.canJoin`).
-package enum JoinRefusal: String, Sendable {
+/// Why a variant cannot take over a segment whose download was given up (`DemuxerInput.joinSegment`).
+package enum JoinRefusal: String, Error, Sendable {
     /// The input does not switch variants this way.
     case unsupported = "the input cannot join a segment"
     /// The variant lists no such segment (a live playlist that moved on) or it is a gap.
@@ -53,7 +53,7 @@ package enum JoinRefusal: String, Sendable {
     case atDiscontinuity = "the segment is at a discontinuity"
     /// The next segment is at one: the segment itself is continuous, so this is cautious (kept apart to count it).
     case beforeDiscontinuity = "the segment is just before a discontinuity"
-    /// The two variants' segments are not numbered alike (a DASH picture whose boundaries are not the ladder's): the number
-    /// of one is not a place in the other.
-    case otherNumbering = "the variants' segments are not numbered alike"
+    /// The variant lists segments there, but none starts where the one given up does (a DASH picture whose boundaries are
+    /// not the ladder's, there): a cut at the keyframe it would join at would leave a hole.
+    case noBoundary = "no segment of the variant starts there"
 }

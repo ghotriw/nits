@@ -284,7 +284,7 @@ How a switch splices for DASH, whose demuxer orders the representations otherwis
   every picture handed out as it comes), at the keyframe expected past what is read, by the spacing of the old
   variant's latest keyframes, kept apart from the packets, as a live read-ahead keeps no history (`KeyframeTrail`,
   `expectedHoleCut`), or, with no spacing known or that keyframe at
-  the segment's end, at the next segment's start (`PendingAbandon.joinSequence`): the lowest rung is taken, as each
+  the segment's end, at the next segment's start (`PendingAbandon.skipsRest`): the lowest rung is taken, as each
   second it takes to reach the cut is one of stall, and only when the stall it saves is longer than the picture it
   skips, less what of a long GOP is queued without a keyframe and plays meanwhile
   (`AdaptiveBitrateLogic.Hole`). The estimate learns the download

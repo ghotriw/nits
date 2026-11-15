@@ -168,7 +168,8 @@ package struct MediaPlaylist: Sendable, Equatable {
     package var segments: [MediaSegment] = []
     /// The numbers of its segments are its own (consecutive, as every playlist's), not the ladder's: a DASH picture whose
     /// segments do not start where its ladder's best picture's do. The number of one of its segments is no place in another
-    /// variant's, nor theirs in it (`StreamingInput.canJoin`); a switch by time (`StreamingLane.catchUp`) is the same.
+    /// variant's, so its timeline is not placed by them (`StreamingTimeline.alignedStart`); a download given up is taken
+    /// over by the segment that starts at the same time (`StreamingInput.joinSegment`), by the number it has here.
     package var hasOwnNumbers = false
 
     /// A playlist that can still change: live, or an event going on.

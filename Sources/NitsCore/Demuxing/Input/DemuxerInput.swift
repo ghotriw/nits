@@ -76,10 +76,15 @@ protocol DemuxerInput: StreamDescriptions {
     /// Reads variant `id` again from segment `sequence`, after its download was given up for a switch that did not come
     /// (the demuxer splices what it reads again into what it had queued: `MediaDemuxer.admitRestarted`).
     func restartDownload(ofVariant id: Int, atSequence sequence: Int)
-    /// Why variant `id` cannot read segment `sequence` from its start as the one a download given up leaves (nil: it can): it lists it,
-    /// and the segment is not at a discontinuity (timestamps that restart). `sequence` is a number of variant `source`, the
-    /// one whose download is given up: the two must number their segments alike.
-    func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal?
+    /// The segment variant `id` reads from its start as the one a download given up leaves, as the number it has in `id`'s
+    /// own numbering; or why it cannot: it lists no such segment, and the segment is not at a discontinuity (timestamps
+    /// that restart). The download given up is variant `source`'s segment `sequence`; the segment is that one, or the one
+    /// after it (`joinsNext`). Variants numbered alike (HLS's ladder) take it by the number; one that numbers its segments
+    /// on its own (a DASH picture whose boundaries are not the ladder's) by `time`, the start of that segment on the
+    /// timeline (seconds), within half a frame: the segment that starts there, else none.
+    func joinSegment(
+        ofVariant id: Int, from source: Int, sequence: Int, joinsNext: Bool, startingAt time: Double
+    ) -> Result<Int, JoinRefusal>
     /// The variant switched to next joins at segment `sequence` (nil: behind the picture, as a switch does).
     func joinNext(atSequence sequence: Int?)
 
@@ -121,7 +126,11 @@ extension DemuxerInput {
     func pollSegments(_ observer: (InFlightSegment) -> Void) {}
     func abandonDownload(ofVariant id: Int) {}
     func restartDownload(ofVariant id: Int, atSequence sequence: Int) {}
-    func canJoin(variant id: Int, sequence: Int, from source: Int) -> JoinRefusal? { .unsupported }
+    func joinSegment(
+        ofVariant id: Int, from source: Int, sequence: Int, joinsNext: Bool, startingAt time: Double
+    ) -> Result<Int, JoinRefusal> {
+        .failure(.unsupported)
+    }
     func joinNext(atSequence sequence: Int?) {}
     func variantDescription(id: Int) -> VariantDescription { .described }
     func describeVariant(id: Int, at seconds: Double) -> VariantDescription { .described }
