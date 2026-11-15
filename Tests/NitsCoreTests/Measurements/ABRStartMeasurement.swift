@@ -75,7 +75,9 @@ struct ABRStartRealMeasurement {
         let openStart = ContinuousClock.now
         let demuxer = try #require(MediaDemuxer(url: url))
         let open = (ContinuousClock.now - openStart) / .seconds(1)
-        let prefetch = LogStore.shared.snapshot().last { $0.message.hasPrefix("HLS client") }?.message ?? "none"
+        let prefetch =
+            LogStore.shared.snapshot().last { $0.message.hasPrefix("\(demuxer.input.streamingName) client") }?.message
+            ?? "none"
         // NITS_MEASURE_START_KBPS: start on the switchable variant nearest that bandwidth (adaptive bitrate stays on),
         // to tell what a better start would be worth.
         if let kbps = Int(ProcessInfo.processInfo.environment["NITS_MEASURE_START_KBPS"] ?? ""),
