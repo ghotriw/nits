@@ -321,8 +321,9 @@ extension PlayerEngine {
         let wantedFormat = preResolved?.selectedVideoFormatID
 
         enum Resolution { case resolved, declined, ended }
-        /// Asks the resolver for the page's streams; those open from here on. A resolver's error fails the load.
-        func resolve() async -> Resolution {
+        /// Asks the resolver for the page's streams; those open from here on. A resolver's error fails the load, unless
+        /// `canFallBack` and the first answer gave files to fall back on (`fallback`): it declines, and those play.
+        func resolve(canFallBack: Bool = false) async -> Resolution {
             if known == nil, resolver == nil || pageURL == nil { return .declined }
             let resolved: ResolvedMedia?
             do {
@@ -344,6 +345,11 @@ extension PlayerEngine {
                     return .declined
                 }
                 let errorDetail = (error as? MediaResolutionError)?.message ?? error.localizedDescription
+                if canFallBack, fallback != nil {
+                    AppLog.warning(
+                        .engine, "Asking for '\(path)' again failed (\(errorDetail)): falling back on its files")
+                    return .declined
+                }
                 fail(errorDetail, logging: "Found nothing to play in '\(path)': \(errorDetail)")
                 return .ended
             }
@@ -450,7 +456,7 @@ extension PlayerEngine {
         {
             AppLog.info(.engine, "The streams of '\(path)' didn't open: asking the resolver again")
             known = nil
-            switch await resolve() {
+            switch await resolve(canFallBack: true) {
             case .ended: return
             case .declined: break
             case .resolved:
