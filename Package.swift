@@ -91,6 +91,13 @@ let package = Package(
             path: "Tests/NitsTestSupport",
             swiftSettings: defaultSwiftSettings
         ),
+        // The client on its own: parsers, the timeline, adaptive bitrate. Tests that serve media over HTTP or play it stay in
+        // NitsCoreTests, which has the servers and the synthetic media.
+        .testTarget(
+            name: "NitsStreamingTests",
+            dependencies: ["NitsStreaming"],
+            swiftSettings: defaultSwiftSettings
+        ),
         .testTarget(
             name: "NitsCoreTests",
             dependencies: ["NitsCore", "NitsStreaming", "NitsKernels", "NitsTestSupport"],

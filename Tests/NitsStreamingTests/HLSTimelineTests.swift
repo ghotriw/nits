@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 
-@testable import NitsCore
 @testable import NitsStreaming
 
 /// `HLSTimeline`: a rendition's segments on the playlist's timeline, live reloads merged by media sequence, and other

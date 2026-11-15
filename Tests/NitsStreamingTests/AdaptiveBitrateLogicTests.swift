@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 
-@testable import NitsCore
 @testable import NitsStreaming
 
 @Suite("Adaptive bitrate logic")
