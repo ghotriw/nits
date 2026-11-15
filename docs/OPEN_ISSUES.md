@@ -173,14 +173,18 @@ Accepted for now, noted for later.
   limitations (the start on a middle link, the estimate after a slow segment, a rung at the edge flapping, what breaks
   leave, subtitle renditions, advertisements on streams of their own, variant switches at the edges, AES-128) are kept
   there, with the open work in order.
-- **DASH: a WebM file's `Cues` are read, not yet measured on a real manifest.** `MatroskaCues` makes the same
+- **DASH: a WebM file's `Cues` are measured on Shaka's manifest, not on YouTube's.** `MatroskaCues` makes the same
   `SegmentIndex` an MP4's `sidx` does, so a WebM picture or sound of `SegmentBase` is a rung of the ladder like an MP4
   one (tested on FFmpeg's VP9 / Opus with the cues first, a seek asking for its cluster). Not read: a `Segment` of
   unknown size, a file with one cue and no `Duration`, an `Initialization` that does not start at byte 0 (all refused as the
   playlist is read, so the manifest does not play: the manifest cannot tell them before; only a WebM with no `Initialization`
   from byte 0 is played as a file). A WebM and an MP4 of one codec are two groups: the ladder never switches the container.
-  To check on a real YouTube / Shaka manifest of VP9 beside H.264: the ladder's
-  numbering across the codecs' groups, and that `playsAsFiles` now only means a file with no index range.
+  Shaka's tos-ttml (2026-11-15, VP9 WebM beside H.264 MP4, both `SegmentBase` with the start told): the VP9 ladder of 7
+  is a format of its own in the menu and plays by hand; behind the stand's shaping proxy (`scripts/hls-stand/`, Wi-Fi,
+  RTT 33 ms; 400 kbit/s from 20 to 50 s) its ABR came down to 223k at once and back to 2121k 0.5 s after the link did,
+  stalled 0 s, as the H.264 ladder did (back in three steps over 6 s); the sound is the manifest's AAC, not its Opus
+  (`bestSounds`). The picture changes a read-ahead (~30 s) after the decision, both ways. Not measured: seeks in a VP9
+  ladder, and YouTube's files, whose index ranges yt-dlp does not give (a `SegmentBase` without `indexRange` is refused).
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest

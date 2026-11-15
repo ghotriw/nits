@@ -408,8 +408,10 @@ flowchart TD
     source reads each file's `sidx` when its playlist is asked for (chains, hierarchies past the index range, an index
     in a file of its own, a late start), once for every caller, and tells its segments as byte ranges; the resolver no
     longer reads indexes, and a ladder of such pictures is a ladder (numbered by time, a rung of other boundaries left
-    out). WebM files (`Cues`, `MatroskaCues`; added 2026-11-15) are read the same way. Files without an index range play as files, the others in the
-    format menu, the sound added; beside MP4 pictures they are left out. Shaka's tos-ttml: a ladder of 7, opening 2 s,
+    out). WebM files (`Cues`, `MatroskaCues`; added 2026-11-15) are read the same way. A WebM with its index range and its start (`Initialization` from
+    byte 0) is a ladder rung like an MP4, its codec a format of its own in the menu (Shaka's tos-ttml: VP9's ladder of 7
+    beside H.264's); one without them plays as a file, in the format menu with the sound added, and beside pictures the
+    client reads is left out. Shaka's tos-ttml, H.264: a ladder of 7, opening 2 s,
     seeks 1 s (through FFmpeg's demuxer, which now gets the ladder of files, 3.6 s and a seek that misses).
   - [ ] A live (`type="dynamic"`) manifest, several periods.
 
