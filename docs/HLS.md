@@ -47,7 +47,9 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
   - *A slow answer.* A top that has not answered in `StreamingInput.answerLimit` (4 s; the request's own timeout is 10 s of
     silence) has the next rung down probed beside it (`ProbeRace`); the first to answer describes the ladder, the other's
     requests are stopped (`SegmentLoader.aborting(when:)`) and it becomes a clone. A probe that fails on its own is
-    left out, and the next rung down is probed. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
+    left out, and the next rung down is probed. So is an HLS rendition that fails to open; a DASH manifest's default
+    sound is not (`PlaylistSource.isEssential`: it has no other): it fails the opening, which the engine tries again
+    (a fresh YouTube signature still refused), rather than playing without sound. Apple's Dolby Vision top init went unanswered for 10 s at RTT +150 ms.
   - *A slow link* (`openingLinkRate`): the rung it starts on is probed too, before the demuxer chooses (the same rule,
     `AdaptiveBitrateLogic.openingRung`), and the next one down when that probe fails; the download of the rung probed
     to start on stops.

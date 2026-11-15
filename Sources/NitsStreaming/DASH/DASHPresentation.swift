@@ -723,8 +723,14 @@ extension DASHPresentation {
             // No range: the file's own start tells where its index is, when the file is the index's too (not
             // `RepresentationIndex@sourceURL`); the initialization is the manifest's, else what that finds.
             guard indexURL == base else { throw .unsupported("one file without an index range") }
+            let told = try initSection(information.initialization, base: base)
+            // A WebM's cues count from the Segment's data, read from the start it is given (`MatroskaCues`): one the
+            // manifest tells has to be the file's own start, as with a range.
+            if format == .webm, let told, told.url != base || told.byteRange?.offset != 0 {
+                throw .unsupported("a WebM file without its initialization from the file's start")
+            }
             return Told(
-                initSection: try initSection(information.initialization, base: base),
+                initSection: told,
                 presentationTimeOffset: Double(information.presentationTimeOffset) / Double(information.timescale),
                 index: IndexLocation(media: base, format: format, url: base, range: nil))
         }

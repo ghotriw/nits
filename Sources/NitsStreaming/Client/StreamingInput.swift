@@ -504,6 +504,14 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
                     fail("the first segment failed to open (\(error))", code: error.code)
                     return nil
                 }
+                // One the stream is not played without (a DASH manifest's sound: there is no other) fails the opening,
+                // which the engine may try again (a fresh signature still refused), rather than playing without it.
+                if playlists.isEssential(wanted[index].url) {
+                    fail(
+                        "\(wanted[index].url.lastPathComponent), which the stream is not played without, failed to open (\(error))",
+                        code: error.code)
+                    return nil
+                }
                 // A rung or rendition that fails to open is left out; the stream plays without it.
                 StreamingLog.warning(
                     "\(streamingName): \(wanted[index].url.lastPathComponent) failed to open (\(error))")

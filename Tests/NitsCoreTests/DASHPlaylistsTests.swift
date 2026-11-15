@@ -559,6 +559,26 @@ struct DASHPlaylistsTests {
         }
     }
 
+    @Test(
+        "A WebM file without an index range takes an initialization the manifest tells only from the file's start: the cues count from it"
+    )
+    func webmInitializationWithoutRange() {
+        func webm(_ inside: String) -> Data {
+            Self.mpd(
+                #"<AdaptationSet contentType="audio" mimeType="audio/webm"><Representation id="a" bandwidth="1" "#
+                    + #"codecs="opus"><BaseURL>a.webm</BaseURL><SegmentBase>\#(inside)</SegmentBase>"#
+                    + "</Representation></AdaptationSet>")
+        }
+        #expect(Self.refusal(webm("")) == nil, "None told: the file's start tells it")
+        #expect(Self.refusal(webm(#"<Initialization range="0-400"/>"#)) == nil)
+        #expect(
+            Self.refusal(webm(#"<Initialization range="100-400"/>"#))
+                == "a: a WebM file without its initialization from the file's start")
+        #expect(
+            Self.refusal(webm(#"<Initialization sourceURL="init.webm"/>"#))
+                == "a: a WebM file without its initialization from the file's start")
+    }
+
     // MARK: - What a manifest's numbers may be
 
     /// The reason `data` is refused for, nil when it is read.

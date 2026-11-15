@@ -181,6 +181,18 @@ package struct DASHPlaylists: PlaylistSource {
         return history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
+    /// The entry `url` names is the default sound (`Entry.isEssential`), which has no other to stand in for it. Not a
+    /// picture: another rung plays in its place, and a refused index of the one the others are numbered on is
+    /// `refusal`'s already.
+    package func isEssential(_ url: URL) -> Bool {
+        guard url.scheme == Self.scheme, url.host == id, let built = manifest.current,
+            let index = url.pathComponents.dropFirst().first.flatMap({ Int($0) }),
+            built.entries.indices.contains(index)
+        else { return false }
+        let entry = built.entries[index]
+        return entry.isEssential && entry.representation.kind == .audio
+    }
+
     private func read(loader: SegmentLoader) throws(PlaylistSourceError) -> Built {
         let data: Data
         let servedFrom: URL
@@ -515,8 +527,7 @@ package struct DASHPlaylists: PlaylistSource {
             guard rounds <= 8 else { throw .unsupported("a file whose start does not tell where its index is") }
             // The part not read yet; a file shorter than asked for answers with fewer bytes.
             let more = try indexBytes(
-                of: location, offset: Int64(prefix.count), length: length - Int64(prefix.count), loader: loader,
-                prefix: prefix)
+                of: location, offset: Int64(prefix.count), length: length - Int64(prefix.count), loader: loader)
             guard !more.isEmpty else { throw .unsupported("a file that ends before its index") }
             prefix += more
             let reading: SingleFileLayout.Reading
@@ -547,9 +558,14 @@ package struct DASHPlaylists: PlaylistSource {
                 }
             }
         }
-        guard let layout = found, layout.initialization.length <= Int64(prefix.count),
-            layout.index.length <= SegmentIndex.sizeLimit
-        else { throw .unsupported("an index of more than \(SegmentIndex.sizeLimit) bytes") }
+        guard let layout = found else { throw .unsupported("a file whose start does not tell where its index is") }
+        guard layout.initialization.length <= Int64(prefix.count) else {
+            throw .unsupported(
+                "an initialization of \(layout.initialization.length) bytes past the \(prefix.count) read")
+        }
+        guard layout.index.length <= SegmentIndex.sizeLimit else {
+            throw .unsupported("an index of more than \(SegmentIndex.sizeLimit) bytes")
+        }
         // The index follows the bytes read (or begins inside them): the rest of it comes with one request.
         if layout.index.offset <= Int64(prefix.count), layout.index.range.upperBound > Int64(prefix.count) {
             prefix += try indexBytes(

@@ -226,4 +226,31 @@ struct DASHClientTests {
         #expect(asked.count == 1, "Asked once, not again by another demuxer: \(asked.count) requests")
         #expect(missing.lastError?.code != PlaylistSourceError.unsupported("").code, "The failure is the load's")
     }
+
+    @Test(
+        "The manifest's one sound refused (403) fails the opening with the server's code, not a stream without sound; a refused rung is left out"
+    )
+    func refusedSoundFailsTheOpening() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        server.setBehavior(.init(failure: .status(403)), forPaths: { $0.contains("audio") })
+        let text = Self.manifest(server)
+        let interrupt = FFmpegInterrupt()
+        let source = DASHPlaylists(address: URL(string: server.url("manifest.mpd"))!, inline: Data(text.utf8))
+        let input = StreamingInput(
+            multivariant: source.multivariantURL, playlists: source, source: source.address.absoluteString,
+            allowsFiles: false, headers: [:], interrupt: interrupt, streamingName: "DASH")
+        #expect(input == nil, "Opened without its sound")
+        #expect(
+            interrupt.lastError?.code == FFmpegErrorCode.httpForbidden, "\(String(describing: interrupt.lastError))")
+
+        // A picture is not essential: the top rung refused, the others play, with the sound.
+        server.setBehavior(.init(), forPaths: { $0.contains("audio") })
+        let rungs = SyntheticTestMediaFactory.dashLadderRungs
+        let top = try #require(rungs.indices.max { rungs[$0].bitrate < rungs[$1].bitrate })
+        server.setBehavior(.init(failure: .status(403)), forPaths: { $0.contains("video\(top)") })
+        let demuxer = try #require(Self.demuxer(server))
+        #expect(demuxer.hasAudio)
+        #expect(demuxer.variants.count == rungs.count - 1, "\(demuxer.variants)")
+    }
 }

@@ -20,11 +20,17 @@ package protocol PlaylistSource: Sendable {
     /// Makes the addresses valid again after the server refused one (403: it expired before it was renewed); asked
     /// once per request, which is then made again at `address(of:)`. False when it could not.
     func renewAddresses(shouldAbort: () -> Bool) -> Bool
+
+    /// The stream is not played without the media playlist at `url` (a DASH manifest's default sound: there is no other
+    /// of its language): one that fails to open fails the opening, which may then be tried again, instead of being left
+    /// out as a rung or an HLS rendition is. Asked after the playlist was read.
+    func isEssential(_ url: URL) -> Bool
 }
 
 extension PlaylistSource {
     package func address(of url: URL) -> URL? { url }
     package func renewAddresses(shouldAbort: () -> Bool) -> Bool { false }
+    package func isEssential(_ url: URL) -> Bool { false }
 }
 
 package enum PlaylistSourceError: Error, Equatable {
