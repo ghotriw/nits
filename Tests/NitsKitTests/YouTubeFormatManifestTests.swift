@@ -153,8 +153,8 @@ struct YouTubeFormatManifestTests {
         }
         #expect(source.address(forKey: "a")?.absoluteString == "https://x.example/a?sig=1")
         #expect(source.address(forKey: "missing") == nil)
-        async let first = Task.detached { source.renewAddresses(shouldAbort: { false }) }.value
-        async let second = Task.detached { source.renewAddresses(shouldAbort: { false }) }.value
+        async let first = onThread { source.renewAddresses(shouldAbort: { false }) }
+        async let second = onThread { source.renewAddresses(shouldAbort: { false }) }
         let (one, two) = await (first, second)
         #expect(one && two)
         #expect(calls.withLock { $0 } == 1, "A read refused while a renewal runs joins it")
@@ -165,32 +165,32 @@ struct YouTubeFormatManifestTests {
         let failing = YouTubeFormatSource(urls: ["a": "https://x.example/a"], settling: .zero) {
             throw MediaResolutionError("no")
         }
-        #expect(!failing.renewAddresses(shouldAbort: { false }))
+        #expect(await !onThread { failing.renewAddresses(shouldAbort: { false }) })
         #expect(failing.address(forKey: "a")?.absoluteString == "https://x.example/a")
     }
 
     @Test(
         "An address refused in its first seconds is waited for, not renewed: the same one is asked again, and later renewed"
     )
-    func settling() {
+    func settling() async {
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let source = YouTubeFormatSource(urls: ["a": "https://x.example/a?sig=1"], settling: .milliseconds(300)) {
             calls.withLock { $0 += 1 }
             return ["a": "https://x.example/a?sig=2"]
         }
         let began = ContinuousClock.now
-        #expect(source.renewAddresses(shouldAbort: { false }))
+        #expect(await onThread { source.renewAddresses(shouldAbort: { false }) })
         #expect(ContinuousClock.now - began >= .milliseconds(250), "Waited for the address to settle")
         #expect(calls.withLock { $0 } == 0 && source.address(forKey: "a")?.absoluteString.hasSuffix("sig=1") == true)
         // Once it is older than that, the refusal is of a bad address: yt-dlp is asked, and the renewed address is waited
         // for the same way before the loader asks it.
         let renewing = ContinuousClock.now
-        #expect(source.renewAddresses(shouldAbort: { false }))
+        #expect(await onThread { source.renewAddresses(shouldAbort: { false }) })
         #expect(calls.withLock { $0 } == 1 && source.address(forKey: "a")?.absoluteString.hasSuffix("sig=2") == true)
         #expect(ContinuousClock.now - renewing >= .milliseconds(250), "Waited for the renewed address to settle")
         // The wait gives way to an abort.
         let fresh = YouTubeFormatSource(urls: [:], settling: .seconds(30)) { [:] }
-        #expect(!fresh.renewAddresses(shouldAbort: { true }))
+        #expect(await !onThread { fresh.renewAddresses(shouldAbort: { true }) })
     }
 
     @Test("From 720p a ladder keeps its 60 fps rungs and drops the 30 fps ones; below that both stay")
