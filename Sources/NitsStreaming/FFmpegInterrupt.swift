@@ -5,7 +5,7 @@ import os
 /// Aborts blocking FFmpeg I/O (open, read, seek) on request or after an optional deadline. Once
 /// installed on an `AVFormatContext`, FFmpeg polls it from inside those calls. Also keeps the last error
 /// the owner recorded, so a caller that cancelled or timed out can still report why opening failed.
-public final class FFmpegInterrupt: Sendable {
+package final class FFmpegInterrupt: Sendable {
     private struct State: Sendable {
         var isCancelled = false
         /// Callers waiting to take the demuxer's input from a read that waits (`yieldIO`).
@@ -47,21 +47,21 @@ public final class FFmpegInterrupt: Sendable {
     /// A caller that is about to reposition the input (a seek) is waiting for a read to let go of it: FFmpeg's blocking
     /// calls are interrupted until `resumeIO()`. For a read that waits for a live stream's next segment, which would
     /// hold the input for as long as the stream stalls. Not part of `shouldAbort`: the waits of Swift code go on.
-    func yieldIO() {
+    package func yieldIO() {
         state.withLock { $0.yielders += 1 }
     }
 
     /// A caller waits to reposition the input (`yieldIO`).
-    var isYieldingIO: Bool {
+    package var isYieldingIO: Bool {
         state.withLock { $0.yielders > 0 }
     }
 
-    func resumeIO() {
+    package func resumeIO() {
         state.withLock { $0.yielders -= 1 }
     }
 
     /// What FFmpeg's interrupt callback reports: `shouldAbort`, or a caller waiting to reposition the input.
-    var shouldInterruptFFmpeg: Bool {
+    package var shouldInterruptFFmpeg: Bool {
         state.withLock { state in
             state.isCancelled || state.yielders > 0 || state.deadline.map { ContinuousClock.now >= $0 } ?? false
         }
@@ -77,7 +77,7 @@ public final class FFmpegInterrupt: Sendable {
 
     /// Points `ctx`'s interrupt callback at this object. FFmpeg only takes a C callback with an
     /// unretained pointer, so the caller must keep `self` alive for as long as `ctx` is open.
-    func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {
+    package func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {
         ctx.pointee.interrupt_callback.opaque = Unmanaged.passUnretained(self).toOpaque()
         ctx.pointee.interrupt_callback.callback = { opaque in
             guard let opaque else { return 0 }

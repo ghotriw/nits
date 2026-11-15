@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// Chooses the HLS variant to read next from the network throughput and the read-ahead (seconds of media read past
 /// the packets taken). Pure: the demuxer feeds it samples and times (`MediaDemuxer+AdaptiveBitrate.swift`).
@@ -34,60 +35,60 @@ import Foundation
 ///   variant below the one given up that `probeSafety` of the estimate fits (no fewer pixels): a step up, held and backed
 ///   off as one. Else a link in the band between `upSafety` and `safety` of a variant (1.5 Mbit/s and 480 at
 ///   1.08) never stepped up to it but by the probe at a full read-ahead, and played the lowest for some 40 s.
-struct AdaptiveBitrateLogic: Sendable {
-    struct Config: Sendable {
+package struct AdaptiveBitrateLogic: Sendable {
+    package struct Config: Sendable {
         /// Read-ahead seconds from which the logic steps up, and below which it steps down.
-        var highBuffer = 20.0
+        package var highBuffer = 20.0
         /// Share of the throughput estimate a variant's bandwidth may take to be kept, or stepped down to: hls.js's
         /// `abrBandWidthFactor`. At 0.8, a cold CDN cache's start on Apple's AV1 example (184 ms of round trip, 0.33 s
         /// of answers a second of media) came down from 4K on its first estimate, 76 Mbit/s of the 150 to 180 it then
         /// measured: 4K's 38.5 Mbit/s took 0.84 of a second to read, and the read-ahead grew all the same.
-        var safety = 0.95
+        package var safety = 0.95
         /// Seconds after a switch before stepping up with a full read-ahead (a probe).
-        var upSwitchInterval = 10.0
+        package var upSwitchInterval = 10.0
         /// Read-ahead seconds from which a recent estimate steps up to the variant it fits with `upSafety`.
-        var estimateUpBuffer = 10.0
+        package var estimateUpBuffer = 10.0
         /// Share of the throughput estimate a variant stepped up to on an estimate may take.
-        var upSafety = 0.7
+        package var upSafety = 0.7
         /// Share of the estimate the next variant may take for a probe at a full read-ahead, with a recent estimate that
         /// fits it with `upSafety` no higher. Apple's AV1 example: 18.9 Mbit/s takes 0.76 of a 25 Mbit/s link, 21.5 takes
         /// 0.86, which a variant stood on would not keep.
-        var probeSafety = 0.85
+        package var probeSafety = 0.85
         /// Share of the estimate a variant stepped up to may take within `failedProbeWindow` of the step before it is left.
         /// A 15 % dip of the estimate (23 to 20 Mbit/s on a steady link) took 18.9 Mbit/s down 8 s after the step at
         /// `safety`.
-        var probeHoldSafety = 1.0
+        package var probeHoldSafety = 1.0
         /// Seconds a variant just stepped up to must keep not fitting `probeHoldSafety` before it is left: the estimate of
         /// one second (20.7 of 23 Mbit/s, 0.1 of latency) took 18.9 Mbit/s down 13 s after the step.
-        var holdDebounce = 5.0
+        package var holdDebounce = 5.0
         /// Read-ahead seconds below which that wait is skipped.
-        var urgentBuffer = 5.0
+        package var urgentBuffer = 5.0
         /// Seconds after a switch before stepping down.
-        var downSwitchInterval = 2.0
+        package var downSwitchInterval = 2.0
         /// Seconds an estimate stays recent enough to step up to the variant it fits.
-        var estimateLifetime = 20.0
+        package var estimateLifetime = 20.0
         /// Half-lives (samples' weight: seconds of media) of the two averages.
-        var halfLives = (fast: 2.0, slow: 8.0)
+        package var halfLives = (fast: 2.0, slow: 8.0)
         /// Seconds of a transfer that TCP's slow start may take, at least, and in round trips to its host: past them, a
         /// transfer slower than in real time weighs its seconds (less these), not its media. Ten round trips take the
         /// window from its first to a thousand times that (a link's bytes in flight over the first window's ~14 KB): 1.8 s
         /// at 184 ms, 6 s at 600 ms.
-        var slowStartSeconds = 2.0
-        var slowStartRoundTrips = 10.0
+        package var slowStartSeconds = 2.0
+        package var slowStartRoundTrips = 10.0
         /// Seconds after a step up within which coming down makes it a failed probe.
-        var failedProbeWindow = 60.0
-        var maxProbeBackoff = 8.0
+        package var failedProbeWindow = 60.0
+        package var maxProbeBackoff = 8.0
         /// Samples' weight before the estimate counts: a first short read says little.
-        var minimumMeasurement = 1.0
+        package var minimumMeasurement = 1.0
         /// Half-life (seconds of media read) of the latency share.
-        var latencyHalfLife = 30.0
+        package var latencyHalfLife = 30.0
         /// Seconds of media read before the latency share counts. A request counts once answered, ahead of its media
         /// (and an init section's has none): over the first seconds read, the few answered ahead weigh on next to no
         /// media, and later on less and less.
-        var minimumLatencyMedia = 6.0
+        package var minimumLatencyMedia = 6.0
 
         /// The read-ahead threshold at the same share of a read-ahead limit (20 s of 30 s).
-        static func scaled(toReadAhead seconds: Double) -> Config {
+        package static func scaled(toReadAhead seconds: Double) -> Config {
             var config = Config()
             config.highBuffer = min(config.highBuffer, seconds * 2 / 3)
             config.estimateUpBuffer = min(config.estimateUpBuffer, seconds / 3)
@@ -96,23 +97,29 @@ struct AdaptiveBitrateLogic: Sendable {
         }
     }
 
-    struct Variant: Sendable, Equatable {
-        let id: Int
+    package struct Variant: Sendable, Equatable {
+        package let id: Int
         /// Bits a second.
-        let bandwidth: Int
+        package let bandwidth: Int
         /// Width × height; 0 when the playlist doesn't say.
-        var pixels = 0
+        package var pixels = 0
+
+        package init(id: Int, bandwidth: Int, pixels: Int = 0) {
+            self.id = id
+            self.bandwidth = bandwidth
+            self.pixels = pixels
+        }
     }
 
     /// The rung an opening that measured the link at `linkRate` bits a second starts on: the best that fits `safety` of
     /// it, else the lowest. One rule for the input that probes the start and the demuxer that adopts it.
-    static func openingRung<Rung>(of rungs: [Rung], bandwidth: (Rung) -> Int, linkRate: Double) -> Rung? {
+    package static func openingRung<Rung>(of rungs: [Rung], bandwidth: (Rung) -> Int, linkRate: Double) -> Rung? {
         let share = Config().safety
         let fitting = rungs.filter { Double(bandwidth($0)) <= linkRate * share }.max { bandwidth($0) < bandwidth($1) }
         return fitting ?? rungs.min { bandwidth($0) < bandwidth($1) }
     }
 
-    let config: Config
+    package let config: Config
     private var averages = [(value: 0.0, weight: 0.0), (value: 0.0, weight: 0.0)]
     /// Decayed sums of the requests' latency and of the media read meanwhile, seconds.
     private var latency = (waited: 0.0, media: 0.0)
@@ -128,25 +135,25 @@ struct AdaptiveBitrateLogic: Sendable {
     /// given up): until a step up, a seek or a variant chosen by hand (`endDetour`), and for `failedProbeWindow` after
     /// `time` at most. `measured` is the weight of the samples taken since: the estimate is the link's after the give-up,
     /// not the one `noteAbandoned` set, once it reaches `halfLives.slow`.
-    struct Detour: Sendable, Equatable {
-        let ceiling: Int
-        let time: Double
-        var measured = 0.0
+    package struct Detour: Sendable, Equatable {
+        package let ceiling: Int
+        package let time: Double
+        package var measured = 0.0
     }
 
     private(set) var detour: Detour?
 
-    init(config: Config = Config()) {
+    package init(config: Config = Config()) {
         self.config = config
     }
 
     /// A seek, or a variant chosen by hand: the give-up is no reason to step up any more.
-    mutating func endDetour() {
+    package mutating func endDetour() {
         detour = nil
     }
 
     /// Bits a second, once `minimumMeasurement` was measured.
-    var estimate: Double? {
+    package var estimate: Double? {
         guard averages[0].weight > 0, measuredWeight >= config.minimumMeasurement else { return nil }
         // Weighted by the share of the averages that samples filled, so the first ones aren't pulled to zero.
         return averages.map { $0.value / $0.weight }.min()
@@ -155,12 +162,12 @@ struct AdaptiveBitrateLogic: Sendable {
     /// Seconds spent waiting on the requests' answers per second of media read, once `minimumLatencyMedia` was read:
     /// about the same for every variant, as each reads a request per segment of the same length (and one per audio
     /// rendition's).
-    var latencyShare: Double? {
+    package var latencyShare: Double? {
         latency.media >= config.minimumLatencyMedia ? latency.waited / latency.media : nil
     }
 
     /// `waited` seconds for the requests' answers while `media` seconds were read.
-    mutating func addLatency(_ waited: Double, media: Double) {
+    package mutating func addLatency(_ waited: Double, media: Double) {
         guard media > 0 || waited > 0 else { return }
         let keep = pow(0.5, media / config.latencyHalfLife)
         latency = (keep * latency.waited + waited, keep * latency.media + media)
@@ -186,7 +193,7 @@ struct AdaptiveBitrateLogic: Sendable {
     /// faster. Weighed by its media alone, a segment of 8 s read in 29 s (2 Mbit/s after ~90, behind a shaping proxy)
     /// weighed 5.7 s, and the estimate fell only to 12.6–14.1 Mbit/s: the 10 Mbit/s variant was asked for again and
     /// given up.
-    mutating func addSample(
+    package mutating func addSample(
         bytes: Int, ownBytes: Int? = nil, seconds: Double, media: Double, roundTrip: Double? = nil, at time: Double
     ) {
         guard bytes > 0, seconds > 0 else { return }
@@ -215,7 +222,7 @@ struct AdaptiveBitrateLogic: Sendable {
     /// while the latency alone takes `safety` (`choose` goes by that then). Else the estimate of the fast link before the drop, which a few seconds of
     /// a slow one hardly move, took the stream back up to the variant given up (measured: 1920p chosen again 2 to 20 s
     /// after its download was given up on a 2 Mbit/s link, and its next segment ran the buffer from 40 s down to 9.5 s).
-    mutating func noteAbandoned(
+    package mutating func noteAbandoned(
         at time: Double, download: Download? = nil, targetBandwidth: Int? = nil, abandonedBandwidth: Int? = nil
     ) {
         if let download, download.measuredBytes > 0, download.transferring > 0 {
@@ -248,7 +255,7 @@ struct AdaptiveBitrateLogic: Sendable {
     /// The variant to switch to, or nil to stay. `variants` are the switchable ones; `current` is read now.
     /// `isReadAheadReal` is false when `readAhead` was raised to stand for a full one (a live stream at its edge, where
     /// only seconds are buffered): the estimate-based probe, which a drained buffer would not survive, waits.
-    mutating func choose(
+    package mutating func choose(
         current: Int, among variants: [Variant], readAhead: Double, isReadAheadReal: Bool = true, at time: Double
     ) -> Int? {
         let ladder = variants.sorted { $0.bandwidth < $1.bandwidth }

@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 import os
 
 /// Reads the HTTP(S) inputs of Nits' HLS and DASH client through `URLSession`, in place of FFmpeg's HTTP protocol (`io_open`,
@@ -20,8 +21,8 @@ import os
 /// What isn't served here FFmpeg opens itself: a URL that isn't HTTP(S) (an encrypted segment's `crypto+`), an answer
 /// redirected (FFmpeg resolves a playlist's URIs against where it was served from, which only its own inputs tell),
 /// and a byte range the server answers whole.
-final class HTTPSessionTransport: Sendable {
-    enum Opened {
+package final class HTTPSessionTransport: Sendable {
+    package enum Opened {
         case input(HTTPSessionInput)
         /// FFmpeg's error for the request: the server's answer, or `AVERROR_EXIT` for an interrupted open.
         case failed(Int32)
@@ -29,17 +30,17 @@ final class HTTPSessionTransport: Sendable {
         case notServed
     }
 
-    let meter = NetworkTransferMeter()
+    package let meter = NetworkTransferMeter()
     /// What the inputs opened while the client (HLS or DASH) opens are held to, until `endOpening`.
     private let openingLimit = HTTPSessionInput.OpeningLimit()
     let holder: HTTPSessionHolder
     private let headers: [String: String]
-    let shouldAbort: @Sendable () -> Bool
+    package let shouldAbort: @Sendable () -> Bool
 
     /// `headers` are the source's (the user agent among them), sent with every request; `shouldAbort` interrupts the
     /// waits for an answer and for data, as FFmpeg's interrupt callback does its own I/O.
-    init(source: String, headers: [String: String], shouldAbort: @escaping @Sendable () -> Bool) {
-        var headers = MediaURL.sanitizedHeaders(headers)
+    package init(source: String, headers: [String: String], shouldAbort: @escaping @Sendable () -> Bool) {
+        var headers = StreamingURL.sanitizedHeaders(headers)
         // FFmpeg's own, without one of the source's: the server sees the client the inputs FFmpeg opens show.
         if !headers.keys.contains(where: { $0.lowercased() == "user-agent" }) {
             let version = avformat_version()
@@ -50,7 +51,7 @@ final class HTTPSessionTransport: Sendable {
         self.headers = headers
         self.shouldAbort = shouldAbort
         let configuration = URLSessionConfiguration.ephemeral
-        // FFmpeg's `rw_timeout` (`MediaURL.applyNetworkOptions`): seconds without data.
+        // FFmpeg's `rw_timeout` (`StreamingURL.applyNetworkOptions`): seconds without data.
         configuration.timeoutIntervalForRequest = 10
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieAcceptPolicy = .always
@@ -62,12 +63,12 @@ final class HTTPSessionTransport: Sendable {
 
     deinit { holder.invalidate() }
 
-    static func serves(_ url: String) -> Bool {
+    package static func serves(_ url: String) -> Bool {
         url.hasPrefix("http://") || url.hasPrefix("https://")
     }
 
     /// The opening's rate at the points it could be read at, for the measurement (`OpeningLimit.rateReport`).
-    var openingRateReport: String { openingLimit.rateReport }
+    package var openingRateReport: String { openingLimit.rateReport }
 
     /// Bytes of the opening's transfers left out of the link's rate at least (`skipSlowStart`).
     static let slowStartBytes = 128 << 10
@@ -83,7 +84,7 @@ final class HTTPSessionTransport: Sendable {
     ///
     /// A request's metrics may come after its body was read through: those still to come for `host`
     /// (`NetworkTransferMeter.awaitsMetrics(host:)`) are waited for, `metricsWait` at most, in steps of 10 ms.
-    func skipSlowStart(forSegmentsOn host: String?, limit: Double) -> Double? {
+    package func skipSlowStart(forSegmentsOn host: String?, limit: Double) -> Double? {
         var roundTrip = host.flatMap { meter.roundTrip(host: $0) }
         if let host, roundTrip == nil {
             let deadline = ContinuousClock.now + Self.metricsWait
@@ -104,7 +105,7 @@ final class HTTPSessionTransport: Sendable {
     /// what came (`OpeningLimit.rateOfWhatCame`: nil for less than half a second of transfer, a link that brought all
     /// they asked for at once); nil for an abort. Blocks the opening's thread, as its
     /// probes do (`shouldAbort`, checked every 20 ms).
-    func waitForOpeningRate(limit: Double) -> Double? {
+    package func waitForOpeningRate(limit: Double) -> Double? {
         let wake = DispatchSemaphore(value: 0)
         while true {
             if let rate = openingLimit.linkRate(limit: limit) { return rate }
@@ -115,7 +116,7 @@ final class HTTPSessionTransport: Sendable {
     }
 
     /// The demuxer has opened: the inputs opened meanwhile are held no longer (see `HTTPSessionInput.OpeningLimit`).
-    func endOpening() {
+    package func endOpening() {
         openingLimit.lift()
     }
 
@@ -123,7 +124,7 @@ final class HTTPSessionTransport: Sendable {
     /// demuxer's opening, and how it is read (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
     /// that lost its race, `HLSInput`). `onProgress` is told how far the request has got while it waits for its answer
     /// too (a server that stalls before its headers), and for its bytes after.
-    func open(
+    package func open(
         _ url: String, offset: Int64, end: Int64?,
         opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)? = nil
@@ -162,10 +163,10 @@ final class HTTPSessionTransport: Sendable {
     static let oneTimeRequestBytes: Int64 = 16 << 10
 
     /// The cookies the session holds, from `Set-Cookie` answers.
-    var cookies: [HTTPCookie] { holder.cookieStorage?.cookies ?? [] }
+    package var cookies: [HTTPCookie] { holder.cookieStorage?.cookies ?? [] }
 
     /// Takes over cookies another session holds (a read of the same stream on a session of its own).
-    func adopt(_ cookies: [HTTPCookie]) {
+    package func adopt(_ cookies: [HTTPCookie]) {
         guard let storage = holder.cookieStorage else { return }
         for cookie in cookies { storage.setCookie(cookie) }
     }
@@ -181,19 +182,19 @@ final class HTTPSessionTransport: Sendable {
 /// while one is read hides its answer's wait, but over HTTP/1.1 the server sends the body with the answer: side by
 /// side, the one read, needed first, came in at half the rate (a live stream at 1.5 Mbit/s: the read-ahead empty for
 /// 7 s), and a task suspended once answered took its body all the same, into the socket's buffer.
-final class NetworkTransferMeter: Sendable {
-    struct Transfer: Sendable {
-        let bytes: Int
-        let seconds: Double
+package final class NetworkTransferMeter: Sendable {
+    package struct Transfer: Sendable {
+        package let bytes: Int
+        package let seconds: Double
         /// Bytes every transfer received during this one's `seconds`, its own included: the requests of a switch's old
         /// and new variant, side by side, share the link, and the rate of the link is what all of them carried, however
         /// they divided it. Never below `bytes`.
-        let linkBytes: Int
+        package let linkBytes: Int
         /// The shortest round trip measured to the request's host (`roundTrip(host:)`), when one was: how long TCP's slow
         /// start may hold the transfer back (`AdaptiveBitrateLogic.addSample`).
-        let roundTrip: Double?
+        package let roundTrip: Double?
 
-        init(bytes: Int, seconds: Double, linkBytes: Int? = nil, roundTrip: Double? = nil) {
+        package init(bytes: Int, seconds: Double, linkBytes: Int? = nil, roundTrip: Double? = nil) {
             self.bytes = bytes
             self.seconds = seconds
             self.linkBytes = max(linkBytes ?? bytes, bytes)
@@ -206,11 +207,11 @@ final class NetworkTransferMeter: Sendable {
         var oneTimeWaits = 0.0
         /// Seconds every request waited for its answer, and the latest answered (`HLSInput` reads them as FFmpeg's
         /// `io_open` times are read: `MediaDemuxer.noteRead`).
-        var answerSeconds = 0.0
-        var lastAnswer:
+        package var answerSeconds = 0.0
+        package var lastAnswer:
             (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
         /// Body bytes received by every transfer so far.
-        var receivedBytes = 0
+        package var receivedBytes = 0
         /// The shortest round trip to each host its connections were set up in (`HTTPSessionInput.roundTrip(of:)`).
         var roundTrips: [String: Double] = [:]
         /// Tasks to each host whose metrics have not come yet.
@@ -226,7 +227,7 @@ final class NetworkTransferMeter: Sendable {
     }
 
     /// The shortest round trip a connection to `host` was set up in, if one was.
-    func roundTrip(host: String) -> Double? {
+    package func roundTrip(host: String) -> Double? {
         state.withLock { $0.roundTrips[host] }
     }
 
@@ -251,7 +252,7 @@ final class NetworkTransferMeter: Sendable {
     }
 
     /// Body bytes received by every transfer so far: a transfer's share of the link is the difference over its spells.
-    var receivedBytes: Int {
+    package var receivedBytes: Int {
         state.withLock { $0.receivedBytes }
     }
 
@@ -269,10 +270,11 @@ final class NetworkTransferMeter: Sendable {
     }
 
     /// Seconds spent waiting for answers so far.
-    var answerSeconds: Double { state.withLock { $0.answerSeconds } }
+    package var answerSeconds: Double { state.withLock { $0.answerSeconds } }
 
     /// The latest request answered.
-    var lastAnswer: (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
+    package var lastAnswer:
+        (asked: ContinuousClock.Instant, answered: ContinuousClock.Instant, total: Int64, seconds: Double)?
     {
         state.withLock { $0.lastAnswer }
     }
@@ -283,12 +285,12 @@ final class NetworkTransferMeter: Sendable {
     }
 
     /// Seconds waited for answers paid once, so far: a read's are the difference over it.
-    var oneTimeWaitSeconds: Double {
+    package var oneTimeWaitSeconds: Double {
         state.withLock { $0.oneTimeWaits }
     }
 
     /// The transfers ended since the last call.
-    func take() -> [Transfer] {
+    package func take() -> [Transfer] {
         state.withLock { state in
             defer { state.transfers.removeAll() }
             return state.transfers
@@ -303,8 +305,8 @@ final class NetworkTransferMeter: Sendable {
 ///
 /// A body cut short (the connection dropped, or timed out: a server may close one suspended for long) is asked for
 /// again from where it stopped, `Range` from the bytes received, up to `retryDelays.count` times, as FFmpeg's
-/// `reconnect` does for its own (`MediaURL.applyNetworkOptions`): failed, `hls.c` drops the rest of the segment.
-final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSource, @unchecked Sendable {
+/// `reconnect` does for its own (`StreamingURL.applyNetworkOptions`): failed, `hls.c` drops the rest of the segment.
+package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSource, @unchecked Sendable {
     private enum Answer {
         case open
         case failed(Int32)
@@ -319,7 +321,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var task: URLSessionDataTask?
         var answer: Answer?
         /// The body's bytes, as the first answer told them.
-        var answeredLength: Int64?
+        package var answeredLength: Int64?
         var chunks: [Data] = []
         /// Bytes of `chunks.first` already read.
         var readInFirst = 0
@@ -327,16 +329,16 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         /// Body bytes still to be served: a byte range answered whole stops at its end.
         var remaining: Int64?
         var fileSize: Int64?
-        var isFinished = false
+        package var isFinished = false
         var failed = false
-        var isSuspended = false
+        package var isSuspended = false
         /// The task was suspended at some point: a server may close a connection left idle that long.
         var wasSuspended = false
         var isClosed = false
         /// Body bytes received, by every task.
         var received = 0
         /// Where the first answer came from, after the redirects a request that follows them went through.
-        var servedFrom: URL?
+        package var servedFrom: URL?
         /// The `Date` header of the first answer: the server's clock (a live DASH manifest's, when it tells none else).
         var serverDateHeader: String?
         /// Of them, those that came while the transfer didn't run (still under way when suspended), and the first delivery
@@ -383,7 +385,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     /// How a request of the demuxer's opening (`OpeningLimit`) is read. Its bytes are the opening's either way: counted
     /// in its rate, and no adaptive-bitrate sample.
-    enum Opening: Sendable {
+    package enum Opening: Sendable {
         /// A probe of a stream's description, of which FFmpeg's analysis reads a little: held to `openingHighWater`,
         /// asked for in pieces of it.
         case held
@@ -396,7 +398,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// What the inputs opened while a demuxer opens share (`HTTPSessionTransport.open(opening:)`), until it has
     /// (`HTTPSessionTransport.endOpening`): the held ones are held to `openingHighWater` while `isLimited`, their buffers
     /// growing as any's once lifted, and all of them measure the link together (`throughput`, `linkRate`).
-    final class OpeningLimit: Sendable {
+    package final class OpeningLimit: Sendable {
         private struct State {
             var isLimited = true
             /// Inputs transferring now, since when any did, for how long any did, and what they brought meanwhile.
@@ -454,7 +456,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         var isTransferring: Bool { state.withLock { $0.isLimited && $0.busySince != nil } }
 
         /// Bytes `linkRate` measures the link over, past the skipped ones.
-        static let measuredBytes = 256 << 10
+        package static let measuredBytes = 256 << 10
         /// The least time past the skip a rate of a link slower than the limit is measured over; less, and it is the
         /// whole opening's.
         static let shortestMeasure = 0.25
@@ -667,33 +669,33 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// How far the request has got, for the rule that gives a download up (`AdaptiveBitrateLogic.abandonment`).
-    struct Progress: Sendable, Equatable {
+    package struct Progress: Sendable, Equatable {
         /// Body bytes received, read or not.
-        var bytes: Int
+        package var bytes: Int
         /// The body's length, as the server told it.
-        var length: Int64?
+        package var length: Int64?
         /// Seconds since the request was made.
-        var elapsed: Double
+        package var elapsed: Double
         /// Seconds until the first answer, once it came.
-        var firstAnswer: Double?
+        package var firstAnswer: Double?
         /// Seconds the transfer ran (not suspended by a full buffer) since the first answer, and the bytes it brought in
         /// them: what came while the demuxer opened is left out of both (the ladder's rungs read side by side, a share
         /// of the link, not its rate); none while that goes on. Timed from each spell's first delivery, whose bytes are
         /// left out (`State.transferringSince`).
-        var transferring: Double
-        var measuredBytes: Int
+        package var transferring: Double
+        package var measuredBytes: Int
         /// The task is suspended: the reader is behind, so a slow download is not the link's doing.
-        var isSuspended: Bool
+        package var isSuspended: Bool
         /// The body is through, or the request closed: nothing is left to watch.
-        var isFinished = false
+        package var isFinished = false
     }
 
     /// Told how far the request has got while the reader waits for its bytes, at most every `observeInterval`: the
     /// read thread is blocked there exactly when a download is too slow. Set before the first read.
-    var onProgress: (@Sendable (Progress) -> Void)?
+    package var onProgress: (@Sendable (Progress) -> Void)?
     static let observeInterval = Duration.milliseconds(100)
 
-    var progress: Progress {
+    package var progress: Progress {
         state.withLock { state in
             let now = ContinuousClock.now
             let spell = state.transferringSince.map { (now - $0) / .seconds(1) } ?? 0
@@ -750,18 +752,18 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// The body's bytes, once answered, when the server told them.
-    var answeredLength: Int64? {
+    package var answeredLength: Int64? {
         state.withLock { $0.answeredLength }
     }
 
     /// The address that answered, after the redirects a request that followed them went through: what a playlist's
     /// relative URIs are read against.
-    var servedFrom: URL? {
+    package var servedFrom: URL? {
         state.withLock { $0.servedFrom }
     }
 
     /// The server's clock as the answer's `Date` header tells it (whole seconds), once answered.
-    var serverDate: Date? {
+    package var serverDate: Date? {
         state.withLock { $0.serverDateHeader }.flatMap(Self.httpDate(of:))
     }
 
@@ -775,7 +777,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// Body bytes the task has delivered so far, read or not.
-    var receivedBytes: Int {
+    package var receivedBytes: Int {
         state.withLock { $0.received }
     }
 
@@ -842,7 +844,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     // MARK: FFmpegInputSource
 
-    func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
+    package func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
         while true {
             let result = readOnce(buffer, size)
             if result != Self.again { return result }
@@ -895,7 +897,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     }
 
     /// Only the file's size (`avio_size`, which an init section without a byte range asks).
-    func seek(_ offset: Int64, _ whence: Int32) -> Int64 {
+    package func seek(_ offset: Int64, _ whence: Int32) -> Int64 {
         guard whence & AVSEEK_SIZE != 0, let size = state.withLock({ $0.fileSize }) else { return Int64(-ENOSYS) }
         return size
     }
@@ -903,13 +905,13 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// Gives the download up for another's: the task is cancelled, and a read waiting for it, now or later, is
     /// interrupted (`FFmpegErrorCode.exit`, as a seek interrupts it) instead of reading what is left of the body as the
     /// end of a segment. What it received stays reported as a transfer (`reportTransfer`): the link did carry it.
-    func abandon() {
+    package func abandon() {
         state.withLockUnchecked { $0.isAbandoned = true }
         close()
         changed.signal()
     }
 
-    func close() {
+    package func close() {
         state.withLockUnchecked { state in
             state.isClosed = true
             reportTransfer(in: &state)
@@ -921,7 +923,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
 
     /// A redirect isn't followed, but for the input that asked to (`followsRedirects`): its answer goes to FFmpeg, which
     /// asks for it again and follows it itself.
-    func urlSession(
+    package func urlSession(
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
@@ -930,7 +932,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         completionHandler(followsRedirects && !isDowngrade ? request : nil)
     }
 
-    func urlSession(
+    package func urlSession(
         _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
         completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
     ) {
@@ -979,7 +981,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         changed.signal()
     }
 
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    package func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         let wasEmpty = state.withLockUnchecked { state -> Bool in
             guard dataTask === state.task, !state.isClosed else { return false }
             let wasEmpty = state.buffered == 0
@@ -1007,7 +1009,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         if wasEmpty { changed.signal() }
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+    package func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         // A connection the server closed (HTTP/3 to YouTube's servers does it after a response, with the next request
         // already on it): the requests that follow, retries included, would go on the same dead connection until the
         // session drops it, which was seen to be never. A session of its own for what comes next. The replacement costs
@@ -1050,8 +1052,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         }
         if let retry {
             let received = state.withLock { $0.received }
-            AppLog.warning(
-                .demuxer,
+            StreamingLog.warning(
                 "HTTP: \(requestURL.lastPathComponent) cut short at \(received) B "
                     + "(\(error?.localizedDescription ?? "?")): asking again in \(Int(retry)) s")
             DispatchQueue.global().asyncAfter(deadline: .now() + retry) { [self] in
@@ -1068,12 +1069,14 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
             return
         }
         if let error, (error as? URLError)?.code != .cancelled {
-            AppLog.warning(.demuxer, "HTTP: \(requestURL.lastPathComponent) failed: \(error.localizedDescription)")
+            StreamingLog.warning("HTTP: \(requestURL.lastPathComponent) failed: \(error.localizedDescription)")
         }
         changed.signal()
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+    package func urlSession(
+        _ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics
+    ) {
         for transaction in metrics.transactionMetrics {
             guard let host = transaction.request.url?.host, let roundTrip = Self.roundTrip(of: transaction) else {
                 continue
@@ -1088,8 +1091,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
         let ms = { (seconds: TimeInterval) in Int((seconds * 1000).rounded()) }
         let transfer = ended.timeIntervalSince(answered)
         let rate = transfer > 0 ? "\(Int(Double(received) * 8 / transfer / 1000)) kbit/s" : "-"
-        AppLog.debug(
-            .demuxer,
+        StreamingLog.debug(
             "HTTP: \(requestURL.lastPathComponent) @\(offset) \(received) B, answer \(ms(answered.timeIntervalSince(requested))) ms, "
                 + "transfer \(ms(transfer)) ms (\(rate)), \(transaction.isReusedConnection ? "reused" : "new") "
                 + "\(transaction.networkProtocolName ?? "?")")
@@ -1098,7 +1100,7 @@ final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegInputSourc
     /// A round trip to the server, from how a new connection was set up: TCP's handshake alone (to the start of TLS, or
     /// to the connection for plain HTTP), or QUIC's for HTTP/3, one round trip with its TLS. Nil for a connection reused
     /// or through a proxy (the round trip is the proxy's), or one not timed.
-    static func roundTrip(of transaction: URLSessionTaskTransactionMetrics) -> Double? {
+    package static func roundTrip(of transaction: URLSessionTaskTransactionMetrics) -> Double? {
         guard !transaction.isReusedConnection, !transaction.isProxyConnection,
             let start = transaction.connectStartDate
         else { return nil }
@@ -1160,7 +1162,7 @@ final class HTTPSessionHolder: Sendable {
     let cookieStorage: HTTPCookieStorage?
 
     /// Sessions of `configuration`, their delegates' calls on `queue`.
-    init(configuration: URLSessionConfiguration, queue: OperationQueue) {
+    package init(configuration: URLSessionConfiguration, queue: OperationQueue) {
         // The storage is the first session's: an ephemeral configuration may make its own only with a session. Set once,
         // before any session is made from the configuration again.
         let first = URLSession(configuration: configuration, delegate: nil, delegateQueue: queue)
@@ -1172,7 +1174,7 @@ final class HTTPSessionHolder: Sendable {
     }
 
     /// One session that is never replaced.
-    init(fixed session: URLSession) {
+    package init(fixed session: URLSession) {
         make = nil
         cookieStorage = session.configuration.httpCookieStorage
         state = OSAllocatedUnfairLock(initialState: State(session: session))

@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreMedia
 import Foundation
+internal import NitsStreaming
 import VideoToolbox
 import os
 
@@ -507,7 +508,7 @@ public final class MediaDemuxer: @unchecked Sendable {
     var closedCaptionFields: Set<Int> = []
 
     /// Cancels this demuxer's blocking I/O; share one across demuxers to cancel a whole load.
-    public typealias InterruptContext = FFmpegInterrupt
+    typealias InterruptContext = FFmpegInterrupt
 
     let interruptContext: InterruptContext
     private let ownsInterruptContext: Bool
@@ -634,10 +635,25 @@ public final class MediaDemuxer: @unchecked Sendable {
         url: String,
         headers: [String: String] = [:],
         httpRequestSize: Int? = nil,
-        interruptContext: InterruptContext? = nil,
         audioOnly: Bool = false,
         liveHistory: LiveHistory? = nil
     ) {
+        self.init(
+            url: url, headers: headers, httpRequestSize: httpRequestSize, interruptContext: nil, audioOnly: audioOnly,
+            liveHistory: liveHistory)
+    }
+
+    /// The same with the interrupt a load shares among its demuxers (`PlayerEngine`'s, to cancel the whole load).
+    /// Not public API: the type is the streaming client's, and a host cancels through the engine.
+    convenience init?(
+        url: String,
+        headers: [String: String] = [:],
+        httpRequestSize: Int? = nil,
+        interruptContext: InterruptContext?,
+        audioOnly: Bool = false,
+        liveHistory: LiveHistory? = nil
+    ) {
+        StreamingLogBridge.install()
         let interrupt = interruptContext ?? InterruptContext()
         let windowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
         // HLS: Nits' own client (FFmpeg's HLS demuxer is not built). A playlist is known by its name; one under another

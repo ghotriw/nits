@@ -4,6 +4,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// Adaptive bitrate against `TestHTTPServer` throttled: the demuxer reads ahead as for any network source, and a
 /// stand-in for playback takes pictures in real time.

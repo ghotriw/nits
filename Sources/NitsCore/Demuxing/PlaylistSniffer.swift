@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// What the first bytes of an address say it is, whatever its name: an HLS playlist or a DASH manifest.
 enum SniffedPlaylist: Equatable {
@@ -43,6 +44,7 @@ enum SniffedPlaylist: Equatable {
     /// after FFmpeg failed to open the address, so a file never pays for it.
     static func sniff(_ url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> SniffedPlaylist? {
         guard HTTPSessionTransport.serves(url) else { return nil }
+        StreamingLogBridge.install()
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         guard
             case .input(let input) = transport.open(

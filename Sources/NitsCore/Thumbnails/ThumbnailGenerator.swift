@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreGraphics
 import Foundation
+internal import NitsStreaming
 import QuartzCore
 
 /// Low-priority background thumbnail generator.

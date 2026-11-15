@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+internal import NitsStreaming
 import Observation
 
 /// What `SubtitleController` needs of the player it shows subtitles for; `PlayerEngine` is one, held weakly.

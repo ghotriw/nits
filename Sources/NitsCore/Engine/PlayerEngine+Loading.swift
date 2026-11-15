@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 @preconcurrency import CoreMedia
 import Foundation
+internal import NitsStreaming
 import os
 
 extension PlayerEngine {
@@ -521,7 +522,7 @@ extension PlayerEngine {
             for opened in externalAudio { opened.demuxer.cancel() }
             demuxer.cancel()
             fail(
-                "Can't read the media's audio from \(MediaURL.displayHost(of: lost.url))",
+                "Can't read the media's audio from \(StreamingURL.displayHost(of: lost.url))",
                 logging:
                     "Failed to open the audio of '\(MediaURL.loggable(path))': \(MediaURL.loggable(lost.url.absoluteString))"
             )

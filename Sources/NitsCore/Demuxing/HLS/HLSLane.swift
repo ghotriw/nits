@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 import os
 
 /// One rendition of an HLS stream being read: the variant's playlist (its video, and the sound muxed into it) or an

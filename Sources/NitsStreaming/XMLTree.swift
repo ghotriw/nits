@@ -2,43 +2,43 @@ import Foundation
 
 /// An XML document as a tree of values, to read a manifest: element names, attributes and text are kept as they are,
 /// namespaces included (prefixes are not resolved), comments and processing instructions are not.
-struct XMLTreeElement {
+package struct XMLTreeElement {
     var name: String
-    var attributes: [(name: String, value: String)] = []
-    var children: [Node] = []
+    package var attributes: [(name: String, value: String)] = []
+    package var children: [Node] = []
 
-    enum Node {
+    package enum Node {
         case element(XMLTreeElement)
         case text(String)
     }
 
     /// The name without a namespace prefix (`mpd:Period` → `Period`).
-    var localName: String {
+    package var localName: String {
         name.split(separator: ":").last.map(String.init) ?? name
     }
 
-    func attribute(_ name: String) -> String? {
+    package func attribute(_ name: String) -> String? {
         attributes.first { $0.name == name }?.value
     }
 
     /// The child elements.
-    var elements: [XMLTreeElement] {
+    package var elements: [XMLTreeElement] {
         children.compactMap { if case .element(let element) = $0 { element } else { nil } }
     }
 
     /// The child elements named (without prefix) `localName`.
-    func elements(named localName: String) -> [XMLTreeElement] {
+    package func elements(named localName: String) -> [XMLTreeElement] {
         elements.filter { $0.localName == localName }
     }
 
     /// The text directly in the element, trimmed.
-    var text: String {
+    package var text: String {
         children.compactMap { if case .text(let text) = $0 { text } else { nil } }
             .joined().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The document `data` holds; nil when it is not well-formed XML or is larger than `limit` bytes.
-    static func parse(_ data: Data, limit: Int) -> XMLTreeElement? {
+    package static func parse(_ data: Data, limit: Int) -> XMLTreeElement? {
         guard data.count <= limit else { return nil }
         let builder = Builder()
         let parser = XMLParser(data: data)

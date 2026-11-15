@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// What the resolver reads of DASH manifests (`DASHManifest`), from minimal manifests that have
 /// what each case is about.

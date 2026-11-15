@@ -38,10 +38,24 @@ check_platform_boundary() {
     local members='\bAudioObject[A-Za-z]*\(|\bCVDisplayLink|\bCGDisplay|\bCGMainDisplayID\b|\baudioOutputDeviceUniqueID\b|\bdisplaySyncEnabled\b'
     local leaks
     # grep prints path:line:text, so the path filter stops at the first ':' and the comment filter reads the text.
-    leaks="$(grep -rnE "$imports|$appkit|$uikit|$members" Sources/NitsCore --include='*.swift' \
+    leaks="$(grep -rnE "$imports|$appkit|$uikit|$members" Sources/NitsCore Sources/NitsStreaming --include='*.swift' \
         | grep -vE '^Sources/NitsCore/Platform/[^/:]+/' | grep -vE '^[^:]+:[0-9]+:\s*//' || true)"
     if [[ -n "$leaks" ]]; then
         echo "Platform-specific code outside Sources/NitsCore/Platform/<os>/:" >&2
+        echo "$leaks" >&2
+        return 1
+    fi
+}
+
+# NitsStreaming (the HLS / DASH client) is NitsCore's alone: its API is `package`, which SwiftPM shows to every target that
+# imports it, transitive imports included, so only NitsCore (and tests) may name it. A host, NitsUI or NitsKit reaches
+# the client through NitsCore's public API (see "Layer boundaries" in AGENTS.md).
+check_streaming_boundary() {
+    local leaks
+    leaks="$(grep -rnE '^\s*(@\w+ )*((internal|package|public|private|fileprivate) )?import NitsStreaming\b' Sources --include='*.swift' \
+        | grep -vE '^Sources/(NitsCore|NitsStreaming)/' || true)"
+    if [[ -n "$leaks" ]]; then
+        echo "NitsStreaming imported outside NitsCore:" >&2
         echo "$leaks" >&2
         return 1
     fi
@@ -57,6 +71,7 @@ case "$MODE" in
         echo "Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
         check_platform_boundary
+        check_streaming_boundary
         echo "Lint check passed."
         ;;
     typecheck|--typecheck|-t)
@@ -68,6 +83,7 @@ case "$MODE" in
         echo "1. Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
         check_platform_boundary
+        check_streaming_boundary
         echo "2. Type-checking targets with strict concurrency..."
         swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
         echo "3. Running test suite..."

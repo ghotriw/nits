@@ -3,10 +3,10 @@ import Foundation
 
 /// The family of a codec told by a streaming manifest's `CODECS` / `codecs` string ("avc1.64001f,mp4a.40.2"): what the
 /// HLS and DASH manifests are read for, to tell which streams are of the same kind.
-enum CodecFamily {
+package enum CodecFamily {
     /// The video codec of a list, by family: the first entry that is a video codec's, its four-character code with a
     /// profile's variants made one (`avc1` and `avc3`, `hvc1` and `hev1`, `dvh1` and `dvhe`). Nil for a list without one.
-    static func video(in codecs: String) -> String? {
+    package static func video(in codecs: String) -> String? {
         let families = [
             "avc1": "avc", "avc3": "avc", "hvc1": "hevc", "hev1": "hevc", "dvh1": "dvhevc", "dvhe": "dvhevc",
             "dva1": "dvavc", "dvav": "dvavc", "av01": "av1", "dav1": "dvav1", "vp09": "vp9", "vp08": "vp8",
@@ -20,7 +20,7 @@ enum CodecFamily {
     /// Whether the bundled FFmpeg decodes the audio codec of a list (its first entry): nil for a codec this does not
     /// know by name, which is left to be tried. The sounds are all decoded by FFmpeg, so its decoders are the answer
     /// (it has none for AC-4 and MPEG-H 3D Audio, which a broadcaster's manifest may list over the AAC).
-    static func canDecodeAudio(in codecs: String) -> Bool? {
+    package static func canDecodeAudio(in codecs: String) -> Bool? {
         let entry =
             codecs.split(separator: ",").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
         let parts = entry.split(separator: ".").map(String.init)
@@ -53,12 +53,12 @@ enum CodecFamily {
     }
 
     /// Whether a video family (`video(in:)`) is Dolby Vision.
-    static func isDolbyVision(_ family: String) -> Bool {
+    package static func isDolbyVision(_ family: String) -> Bool {
         family.hasPrefix("dv")
     }
 
     /// A video family as shown ("H.264", "HEVC", "AV1", "VP9").
-    static func displayName(ofVideo family: String) -> String {
+    package static func displayName(ofVideo family: String) -> String {
         switch family {
         case "avc": "H.264"
         case "hevc": "HEVC"

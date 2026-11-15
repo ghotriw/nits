@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// Whether the segment being downloaded should be given up for one of a lower variant
 /// (`AdaptiveBitrateLogic.abandonment(of:among:buffer:roundTrip:)`), and the cut that splices the lower one in. Each

@@ -239,7 +239,10 @@ public enum AppLog {
     /// before evaluating any @autoclosure string interpolation.
     public static var minimumLogLevel: LogLevel {
         get { thresholdLock.withLock { $0 } }
-        set { thresholdLock.withLock { $0 = newValue } }
+        set {
+            thresholdLock.withLock { $0 = newValue }
+            StreamingLogBridge.thresholdChanged(to: newValue)
+        }
     }
 
     private static let loggers: [LogCategory: os.Logger] = [

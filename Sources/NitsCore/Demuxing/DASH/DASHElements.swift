@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// What an MPD's elements say, read the same way by the resolver's manifest (`DASHManifest`) and the client's source
 /// (`DASHPresentation`).

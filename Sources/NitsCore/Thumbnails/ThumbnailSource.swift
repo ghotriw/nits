@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// What `ThumbnailGenerator` reads the packets of one video stream from, and seeks in: a context FFmpeg opens on the
 /// file, or Nits' own HLS client for a finished HLS stream (`HLSInput`: the playlists are no file FFmpeg could open).
@@ -60,7 +61,7 @@ final class ThumbnailSource {
         var avOptions: OpaquePointer? = nil
         defer { if avOptions != nil { av_dict_free(&avOptions) } }
         if MediaURL.isNetworkURL(path) {
-            MediaURL.applyNetworkOptions(&avOptions, headers: headers, httpRequestSize: httpRequestSize)
+            StreamingURL.applyNetworkOptions(&avOptions, headers: headers, httpRequestSize: httpRequestSize)
         }
         let cleanPath = MediaURL.normalizeMediaPath(path)
 
@@ -125,7 +126,8 @@ final class ThumbnailSource {
 
     /// Opens the finished HLS stream at `url` through the client (see `open(_:)`).
     static func openHLS(url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> ThumbnailSource? {
-        open(HLSInput(url: url, headers: headers, interrupt: interrupt))
+        StreamingLogBridge.install()
+        return open(HLSInput(url: url, headers: headers, interrupt: interrupt))
     }
 
     /// Opens the finished DASH stream at `url` (an address or the resolver's inline manifest) through the client; nil for
@@ -133,6 +135,7 @@ final class ThumbnailSource {
     static func openDASH(
         url: String, headers: [String: String], interrupt: FFmpegInterrupt, assumingManifest: Bool = false
     ) -> ThumbnailSource? {
+        StreamingLogBridge.install()
         guard let playlists = DASHPlaylists(media: url, assumingManifest: assumingManifest) else { return nil }
         return open(playlists.makeInput(headers: headers, interrupt: interrupt))
     }

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @Suite("Abandoning a segment download")
 struct AdaptiveBitrateAbandonmentTests {

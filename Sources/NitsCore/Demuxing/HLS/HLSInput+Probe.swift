@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 extension HLSInput {
     /// The length of a finished HLS stream (a playlist that ends), from its playlists alone: the top variant's, for a

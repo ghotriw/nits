@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 import os
 
 /// A DASH manifest (MPD) told to the client as HLS playlists (`HLSPlaylistSource`): its pictures as the variants of a
@@ -93,7 +94,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     /// unless `assumingManifest`: the address was found to serve a manifest by its bytes (`SniffedPlaylist`), whatever
     /// its name.
     init?(media path: String, history liveHistory: LiveHistory? = nil, assumingManifest: Bool = false) {
-        if let inline = MediaURL.inlineDASHManifestContents(path) {
+        if let inline = StreamingURL.inlineDASHManifestContents(path) {
             let clock: @Sendable () -> Date = { Date() }
             let history = liveHistory?.source.map {
                 DASHHistory(source: $0, head: liveHistory?.headNumber ?? 0, clock: clock)

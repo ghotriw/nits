@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// A DASH manifest (MPD) read by the resolver (`DASHManifestResolver`) for what it offers to choose from.
 ///

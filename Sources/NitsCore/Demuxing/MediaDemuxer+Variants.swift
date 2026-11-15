@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreMedia
 import Foundation
+internal import NitsStreaming
 
 /// Variants of an adaptive stream. `HLSInput` lists each `EXT-X-STREAM-INF` as a candidate with streams of its own, and
 /// downloads the segments of every playlist with a stream not discarded.

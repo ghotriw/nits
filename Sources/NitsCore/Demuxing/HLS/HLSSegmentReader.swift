@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 enum HLSSegmentReaderError: Error, Equatable {
     case load(HLSSegmentLoadError)

@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// The `sidx` of a file that is a DASH representation (`SegmentBase`), read by the client's source to tell the file's
 /// segments: one box, a chain, a hierarchy whose boxes lie past the bytes read.

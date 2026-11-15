@@ -5,6 +5,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @Suite("Thumbnail System Tests", .hostDependent)
 struct ThumbnailTests {

@@ -5,6 +5,7 @@ import NitsTestSupport
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// For stress loops only, which hold a slot of the network budget for seconds: not for a test that fails in a strict pool,
 /// which the check of the HTTP suites (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) is there to catch. In a pool of one thread

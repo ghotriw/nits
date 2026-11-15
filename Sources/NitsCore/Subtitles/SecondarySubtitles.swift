@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 import Observation
 
 /// The second subtitle track shown with the selected one (a translation above the dialogue), as mpv's

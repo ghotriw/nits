@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// A DASH manifest (MPD) for streams a site gives as numbered segments of one URL, as YouTube's recording of a live
 /// stream that just ended (`http_dash_segments` formats with `…&sq=N` segments), which yt-dlp lists but no HTTP file

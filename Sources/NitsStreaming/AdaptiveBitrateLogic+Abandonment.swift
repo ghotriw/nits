@@ -6,34 +6,49 @@ import Foundation
 /// buffer, which `choose` (a decision between segments) comes to late.
 extension AdaptiveBitrateLogic {
     /// What the rule knows of the download under way.
-    struct Download: Sendable, Equatable {
+    package struct Download: Sendable, Equatable {
         /// The variant being read.
-        var variant: Int
+        package var variant: Int
         /// Media seconds of the segment.
-        var duration: Double
+        package var duration: Double
         /// Body bytes received, and the body's length when the server told it.
-        var bytes: Int
-        var length: Int64?
+        package var bytes: Int
+        package var length: Int64?
         /// Seconds since the request was made, until the first answer, and the transfer's running time after it.
-        var elapsed: Double
-        var firstAnswer: Double?
-        var transferring: Double
+        package var elapsed: Double
+        package var firstAnswer: Double?
+        package var transferring: Double
         /// The bytes of `bytes` that came in `transferring`: the rate is theirs (those of an opening are no measure).
-        var measuredBytes: Int
+        package var measuredBytes: Int
         /// The reader is behind (the download is suspended): its speed says nothing of the link.
-        var isSuspended = false
+        package var isSuspended = false
+
+        package init(
+            variant: Int, duration: Double, bytes: Int, length: Int64?, elapsed: Double, firstAnswer: Double?,
+            transferring: Double, measuredBytes: Int, isSuspended: Bool = false
+        ) {
+            self.variant = variant
+            self.duration = duration
+            self.bytes = bytes
+            self.length = length
+            self.elapsed = elapsed
+            self.firstAnswer = firstAnswer
+            self.transferring = transferring
+            self.measuredBytes = measuredBytes
+            self.isSuspended = isSuspended
+        }
     }
 
     /// The decision, with the terms it was made from (for the log).
-    struct Abandonment: Sendable, Equatable {
+    package struct Abandonment: Sendable, Equatable {
         /// The variant to ask the same segment of.
-        let target: Int
+        package let target: Int
         /// Seconds the download under way still needs, the buffer's, and the lower segment's.
-        let remaining: Double
-        let buffer: Double
-        let lower: Double
+        package let remaining: Double
+        package let buffer: Double
+        package let lower: Double
         /// Bits a second the download has brought since its first answer.
-        let loadRate: Double?
+        package let loadRate: Double?
     }
 
     /// Never when the download is within a half of the segment's duration (and a round trip: the answer's own wait),
@@ -46,7 +61,7 @@ extension AdaptiveBitrateLogic {
     /// position passed it: a hole in the picture, where ahead of the position it is a stall). `hole`: with the position
     /// inside the segment and nothing of it queued to cut at, where the lower variant is cut in past what is handed out
     /// (`Hole`); `cutOffset` is then not given.
-    func abandonment(
+    package func abandonment(
         of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
         cutOffset: Double? = nil, hole: Hole? = nil
     ) -> Abandonment? {
@@ -60,7 +75,7 @@ extension AdaptiveBitrateLogic {
     }
 
     /// Why a download is kept, for the diagnosis of a check that never gives one up (`NITS_ABR_TRACE`).
-    enum Refusal: String, Sendable, Equatable {
+    package enum Refusal: String, Sendable, Equatable {
         case unknownVariantOrLowest = "variant unknown or the lowest"
         case suspended = "download suspended (reader behind)"
         case finished = "download through"
@@ -75,20 +90,25 @@ extension AdaptiveBitrateLogic {
     /// A give-up with the position inside the segment and nothing of it queued to cut at: the old variant's pictures
     /// handed out play as they arrive (the buffer is empty, or holds no keyframe), so the lower variant is cut in at a
     /// keyframe past them, and what is between is skipped.
-    struct Hole: Sendable, Equatable {
+    package struct Hole: Sendable, Equatable {
         /// Seconds of the lower variant read before the cut: from the segment's start to the keyframe expected past what
         /// is handed out, or 0 when the lower variant joins the next segment (the keyframe is not known, or is that one).
-        var reach: Double
+        package var reach: Double
         /// Seconds of picture skipped: from the last one handed out to the cut.
-        var skipped: Double
+        package var skipped: Double
+
+        package init(reach: Double, skipped: Double) {
+            self.reach = reach
+            self.skipped = skipped
+        }
     }
 
-    enum Evaluation: Sendable, Equatable {
+    package enum Evaluation: Sendable, Equatable {
         case abandon(Abandonment)
         case keep(Refusal)
     }
 
-    func evaluation(
+    package func evaluation(
         of download: Download, among variants: [Variant], buffer: Double, roundTrip: Double, playlistLoad: Double = 0,
         cutOffset: Double? = nil, hole: Hole? = nil
     ) -> Evaluation {
@@ -182,6 +202,6 @@ extension AdaptiveBitrateLogic {
 extension AdaptiveBitrateLogic {
     /// Seconds, or this share of the segment's duration, by which the lower segment must come sooner than the rest of
     /// the download under way (the larger of the two).
-    static let abandonMargin = 1.0
-    static let abandonMarginShare = 0.15
+    package static let abandonMargin = 1.0
+    package static let abandonMarginShare = 0.15
 }

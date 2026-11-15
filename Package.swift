@@ -45,9 +45,16 @@ let package = Package(
                 .unsafeFlags(["-O"], .when(configuration: .debug))
             ]
         ),
+        // HTTP adaptive streaming client (HLS and DASH): playlists and manifests, segment loading, lanes, adaptive
+        // bitrate. Knows nothing of NitsCore; its API is `package`, and only NitsCore (and tests) import it.
+        .target(
+            name: "NitsStreaming",
+            dependencies: ["CFFmpeg"],
+            swiftSettings: defaultSwiftSettings
+        ),
         .target(
             name: "NitsCore",
-            dependencies: ["CFFmpeg", "CLibass", "NitsKernels"],
+            dependencies: ["CFFmpeg", "CLibass", "NitsKernels", "NitsStreaming"],
             resources: [
                 .process("Video/HDRToneMapping.metal"),
                 .process("Video/BT2390ToneMapping.metal"),
@@ -86,7 +93,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NitsCoreTests",
-            dependencies: ["NitsCore", "NitsKernels", "NitsTestSupport"],
+            dependencies: ["NitsCore", "NitsStreaming", "NitsKernels", "NitsTestSupport"],
             swiftSettings: defaultSwiftSettings
         ),
         .testTarget(

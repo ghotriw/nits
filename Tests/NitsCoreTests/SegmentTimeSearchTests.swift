@@ -3,6 +3,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// The start time of a fragment of a fragmented MP4, and the search of the segment that holds a moment by those times.
 @Suite("Segment times")

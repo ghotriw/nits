@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// Reads a media resource's duration from its container header without decoding, so playlist rows
 /// and totals are known before each item is played.
@@ -38,6 +39,7 @@ enum MediaDurationProbe {
     }
 
     private static func readDuration(path: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Double? {
+        StreamingLogBridge.install()
         guard !interrupt.shouldAbort else { return nil }
         if HLSInput.applies(to: path) {
             return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
@@ -57,7 +59,7 @@ enum MediaDurationProbe {
         }
         let isNetwork = MediaURL.isNetworkURL(path)
         if isNetwork {
-            MediaURL.applyNetworkOptions(&options, headers: headers)
+            StreamingURL.applyNetworkOptions(&options, headers: headers)
         }
 
         // On failure avformat_open_input frees the context itself.

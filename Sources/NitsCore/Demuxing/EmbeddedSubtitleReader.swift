@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// Subtitle packets as cues, pictures and ASS events, and reads of a subtitle stream (whole, or around a time) from a
 /// secondary demuxer that never disturbs playback.
@@ -274,6 +275,7 @@ enum EmbeddedSubtitleReader {
         // One condition for the transport (on URLSession's queue, where `Task.isCancelled` is never the task's), the lane
         // and the loop: the interrupt, which the controller sets when it cancels the read.
         let abort: @Sendable () -> Bool = { interrupt?.shouldInterruptFFmpeg == true }
+        StreamingLogBridge.install()
         let transport = HTTPSessionTransport(source: source.address, headers: source.headers, shouldAbort: abort)
         transport.adopt(source.cookies())
         let loader = HLSSegmentLoader(transport: transport, allowsFiles: source.allowsFiles)

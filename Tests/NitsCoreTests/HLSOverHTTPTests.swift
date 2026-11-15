@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// HLS served by `TestHTTPServer`, read by Nits' own client.
 @Suite("HLS over HTTP", .hostDependent, .networkServer)

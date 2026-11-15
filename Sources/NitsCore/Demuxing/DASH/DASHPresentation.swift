@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// An MPD read for the client (`DASHPlaylists`): its pictures and sounds with their segments, each placed on the
 /// presentation's time. What the client does not play yet is refused with a reason (`DASHPresentationError.unsupported`),

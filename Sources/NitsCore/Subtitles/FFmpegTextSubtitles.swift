@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// Subtitle files in text formats Nits has no parser of its own for (MicroDVD and SubViewer `.sub`, SAMI `.smi`):
 /// FFmpeg reads them and its decoders turn every format into ASS events, which become plain-text cues as SRT's are,

@@ -4,6 +4,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @_silgen_name("FigVideoFormatDescriptionConformsToDolbyVisionProfile81")
 private func figVideoFormatDescriptionConformsToDolbyVisionProfile81(_ formatDescription: CMFormatDescription) -> Bool

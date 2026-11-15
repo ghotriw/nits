@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 // What an input and the demuxer tell each other of variants and of the segments being downloaded: the input's side of
 // the interface names no demuxer type (`DemuxerInput`).

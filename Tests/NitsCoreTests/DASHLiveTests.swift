@@ -4,6 +4,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A dynamic MPD told to the client as playlists that slide (`DASHLive.swift`): the window the clock gives, the numbers a
 /// timeline keeps, the manifest fetched again when it says it changes, the server's clock from `UTCTiming`.

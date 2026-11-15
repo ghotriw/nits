@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// The rate a transfer reports is the link's: every byte received while it ran, whoever's (`Transfer.linkBytes`), as at a
 /// variant switch, where the old variant's segment is read on while the new one's comes.

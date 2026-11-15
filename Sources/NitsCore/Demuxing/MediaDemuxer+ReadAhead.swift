@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreMedia
 import Foundation
+internal import NitsStreaming
 import os
 
 /// Read-ahead for network sources, as mpv's demuxer cache. Without it the demuxer reads only when a consumer asks,

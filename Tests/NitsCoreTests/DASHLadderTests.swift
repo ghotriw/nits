@@ -5,6 +5,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A DASH ladder (the `dashLadder` preset: three rungs with B-frames, a keyframe at each second) played from
 /// `TestHTTPServer` as the resolver's manifest of it: the client lists the rungs as variants, and the demuxer switches

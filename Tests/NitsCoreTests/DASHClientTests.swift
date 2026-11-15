@@ -4,6 +4,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// The client playing a DASH manifest told as playlists (`DASHPlaylists` into `HLSInput`): the `dashLadder` preset
 /// (three rungs, a keyframe at each 1 s segment, segments that each hold their initialization) from `TestHTTPServer`,

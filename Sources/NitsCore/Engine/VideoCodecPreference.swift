@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// The user's order of video codecs for choosing among the pictures of one size a manifest offers (DASH), most
 /// preferred first. A codec switched off ranks after every one that is on, still played when it is all there is. The

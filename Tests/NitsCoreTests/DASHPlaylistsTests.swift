@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A DASH manifest told to the client as HLS playlists (`DASHPresentation`, `DASHPlaylists`), from minimal manifests
 /// that have what each case is about.
@@ -708,7 +709,7 @@ extension DASHPlaylistsTests {
         let text = "<MPD>https://signed.example/videoplayback?sig=secret</MPD>"
         let told = MediaURL.inlineDASHManifest(text)
         #expect(MediaURL.isInlineDASHManifest(told))
-        let contents = try #require(MediaURL.inlineDASHManifestContents(told))
+        let contents = try #require(StreamingURL.inlineDASHManifestContents(told))
         #expect(String(decoding: contents, as: UTF8.self) == text)
         // The manifest is not logged.
         let logged = MediaURL.loggable(told)

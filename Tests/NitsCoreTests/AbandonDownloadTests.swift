@@ -3,6 +3,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A segment download given up for a lower variant's of the same segment (`MediaDemuxer.requestAbandon`), against
 /// `TestHTTPServer` throttled: the old variant's bytes stop, the demuxer takes the interrupt as none, the new variant reads

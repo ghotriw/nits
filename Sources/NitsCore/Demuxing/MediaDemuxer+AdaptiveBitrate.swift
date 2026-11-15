@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// Adaptive bitrate for HLS while reading ahead (`AdaptiveBitrateLogic` decides). The requests go through
 /// `HTTPSessionTransport`, whose meter measures each one's transfer apart from its answer: the read-ahead thread feeds

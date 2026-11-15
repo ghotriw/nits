@@ -3,6 +3,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A segment marked `EXT-X-GAP` is never requested: a lane starts, or goes on, at the segment after it.
 @Suite("HLS gaps")

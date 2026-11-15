@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// The packets of every subtitle stream playback has read, kept so a track chosen later has them at once (as mpv's
 /// demuxer cache serves a refresh seek), network sources included, instead of reading them again.

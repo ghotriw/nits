@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+internal import NitsStreaming
 
 /// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file. HLS and DASH are
 /// `HLSInput`'s (FFmpeg's HLS and DASH demuxers are not built). See `DemuxerInput`.
@@ -270,8 +271,4 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
             )
         }
     }
-}
-
-extension FFmpegIOByteCounter: NetworkReadAccount {
-    var transferMeter: NetworkTransferMeter? { nil }
 }

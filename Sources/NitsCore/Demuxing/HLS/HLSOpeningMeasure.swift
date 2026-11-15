@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// The log lines that split an HLS stream's opening, and each run's, into their steps: the measurement suites
 /// (`HLSOpeningMeasurement`) read them back from `LogStore`. One line for the opening, at its end (`opening`), and one

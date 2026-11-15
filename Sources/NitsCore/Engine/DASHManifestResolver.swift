@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// Plays the DASH manifests (`.mpd`) of the network. Reads the manifest (`DASHManifest`) for what it offers to choose
 /// from, and hands back its address with the choice in the fragment (`DASHSelection`), which the client (`DASHPlaylists`)
@@ -42,7 +43,9 @@ struct DASHManifestResolver: MediaResolver {
 
     func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
         var request = URLRequest(url: url, timeoutInterval: 15)
-        for (name, value) in MediaURL.sanitizedHeaders(headers) { request.setValue(value, forHTTPHeaderField: name) }
+        for (name, value) in StreamingURL.sanitizedHeaders(headers) {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         guard let (data, finalURL) = await download(request),
             let manifest = DASHManifest(data: data, url: finalURL, codecs: codecs)
         else {

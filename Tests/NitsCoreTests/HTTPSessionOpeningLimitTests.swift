@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A body nobody reads isn't downloaded whole while a DASH demuxer opens (`HTTPSessionInput.OpeningLimit`): it reads
 /// the start of each rung of a ladder, a few kilobytes of segments of megabytes, and they would take a slow link's

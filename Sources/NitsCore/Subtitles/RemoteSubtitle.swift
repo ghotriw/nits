@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// A network subtitle file (`MediaLoadRequest.SubtitleFile`), downloaded and read when its track is selected.
 struct RemoteSubtitle: Sendable {

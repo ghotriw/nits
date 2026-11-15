@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @Suite("HLS segment pipeline", .serialized, .networkServer, .backstopTimeLimit)
 struct HLSSegmentPipelineTests {

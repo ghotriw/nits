@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 // MARK: - Subtitle files
 

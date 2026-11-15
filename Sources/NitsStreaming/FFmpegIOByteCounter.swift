@@ -7,7 +7,9 @@ import Foundation
 /// itself, so the HTTP options it reads back from them (cookies, redirects) stay.
 ///
 /// Behind the demuxer's `lock`: FFmpeg opens and closes inputs inside the calls made under it.
-final class FFmpegIOByteCounter: @unchecked Sendable {
+package final class FFmpegIOByteCounter: @unchecked Sendable {
+    package init() {}
+
     private typealias Open =
         @convention(c) (
             UnsafeMutablePointer<AVFormatContext>?, UnsafeMutablePointer<UnsafeMutablePointer<AVIOContext>?>?,
@@ -23,20 +25,20 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
     private var closedBytes: Int64 = 0
     /// The latest input opened, with `total` and `openSeconds` when it was asked for: a read that opened an input
     /// transferred from `opened` on.
-    private(set) var lastOpen:
+    package private(set) var lastOpen:
         (asked: ContinuousClock.Instant, opened: ContinuousClock.Instant, total: Int64, openSeconds: Double)?
     /// Seconds spent opening inputs: an HTTP input is open once its response's headers are in, so this is the
     /// requests' latency (connection, TLS, the server's answer), no transfer.
-    private(set) var openSeconds = 0.0
+    package private(set) var openSeconds = 0.0
 
     /// Bytes read so far by every input the context opened.
-    var total: Int64 {
+    package var total: Int64 {
         open.reduce(closedBytes) { $0 + $1.pointee.bytes_read }
     }
 
     /// Takes over `ctx`'s `io_open` / `io_close2` and its `opaque`, before it opens anything. FFmpeg only takes C
     /// callbacks with an unretained pointer, so the caller keeps `self` alive for as long as `ctx` is open.
-    func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {
+    package func install(on ctx: UnsafeMutablePointer<AVFormatContext>) {
         originalOpen = ctx.pointee.io_open
         originalClose = ctx.pointee.io_close2
         // Nested contexts call back with their own context, carrying this opaque.
@@ -67,4 +69,8 @@ final class FFmpegIOByteCounter: @unchecked Sendable {
             return close(s, pb)
         }
     }
+}
+
+extension FFmpegIOByteCounter: NetworkReadAccount {
+    package var transferMeter: NetworkTransferMeter? { nil }
 }

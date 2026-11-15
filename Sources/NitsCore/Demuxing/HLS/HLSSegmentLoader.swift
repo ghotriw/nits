@@ -1,5 +1,6 @@
 import CommonCrypto
 import Foundation
+internal import NitsStreaming
 import os
 
 enum HLSSegmentLoadError: Error, Equatable {
