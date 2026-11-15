@@ -3,7 +3,7 @@ import os
 
 /// A DASH manifest (MPD) told to the client as HLS playlists (`PlaylistSource`): its pictures as the variants of a
 /// multivariant playlist, the best sound of each language as an audio rendition, each representation's segments as a media
-/// playlist. The client plays them as it plays HLS's (`HLSInput`); see `.agents/dash-client/PLAN.md`.
+/// playlist. The client plays them as it plays HLS's (`StreamingInput`); see `.agents/dash-client/PLAN.md`.
 ///
 /// **Addresses.** The playlists are named by keys of the source's own (`nits-dash://<source>/…`), never fetched: the
 /// manifest (inline, from a site's extractor, or at `address`) is read once and every playlist is answered from it. What the
@@ -14,9 +14,9 @@ import os
 /// as the manifest is. An index it cannot read refuses that representation with the reason; one that does not load is
 /// a failure of its playlist, as a playlist's load is.
 ///
-/// **Numbers.** The client switches between variants by segment number (`HLSInput.canJoin(variant:sequence:)`), which
+/// **Numbers.** The client switches between variants by segment number (`StreamingInput.canJoin(variant:sequence:)`), which
 /// HLS promises a ladder and DASH does not (`startNumber`, timelines per representation, each resolution in a set of its
-/// own). So the pictures that may switch with each other (one codec and range, as `HLSInput.ladder(of:)` groups them)
+/// own). So the pictures that may switch with each other (one codec and range, as `StreamingInput.ladder(of:)` groups them)
 /// are numbered by time, from the segments of the best of them: a picture whose segments do not start where the best
 /// one's do (within half a frame) is left out, as a switch to it could not land on a segment boundary. For one file
 /// that is known once both indexes are read: its playlist is then refused, and the opening leaves its variant out.
@@ -27,7 +27,7 @@ package struct DASHPlaylists: PlaylistSource {
     /// The scheme of the keys.
     static let scheme = "nits-dash"
 
-    /// The key of the multivariant playlist: what `HLSInput` opens.
+    /// The key of the multivariant playlist: what `StreamingInput` opens.
     let multivariantURL: URL
     /// Where the manifest came from (after redirects; an inline one tells none): its relative addresses are
     /// relative to it, and the requests' headers are scoped by it.
@@ -127,8 +127,8 @@ package struct DASHPlaylists: PlaylistSource {
     /// opening that went on without what the stream is not played without (the default sound, whose index the source
     /// refused) is refused too: not played silent. Asked of the source itself, not read off the interrupt's last error,
     /// which another failure (or an earlier attempt on the same context) may have written.
-    package func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> HLSInput? {
-        let input = HLSInput(
+    package func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> StreamingInput? {
+        let input = StreamingInput(
             multivariant: multivariantURL, playlists: self, source: address.absoluteString, allowsFiles: allowsFiles,
             headers: headers, interrupt: interrupt, streamingName: "DASH")
         guard let input else { return nil }
@@ -531,7 +531,7 @@ package struct DASHPlaylists: PlaylistSource {
             var supplemental: String?
             var range: VideoRange?
         }
-        // `HLSInput.ladder(of:)` keeps every variant as one ladder when one of those with a picture (a size or a picture's
+        // `StreamingInput.ladder(of:)` keeps every variant as one ladder when one of those with a picture (a size or a picture's
         // codec told; all, when none is) tells no codec it knows: then all the pictures are numbered as one group, or a
         // ladder would join variants numbered apart.
         let knowsCodec = { (video: DASHPresentation.Representation) in

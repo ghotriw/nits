@@ -5,13 +5,13 @@ import Foundation
 /// the rendition's playlist as the opening placed it on the timeline, the offsets the playback's pictures anchored
 /// (shared, thread-safe) and how to reach the server. Immutable once made; a live stream has none (its window moves, and
 /// playback reads it from the edge).
-package struct HLSSubtitleWindowSource: Sendable {
+package struct SubtitleWindowSource: Sendable {
     /// The address the stream was opened by, and the headers its requests carry: the reader makes a transport of its own.
     package let address: String
     package let headers: [String: String]
     package let allowsFiles: Bool
     package let url: URL
-    package let timeline: HLSTimeline
+    package let timeline: StreamingTimeline
     package let variables: [String: String]
     /// Where the stream's playlists come from, as the opening read them.
     package let playlists: any PlaylistSource
@@ -20,7 +20,7 @@ package struct HLSSubtitleWindowSource: Sendable {
     package let cookies: @Sendable () -> [HTTPCookie]
 }
 
-extension HLSSubtitleWindowSource {
+extension SubtitleWindowSource {
     /// The part of `range` that can be read and placed rightly, and the `limit` a lane is read to (no segment that starts
     /// after it is loaded). Cues are placed by the offset of their discontinuity sequence
     /// (`TimestampAnchors.subtitleShift`); a sequence nobody has anchored would give them the picture's current
@@ -36,7 +36,7 @@ extension HLSSubtitleWindowSource {
             return anchors.hasAnchors ? (range, range.upperBound) : nil
         }
         let ahead = entries.filter { $0.end > range.lowerBound && $0.start <= range.upperBound }
-        let isAnchored = { (entry: HLSTimeline.Entry) in anchors.isAnchored(entry.segment.discontinuitySequence) }
+        let isAnchored = { (entry: StreamingTimeline.Entry) in anchors.isAnchored(entry.segment.discontinuitySequence) }
         guard let first = ahead.first(where: isAnchored) else { return nil }
         let lower = max(range.lowerBound, first.start)
         var upper = range.upperBound
@@ -49,7 +49,7 @@ extension HLSSubtitleWindowSource {
     }
 }
 
-extension HLSSubtitleWindowSource {
+extension SubtitleWindowSource {
     /// How a read of the rendition's cues ended.
     package enum WindowRead {
         /// Nothing in the range can be read yet (`readable(in:)`).
@@ -77,16 +77,16 @@ extension HLSSubtitleWindowSource {
         let transport = HTTPSessionTransport(source: address, headers: headers, shouldAbort: shouldAbort)
         transport.adopt(cookies())
         let loader = SegmentLoader(transport: transport, allowsFiles: allowsFiles)
-        let lane = HLSLane(
+        let lane = StreamingLane(
             kind: .subtitle, url: url, timeline: timeline, variables: variables, playlists: playlists, loader: loader,
             anchors: anchors, shouldAbort: shouldAbort)
         defer { lane.close() }
-        lane.setStreams([HLSLane.StreamSlot(table: 0, timebase: timebase, type: AVMEDIA_TYPE_SUBTITLE)])
+        lane.setStreams([StreamingLane.StreamSlot(table: 0, timebase: timebase, type: AVMEDIA_TYPE_SUBTITLE)])
         lane.reposition(at: covered.lowerBound)
         var pkt = AVPacket()
         while !isCancelled() {
             let code = lane.fill(before: limit.isFinite ? limit : nil)
-            if code == FFmpegErrorCode.eof || code == HLSLane.held {
+            if code == FFmpegErrorCode.eof || code == StreamingLane.held {
                 return isCancelled() ? .failed : .read(covered: covered)
             }
             guard code >= 0 else { return .failed }

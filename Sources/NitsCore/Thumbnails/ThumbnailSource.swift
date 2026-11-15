@@ -3,7 +3,7 @@ import Foundation
 internal import NitsStreaming
 
 /// What `ThumbnailGenerator` reads the packets of one video stream from, and seeks in: a context FFmpeg opens on the
-/// file, or Nits' own HLS client for a finished HLS stream (`HLSInput`: the playlists are no file FFmpeg could open).
+/// file, or Nits' own HLS client for a finished HLS stream (`StreamingInput`: the playlists are no file FFmpeg could open).
 /// Timestamps are the container's own; `timelineOffset` is what a zero-based timeline lacks of them, in the stream's
 /// time base (MPEG-TS / MPEG-PS start wherever the source clock was).
 final class ThumbnailSource {
@@ -127,7 +127,7 @@ final class ThumbnailSource {
     /// Opens the finished HLS stream at `url` through the client (see `open(_:)`).
     static func openHLS(url: String, headers: [String: String], interrupt: FFmpegInterrupt) -> ThumbnailSource? {
         StreamingLogBridge.install()
-        return open(HLSInput(url: url, headers: headers, interrupt: interrupt))
+        return open(StreamingInput(url: url, headers: headers, interrupt: interrupt))
     }
 
     /// Opens the finished DASH stream at `url` (an address or the resolver's inline manifest) through the client; nil for
@@ -143,7 +143,7 @@ final class ThumbnailSource {
     /// Takes the picture of a finished stream `input` opened, on its cheapest variant with a picture: thumbnails are
     /// small, and a lane nothing reads downloads nothing. Nil for a live stream (no timeline to sample) or one without
     /// a picture.
-    private static func open(_ input: HLSInput?) -> ThumbnailSource? {
+    private static func open(_ input: StreamingInput?) -> ThumbnailSource? {
         guard let input, !input.isLivePlaylist else {
             input?.close()
             return nil

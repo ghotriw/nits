@@ -7,10 +7,10 @@ import Testing
 /// Reads of a subtitle rendition outside playback (`EmbeddedSubtitleReader.readSubtitles(hls:in:interrupt:)`) over a
 /// playlist with a discontinuity: cues are placed by their sequence's offset, which only the pictures anchor.
 @Suite("HLS subtitle window reads", .serialized)
-struct HLSSubtitleWindowTests {
+struct SubtitleWindowTests {
     /// Three segments of 10 s, the last after a discontinuity (sequence 1); no cues in the second.
     private static func makeSource(directory: URL) throws -> (
-        source: HLSSubtitleWindowSource, anchors: TimestampAnchors
+        source: SubtitleWindowSource, anchors: TimestampAnchors
     ) {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try "WEBVTT\n\n00:01.000 --> 00:02.000\none\n".write(
@@ -34,8 +34,8 @@ struct HLSSubtitleWindowTests {
         try text.write(to: url, atomically: true, encoding: .utf8)
         guard case .media(let playlist) = try StreamingPlaylist.parse(text, url: url) else { throw CancellationError() }
         let anchors = TimestampAnchors()
-        let source = HLSSubtitleWindowSource(
-            address: url.path, headers: [:], allowsFiles: true, url: url, timeline: HLSTimeline(playlist),
+        let source = SubtitleWindowSource(
+            address: url.path, headers: [:], allowsFiles: true, url: url, timeline: StreamingTimeline(playlist),
             variables: [:], playlists: HLSServedPlaylists(), anchors: anchors, cookies: { [] })
         return (source, anchors)
     }

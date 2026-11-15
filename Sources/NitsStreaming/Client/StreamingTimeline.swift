@@ -10,7 +10,7 @@ import Foundation
 ///
 /// Another rendition of the same stream (a variant switched to, an audio rendition) is placed on the same timeline
 /// (`init(_:alignedTo:sharesSequenceNumbers:)`).
-package struct HLSTimeline: Sendable, Equatable {
+package struct StreamingTimeline: Sendable, Equatable {
     /// A segment and where it starts on the timeline, in seconds.
     package struct Entry: Sendable, Equatable {
         var segment: MediaSegment
@@ -101,7 +101,7 @@ package struct HLSTimeline: Sendable, Equatable {
     ///
     /// Nil for an empty playlist or reference: there is nothing to align, and the segments a reload brings would be
     /// placed from the reference's start, not where they belong. Made from the first load that lists segments.
-    init?(_ playlist: MediaPlaylist, alignedTo reference: HLSTimeline, sharesSequenceNumbers: Bool) {
+    init?(_ playlist: MediaPlaylist, alignedTo reference: StreamingTimeline, sharesSequenceNumbers: Bool) {
         guard !playlist.segments.isEmpty, !reference.isEmpty else { return nil }
         self.init(
             playlist,
@@ -429,7 +429,7 @@ package struct HLSTimeline: Sendable, Equatable {
     /// - else, for a variant of the reference's ladder (`sharesSequenceNumbers`), by media sequence number;
     /// - else, both live, at the same live edge; both finished, at the same end.
     static func alignedStart(
-        of playlist: MediaPlaylist, to reference: HLSTimeline, sharesSequenceNumbers: Bool
+        of playlist: MediaPlaylist, to reference: StreamingTimeline, sharesSequenceNumbers: Bool
     ) -> Double {
         guard !playlist.segments.isEmpty, !reference.isEmpty else { return reference.start }
         if listsFromStreamStart(playlist), let origin = reference.streamStart { return origin }

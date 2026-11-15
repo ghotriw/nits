@@ -6,7 +6,7 @@ import Testing
 
 /// Measurement (skipped unless asked for, see README.md): where the opening of a real HLS stream goes, and of a run
 /// opened by a seek. Each run opens the stream anew, decodes its first picture, seeks into it and decodes the picture
-/// there; it prints the totals and the client's own lines (`HLSOpeningMeasure`) of each phase. `NITS_MEASURE_OPEN_URL`
+/// there; it prints the totals and the client's own lines (`StreamingOpeningMeasure`) of each phase. `NITS_MEASURE_OPEN_URL`
 /// (one or more addresses, comma-separated), `NITS_MEASURE_OPEN_N` (runs after a warm-up, default 5).
 @Suite("HLS opening measurement")
 struct HLSOpeningMeasurement {
@@ -67,20 +67,23 @@ struct HLSOpeningMeasurement {
                 isCurrent: { true })
             let seekPicture = ContinuousClock.now - seekClock
             seekReport =
-                "seekTo=\(Int(target))s seek=\(HLSOpeningMeasure.ms(seek)) seekPicture=\(HLSOpeningMeasure.ms(seekPicture)) "
+                "seekTo=\(Int(target))s seek=\(StreamingOpeningMeasure.ms(seek)) seekPicture=\(StreamingOpeningMeasure.ms(seekPicture)) "
                 + "fromCache=\(outcome.fromCache) seekFrame=\(frame.map { String(format: "%.2f", $0.pts) } ?? "none")"
         }
         let ended = Date()
 
         print(
             "MEASURE-OPEN label=\(label) url=\(url) run=\(run)\(run == 0 ? "(warm-up)" : "") rtt=\(rtt) "
-                + "open=\(HLSOpeningMeasure.ms(open)) firstPicture=\(HLSOpeningMeasure.ms(firstPicture)) "
+                + "open=\(StreamingOpeningMeasure.ms(open)) firstPicture=\(StreamingOpeningMeasure.ms(firstPicture)) "
                 + "firstFrame=\(first.map { String(format: "%.2f", $0.pts) } ?? "none") "
                 + "variants=\(demuxer.variants.count) start=\(variant.map { "\($0.width)p@\($0.bandwidth / 1000)k" } ?? "-") "
                 + seekReport)
         for entry in LogStore.shared.snapshot() where entry.timestamp >= openStart && entry.timestamp <= ended {
             // "HLS client:" tells the opening's link rate, which chooses the start on a slow link (`openingLinkRate`).
-            let prefixes = [HLSOpeningMeasure.opening, HLSOpeningMeasure.rate, HLSOpeningMeasure.run, "HLS client:"]
+            let prefixes = [
+                StreamingOpeningMeasure.opening, StreamingOpeningMeasure.rate, StreamingOpeningMeasure.run,
+                "HLS client:",
+            ]
             guard prefixes.contains(where: entry.message.hasPrefix) else { continue }
             print("MEASURE-OPEN   [\(entry.timestamp < seekStart ? "open" : "seek")] \(entry.message)")
         }

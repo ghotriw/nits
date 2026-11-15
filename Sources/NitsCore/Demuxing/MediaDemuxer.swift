@@ -565,8 +565,8 @@ public final class MediaDemuxer: @unchecked Sendable {
     var canOpenAsFile: Bool { input.traits.opensAsFile }
     /// How to read subtitle stream `index` outside playback when the input is an HLS stream (a rendition of a VOD
     /// playlist), which a second demuxer can't open as a file; nil for any other.
-    func hlsSubtitleSource(streamIndex index: Int) -> HLSSubtitleWindowSource? {
-        (input as? HLSInput)?.subtitleWindowSource(forStream: index)
+    func hlsSubtitleSource(streamIndex index: Int) -> SubtitleWindowSource? {
+        (input as? StreamingInput)?.subtitleWindowSource(forStream: index)
     }
     /// A track was selected since the last read: the next one applies it (`applyStreamSelection`).
     var streamSelectionChanged = false
@@ -624,7 +624,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         self.init(url: url, headers: [:], interruptContext: nil)
     }
 
-    /// Opens `url`: with `HLSInput` when it is an HLS playlist or a DASH manifest the client plays, else with FFmpeg
+    /// Opens `url`: with `StreamingInput` when it is an HLS playlist or a DASH manifest the client plays, else with FFmpeg
     /// (`FFmpegInput`).
     ///
     /// - Parameters:
@@ -658,8 +658,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         let windowState = OSAllocatedUnfairLock<LiveReport?>(initialState: nil)
         // HLS: Nits' own client (FFmpeg's HLS demuxer is not built). A playlist is known by its name; one under another
         // name is what FFmpeg fails to open (below).
-        if liveHistory == nil, HLSInput.applies(to: url) {
-            guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
+        if liveHistory == nil, StreamingInput.applies(to: url) {
+            guard let input = StreamingInput(url: url, headers: headers, interrupt: interrupt) else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
             }
@@ -708,7 +708,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if sniffed == .hls {
             // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
             opened?.close()
-            guard let input = HLSInput(url: url, headers: headers, interrupt: interrupt) else {
+            guard let input = StreamingInput(url: url, headers: headers, interrupt: interrupt) else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
             }

@@ -57,7 +57,7 @@ package final class SegmentReader {
         let tolerance: Double
         let role: TimestampAnchors.Role
         /// Told where the media puts each segment of the run: its sequence, and the time of its first picture (else its
-        /// first stream's sound) on the timeline (`HLSTimeline.measure`). Not for a run that has no timestamps of its own.
+        /// first stream's sound) on the timeline (`StreamingTimeline.measure`). Not for a run that has no timestamps of its own.
         var onSegmentStart: ((MediaSegment, Double) -> Void)?
     }
 
@@ -114,7 +114,7 @@ package final class SegmentReader {
     /// The segment being read (`body`) has handed out bytes: a failure of it ends the run inside a packet.
     private var bodyHasBytes = false
 
-    /// How long the opening of the run took, by step (`HLSOpeningMeasure`): the measurement suites read it from the log.
+    /// How long the opening of the run took, by step (`StreamingOpeningMeasure`): the measurement suites read it from the log.
     package struct OpenTiming {
         /// Loading the init section, when the run has one.
         var initSection: Duration?
@@ -128,7 +128,7 @@ package final class SegmentReader {
         var bytes: Int64 = 0
 
         var description: String {
-            let ms = HLSOpeningMeasure.ms
+            let ms = StreamingOpeningMeasure.ms
             let steps = "answer=\(ms(answer)) open=\(ms(open)) analyze=\(ms(analyze)) bytes=\(bytes)"
             guard let initSection else { return steps }
             return "init=\(ms(initSection)) " + steps
@@ -138,7 +138,7 @@ package final class SegmentReader {
 
     /// Opens the run at `first`, which `start` seconds on the timeline. Waits for the first segment (and its init
     /// section): the caller's thread. A probe (`probe`, how its request is read while the demuxer opens) reads `first`
-    /// only as far as FFmpeg's analysis goes, to describe the streams (`HLSLane.probe`): the run is not read on, but its
+    /// only as far as FFmpeg's analysis goes, to describe the streams (`StreamingLane.probe`): the run is not read on, but its
     /// first segment's body, retained as any run's, may go on as the run read afterwards (`claimFirstBody`).
     /// `timelineShift` gives a WebVTT segment's offset by its discontinuity sequence. `knownVideoDelay`: the caller has
     /// the streams described already (a lane past its probe), and their picture's reorder depth (`video_delay`, 0
@@ -285,7 +285,7 @@ package final class SegmentReader {
         return retainedFirst
     }
 
-    /// Gives up the download of the segment being read for another's (`HLSLane.abandonDownload`): a read of it is
+    /// Gives up the download of the segment being read for another's (`StreamingLane.abandonDownload`): a read of it is
     /// interrupted, whether it waits for it now or comes to it later.
     func abandonDownload() {
         body?.abandon()
@@ -293,7 +293,7 @@ package final class SegmentReader {
     }
 
     /// Gives up the download of the segment being read, but keeps the context and its streams: a probe whose run is
-    /// not read on (`HLSLane.endDownload`), which a start's download (`HTTPSessionInput.Opening.start`) would go on with.
+    /// not read on (`StreamingLane.endDownload`), which a start's download (`HTTPSessionInput.Opening.start`) would go on with.
     func endDownload() {
         body?.close()
         retainedFirst?.close()

@@ -3,10 +3,10 @@ import Foundation
 import os
 
 /// An HLS stream read by Nits' own client, not FFmpeg's `hls.c`: the playlists are parsed and placed on a timeline
-/// (`HLSTimeline`), the segments downloaded (`SegmentLoader`) and demuxed by FFmpeg's container demuxers
+/// (`StreamingTimeline`), the segments downloaded (`SegmentLoader`) and demuxed by FFmpeg's container demuxers
 /// (`SegmentReader`), and the packets handed to `MediaDemuxer` through `DemuxerInput`, as a file's are.
 ///
-/// The stream is read as **lanes** (`HLSLane`): a lane for each variant's playlist (its video, and the sound muxed into
+/// The stream is read as **lanes** (`StreamingLane`): a lane for each variant's playlist (its video, and the sound muxed into
 /// it) and for each audio and subtitle rendition with a playlist of its own. A lane is read as far as its next packet;
 /// `read` hands out the one whose packet decodes first, so the renditions come out interleaved on the shared timeline.
 /// Streams are described once, at the opening, in a table (`AVStreamTable`) and keep their index for good: a lane's
@@ -28,16 +28,16 @@ import os
 /// The rung probed to start on (`HTTPSessionInput.Opening.start`) is asked for whole, not held: its download goes on
 /// past the analysis, measures the link past its slow start (`HTTPSessionTransport.skipSlowStart`, `waitForOpeningRate`)
 /// and is the start of playback; the others are held to a small buffer. A probe's segment is kept by its lane
-/// (`HLSLane.startBody`) once the streams are described, as the first segment of any run the lane reads is: a run that
+/// (`StreamingLane.startBody`) once the streams are described, as the first segment of any run the lane reads is: a run that
 /// starts there (the demuxer's first read, its rewind to the start after its opening scan, a seek) replays what was read
 /// and goes on with the same download, and a lane that is not read drops it and downloads nothing more. A lane read
-/// again for a switch starts at the segment after the one the picture is at (`HLSLane.catchUp`); the demuxer drops its
+/// again for a switch starts at the segment after the one the picture is at (`StreamingLane.catchUp`); the demuxer drops its
 /// pictures up to the keyframe it splices at.
 ///
 /// Timeline 0 is the first segment listed when the playlist was first loaded, live or not (so `timelineOrigin` is 0 and
 /// nothing is rebased); the window is told from the playlist's own model (`liveWindow`).
 ///
-package final class HLSInput: StreamDescriptions, @unchecked Sendable {
+package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
 
     /// Whether `path` is an address this input opens: a playlist (`.m3u8`, `.m3u`) over HTTP(S). A saved one, a file whose
     /// text is an HLS manifest, is NitsCore's to tell (`hasPlaylistExtension`, then the text).
@@ -56,7 +56,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
     /// The streams of a reader that a lane of `kind` describes and reads: pictures and sounds of a variant (not cover
     /// art, subtitles in the segments, data), the sound of an audio rendition, the cues of a subtitle rendition.
-    static func keeps(_ stream: UnsafeMutablePointer<AVStream>, in kind: HLSLane.Kind) -> Bool {
+    static func keeps(_ stream: UnsafeMutablePointer<AVStream>, in kind: StreamingLane.Kind) -> Bool {
         let type = stream.pointee.codecpar.pointee.codec_type
         switch kind {
         case .primary:
@@ -77,7 +77,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
     private struct StreamInfo {
         let lane: Int
-        /// Position among the streams of the lane (`HLSLane.streams`).
+        /// Position among the streams of the lane (`StreamingLane.streams`).
         let slot: Int
         let title: String
     }
@@ -94,20 +94,20 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     private let table: AVStreamTable
     private let transport: HTTPSessionTransport
     private let interrupt: FFmpegInterrupt
-    private var lanes: [HLSLane] = []
+    private var lanes: [StreamingLane] = []
     /// The lanes as `read` visits them: the variants' first, so that the picture's run anchors its sequence's timestamps
     /// (`TimestampAnchors`) after a seek, and the subtitle renditions' last, read only as far as the others are.
-    private var readOrder: [HLSLane] = []
+    private var readOrder: [StreamingLane] = []
     private var infos: [StreamInfo] = []
     /// How to read each subtitle rendition outside playback, by table stream; set once at the end of `init`.
-    private var subtitleSources: [Int: HLSSubtitleWindowSource] = [:]
+    private var subtitleSources: [Int: SubtitleWindowSource] = [:]
     /// The variants of a multivariant playlist (none for a media playlist), in the order it lists them.
     private var variants: [Variant] = []
     private let meter: TransferAccount
     /// The timeline's seconds of the last picture handed out: where a lane read again starts.
     private var lastTime = 0.0
     /// The variant being caught up for a switch: its pictures are not where the picture is.
-    private var catchingUp: HLSLane?
+    private var catchingUp: StreamingLane?
     /// The segment the variant read next joins at (`joinNext(atSequence:)`), instead of behind the picture.
     private var joinSequence: Int?
     /// The variants described from another rung's probe (`redescribe`): pending until their first read, then described
@@ -155,7 +155,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// What a playlist the opening loads is for.
     private struct Wanted {
         package var url: URL
-        var kind: HLSLane.Kind
+        var kind: StreamingLane.Kind
         var rendition: PlaylistRendition?
     }
 
@@ -163,7 +163,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// `answerLimit`: how long the top rung's probe waits for an answer before the next rung down is probed beside it.
     package convenience init?(
         url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
-        answerLimit: Duration = HLSInput.answerLimit
+        answerLimit: Duration = StreamingInput.answerLimit
     ) {
         let url = StreamingURL.normalizeMediaPath(address)
         let isLocal = !HTTPSessionTransport.serves(url)
@@ -180,7 +180,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// saved playlist), which a `source` served over HTTP(S) never allows.
     package init?(
         multivariant multivariantURL: URL, playlists: any PlaylistSource, source url: String, allowsFiles: Bool,
-        headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = HLSInput.answerLimit,
+        headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = StreamingInput.answerLimit,
         streamingName: String = "HLS"
     ) {
         // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`SegmentLoader.allowsFiles`).
@@ -235,7 +235,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 return nil
             }
             var positions: [String: Int] = [:]
-            func position(of url: URL, kind: HLSLane.Kind, rendition: PlaylistRendition?) -> Int {
+            func position(of url: URL, kind: StreamingLane.Kind, rendition: PlaylistRendition?) -> Int {
                 let key = "\(kind):\(url.absoluteString)"
                 if let known = positions[key] { return known }
                 wanted.append(Wanted(url: url, kind: kind, rendition: rendition))
@@ -310,7 +310,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 code: failures[referenceIndex].value ?? -EIO)
             return nil
         }
-        let reference = HLSTimeline(referencePlaylist)
+        let reference = StreamingTimeline(referencePlaylist)
 
         // Where reading starts: the beginning, or for a live stream a few target durations behind its edge.
         let isLive = referencePlaylist.isLive
@@ -323,20 +323,20 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
         // The offsets of the timestamps, shared by every lane: a sequence's first run anchors it, the others take it.
         let anchors = TimestampAnchors()
-        var built: [HLSLane?] = wanted.indices.map { index in
+        var built: [StreamingLane?] = wanted.indices.map { index in
             guard let playlist = slots[index].value, !playlist.segments.isEmpty else { return nil }
-            let timeline: HLSTimeline
+            let timeline: StreamingTimeline
             if index == referenceIndex {
                 timeline = reference
             } else {
                 // A variant of the ladder shares the reference's sequence numbers; a rendition's need not.
                 guard
-                    let aligned = HLSTimeline(
+                    let aligned = StreamingTimeline(
                         playlist, alignedTo: reference, sharesSequenceNumbers: wanted[index].kind == .primary)
                 else { return nil }
                 timeline = aligned
             }
-            return HLSLane(
+            return StreamingLane(
                 kind: wanted[index].kind, url: wanted[index].url, timeline: timeline, variables: variables,
                 playlists: playlists, loader: loader, anchors: anchors, shouldAbort: shouldAbort)
         }
@@ -391,7 +391,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                     {
                         queue.removeFirst()
                         StreamingLog.warning(
-                            "\(streamingName): \(lane.label) has not answered in \(HLSOpeningMeasure.ms(answerLimit)), "
+                            "\(streamingName): \(lane.label) has not answered in \(StreamingOpeningMeasure.ms(answerLimit)), "
                                 + "probing \(neighbour.label) beside it")
                         race.start(next, lane: neighbour, at: probeTime, loader: loader)
                         started.append(next)
@@ -506,12 +506,12 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 continue
             }
             let laneIndex = lanes.count
-            var slotsOfLane: [HLSLane.StreamSlot] = []
+            var slotsOfLane: [StreamingLane.StreamSlot] = []
             func register(_ added: UnsafeMutablePointer<AVStream>) {
                 infos.append(
                     StreamInfo(lane: laneIndex, slot: slotsOfLane.count, title: wanted[index].rendition?.name ?? ""))
                 slotsOfLane.append(
-                    HLSLane.StreamSlot(
+                    StreamingLane.StreamSlot(
                         table: Int(added.pointee.index), timebase: added.pointee.time_base,
                         type: added.pointee.codecpar.pointee.codec_type))
             }
@@ -549,7 +549,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 guard let lane = built[index] else { continue }
                 let laneIndex = lanes.count
                 let size = plan.indices.first { plan[$0].video == index }.flatMap { listed[$0].resolution }
-                var slotsOfLane: [HLSLane.StreamSlot] = []
+                var slotsOfLane: [StreamingLane.StreamSlot] = []
                 for slot in modelLane.streams {
                     guard let source = table.stream(slot.table), let added = table.addStream() else { continue }
                     Self.describe(source, in: added)
@@ -561,7 +561,8 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                     }
                     infos.append(StreamInfo(lane: laneIndex, slot: slotsOfLane.count, title: ""))
                     slotsOfLane.append(
-                        HLSLane.StreamSlot(table: Int(added.pointee.index), timebase: slot.timebase, type: slot.type))
+                        StreamingLane.StreamSlot(
+                            table: Int(added.pointee.index), timebase: slot.timebase, type: slot.type))
                 }
                 lane.setStreams(slotsOfLane)
                 lane.analyzesAs(modelLane)
@@ -580,12 +581,12 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
             fail("the stream has nothing to play")
             return nil
         }
-        readOrder = [HLSLane.Kind.primary, .audio, .subtitle].flatMap { kind in lanes.filter { $0.kind == kind } }
+        readOrder = [StreamingLane.Kind.primary, .audio, .subtitle].flatMap { kind in lanes.filter { $0.kind == kind } }
         // A live stream's renditions are read by playback alone (its window moves).
         if !isLive {
             for lane in lanes where lane.kind == .subtitle {
                 guard let slot = lane.streams.first else { continue }
-                subtitleSources[slot.table] = HLSSubtitleWindowSource(
+                subtitleSources[slot.table] = SubtitleWindowSource(
                     address: url, headers: headers, allowsFiles: isLocal, url: lane.url, timeline: lane.timeline,
                     variables: variables, playlists: playlists, anchors: anchors,
                     cookies: { [transport] in transport.cookies })
@@ -602,17 +603,17 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                     subtitleLanes: entry.subtitles.compactMap { laneOfWanted[$0] }))
             if cloneLanes.contains(video) { descriptions.withLock { $0[position + 1] = .pending } }
         }
-        let ms = HLSOpeningMeasure.ms
+        let ms = StreamingOpeningMeasure.ms
         let ended = ContinuousClock.now
         let playlistsLoad = "playlists=\(plan.isEmpty ? 0 : requests.count)/\(ms(playlistsLoaded - multivariantLoaded))"
         let probes = "\(isProbing ? "probes" : "firstRun")=\(opened)/\(ms(probed - playlistsLoaded))"
         StreamingLog.info(
-            "\(HLSOpeningMeasure.opening) multivariant=\(ms(multivariantLoaded - began)) \(playlistsLoad) \(probes) "
+            "\(StreamingOpeningMeasure.opening) multivariant=\(ms(multivariantLoaded - began)) \(playlistsLoad) \(probes) "
                 + "clones=\(cloneLanes.count) describe=\(ms(ended - probed)) total=\(ms(ended - began))")
         if isProbing {
             let told = openingRate.map { "\(Int($0 / 1000))kbit/s" } ?? "-"
             StreamingLog.info(
-                "\(HLSOpeningMeasure.rate) " + rateReport
+                "\(StreamingOpeningMeasure.rate) " + rateReport
                     + " rtt=\(roundTrip.map { "\(Int(($0 * 1000).rounded()))ms" } ?? "-") rate=\(told) "
                     + "wait=\(ms(rateTold - rateWait))")
         }
@@ -660,7 +661,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         }
     }
 
-    /// A clone's first run found `streams` (`HLSLane.describeFirstRun`): when they are of the kinds and number its lane
+    /// A clone's first run found `streams` (`StreamingLane.describeFirstRun`): when they are of the kinds and number its lane
     /// was described with, their description replaces the model's in the table (the time base kept: the lane puts its
     /// packets on it), and its variants are `described`; else they are `rejected`, and the lane reads nothing. On the
     /// reading thread, before any packet of the lane: the demuxer reads a variant's streams once it splices to it.
@@ -692,7 +693,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         descriptions.withLock { $0[id] } ?? .described
     }
 
-    /// A clone probed at the seek's target `seconds` (`HLSLane.describeByProbe`), which `redescribe`s it.
+    /// A clone probed at the seek's target `seconds` (`StreamingLane.describeByProbe`), which `redescribe`s it.
     package func describeVariant(id: Int, at seconds: Double) -> VariantDescription {
         if variantDescription(id: id) == .pending, let variant = variants.first(where: { $0.id == id }) {
             _ = lanes[variant.lane].describeByProbe(at: seconds)
@@ -804,7 +805,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     /// The source for reading the subtitle rendition behind table stream `index` outside playback
     /// (`EmbeddedSubtitleReader.readSubtitles(hls:in:interrupt:)`); nil for any other stream and for a live stream.
     /// Made once at the opening: readable from any thread.
-    package func subtitleWindowSource(forStream index: Int) -> HLSSubtitleWindowSource? { subtitleSources[index] }
+    package func subtitleWindowSource(forStream index: Int) -> SubtitleWindowSource? { subtitleSources[index] }
 
     /// The opening is done: what it downloaded (the probes, the first segment read to describe the picture, on a link
     /// that may not be the one playback runs on) is no sample of the link for adaptive bitrate.
@@ -814,7 +815,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
     }
 
     /// A lane's segment as the demuxer wants it told: with the variants the lane serves and whether sound is muxed in.
-    private func inFlight(_ segment: HLSLane.SegmentInFlight, laneIndex: Int) -> InFlightSegment {
+    private func inFlight(_ segment: StreamingLane.SegmentInFlight, laneIndex: Int) -> InFlightSegment {
         // Variants that differ in their audio group share a playlist, so a lane may be several variants'.
         .init(
             variants: variants.filter { $0.lane == laneIndex }.map(\.id), sequence: segment.sequence,
@@ -822,7 +823,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
             hasMuxedAudio: !tableStreams(ofLane: laneIndex, AVMEDIA_TYPE_AUDIO).isEmpty)
     }
 
-    /// Each variant's picture lane tells how far its segment's download has got (`HLSLane.observeProgress`).
+    /// Each variant's picture lane tells how far its segment's download has got (`StreamingLane.observeProgress`).
     package func observeSegments(_ observer: @escaping @Sendable (InFlightSegment) -> Void) {
         // A rendition's lanes too (no variants: told so): the thread may stand on their input while a picture downloads.
         for laneIndex in lanes.indices {
@@ -881,10 +882,10 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
     /// Hands out the packet that decodes first of the lanes'. Each lane read holds its next packet, but a subtitle
     /// rendition's lane loads no segment that starts after the picture's and sound's next packet
-    /// (`HLSLane.fill(before:picture:)`): a stretch without cues would hold the read until its next cue. A rendition's run
-    /// at a break waits for the picture to anchor it (`HLSLane.waitsForAnchor`): the variants' lanes come first.
+    /// (`StreamingLane.fill(before:picture:)`): a stretch without cues would hold the read until its next cue. A rendition's run
+    /// at a break waits for the picture to anchor it (`StreamingLane.waitsForAnchor`): the variants' lanes come first.
     package func read(_ pkt: inout AVPacket) -> Int32 {
-        var best: HLSLane?
+        var best: StreamingLane?
         /// The decode time of the next packet of a picture or sound, and of a picture.
         var media: Double?
         var picture: Double?
@@ -896,7 +897,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
                 case .audio: code = lane.fill(picture: picture)
                 case .subtitle: code = lane.fill(before: media, picture: picture)
                 }
-                if code == FFmpegErrorCode.eof || (lane.kind != .primary && code == HLSLane.held) { continue }
+                if code == FFmpegErrorCode.eof || (lane.kind != .primary && code == StreamingLane.held) { continue }
                 if code < 0 {
                     guard code != FFmpegErrorCode.exit, canDrop(lane) else { return code }
                     StreamingLog.warning("\(streamingName): \(lane.label) failed (\(code)) and is left out")
@@ -924,7 +925,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
 
     /// Whether the stream plays without `lane`: a rendition besides the picture, or a variant while another is read (the
     /// one a switch is catching up; the demuxer's splice never comes and the old one plays on).
-    private func canDrop(_ lane: HLSLane) -> Bool {
+    private func canDrop(_ lane: StreamingLane) -> Bool {
         lane.kind != .primary || lanes.contains { $0 !== lane && $0.kind == .primary && $0.isRead }
     }
 
@@ -954,7 +955,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         for lane in lanes where lane.isRead {
             let keyframeOf = lane === seekLane && type == AVMEDIA_TYPE_VIDEO ? type : nil
             lane.reposition(
-                at: seconds, landing: isForward ? HLSLane.Landing(time: seconds, keyframeOf: keyframeOf) : nil)
+                at: seconds, landing: isForward ? StreamingLane.Landing(time: seconds, keyframeOf: keyframeOf) : nil)
         }
         lastTime = seconds
         return 0
@@ -1034,7 +1035,7 @@ private final class TransferAccount: NetworkReadAccount {
     }
 }
 
-/// The probes of the rungs that may describe a ladder at the opening (`HLSInput`'s `raceForModel`): the top's, and the
+/// The probes of the rungs that may describe a ladder at the opening (`StreamingInput`'s `raceForModel`): the top's, and the
 /// next rung down's beside it once the top has not answered in time. The first to answer goes on; the other's requests
 /// are stopped (`SegmentLoader.aborting(when:)`), which ends its probe with an error.
 private final class ProbeRace: @unchecked Sendable {
@@ -1051,7 +1052,7 @@ private final class ProbeRace: @unchecked Sendable {
     private let group = DispatchGroup()
 
     /// Probes `lane` (at `index` of the opening's playlists) at `time` on a thread of its own.
-    package func start(_ index: Int, lane: HLSLane, at time: Double, loader: SegmentLoader) {
+    package func start(_ index: Int, lane: StreamingLane, at time: Double, loader: SegmentLoader) {
         state.withLock { $0.running += 1 }
         let state = state
         let changed = changed

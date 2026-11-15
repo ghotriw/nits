@@ -6,7 +6,7 @@ import Testing
 
 /// Measurement (skipped unless asked for, see README.md): what a reload of a long live window costs, a day of 5 s
 /// segments (YouTube's live history as a live playlist, `.agents/dash-client/PLAN.md` D7): a source building the
-/// playlist's segments (with an address each, or one shared), and `HLSTimeline.reload` merging it. Each lane (picture,
+/// playlist's segments (with an address each, or one shared), and `StreamingTimeline.reload` merging it. Each lane (picture,
 /// sound) does both every segment's length.
 @Suite("Live window cost measurement")
 struct LiveWindowCostMeasurement {
@@ -40,7 +40,7 @@ struct LiveWindowCostMeasurement {
         let rounds = 20
         let clock = ContinuousClock()
         for addressed in [true, false] {
-            var timeline = HLSTimeline(Self.playlist(first: 1000, count: count, addressed: addressed))
+            var timeline = StreamingTimeline(Self.playlist(first: 1000, count: count, addressed: addressed))
             var build = Duration.zero
             var merge = Duration.zero
             var worst = Duration.zero
@@ -50,7 +50,7 @@ struct LiveWindowCostMeasurement {
                 build += clock.measure {
                     playlist = Self.playlist(first: 1000 + round, count: count, addressed: addressed)
                 }
-                var change: HLSTimeline.ReloadChange!
+                var change: StreamingTimeline.ReloadChange!
                 let took = clock.measure { change = timeline.reload(playlist) }
                 merge += took
                 worst = max(worst, took)

@@ -14,7 +14,7 @@ import os
 ///
 /// **The start.** The window slides with the clock from the first load, as the server's oldest segments expire as
 /// time goes: what is listed starts as many seconds on as have passed (the engine slides its window the same way).
-/// The timeline's zero stays where the first segment was (`HLSTimeline` keeps the places of the segments it had).
+/// The timeline's zero stays where the first segment was (`StreamingTimeline` keeps the places of the segments it had).
 ///
 /// **The addresses.** A segment is named by its stream's key and number (`StreamHistory.segment(named:)`); the loader
 /// asks the source for the signed address at each request, and for a new signature when one is refused.

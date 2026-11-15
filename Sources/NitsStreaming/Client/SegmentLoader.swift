@@ -76,7 +76,7 @@ package final class SegmentLoader: Sendable {
     }
 
     /// The same loader (transport, kept init sections and keys) whose requests also give way to `abort`: a probe of the
-    /// opening that another one beat (`HLSInput`'s race), stopped without stopping the stream.
+    /// opening that another one beat (`StreamingInput`'s race), stopped without stopping the stream.
     func aborting(when abort: @escaping @Sendable () -> Bool) -> SegmentLoader {
         SegmentLoader(sharing: self, abort: abort, relay: relay)
     }
@@ -278,7 +278,7 @@ package final class SegmentLoader: Sendable {
 /// handler once it is made, after the loader it reads with. Called on the thread that reads the segment, while it waits.
 package final class SegmentProgressRelay: @unchecked Sendable {
     var handler: ((MediaSegment, HTTPSessionInput.Progress) -> Void)?
-    /// The download last begun, for a check made while the thread that reads is idle (`HLSLane.pollProgress`): the
+    /// The download last begun, for a check made while the thread that reads is idle (`StreamingLane.pollProgress`): the
     /// download goes on in the background while the read-ahead is full, and nothing waits for it then.
     private let latest = OSAllocatedUnfairLock<(segment: MediaSegment, input: Weak<HTTPSessionInput>)?>(
         initialState: nil)
@@ -456,7 +456,7 @@ package final class SegmentBody {
 
 extension SegmentLoader {
     /// The segment's bytes as they arrive (`SegmentBody`): the download starts now and the caller reads as it comes.
-    /// `opening`: a probe of the stream's description (`HLSLane.probe`), which FFmpeg's analysis reads as far as it
+    /// `opening`: a probe of the stream's description (`StreamingLane.probe`), which FFmpeg's analysis reads as far as it
     /// needs: the request is the opening's (`HTTPSessionTransport.open(opening:)`), counted in its rate and in no
     /// adaptive-bitrate sample; held to a small buffer so that the server sends little more than is read, but for the
     /// segment playback starts on (`.start`). `retains`: the body can be `replayed`.

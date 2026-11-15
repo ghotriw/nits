@@ -1,68 +1,6 @@
 import Foundation
 import os
 
-/// `X-TIMESTAMP-MAP` of a WebVTT segment (RFC 8216 3.5): the cue time `local` (the file's own) is the MPEG-TS time
-/// `mpegts` (90 kHz ticks) of the media it goes with, so a cue at `t` is at `t + mpegts / 90000 - local` on that media's
-/// clock. Without the header, as RFC 8216 says, both are zero.
-package struct HLSTimestampMap: Sendable, Equatable {
-    var mpegts: Int64 = 0
-    var local: Double = 0
-
-    /// Seconds to add to a cue's time to put it on the media's clock.
-    var shift: Double { Double(mpegts) / 90_000 - local }
-
-    /// The map in the header of a WebVTT file (up to its first blank line); nil when it has none or can't be read.
-    package static func parse(webVTT data: Data) -> HLSTimestampMap? {
-        // The header is a few lines; a file is read as far as the first cue.
-        let head = String(decoding: data.prefix(4096), as: UTF8.self)
-        let lines = head.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-        for line in lines.dropFirst() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { break }
-            guard trimmed.hasPrefix("X-TIMESTAMP-MAP=") else { continue }
-            return parse(value: trimmed.dropFirst("X-TIMESTAMP-MAP=".count))
-        }
-        return nil
-    }
-
-    package static func parse(value: Substring) -> HLSTimestampMap? {
-        var map = HLSTimestampMap()
-        var sawMPEGTS = false
-        var sawLocal = false
-        for part in value.split(separator: ",") {
-            let pair = part.split(separator: ":", maxSplits: 1)
-            guard pair.count == 2 else { return nil }
-            switch pair[0].trimmingCharacters(in: .whitespaces) {
-            case "MPEGTS":
-                guard let ticks = Int64(pair[1].trimmingCharacters(in: .whitespaces)), ticks >= 0,
-                    ticks < Int64(1) << 40
-                else { return nil }
-                map.mpegts = ticks
-                sawMPEGTS = true
-            case "LOCAL":
-                guard let seconds = timestamp(pair[1].trimmingCharacters(in: .whitespaces)) else { return nil }
-                map.local = seconds
-                sawLocal = true
-            default:
-                continue
-            }
-        }
-        return sawMPEGTS && sawLocal ? map : nil
-    }
-
-    /// `[hh:]mm:ss.mmm`.
-    private static func timestamp(_ text: String) -> Double? {
-        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2 || parts.count == 3 else { return nil }
-        guard let seconds = Double(parts[parts.count - 1]), let minutes = Double(parts[parts.count - 2]),
-            seconds >= 0, minutes >= 0, seconds.isFinite, minutes.isFinite, minutes < 1e9
-        else { return nil }
-        let hours = parts.count == 3 ? Double(parts[0]) : 0
-        guard let hours, hours >= 0, hours < 1e6 else { return nil }
-        return hours * 3600 + minutes * 60 + seconds
-    }
-}
-
 /// The seconds that put an HLS stream's media timestamps on the playlist's timeline, one for each discontinuity
 /// sequence, shared by all its lanes and runs (hls.js's `initPTS[cc]`, ExoPlayer's `TimestampAdjusterProvider`).
 ///
@@ -76,7 +14,7 @@ package struct HLSTimestampMap: Sendable, Equatable {
 /// don't match across playlists) is anchored anew, and anchors the sequence for the runs after it.
 ///
 /// Who anchors (`Role`): the picture's runs, and an audio rendition's (which waits for the picture at a break first,
-/// `HLSLane.waitsForAnchor`, so that the picture anchors whenever it gets there). Cues never do: they are sparse, the
+/// `StreamingLane.waitsForAnchor`, so that the picture anchors whenever it gets there). Cues never do: they are sparse, the
 /// first may be far into its segment. A WebVTT rendition has no timestamps of its own, and its cues take the offset of
 /// the sequence they are in (`cueOffset`); cues of a sequence nobody anchored (a subtitle playlist without the breaks
 /// the picture's has) take the offset the picture is read with.
@@ -144,58 +82,6 @@ package final class TimestampAnchors: Sendable {
     /// follow the picture's breaks, or a break the picture has not anchored within the wait).
     private static func cueOffset(of sequence: Int, in state: State) -> Double? {
         state.offsets[sequence] ?? state.picture
-    }
-}
-
-/// The ID3 tag packed audio segments (raw AAC, AC-3, E-AC-3, MP3) start with: its `PRIV` frame
-/// `com.apple.streaming.transportStreamTimestamp` is the MPEG-TS time (90 kHz, 33 bits) of the segment's first sample
-/// (RFC 8216 3.4), which the segment's own bytes carry no timestamps for.
-package enum HLSPackedAudioTag {
-    /// The length of the ID3v2 tag `data` starts with (its header and body, and footer); nil when it starts with none.
-    package static func length(_ data: Data) -> Int? {
-        let bytes = [UInt8](data.prefix(10))
-        guard bytes.count == 10, bytes.starts(with: Array("ID3".utf8)), bytes[3] != 0xFF, bytes[4] != 0xFF,
-            bytes[6..<10].allSatisfy({ $0 < 0x80 })
-        else { return nil }
-        let footer = bytes[5] & 0x10 != 0 ? 10 : 0
-        return 10 + syncsafe(bytes[6..<10]) + footer
-    }
-
-    /// The `PRIV` transport stream timestamp of the ID3 tag `data` starts with: 90 kHz ticks; nil without one.
-    static func transportStreamTimestamp(_ data: Data) -> Int64? {
-        guard let length = length(data), data.count >= 10 else { return nil }
-        let bytes = [UInt8](data.prefix(min(length, data.count)))
-        let major = bytes[3]
-        var position = 10
-        if bytes[5] & 0x40 != 0, bytes.count >= 14 {
-            // An extended header: v2.4 counts itself in its syncsafe size, v2.3 doesn't count its own 4 bytes.
-            let size = major >= 4 ? syncsafe(bytes[10..<14]) : plain(bytes[10..<14]) + 4
-            position += size
-        }
-        let owner = Array("com.apple.streaming.transportStreamTimestamp".utf8) + [0]
-        while position + 10 <= bytes.count, bytes[position] != 0 {
-            let id = bytes[position..<position + 4]
-            let size =
-                major >= 4 ? syncsafe(bytes[position + 4..<position + 8]) : plain(bytes[position + 4..<position + 8])
-            let body = position + 10
-            guard size >= 0, body + size <= bytes.count else { return nil }
-            if id.elementsEqual("PRIV".utf8), size == owner.count + 8,
-                bytes[body..<body + owner.count].elementsEqual(owner)
-            {
-                let value = bytes[(body + owner.count)..<(body + size)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-                return Int64(value & ((UInt64(1) << 33) - 1))
-            }
-            position = body + size
-        }
-        return nil
-    }
-
-    private static func syncsafe(_ bytes: ArraySlice<UInt8>) -> Int {
-        bytes.reduce(0) { $0 << 7 | Int($1 & 0x7F) }
-    }
-
-    private static func plain(_ bytes: ArraySlice<UInt8>) -> Int {
-        bytes.reduce(0) { $0 << 8 | Int($1) }
     }
 }
 

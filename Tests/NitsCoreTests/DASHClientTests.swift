@@ -6,7 +6,7 @@ import os
 @testable import NitsCore
 @testable import NitsStreaming
 
-/// The client playing a DASH manifest told as playlists (`DASHPlaylists` into `HLSInput`): the `dashLadder` preset
+/// The client playing a DASH manifest told as playlists (`DASHPlaylists` into `StreamingInput`): the `dashLadder` preset
 /// (three rungs, a keyframe at each 1 s segment, segments that each hold their initialization) from `TestHTTPServer`,
 /// as the resolver's manifest of it.
 @Suite("DASH client", .serialized, .networkServer)
@@ -36,7 +36,7 @@ struct DASHClientTests {
     static func demuxer(_ source: DASHPlaylists) -> MediaDemuxer? {
         let interrupt = FFmpegInterrupt()
         guard
-            let input = HLSInput(
+            let input = StreamingInput(
                 multivariant: source.multivariantURL, playlists: source, source: source.address.absoluteString,
                 allowsFiles: false,
                 headers: [:], interrupt: interrupt, streamingName: "DASH")
@@ -164,7 +164,7 @@ struct DASHClientTests {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
         let demuxer = try #require(MediaDemuxer(url: MediaURL.inlineDASHManifest(Self.manifest(server))))
-        let input = try #require(demuxer.input as? HLSInput)
+        let input = try #require(demuxer.input as? StreamingInput)
         #expect(input.streamingName == "DASH")
         #expect(demuxer.variants.count == SyntheticTestMediaFactory.dashLadderRungs.count)
         #expect(demuxer.isNetworkSource)
@@ -180,7 +180,7 @@ struct DASHClientTests {
         server.setResponder(forPath: "stream.txt") { Data(text.utf8) }
         for address in [server.url("manifest") + "?format=dash", server.url("stream.txt")] {
             let demuxer = try #require(MediaDemuxer(url: address), Comment(rawValue: address))
-            let input = try #require(demuxer.input as? HLSInput)
+            let input = try #require(demuxer.input as? StreamingInput)
             #expect(input.streamingName == "DASH", Comment(rawValue: address))
             #expect(
                 demuxer.variants.count == SyntheticTestMediaFactory.dashLadderRungs.count, Comment(rawValue: address))

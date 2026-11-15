@@ -1,6 +1,6 @@
 import Foundation
 
-extension HLSInput {
+extension StreamingInput {
     /// The length of a finished HLS stream (a playlist that ends), from its playlists alone: the top variant's, for a
     /// multivariant. Nil for a live one, or one that doesn't load in time (`interrupt`). No segment is read.
     package static func finishedDuration(of address: String, headers: [String: String], interrupt: FFmpegInterrupt)
@@ -27,7 +27,7 @@ extension HLSInput {
             media = playlist
         }
         guard !media.isLive, !media.segments.isEmpty else { return nil }
-        let timeline = HLSTimeline(media)
+        let timeline = StreamingTimeline(media)
         return timeline.end - timeline.start
     }
 }

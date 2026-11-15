@@ -8,7 +8,7 @@ import os
 @testable import NitsStreaming
 
 @Suite("HLS input", .serialized, .networkServer, .backstopTimeLimit)
-struct HLSInputTests {
+struct StreamingInputTests {
     // MARK: Helpers
 
     private struct Stand {
@@ -26,8 +26,10 @@ struct HLSInputTests {
     /// disables the rest, `applyStreamSelection`).
     private static func open(
         _ stand: Stand, _ name: String, interrupt: FFmpegInterrupt = FFmpegInterrupt()
-    ) -> HLSInput? {
-        guard let input = HLSInput(url: stand.server.url(name), headers: [:], interrupt: interrupt) else { return nil }
+    ) -> StreamingInput? {
+        guard let input = StreamingInput(url: stand.server.url(name), headers: [:], interrupt: interrupt) else {
+            return nil
+        }
         if let top = input.variantCandidates()?.max(by: { $0.bandwidth < $1.bandwidth }) {
             let kept = Set(top.streams.all).subtracting(top.streams.subtitles)
             for index in 0..<input.streamCount where !kept.contains(index) { input.setReading(false, stream: index) }
@@ -44,7 +46,7 @@ struct HLSInputTests {
     }
 
     /// Reads up to `limit` packets (all, by default), and the code that ended the read.
-    private static func drain(_ input: HLSInput, limit: Int = .max) -> (packets: [Packet], code: Int32) {
+    private static func drain(_ input: StreamingInput, limit: Int = .max) -> (packets: [Packet], code: Int32) {
         let pointer = av_packet_alloc()!
         defer {
             var optional: UnsafeMutablePointer<AVPacket>? = pointer
@@ -67,7 +69,7 @@ struct HLSInputTests {
         return (packets, 0)
     }
 
-    private static func codecTypes(_ input: HLSInput) -> [AVMediaType] {
+    private static func codecTypes(_ input: StreamingInput) -> [AVMediaType] {
         (0..<input.streamCount).map { input.stream($0)!.pointee.codecpar.pointee.codec_type }
     }
 
@@ -217,7 +219,7 @@ struct HLSInputTests {
         stand.server.setBehavior(slow, forPaths: { $0 == "v2_000.ts" })
         let began = ContinuousClock.now
         let input = try #require(
-            HLSInput(
+            StreamingInput(
                 url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt(),
                 answerLimit: .milliseconds(300)))
         defer { input.close() }
@@ -246,7 +248,7 @@ struct HLSInputTests {
         slow.delay = .milliseconds(1500)
         stand.server.setBehavior(slow, forPaths: { $0 == "v1_000.ts" })
         let input = try #require(
-            HLSInput(
+            StreamingInput(
                 url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt(),
                 answerLimit: .milliseconds(300)))
         defer { input.close() }
@@ -287,12 +289,12 @@ struct HLSInputTests {
                 case .multivariant(let multivariant) = try StreamingPlaylist.parse(
                     Data(text.utf8), url: URL(string: "http://h/m.m3u8")!)
             else { return [] }
-            let listed = HLSInput.ladder(of: multivariant)
+            let listed = StreamingInput.ladder(of: multivariant)
             let plan = listed.enumerated().map {
                 (bandwidth: $1.bandwidth, video: $0, audio: [Int](), subtitles: [Int]())
             }
             let top = try #require(plan.max { $0.bandwidth < $1.bandwidth }).video
-            return HLSInput.cloneCandidates(plan: plan, listed: listed, top: top) { _ in true }
+            return StreamingInput.cloneCandidates(plan: plan, listed: listed, top: top) { _ in true }
         }
         let avc = { (bandwidth: Int, codecs: String) in
             "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth),CODECS=\"\(codecs)\"\nv\(bandwidth).m3u8\n"
@@ -441,7 +443,7 @@ struct HLSInputTests {
             }
         }
         let input = try #require(
-            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+            StreamingInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
         let candidates = try #require(input.variantCandidates())
         // The multivariant lists the lower variant first: its subtitle lane comes before the top variant's in the multivariant.
         let top = try #require(candidates.max { $0.bandwidth < $1.bandwidth })
@@ -519,7 +521,7 @@ struct HLSInputTests {
             }
         }
         let input = try #require(
-            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+            StreamingInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
         let top = try #require(input.variantCandidates()?.max { $0.bandwidth < $1.bandwidth })
         let subtitle = try #require(top.streams.subtitles.first)
         let kept = Set(top.streams.all).subtracting(top.streams.subtitles).union([subtitle])
@@ -582,7 +584,7 @@ struct HLSInputTests {
             Data("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00.000\n\n00:00.500 --> 00:01.000\nafter\n".utf8)
         }
         let input = try #require(
-            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+            StreamingInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
         let subtitle = try #require(
             (0..<input.streamCount).first { Self.codecTypes(input)[$0] == AVMEDIA_TYPE_SUBTITLE })
         let (packets, code) = Self.drain(input)
@@ -606,7 +608,9 @@ struct HLSInputTests {
     /// `hlsPackedAudio`'s picture with its packed sound as an audio rendition (`alone`: the sound as the only variant),
     /// each segment served with an ID3 tag whose `PRIV` time is `firstTicks` and on by the playlist's durations, wrapping
     /// at 33 bits as MPEG-TS time does (nil: no tag).
-    private static func packedAudioInput(_ stand: Stand, firstTicks: Int64?, alone: Bool = false) throws -> HLSInput {
+    private static func packedAudioInput(_ stand: Stand, firstTicks: Int64?, alone: Bool = false) throws
+        -> StreamingInput
+    {
         let multivariant =
             alone
             ? "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"\np.m3u8\n"
@@ -632,7 +636,7 @@ struct HLSInputTests {
             start += duration
         }
         return try #require(
-            HLSInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
+            StreamingInput(url: stand.server.url("master.m3u8"), headers: [:], interrupt: FFmpegInterrupt()))
     }
 
     @Test("Packed audio is placed by its ID3 PRIV time against the picture, after a seek too")
@@ -770,8 +774,8 @@ struct HLSInputTests {
         guard let stand = try Self.stand(.hlsVariants) else { return }
         defer { stand.server.stop() }
         let path = stand.directory.appendingPathComponent("master.m3u8").path
-        #expect(HLSInput.applies(to: path))
-        let input = try #require(HLSInput(url: path, headers: [:], interrupt: FFmpegInterrupt()))
+        #expect(StreamingInput.applies(to: path))
+        let input = try #require(StreamingInput(url: path, headers: [:], interrupt: FFmpegInterrupt()))
         #expect(!input.isNetworkSource)
         #expect(input.network == nil)
         #expect(abs(input.durationSeconds - 6) < 0.5)
@@ -786,11 +790,14 @@ struct HLSInputTests {
         defer { stand.server.stop() }
         _ = Self.liveStand(stand) { _ in (2, false) }
         let interrupt = FFmpegInterrupt()
-        let vod = HLSInput.finishedDuration(of: stand.server.url("master.m3u8"), headers: [:], interrupt: interrupt)
+        let vod = StreamingInput.finishedDuration(
+            of: stand.server.url("master.m3u8"), headers: [:], interrupt: interrupt)
         #expect(abs((vod ?? 0) - 6) < 0.5)
         let saved = stand.directory.appendingPathComponent("master.m3u8").path
-        #expect(abs((HLSInput.finishedDuration(of: saved, headers: [:], interrupt: interrupt) ?? 0) - 6) < 0.5)
-        #expect(HLSInput.finishedDuration(of: stand.server.url("live.m3u8"), headers: [:], interrupt: interrupt) == nil)
+        #expect(abs((StreamingInput.finishedDuration(of: saved, headers: [:], interrupt: interrupt) ?? 0) - 6) < 0.5)
+        #expect(
+            StreamingInput.finishedDuration(of: stand.server.url("live.m3u8"), headers: [:], interrupt: interrupt)
+                == nil)
     }
 
     @Test("Thumbnails read the cheapest variant of a finished stream, seek by time, and refuse a live one")
@@ -851,7 +858,7 @@ struct HLSInputTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let list = directory.appendingPathComponent("tracks.m3u8")
         try "#EXTM3U\n#EXTINF:10,Song\nsong.mp3\n".write(to: list, atomically: true, encoding: .utf8)
-        #expect(!HLSInput.applies(to: list.path))
+        #expect(!StreamingInput.applies(to: list.path))
     }
 
     @Test("A playlist served over HTTP(S) never reads the disk, whatever it lists")
@@ -861,7 +868,7 @@ struct HLSInputTests {
         let file = stand.directory.appendingPathComponent("master.m3u8")
         let listing = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\n\(file.absoluteString)\n#EXT-X-ENDLIST\n"
         stand.server.setResponder(forPath: "escape.m3u8") { Data(listing.utf8) }
-        #expect(HLSInput(url: stand.server.url("escape.m3u8"), headers: [:], interrupt: FFmpegInterrupt()) == nil)
+        #expect(StreamingInput(url: stand.server.url("escape.m3u8"), headers: [:], interrupt: FFmpegInterrupt()) == nil)
     }
 
     @Test("An address without an extension is a playlist when its first bytes say so")

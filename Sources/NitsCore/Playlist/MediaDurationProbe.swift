@@ -41,8 +41,8 @@ enum MediaDurationProbe {
     private static func readDuration(path: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Double? {
         StreamingLogBridge.install()
         guard !interrupt.shouldAbort else { return nil }
-        if HLSInput.applies(to: path) {
-            return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+        if StreamingInput.applies(to: path) {
+            return StreamingInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
         }
 
         var formatCtx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
@@ -69,7 +69,7 @@ enum MediaDurationProbe {
             if ret == FFmpegErrorCode.invalidData, isNetwork,
                 SniffedPlaylist.sniff(path, headers: headers, interrupt: interrupt) == .hls
             {
-                return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+                return StreamingInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
             }
             AppLog.debug(
                 .playlist, "Duration probe could not open '\(path)': \(MediaDemuxer.ffmpegErrorDescription(ret))")
@@ -83,7 +83,7 @@ enum MediaDurationProbe {
         if isNetwork, FFmpegInput.isTextFormat(ctx),
             SniffedPlaylist.sniff(path, headers: headers, interrupt: interrupt) == .hls
         {
-            return HLSInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
+            return StreamingInput.finishedDuration(of: path, headers: headers, interrupt: interrupt)
         }
         if let duration = headerDuration(ctx) {
             return duration

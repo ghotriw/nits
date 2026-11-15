@@ -274,7 +274,7 @@ struct SingleFileDASHTests {
         #expect(server.requests.filter { $0.path.hasSuffix(".mp4") }.isEmpty, "The resolver read no index")
 
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
-        #expect(demuxer.input is HLSInput)
+        #expect(demuxer.input is StreamingInput)
         #expect(demuxer.variants.count == 2, "\(demuxer.variants)")
         #expect(abs(demuxer.durationSeconds - 20) < 0.1)
         for file in made.videos + [made.audio] {
@@ -352,7 +352,7 @@ struct SingleFileDASHTests {
         defer { server.stop() }
         server.setBehavior(.init(ignoresRange: true), forPaths: { $0 == "v-low.mp4" })
         let demuxer = try #require(MediaDemuxer(url: url.absoluteString))
-        #expect(demuxer.input is HLSInput)
+        #expect(demuxer.input is StreamingInput)
         #expect(demuxer.variants.count == 2)
         #expect(demuxer.nextVideoSample() != nil)
     }
@@ -439,7 +439,7 @@ extension SingleFileDASHTests {
         let source = DASHPlaylists(address: try #require(URL(string: server.url("dash.mpd"))))
         // The client alone opens the picture and goes on without the sound; the source tells why.
         let interrupt = FFmpegInterrupt()
-        let input = HLSInput(
+        let input = StreamingInput(
             multivariant: source.multivariantURL, playlists: source, source: source.address.absoluteString,
             allowsFiles: false,
             headers: [:], interrupt: interrupt, streamingName: "DASH")

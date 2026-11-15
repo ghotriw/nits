@@ -3,7 +3,7 @@ internal import NitsStreaming
 
 /// The streaming client as a `DemuxerInput`: what the demuxer asks of an input that the client does not know (its
 /// container's chapters and fonts, its traits, the window as a public `LiveWindow`, a saved manifest told by its text).
-extension HLSInput: DemuxerInput {
+extension StreamingInput: DemuxerInput {
     /// Whether `path` is one the client opens: a playlist (`.m3u8`, `.m3u`) over HTTP(S), or a saved one, a file whose text
     /// is an HLS manifest (`PlaylistParser.isHLSManifest`; a plain `.m3u` list of tracks is not).
     static func applies(to path: String) -> Bool {

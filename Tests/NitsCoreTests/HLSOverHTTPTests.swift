@@ -325,7 +325,7 @@ struct HLSRenditionTests {
         }
         #expect(demuxer.selectedVariantId == low.id)
         let ukrainian = try #require(demuxer.audioTracks.first { $0.language == "ukr" })
-        let isRead = { (index: Int) in (demuxer.input as? HLSInput)?.isReading(stream: index) == true }
+        let isRead = { (index: Int) in (demuxer.input as? StreamingInput)?.isReading(stream: index) == true }
         #expect(!isRead(ukrainian.streamIndex))
         #expect(demuxer.subtitleTracks.allSatisfy { !isRead($0.streamIndex) })
         #expect(isRead(demuxer.audioStreamIndex) && isRead(demuxer.videoStreamIndex))

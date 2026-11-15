@@ -3,7 +3,7 @@ import Foundation
 internal import NitsStreaming
 
 /// An input FFmpeg opens and demuxes whole (`avformat_open_input`): a file, a network file. HLS and DASH are
-/// `HLSInput`'s (FFmpeg's HLS and DASH demuxers are not built). See `DemuxerInput`.
+/// `StreamingInput`'s (FFmpeg's HLS and DASH demuxers are not built). See `DemuxerInput`.
 ///
 /// Its network requests go through `ioBytes` (`FFmpegIOByteCounter`), which counts them for adaptive bitrate.
 final class FFmpegInput: DemuxerInput, @unchecked Sendable {
@@ -131,7 +131,7 @@ final class FFmpegInput: DemuxerInput, @unchecked Sendable {
 
     func variantCandidates() -> [VariantCandidate]? { nil }
 
-    /// FFmpeg's formats have no live window of their own to tell: a live playlist is `HLSInput`'s.
+    /// FFmpeg's formats have no live window of their own to tell: a live playlist is `StreamingInput`'s.
     let isLivePlaylist = false
 
     func liveWindow() -> LiveWindow? { nil }

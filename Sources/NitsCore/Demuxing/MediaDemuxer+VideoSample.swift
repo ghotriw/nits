@@ -225,7 +225,7 @@ extension MediaDemuxer {
     }
 
     /// The `avcC` / `hvcC` a key frame brings as new extradata: an HLS stream of fragmented MP4 whose `EXT-X-MAP` changed
-    /// at a discontinuity (`HLSLane` hands it on), whose parameter sets are not in band.
+    /// at a discontinuity (`StreamingLane` hands it on), whose parameter sets are not in band.
     private func newExtradataSets(of pkt: AVPacket) -> VideoFormatDescriptionBuilder.ParameterSets? {
         var packet = pkt
         var size = 0

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Where the client's playlists come from: the opening's multivariant and media playlists (`HLSInput`) and a live one's
-/// reloads (`HLSLane`). The client plays the playlists, not their text: an HLS server's (`HLSServedPlaylists`) or
+/// Where the client's playlists come from: the opening's multivariant and media playlists (`StreamingInput`) and a live one's
+/// reloads (`StreamingLane`). The client plays the playlists, not their text: an HLS server's (`HLSServedPlaylists`) or
 /// another manifest's told as playlists (a DASH MPD's representations as variants and renditions). Called from the
 /// thread that opens or reads, blocking it.
 package protocol PlaylistSource: Sendable {

@@ -151,7 +151,7 @@ extension SubtitleController {
     /// elsewhere a window would read every stream of the file for seconds, against playback refilling after a seek.
     nonisolated private static func subtitleWindow(
         of demuxer: MediaDemuxer, slot: MediaDemuxer.SubtitleSlot, around time: Double, streamIndex: Int,
-        isNetwork: Bool, hls: HLSSubtitleWindowSource?
+        isNetwork: Bool, hls: SubtitleWindowSource?
     ) -> (range: ClosedRange<Double>, starts: [Double]?)? {
         // An HLS playlist is no file for a second demuxer to open: a VOD rendition is read through the client (`hls`,
         // whole window, no index), the rest of it (a live stream's) comes from playback's own reads.

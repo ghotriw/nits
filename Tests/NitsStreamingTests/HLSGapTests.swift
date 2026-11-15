@@ -12,14 +12,15 @@ struct HLSGapTests {
     /// A lane over four segments of 4 s, of which `gaps` (indices) are marked; `abort` is what its waits give way to.
     private static func lane(
         gaps: Set<Int>, hasEnded: Bool = true, abort: OSAllocatedUnfairLock<Bool> = .init(initialState: false)
-    ) throws -> HLSLane {
+    ) throws -> StreamingLane {
         let segments = (0..<4).map { index in
             "\(gaps.contains(index) ? "#EXT-X-GAP\n" : "")#EXTINF:4,\nsegment\(index).ts\n"
         }.joined()
         let text = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\(segments)\(hasEnded ? "#EXT-X-ENDLIST\n" : "")"
         guard case .media(let playlist) = try StreamingPlaylist.parse(text, url: url) else { throw CancellationError() }
-        return HLSLane(
-            kind: .audio, url: url, timeline: HLSTimeline(playlist), variables: [:], playlists: HLSServedPlaylists(),
+        return StreamingLane(
+            kind: .audio, url: url, timeline: StreamingTimeline(playlist), variables: [:],
+            playlists: HLSServedPlaylists(),
             loader: SegmentLoader(
                 transport: HTTPSessionTransport(source: url.absoluteString, headers: [:]) { false }),
             anchors: TimestampAnchors(), shouldAbort: { abort.withLock { $0 } })

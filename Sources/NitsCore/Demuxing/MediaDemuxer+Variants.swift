@@ -3,11 +3,11 @@ import CoreMedia
 import Foundation
 internal import NitsStreaming
 
-/// Variants of an adaptive stream. `HLSInput` lists each `EXT-X-STREAM-INF` as a candidate with streams of its own, and
+/// Variants of an adaptive stream. `StreamingInput` lists each `EXT-X-STREAM-INF` as a candidate with streams of its own, and
 /// downloads the segments of every playlist with a stream not discarded.
 ///
 /// A switch is spliced without a seek. The new variant is enabled beside the old one; the input catches its playlist up
-/// with the read position (`HLSLane.catchUp`, the segment after the picture's), and its pictures are dropped up to its
+/// with the read position (`StreamingLane.catchUp`, the segment after the picture's), and its pictures are dropped up to its
 /// first keyframe, at T. From T on pictures come from the new variant (the old one's are dropped), with a format
 /// description of its own; queued packets keep the one they were read with. Audio of the new variant is held until the
 /// old one reaches T, then takes over from T, and the old variant is discarded: the input stops it at the end of the

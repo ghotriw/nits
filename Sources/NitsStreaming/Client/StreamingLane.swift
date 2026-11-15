@@ -4,7 +4,7 @@ import os
 
 /// One rendition of an HLS stream being read: the variant's playlist (its video, and the sound muxed into it) or an
 /// audio rendition's. It owns the rendition's timeline (reloaded while the stream is live), the reader of the run being
-/// read (`SegmentReader`) and the next packet it would hand out, which `HLSInput` compares with the other lanes'
+/// read (`SegmentReader`) and the next packet it would hand out, which `StreamingInput` compares with the other lanes'
 /// to interleave them by decode time.
 ///
 /// Reading is lazy: a seek or a track change only says where to start (`reposition(at:)`); the next `fill` opens the
@@ -15,7 +15,7 @@ import os
 /// for `stuckTargetDurations` target durations ends the wait with an error.
 ///
 /// Not thread-safe: the demuxer's read, seeks and selection all run behind its `lock`.
-package final class HLSLane: @unchecked Sendable {
+package final class StreamingLane: @unchecked Sendable {
     package enum Kind { case primary, audio, subtitle }
 
     /// A stream of the input's table that the lane hands out packets of.
@@ -40,7 +40,7 @@ package final class HLSLane: @unchecked Sendable {
     /// The offsets of the stream's timestamps, which its lanes share (`TimestampAnchors`): a run of the lane's takes or
     /// sets its sequence's, a subtitle rendition's cues are placed by them.
     private let anchors: TimestampAnchors
-    private(set) var timeline: HLSTimeline
+    private(set) var timeline: StreamingTimeline
     /// Where the timeline ended when the lane was made, before any measure moved it (`contains`).
     private let initialEnd: Double
     /// The streams the lane hands out, in the order its readers find them (`slotIndex` matches a run's by kind).
@@ -68,9 +68,9 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// The segment the run being read is on: what the next one follows.
-    private var current: HLSTimeline.Entry?
+    private var current: StreamingTimeline.Entry?
     /// Where the next run starts: a seek, the segment that ended the last run, the start.
-    private var resume: HLSTimeline.Entry?
+    private var resume: StreamingTimeline.Entry?
     /// The playlist ended and the last segment was read.
     private var isFinished = false
     /// Why the run's segments stopped before the end of the playlist: an abort, a failed reload. `read` returns it
@@ -107,7 +107,7 @@ package final class HLSLane: @unchecked Sendable {
     private var skipped = 0
 
     package init(
-        kind: Kind, url: URL, timeline: HLSTimeline, variables: [String: String], playlists: any PlaylistSource,
+        kind: Kind, url: URL, timeline: StreamingTimeline, variables: [String: String], playlists: any PlaylistSource,
         loader: SegmentLoader, anchors: TimestampAnchors, shouldAbort: @escaping () -> Bool
     ) {
         self.kind = kind
@@ -135,7 +135,7 @@ package final class HLSLane: @unchecked Sendable {
 
     /// Told while a segment's bytes are waited for, of every lane (a picture's, a rendition's): the thread that reads
     /// stands on the input it waits for, and the check of the picture's download is made from whichever it is
-    /// (`MediaDemuxer.noteSegmentInFlight` polls the pictures' lanes from a rendition's wait). Set by `HLSInput`, once open.
+    /// (`MediaDemuxer.noteSegmentInFlight` polls the pictures' lanes from a rendition's wait). Set by `StreamingInput`, once open.
     func observeProgress(_ observer: @escaping @Sendable (SegmentInFlight) -> Void) {
         progressObserver.withLock { $0 = observer }
     }
@@ -190,19 +190,19 @@ package final class HLSLane: @unchecked Sendable {
     /// Where a read goes from a segment: `entry`, or the first segment after it that is not a gap (silence kept in its
     /// place is never read, so a run that starts there starts where the sound does).
     package enum Readable: Equatable {
-        case entry(HLSTimeline.Entry)
+        case entry(StreamingTimeline.Entry)
         /// Only gaps follow, to the end of a finished playlist: nothing to read from there.
         case ended
         /// Only gaps follow, to the edge of a live window (`after` is the last of them): more segments may come.
-        case pending(after: HLSTimeline.Entry)
+        case pending(after: StreamingTimeline.Entry)
 
-        var entry: HLSTimeline.Entry? {
+        var entry: StreamingTimeline.Entry? {
             if case .entry(let entry) = self { return entry }
             return nil
         }
     }
 
-    package func readable(_ entry: HLSTimeline.Entry) -> Readable {
+    package func readable(_ entry: StreamingTimeline.Entry) -> Readable {
         var entry = entry
         while entry.segment.isGap {
             switch timeline.next(after: entry) {
@@ -217,7 +217,7 @@ package final class HLSLane: @unchecked Sendable {
     /// The segment a start chose, as `readable`. Nil to resume from nothing: the lane is finished when only gaps follow
     /// to the end; at a live edge it goes on from the last of them (`current`), and `following` waits there for the
     /// segments that come.
-    private func startingPoint(_ chosen: HLSTimeline.Entry?) -> HLSTimeline.Entry? {
+    private func startingPoint(_ chosen: StreamingTimeline.Entry?) -> StreamingTimeline.Entry? {
         guard let chosen else { return nil }
         switch readable(chosen) {
         case .entry(let entry): return entry
@@ -229,7 +229,7 @@ package final class HLSLane: @unchecked Sendable {
 
     /// The segment a lane opens or is probed at: where `readable` says; at a live edge in gaps, the last one before them
     /// that is not a gap (the lane is only described from it, or the stream opens in the history of the window).
-    private func openingEntry(_ found: HLSTimeline.Entry) throws(SegmentReaderError) -> HLSTimeline.Entry {
+    private func openingEntry(_ found: StreamingTimeline.Entry) throws(SegmentReaderError) -> StreamingTimeline.Entry {
         switch readable(found) {
         case .entry(let entry): return entry
         case .ended: throw .open(-EINVAL)
@@ -242,7 +242,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// The segment after a gap: the one that follows it, which a run of its own reads (a hole in time).
-    private func following(afterGap gap: HLSTimeline.Entry) -> Step {
+    private func following(afterGap gap: StreamingTimeline.Entry) -> Step {
         let step = following(gap)
         if case .entry(let after, _) = step { return .entry(after, breaksRun: true) }
         return step
@@ -280,8 +280,8 @@ package final class HLSLane: @unchecked Sendable {
         probedSegment = entry.segment
         slotOfReaderStream = [:]
         StreamingLog.debug(
-            "\(HLSOpeningMeasure.run) probe \(label) seq=\(entry.sequence) \(probed.openTiming.description) "
-                + "total=\(HLSOpeningMeasure.ms(ContinuousClock.now - began))")
+            "\(StreamingOpeningMeasure.run) probe \(label) seq=\(entry.sequence) \(probed.openTiming.description) "
+                + "total=\(StreamingOpeningMeasure.ms(ContinuousClock.now - began))")
     }
 
     /// The playlist's address shortened for the log: its folder and name (a ladder's playlists often share the name).
@@ -290,7 +290,7 @@ package final class HLSLane: @unchecked Sendable {
         return folder.isEmpty || folder == "/" ? url.lastPathComponent : "\(folder)/\(url.lastPathComponent)"
     }
 
-    /// Why the next run opens, for the log (`HLSOpeningMeasure.run`).
+    /// Why the next run opens, for the log (`StreamingOpeningMeasure.run`).
     private enum RunReason: String {
         /// The lane's first run, of a media playlist alone (`open(at:)`).
         case open
@@ -313,8 +313,8 @@ package final class HLSLane: @unchecked Sendable {
         guard let run = openedRun else { return }
         openedRun = nil
         StreamingLog.debug(
-            "\(HLSOpeningMeasure.run) \(run.reason.rawValue)\(run.replayed ? "+replay" : "") \(label) seq=\(run.sequence) \(run.timing.description) "
-                + "\(outcome)=\(HLSOpeningMeasure.ms(ContinuousClock.now - run.began))")
+            "\(StreamingOpeningMeasure.run) \(run.reason.rawValue)\(run.replayed ? "+replay" : "") \(label) seq=\(run.sequence) \(run.timing.description) "
+                + "\(outcome)=\(StreamingOpeningMeasure.ms(ContinuousClock.now - run.began))")
     }
 
     /// The segment the last probe read.
@@ -331,7 +331,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// Gives up the download of the probe's segment, the streams it found kept until `endProbe`: playback starts on
-    /// another lane (a slow link's rung, `HLSInput`), and a start's download (`HTTPSessionInput.Opening.start`) would go
+    /// another lane (a slow link's rung, `StreamingInput`), and a start's download (`HTTPSessionInput.Opening.start`) would go
     /// on sharing the link with it.
     func endDownload() {
         reader?.endDownload()
@@ -342,10 +342,10 @@ package final class HLSLane: @unchecked Sendable {
     /// with.
     private func learnPicture(from streams: [UnsafeMutablePointer<AVStream>]) {
         let picture = streams.first {
-            HLSInput.keeps($0, in: kind) && $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
+            StreamingInput.keeps($0, in: kind) && $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
         }
         videoDelay = picture.map { max(Int($0.pointee.codecpar.pointee.video_delay), 0) } ?? 0
-        if let video = streams.first(where: { HLSInput.keeps($0, in: kind) }),
+        if let video = streams.first(where: { StreamingInput.keeps($0, in: kind) }),
             video.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
             let bytes = video.pointee.codecpar.pointee.extradata, video.pointee.codecpar.pointee.extradata_size > 0
         {
@@ -353,7 +353,7 @@ package final class HLSLane: @unchecked Sendable {
         }
     }
 
-    /// A lane whose streams were described from another rung's probe (`HLSInput`'s clones): its first run's streams are
+    /// A lane whose streams were described from another rung's probe (`StreamingInput`'s clones): its first run's streams are
     /// handed to this before any packet, which describes them for good and says whether they are the ones described
     /// (the same kinds, as many). Nil once told, and for a lane probed itself.
     var describeFirstRun: (([UnsafeMutablePointer<AVStream>]) -> Bool)?
@@ -362,7 +362,7 @@ package final class HLSLane: @unchecked Sendable {
     /// ladder of one codec are encoded alike, and a full analysis of the first switched to (`max_analyze_duration`, 4K
     /// fMP4: some 3 MB before its first packet) would hold the read during playback. `describeFirstRun` still checks the
     /// streams it finds.
-    func analyzesAs(_ model: HLSLane) {
+    func analyzesAs(_ model: StreamingLane) {
         videoDelay = model.videoDelay
     }
     /// The first run's streams are not the ones described: the lane hands out nothing (`fill` returns `rejected`).
@@ -393,7 +393,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// Takes the slots of the table's streams, in the order of the streams the reader found that the input keeps
-    /// (`HLSInput.keeps`): readers of later runs map by the same order.
+    /// (`StreamingInput.keeps`): readers of later runs map by the same order.
     package func setStreams(_ slots: [StreamSlot]) {
         streams = slots
     }
@@ -455,9 +455,9 @@ package final class HLSLane: @unchecked Sendable {
     /// playlist's durations choose the segment, the media's timestamps may put its start elsewhere (`segmentStarted`).
     private var seekTarget: Double?
     /// The first segment of the run being read.
-    private var runFirst: HLSTimeline.Entry?
+    private var runFirst: StreamingTimeline.Entry?
     /// A better segment to start the run at, found once the first one's start was measured (`fill` restarts there).
-    private var redo: HLSTimeline.Entry?
+    private var redo: StreamingTimeline.Entry?
     private var redoAttempts = 0
     /// A run's reader is being opened (`startRun`), which is when its first segment's start is told.
     private var isOpening = false
@@ -466,7 +466,7 @@ package final class HLSLane: @unchecked Sendable {
     private static let maxRedos = 2
 
     /// The media says where `segment` starts (`SegmentReader.Anchoring.onSegmentStart`): the timeline takes it
-    /// (`HLSTimeline.measure`), and a seek's run, whose first segment the playlist's durations chose, restarts at the
+    /// (`StreamingTimeline.measure`), and a seek's run, whose first segment the playlist's durations chose, restarts at the
     /// segment that holds the target by the corrected timeline when that is another (the chosen one started after the
     /// target, or ended before it).
     private func segmentStarted(_ segment: MediaSegment, at time: Double) {
@@ -493,7 +493,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// `entry` as the timeline lists it now (its start may have been measured since).
-    private func refreshed(_ entry: HLSTimeline.Entry?) -> HLSTimeline.Entry? {
+    private func refreshed(_ entry: StreamingTimeline.Entry?) -> StreamingTimeline.Entry? {
         guard let entry, let now = timeline.entry(sequence: entry.sequence), now.epoch == entry.epoch else {
             return entry
         }
@@ -623,7 +623,7 @@ package final class HLSLane: @unchecked Sendable {
     /// Reads the packet that `read` hands out next into the lane: 0, or an FFmpeg error (`AVERROR_EOF` once the
     /// playlist is read to its end). With `limit`, no segment that starts after it is loaded: `held` until a later call
     /// allows it. A subtitle rendition is read so, as far as the picture is: its cues are sparse, and a lane with no
-    /// packet pending holds the whole read (`HLSInput.read`), which would otherwise load every segment of a stretch
+    /// packet pending holds the whole read (`StreamingInput.read`), which would otherwise load every segment of a stretch
     /// without cues to find the next, and wait at a live edge in a silence while the picture's packets are ready. With
     /// `picture`, a rendition's run of a sequence the picture has not anchored yet waits for it (`waitsForAnchor`).
     package func fill(before limit: Double? = nil, picture: Double? = nil) -> Int32 {
@@ -794,13 +794,13 @@ package final class HLSLane: @unchecked Sendable {
 
     /// The position in `streams` of the reader's stream `index`: the streams the input keeps, in order.
     private func slotIndex(of index: Int, in reader: SegmentReader) -> Int? {
-        guard let stream = reader.stream(at: index), HLSInput.keeps(stream, in: kind) else { return nil }
+        guard let stream = reader.stream(at: index), StreamingInput.keeps(stream, in: kind) else { return nil }
         let type = stream.pointee.codecpar.pointee.codec_type
         // By kind and place among the streams of that kind, as the table was described: a later run may list them in
         // another order.
         var ordinal = 0
         for candidate in 0..<index {
-            if let other = reader.stream(at: candidate), HLSInput.keeps(other, in: kind),
+            if let other = reader.stream(at: candidate), StreamingInput.keeps(other, in: kind),
                 other.pointee.codecpar.pointee.codec_type == type
             {
                 ordinal += 1
@@ -832,7 +832,7 @@ package final class HLSLane: @unchecked Sendable {
     // MARK: Runs
 
     private enum RunStart {
-        case start(HLSTimeline.Entry)
+        case start(StreamingTimeline.Entry)
         /// The next segment starts after `readLimit`.
         case held
         case ended
@@ -851,7 +851,7 @@ package final class HLSLane: @unchecked Sendable {
     /// sound run would anchor it by its own first sample. Waited for until the picture is a target duration past the run's
     /// start at most: a sequence the picture never anchors (numbers of discontinuities that don't match across the
     /// playlists) is then anchored by the sound, and cues take the picture's offset.
-    private func waitsForAnchor(_ entry: HLSTimeline.Entry) -> Bool {
+    private func waitsForAnchor(_ entry: StreamingTimeline.Entry) -> Bool {
         guard kind != .primary, let picture = pictureTime, !anchors.isAnchored(entry.segment.discontinuitySequence)
         else { return false }
         return picture < entry.start + max(timeline.targetDuration, 1)
@@ -879,7 +879,7 @@ package final class HLSLane: @unchecked Sendable {
         }
     }
 
-    private func startRun(at first: HLSTimeline.Entry) throws(SegmentReaderError) {
+    private func startRun(at first: StreamingTimeline.Entry) throws(SegmentReaderError) {
         let began = ContinuousClock.now
         let reason = nextRunReason
         nextRunReason = .next
@@ -970,13 +970,13 @@ package final class HLSLane: @unchecked Sendable {
 
     private enum Step {
         /// The segment that follows; `breaksRun`: it can't be read as the same stream (a gap, a skip over expired segments).
-        case entry(HLSTimeline.Entry, breaksRun: Bool)
+        case entry(StreamingTimeline.Entry, breaksRun: Bool)
         case ended
         case stopped(Int32)
     }
 
     /// The segment after `entry`, waiting for a live playlist to list it.
-    private func following(_ entry: HLSTimeline.Entry) -> Step {
+    private func following(_ entry: StreamingTimeline.Entry) -> Step {
         while true {
             // A live read that is behind has a window the server has moved on from: reload it before the next segment, as
             // hls.c does, so a segment that expired is skipped rather than asked for.
@@ -988,7 +988,7 @@ package final class HLSLane: @unchecked Sendable {
                 // Silence kept in its place (`MediaSegment.isGap`) is never read: on to the segment after it, a run of its
                 // own (a hole in time, as a segment that failed leaves).
                 if next.segment.isGap { return following(afterGap: next) }
-                // Numbers that don't follow: segments missed (a late reload, `HLSTimeline.startRun`) between bytes that
+                // Numbers that don't follow: segments missed (a late reload, `StreamingTimeline.startRun`) between bytes that
                 // are not one stream, whatever the discontinuity sequence says. `entry` may be a gap (`current` after a
                 // start that chose one).
                 return .entry(next, breaksRun: entry.segment.isGap || next.sequence != entry.sequence + 1)
@@ -1043,7 +1043,7 @@ package final class HLSLane: @unchecked Sendable {
     /// Takes what a reload did. Nil to go on waiting; `-ETIMEDOUT` for a playlist that is stuck: it has not changed for
     /// `stuckTargetDurations` target durations (ExoPlayer's `PlaylistStuckException`), a server that stopped
     /// updating it without ending it.
-    private func apply(_ change: HLSTimeline.ReloadChange, _ playlist: MediaPlaylist) -> Int32? {
+    private func apply(_ change: StreamingTimeline.ReloadChange, _ playlist: MediaPlaylist) -> Int32? {
         switch change {
         case .updated, .restarted:
             unchangedReloads = 0

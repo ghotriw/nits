@@ -255,18 +255,18 @@ enum EmbeddedSubtitleReader {
         return collector.packets
     }
 
-    /// The cues of an HLS subtitle rendition (`HLSInput.subtitleWindowSource(forStream:)`) within `range` of the
+    /// The cues of an HLS subtitle rendition (`StreamingInput.subtitleWindowSource(forStream:)`) within `range` of the
     /// timeline (`upperBound` may be `infinity`: the whole rendition), read through Nits' own client by a lane of its own:
     /// its own transport (the requests are no sample for adaptive bitrate, and give way to `interrupt`), the playlist and
     /// the offsets the stream's pictures anchored. The run starts at the segment that holds the lower bound and stops at
     /// the first cue past the upper, and loads no segment that starts after it (a stretch without cues is not read to its
     /// next cue). It stops too at a discontinuity sequence the stream's pictures have not anchored yet
-    /// (`HLSSubtitleWindowSource.readable(in:)`): cues there would be placed wrongly. `covered` is what was
+    /// (`SubtitleWindowSource.readable(in:)`): cues there would be placed wrongly. `covered` is what was
     /// read, `nil` when nothing could be (the first segment's sequence is not anchored); a read that stopped at such a
     /// break covers up to it, and playback reads the rest when it gets there. A segment that fails is skipped, as in
     /// playback (and counts as read). The result is `nil` when the read was cancelled or the lane gave an error up.
     static func readSubtitles(
-        hls source: HLSSubtitleWindowSource, in range: ClosedRange<Double>, interrupt: FFmpegInterrupt? = nil
+        hls source: SubtitleWindowSource, in range: ClosedRange<Double>, interrupt: FFmpegInterrupt? = nil
     ) -> (packets: Packets, covered: ClosedRange<Double>?)? {
         StreamingLogBridge.install()
         // One condition for the transport (on URLSession's queue, where `Task.isCancelled` is never the task's) and the

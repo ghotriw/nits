@@ -121,7 +121,7 @@ package final class HTTPSessionTransport: Sendable {
 
     /// Asks for `url` from `offset` (to `end`, a byte range's, when given) and waits for the answer. `opening`: a request of the
     /// demuxer's opening, and how it is read (`HTTPSessionInput.Opening`). `abort` interrupts this request too, besides `shouldAbort` (a probe of the opening
-    /// that lost its race, `HLSInput`). `onProgress` is told how far the request has got while it waits for its answer
+    /// that lost its race, `StreamingInput`). `onProgress` is told how far the request has got while it waits for its answer
     /// too (a server that stalls before its headers), and for its bytes after.
     package func open(
         _ url: String, offset: Int64, end: Int64?,
@@ -204,7 +204,7 @@ package final class NetworkTransferMeter: Sendable {
     private struct State {
         var transfers: [Transfer] = []
         var oneTimeWaits = 0.0
-        /// Seconds every request waited for its answer, and the latest answered (`HLSInput` reads them as FFmpeg's
+        /// Seconds every request waited for its answer, and the latest answered (`StreamingInput` reads them as FFmpeg's
         /// `io_open` times are read: `MediaDemuxer.noteRead`).
         package var answerSeconds = 0.0
         package var lastAnswer:
@@ -388,8 +388,8 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         /// A probe of a stream's description, of which FFmpeg's analysis reads a little: held to `openingHighWater`,
         /// asked for in pieces of it.
         case held
-        /// The segment playback starts on (`HLSInput`'s start rung): asked for whole and not held, so that its probe goes
-        /// on as the segment read (`HLSLane.startBody`) and its transfer measures the link (`OpeningLimit.linkRate`).
+        /// The segment playback starts on (`StreamingInput`'s start rung): asked for whole and not held, so that its probe goes
+        /// on as the segment read (`StreamingLane.startBody`) and its transfer measures the link (`OpeningLimit.linkRate`).
         /// What comes after the opening is a sample of the link's rate, as any segment's (`openingEnded`).
         case start
     }
@@ -537,7 +537,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         }
 
         /// The rate at the points it could be read at (the first `openingHighWater` bytes, the first half second of
-        /// transfer) and over all, for the measurement of the opening (`HLSOpeningMeasure.rate`).
+        /// transfer) and over all, for the measurement of the opening (`StreamingOpeningMeasure.rate`).
         var rateReport: String {
             state.withLock { state in
                 func kbps(_ bytes: Int, _ seconds: Double) -> String {

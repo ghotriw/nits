@@ -50,7 +50,7 @@ extension MediaDemuxer {
 }
 
 extension LiveWindow {
-    /// The window the streaming client tells (`HLSInput.liveWindow()`).
+    /// The window the streaming client tells (`StreamingInput.liveWindow()`).
     init(_ window: StreamingLiveWindow) {
         self.init(
             start: window.start, end: window.end, hasSlid: window.hasSlid, hasEnded: window.hasEnded,
