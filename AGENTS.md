@@ -78,7 +78,10 @@ the same way for the probes it starts (`ProbeRace`: a `DispatchSemaphore` in ste
 it already blocks its thread on the playlists and the probes side by side; its requests give way to an abort too. A DASH
 manifest's playlists (`DASHPlaylists`) and the index of each of its single files are read once for every caller: those that
 ask while one is read wait for it (`DASHPlaylists.Store`, a `DispatchSemaphore` in steps of 50 ms, each giving way to its own loader's abort), on the
-opening's and the lanes' threads, which block on a playlist's load anyway. Not a pattern for other code.
+opening's and the lanes' threads, which block on a playlist's load anyway. `YouTubeFormatSource.renewAddresses` (the
+addresses of a YouTube video's manifest) waits the same way on a request's thread: for a fresh signature to settle (the CDN refuses
+it for ~2 s), a `DispatchSemaphore` in steps of 50 ms giving way to `shouldAbort`, and for a renewal it reuses
+`YouTubeLiveSource.blocking` (yt-dlp, up to 90 s). Not a pattern for other code.
 
 ## Layer boundaries
 

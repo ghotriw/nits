@@ -332,6 +332,14 @@ flowchart TD
   - [x] Segments of one URL that yt-dlp lists (`http_dash_segments` with `target_duration`: YouTube's recording of a
     live stream that just ended, before it is turned into files) play from a manifest built from them
     (`SegmentedDASHManifest`, given inline as a `data:` URL); the picture and its audio come out of one demuxer.
+  - [x] A YouTube video's files (video-only and audio-only `https` formats) play from a manifest built from all of
+    them (`YouTubeFormatManifest`): the pictures of each codec a ladder with adaptive bitrate, the sound of each language a
+    set of its own, the codec by `VideoCodecPreference` and the others in the format menu, as for an `.mpd` of the network
+    (the order is the resolver's: `MediaResolverChain.offeringChoices`). The client finds the index of a file whose
+    manifest gives none from its start (`SingleFileLayout`); the files are named by keys and their signed addresses
+    renewed when refused (`YouTubeFormatSource`). Checked on one real video (4K, 8 rungs of AV1, 2026-11-15, one run); the
+    two-file path stays as the fallback. Not measured: opening times of the other codecs, ABR on YouTube's rungs, HDR and dubbed
+    videos played (their manifests are tested, not played).
   - [ ] yt-dlp's other DASH formats (a manifest's representations with lists of URLs): play the manifest
     (`manifest_url`), choosing its representations.
   - [x] Adaptive bitrate for DASH (`AdaptiveBitrateLogic` shared with HLS): the segments through
@@ -383,7 +391,7 @@ flowchart TD
     → Preferred Video Codecs, an order (HEVC, H.264, AV1, VP9, VP8 by default) with a switch for each (`VideoCodecPreference`,
     `PlayerConfiguration.videoCodecs`); a size comes first, then HDR, then the codec, then the bitrate. A ladder plays
     as one (the Quality menu), the best picture of each other codec is in a Format menu and plays with its own ladder.
-    Not yet: the same order for HLS and for yt-dlp's formats (yt-dlp chooses its own); AV1 first only where the chip
+    Not yet: the same order for HLS; AV1 first only where the chip
     decodes it; the codec in the names of the Quality menu's rungs.
   - [x] Manifests of single files (`BaseURL` and `SegmentBase`, the on-demand profile: Shaka's demo assets) are no
     ladder (2026-11-02): FFmpeg's DASH demuxer reads such a file from its start to seek in it (its input is not

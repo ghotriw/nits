@@ -184,7 +184,24 @@ Accepted for now, noted for later.
   RTT 33 ms; 400 kbit/s from 20 to 50 s) its ABR came down to 223k at once and back to 2121k 0.5 s after the link did,
   stalled 0 s, as the H.264 ladder did (back in three steps over 6 s); the sound is the manifest's AAC, not its Opus
   (`bestSounds`). The picture changes a read-ahead (~30 s) after the decision, both ways. Not measured: seeks in a VP9
-  ladder, and YouTube's files, whose index ranges yt-dlp does not give (a `SegmentBase` without `indexRange` is refused).
+  ladder. A `SegmentBase` without `indexRange` is no longer refused: the client reads the file's start for the `sidx` or
+  `Cues` (`SingleFileLayout`; a start of more than 1 MiB, an index of more than 1 MiB, a `sidx` before the `moov`, a
+  `Segment` of unknown size, a file with no index are refused with the reason). A non-fragmented MP4 in a bare
+  `<SegmentBase/>`, which played as a file before, is refused now (`no sidx before the first fragment`), and the
+  manifest with it.
+- **YouTube's files as a manifest (`YouTubeFormatManifest`): what is measured and what is not.** Data (2026-11-15, yt-dlp
+  2026.10.26, four videos: 3:34 ordinary, 10:34 4K60, an HDR10 demo, one with 21 dubbed languages; a 10-hour video for the
+  size of the index): an MP4's `sidx` comes right after its `moov` (init 700–750 bytes, `sidx` 296 bytes to 2.5 KB, 100 KB
+  for 10 hours), a WebM's `Cues` right after `Tracks` (init 220–330 bytes, cues 0.4–2.3 KB, 156 KB for 10 hours); the
+  first 1536 bytes hold both for all but the long ones, which need one more request. Played once, an ordinary 4K video:
+  8 AV1 rungs (144p–2160p), opened in 5.5 s with the old 4 s wait for a fresh signature (now 2.5 s: yt-dlp 2.7 s, the
+  rest the opening), a seek landed in 0.37 s, the sound the original's. Not measured or not played: ABR on these
+  rungs, opening times of the VP9 / H.264 groups, an HDR10 or dubbed video played, the YouTube clients' other formats
+  (SABR-only ones are not listed by yt-dlp and never offered), a video of hours (the index of 100–150 KB on the opening's
+  path). The 5.1 sounds (`258`, `328`, `380`) are listed with the rest and the best sound of the language, by bitrate,
+  is the one that plays: a video with 5.1 plays it. Thumbnails come from the picture file of the fallback (the manifest's keys are no addresses the generator can open), when the
+  network policy allows them. A first request for a fresh signature is refused for ~2 s (measured: refused up to 1.5
+  and 2 s, accepted from 2 and 2.5 s, two runs): the opening waits it out in the source.
 - **DASH: a live stream ends at its first ad break.** A dynamic MPD of one period that a reload finds with more
   (server-side ad insertion) is read as the period played up to the next one's start (`DASHPresentation.parse`'s
   `livePeriodStart`): it plays to the break and ends there as a recording; what follows is not played. A live manifest

@@ -146,7 +146,25 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   manifest of them, given to the demuxer inline (`MediaURL.inlineDASHManifest`, a `data:` URL), which the DASH client
   plays: the picture and its audio are two lanes, seeks go by segment. The manifest is the resolver's own format
   (`package` access, not for hosts to open), so the thumbnails (`ThumbnailSource.openDASH`, the client as well), the
-  history and the logs treat it apart (`MediaURL.loggable`). Progressive files are read in HTTP requests of
+  history and the logs treat it apart (`MediaURL.loggable`). A YouTube video (not a live stream) plays from a manifest of
+  all the files its page lists (`YouTubeFormatManifest`, inline likewise): the video-only and audio-only `https` formats
+  without DRM, `-drc` copies, storyboards and the muxed 360p; the pictures of one codec, range (`dynamic_range`: HDR10 and
+  HLG carry their transfer) and container are one set, which the client plays as a ladder with adaptive bitrate; the
+  sound of each language is a set of its own (the original `main`, yt-dlp's `language_preference` / "original" note, the
+  dubs `dub`), so the original plays first and the others are audio tracks. yt-dlp gives neither `initRange` nor
+  `indexRange`, so a `SegmentBase` without them is read from the file's start (`SingleFileLayout`: the walk of an MP4's
+  boxes to the `sidx` after the `moov`, a WebM's `SeekHead` / `Cues` after `Tracks`; the first 1536 bytes, then what the
+  walk or the index still needs, in one request, kept as the initialization). The manifest names the files by keys (the
+  format ids; a dubbed sound's `251-3` is `251-de`, as the order of languages may change), never by their signed
+  addresses, which expire in about six hours: a `MediaFileSource` (`YouTubeFormatSource`, `ResolvedMedia.files`, `package`)
+  gives the real address at each request (`PlaylistSource.address(of:)`) and asks yt-dlp again when one is refused
+  (`renewAddresses`). A fresh signature is refused (403) for its first ~2 s on YouTube's CDN: a refusal while the
+  addresses are younger than 2.5 s waits that out and asks the same ones again, as renewing would restart it. The choice
+  among the codecs is `MediaResolverChain.offeringChoices` (the rules of `DASHManifestResolver`, `VideoCodecPreference`:
+  the preferred first, the others in the format menu), each the manifest's `data:` location with `#nits-video=<id>`
+  (`DASHSelection`, read from an inline manifest's fragment as from a network address's). When the manifest cannot be built
+  or the client refuses it, the files `-f` chose play as before (`ResolvedMedia.fallback`: one picture and one sound, no
+  ladder; thumbnails are made of its picture file, and a refused manifest with a fallback is not first asked of yt-dlp again unless its addresses were refused as expired). A ladder keeps the 60 fps rungs and drops the 30 fps ones from 720p up, as YouTube's player does. Progressive files are read in HTTP requests of
   the size yt-dlp downloads them in (`http_chunk_size` → `httpRequestSize`, FFmpeg's `request_size`): YouTube throttles
   a request for the whole file to about twice its bitrate, which 2x playback outruns, and serves 10 MB ranges at the
   link's rate. The author's chapters stand in for a container without any. A YouTube video's SponsorBlock segments become skip
