@@ -164,11 +164,12 @@ extension VideoCodecPreferenceTests {
 
 extension VideoCodecPreferenceTests {
     @Test(
-        "MP4 files with an index are a ladder (the client reads their segments); WebM ones are none: read from their start"
+        "Files with an index are a ladder (the client reads their segments, MP4's sidx and WebM's Cues); a WebM without its start is none: read from its start"
     )
     func singleFiles() throws {
-        func manifest(_ type: String) throws -> DASHManifest {
-            let base = #"<SegmentBase indexRange="800-1500"><Initialization range="0-799"/></SegmentBase>"#
+        func manifest(_ type: String, hasStart: Bool = true) throws -> DASHManifest {
+            let start = hasStart ? #"<Initialization range="0-799"/>"# : ""
+            let base = #"<SegmentBase indexRange="800-1500">\#(start)</SegmentBase>"#
             return try #require(
                 DASHManifest(
                     data: DASHManifestTests.mpd(
@@ -184,9 +185,13 @@ extension VideoCodecPreferenceTests {
         #expect(mp4.videos.map(\.isSegmented) == [true, true])
         #expect(mp4.ladder.map(\.id) == ["hi", "lo"])
         let webm = try manifest("webm")
-        #expect(webm.videos.map(\.isSegmented) == [false, false])
-        #expect(webm.ladder.isEmpty)
+        #expect(webm.videos.map(\.isSegmented) == [true, true])
+        #expect(webm.ladder.map(\.id) == ["hi", "lo"])
+        // Without its start (the Segment's offset the cues count from) a WebM is read as a file.
+        let noStart = try manifest("webm", hasStart: false)
+        #expect(noStart.videos.map(\.isSegmented) == [false, false])
+        #expect(noStart.ladder.isEmpty)
         // Each is still a picture to play.
-        #expect(webm.address(videoID: "hi") != nil)
+        #expect(noStart.address(videoID: "hi") != nil)
     }
 }
