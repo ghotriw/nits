@@ -108,28 +108,25 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   User-Agent, cookies) passed as FFmpeg `AVDictionary` options.
 - A DASH manifest (`.mpd`) is resolved by the engine's own `DASHManifestResolver`, asked before the host's
   (`MediaResolverChain`; it ends in `.mpd`, a name like Unified Streaming's `/.mpd` too). It downloads the manifest
-  with the request's headers and gives the demuxer a rewritten one inline (`DASHManifest`, on `XMLTree`), with the
-  address it came from after redirects (`MediaURL.inlineDASHManifest(_:source:)`, a `source` parameter of the `data:`
-  URL that FFmpeg's `data:` protocol ignores). The demuxer opens an inline manifest, one at a `.mpd` address, or one
+  with the request's headers to read what it offers to choose from (`DASHManifest`, on `XMLTree`) and hands back the
+  manifest's own address, with the choice in its fragment (`DASHSelection`: `#nits-video=<id>`, or `#nits-audio=<id>`;
+  a server never sees a fragment): the manifest is not written again, and the client downloads it once more as it
+  plays. The demuxer opens an inline manifest (a site's), one at a `.mpd` address, or one
   at another network address whose first bytes are a manifest's root (`SniffedPlaylist`, asked after FFmpeg failed
   to open it, as for an HLS playlist under another name), with
   the client (`DASHPlaylists` into `HLSInput`, see "A DASH client of our own" in `docs/HLS.md`); what the client
   refuses with a reason (`HLSPlaylistSourceError.unsupported`: a live manifest of several periods whose reload tells
   no period to play, one file (`SegmentBase`) in a manifest of several, DRM, a manifest over 8 MB, …) is the opening's
   failure, the reason in its error: nothing falls back on FFmpeg, whose DASH demuxer is not built
-  (`--disable-demuxer=dash`). The rewriting is what the resolver did for that demuxer, which opened every representation at once,
-  failed for one it couldn't read (TTML), played the first picture it listed and, in a timeline that repeats a segment
-  to the end (`r="-1"`), seeked to the second segment. It stays for the choices the client reads from it, until the
-  resolver hands the address and the choice instead (D1 in the DASH plan): it keeps the ladder of
-  one codec and range (the preferred one, `VideoCodecPreference`; a ladder plays as one, `MediaDemuxer.variants`; the
-  best picture of each other codec is in `ResolvedMedia.videoFormats`, each a manifest of its own with its ladder,
-  which the format menu switches to as for a video site), the best audio of each language (not a codec FFmpeg has no
-  decoder for: AC-4, MPEG-H;
-  `CodecFamily.canDecodeAudio`), and drops text and images, trick play and DRM streams;
-  gives timelines their repeats from the length of the period, and the manifest an absolute `BaseURL` of the address
-  after redirects. A manifest it can't handle (live, several periods, unreadable) returns `nil`: the address is the
-  client's as it is. Codec families are read by `CodecFamily`, shared with HLS. The segments' requests carry the
-  source's headers (the client's transport).
+  (`--disable-demuxer=dash`). The client plays what the choice names: the picture and the ladder of its codec and range
+  (`DASHPlaylists.pictures(of:selection:)`: the pictures that switch with it, a bitrate told for each; one alone
+  otherwise) with the best sound of each language, or one sound alone; with no choice, the manifest as it is. What the
+  resolver keeps of the manifest is the menu: the pictures best first (`VideoCodecPreference` orders the codecs), the best
+  picture of each other codec in `ResolvedMedia.videoFormats` (each its address with its own choice, which the format
+  menu switches to as for a video site), pictures that are files the client reads no index of (WebM's `Cues`) played as
+  files with their sounds added (`PlaybackInputs`; a sound of segments is the address with `#nits-audio`). A manifest it
+  can't handle (live, several periods, unreadable) returns `nil`: the address is the client's as it is. Codec families
+  are read by `CodecFamily`, shared with HLS. The segments' requests carry the source's headers (the client's transport).
 - A page that isn't a stream (a video site's) is resolved by the host's `MediaResolver` (`engine.mediaResolver`)
   into the streams that play it (`ResolvedMedia`: the picture's, its separate audio, their headers, the page's
   subtitle files, chapters and action buttons). A host can give subtitle files of its own with any request

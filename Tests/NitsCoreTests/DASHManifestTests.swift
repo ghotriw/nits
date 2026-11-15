@@ -3,7 +3,7 @@ import Testing
 
 @testable import NitsCore
 
-/// DASH manifests read and written again for FFmpeg's demuxer (`DASHManifest`), from minimal manifests that have
+/// What the resolver reads of DASH manifests (`DASHManifest`), from minimal manifests that have
 /// what each case is about.
 @Suite("DASH manifest")
 struct DASHManifestTests {
@@ -82,6 +82,15 @@ struct DASHManifestTests {
         #expect(manifest.videos.map(\.codec) == ["VP9"])
     }
 
+    /// The ids of the sounds a manifest plays as added files, in order: a sound of segments is told to the client by the
+    /// manifest's address with its id as the choice (`DASHSelection`), one that is a file by its address.
+    static func soundIDs(_ manifest: DASHManifest?) -> [String] {
+        (manifest?.sounds() ?? []).map { sound in
+            let url = URL(string: sound.path)
+            return DASHSelection(fragment: url?.fragment).audio ?? "file:" + (url?.lastPathComponent ?? "")
+        }
+    }
+
     @Test("The pictures of the best one's codec and range are a ladder; the others are left out of it")
     func buildsTheLadder() throws {
         let manifest = try #require(
@@ -97,14 +106,11 @@ struct DASHManifestTests {
                 <AdaptationSet contentType="audio" lang="en"><Representation id="a" mimeType="audio/mp4" bandwidth="64000"/></AdaptationSet>
                 """))
         #expect(manifest.ladder.map(\.id) == ["hi", "mid", "lo"], "One codec: a switch needs no new decoder")
-        let text = try #require(manifest.ladderText())
-        for id in ["hi", "mid", "lo", "a"] { #expect(text.contains(#"id="\#(id)""#), "\(id)") }
-        #expect(!text.contains(#"id="vp9""#) && !text.contains(#"id="hevc""#))
         // The one picture of a manifest is no ladder.
         let single = try #require(
             Self.manifest(
                 #"<AdaptationSet contentType="video">\#(Self.video("only", 1280, 720, bandwidth: 1))</AdaptationSet>"#))
-        #expect(single.ladder.isEmpty && single.ladderText() == nil)
+        #expect(single.ladder.isEmpty)
         // A rung without a bitrate can't be told from the others by the network.
         let unknown = try #require(
             Self.manifest(
@@ -113,9 +119,8 @@ struct DASHManifestTests {
         #expect(unknown.ladder.isEmpty)
     }
 
-    @Test(
-        "Of the pictures a manifest lists, the written one has the chosen alone; the audio of each language, the best")
-    func keepsOnePictureAndTheBestAudio() throws {
+    @Test("A picture is chosen by the manifest's address with its id; the sound of each language is the best")
+    func addressesOnePictureAndKeepsTheBestAudio() throws {
         let manifest = try #require(
             Self.manifest(
                 """
@@ -131,16 +136,13 @@ struct DASHManifestTests {
                 <Representation id="en-96" mimeType="audio/mp4" bandwidth="96000"/>
                 </AdaptationSet>
                 """))
-        let best = try #require(manifest.text())
-        #expect(best.contains(#"id="hi""#) && !best.contains(#"id="lo""#))
-        #expect(best.contains(#"id="uk-128""#) && !best.contains(#"id="uk-64""#), "The best of the language")
-        // The main one's language first: the demuxer lists the streams in the order of the manifest.
+        let best = try #require(manifest.address())
         #expect(
-            try #require(best.range(of: #"id="en-96""#)).lowerBound
-                < (try #require(best.range(of: #"id="uk-128""#))).lowerBound)
-        let other = try #require(manifest.text(videoID: "lo"))
-        #expect(other.contains(#"id="lo""#) && !other.contains(#"id="hi""#))
-        #expect(manifest.text(videoID: "missing") == nil)
+            best == "https://cdn.example/show/dash/manifest.mpd?token=abc#nits-video=hi", "The best, with the query")
+        #expect(manifest.address(videoID: "lo")?.hasSuffix("#nits-video=lo") == true)
+        #expect(manifest.address(videoID: "missing") == nil)
+        // The best of the language, the main one's language first.
+        #expect(Self.soundIDs(manifest) == ["en-96", "uk-128"])
     }
 
     @Test("A sound the build has no decoder for (AC-4, MPEG-H) is not played, however high its bitrate")
@@ -159,10 +161,10 @@ struct DASHManifestTests {
                 \(sound("eac3", "ec-3", 192_000, "de"))\(sound("opus", "opus", 96_000, "fr"))\
                 \(sound("untold", "", 96_000, "es"))
                 """))
-        let text = try #require(manifest.text())
-        #expect(text.contains(#"id="aac""#) && !text.contains(#"id="ac4""#), "AAC over the AC-4 of a higher bitrate")
-        #expect(!text.contains(#"id="mpegh""#) && text.contains(#"id="unknown""#), "A codec not known is tried")
-        #expect(text.contains(#"id="eac3""#) && text.contains(#"id="opus""#) && text.contains(#"id="untold""#))
+        let ids = Set(Self.soundIDs(manifest))
+        #expect(ids.contains("aac") && !ids.contains("ac4"), "AAC over the AC-4 of a higher bitrate")
+        #expect(!ids.contains("mpegh") && ids.contains("unknown"), "A codec not known is tried")
+        #expect(ids.isSuperset(of: ["eac3", "opus", "untold"]))
     }
 
     @Test("Of a language, a decoder known beats one not known, whatever the bitrate")
@@ -174,8 +176,7 @@ struct DASHManifestTests {
                 codecs="xyz9" bandwidth="500000"/><Representation id="aac" mimeType="audio/mp4" codecs="mp4a.40.2" \
                 bandwidth="64000"/></AdaptationSet>
                 """))
-        let text = try #require(manifest.text())
-        #expect(text.contains(#"id="aac""#) && !text.contains(#"id="odd""#))
+        #expect(Self.soundIDs(manifest) == ["aac"])
     }
 
     @Test("Of a language, the main sound is its sound: a commentary or a description of a higher bitrate is not")
@@ -189,23 +190,19 @@ struct DASHManifestTests {
         let role = { (value: String) in #"<Role schemeIdUri="urn:mpeg:dash:role:2011" value="\#(value)"/>"# }
         let description = #"<Accessibility schemeIdUri="urn:tva:metadata:cs:AudioPurposeCS:2007" value="1"/>"#
 
-        let main = try #require(
-            Self.manifest(
-                "\(sound("commentary", 192_000, role("commentary")))\(sound("main", 128_000, role("main")))\(sound("plain", 160_000, ""))"
-            )?.text())
-        #expect(main.contains(#"id="main""#) && !main.contains(#"id="commentary""#) && !main.contains(#"id="plain""#))
+        let main = Self.manifest(
+            "\(sound("commentary", 192_000, role("commentary")))\(sound("main", 128_000, role("main")))\(sound("plain", 160_000, ""))"
+        )
+        #expect(Self.soundIDs(main) == ["main"])
 
         // Without a main one, one without a role; a description only when there is nothing else.
-        let plain = try #require(
-            Self.manifest("\(sound("described", 192_000, description))\(sound("plain", 64_000, ""))")?.text())
-        #expect(plain.contains(#"id="plain""#) && !plain.contains(#"id="described""#))
-        let onlyDescribed = try #require(
-            Self.manifest("\(sound("alt", 64_000, role("alternate")))\(sound("described", 192_000, description))")?
-                .text())
-        #expect(onlyDescribed.contains(#"id="alt""#) || onlyDescribed.contains(#"id="described""#))
+        let plain = Self.manifest("\(sound("described", 192_000, description))\(sound("plain", 64_000, ""))")
+        #expect(Self.soundIDs(plain) == ["plain"])
+        let onlyDescribed = Self.manifest(
+            "\(sound("alt", 64_000, role("alternate")))\(sound("described", 192_000, description))")
+        #expect(Self.soundIDs(onlyDescribed).count == 1)
         // A dub is the sound of its language.
-        let dub = try #require(Self.manifest(sound("dub", 64_000, role("dub")))?.text())
-        #expect(dub.contains(#"id="dub""#))
+        #expect(Self.soundIDs(Self.manifest(sound("dub", 64_000, role("dub")))) == ["dub"])
     }
 
     @Test("A role or an accessibility descriptor on the representation counts as one on the set")
@@ -221,9 +218,7 @@ struct DASHManifestTests {
                 <Representation id="main" mimeType="audio/mp4" bandwidth="64000">\
                 <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/></Representation></AdaptationSet>
                 """))
-        let text = try #require(manifest.text())
-        #expect(
-            text.contains(#"id="main""#) && !text.contains(#"id="commentary""#) && !text.contains(#"id="described""#))
+        #expect(Self.soundIDs(manifest) == ["main"])
     }
 
     @Test("The languages are in the order the main sound's comes first")
@@ -235,21 +230,7 @@ struct DASHManifestTests {
                 <AdaptationSet contentType="audio" lang="en"><Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>\
                 <Representation id="en" mimeType="audio/mp4" bandwidth="1"/></AdaptationSet>
                 """))
-        let text = try #require(manifest.text())
-        #expect(
-            try #require(text.range(of: #"id="en""#)).lowerBound
-                < (try #require(text.range(of: #"id="uk""#))).lowerBound)
-    }
-
-    @Test("A manifest without a type is a static one, and is written so: FFmpeg wants it said")
-    func writesTheType() throws {
-        let data = Data(
-            """
-            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S"><Period>\
-            <AdaptationSet contentType="video">\(Self.video("v", 640, 360, bandwidth: 1))</AdaptationSet></Period></MPD>
-            """.utf8)
-        let text = try #require(DASHManifest(data: data, url: Self.url)?.text())
-        #expect(text.contains(#"type="static""#))
+        #expect(Self.soundIDs(manifest) == ["en", "uk"])
     }
 
     @Test("The kind of a set is told in any case, or by the content component some generators use")
@@ -273,11 +254,10 @@ struct DASHManifestTests {
         #expect(element.text == "one two <b> three")
     }
 
-    @Test("A manifest of no streams has nothing to write")
-    func writesNothingForNoStreams() throws {
+    @Test("A manifest of no streams has nothing to play")
+    func hasNothingForNoStreams() throws {
         let manifest = try #require(Self.manifest(#"<AdaptationSet contentType="text"></AdaptationSet>"#))
         #expect(manifest.videos.isEmpty && !manifest.hasAudio)
-        #expect(manifest.text() == nil)
     }
 
     @Test("The codec of an audio is told by the build's decoders")
@@ -307,7 +287,7 @@ struct DASHManifestTests {
         #expect(DASHManifest(data: big, url: Self.url) == nil)
     }
 
-    @Test("What FFmpeg cannot read is left out: text tracks (TTML), images, and the I-frame tracks of trick play")
+    @Test("What is not played is left out: text tracks (TTML), images, and the I-frame tracks of trick play")
     func dropsWhatCannotBeRead() throws {
         let manifest = try #require(
             Self.manifest(
@@ -319,21 +299,7 @@ struct DASHManifestTests {
                 value="main"/>\(Self.video("iframes", 1920, 1080, bandwidth: 100))</AdaptationSet>
                 <AdaptationSet contentType="video">\(Self.video("main", 1280, 720, bandwidth: 2_000_000))</AdaptationSet>
                 """))
-        let text = try #require(manifest.text())
-        #expect(!text.contains("ttml") && !text.contains("thumbs") && !text.contains("iframes"))
         #expect(manifest.videos.map(\.id) == ["main"])
-    }
-
-    @Test("A single file addressed by byte ranges (SegmentBase with an index) is kept as it is")
-    func keepsSegmentBase() throws {
-        let manifest = try #require(
-            Self.manifest(
-                """
-                <AdaptationSet contentType="video">\(Self.video("v", 1280, 720, bandwidth: 1, inside: #"<BaseURL>v.mp4</BaseURL><SegmentBase indexRange="828-3067" timescale="12288"><Initialization range="0-827"/></SegmentBase>"#))</AdaptationSet>
-                """))
-        let text = try #require(manifest.text())
-        #expect(text.contains(#"<SegmentBase indexRange="828-3067" timescale="12288">"#))
-        #expect(text.contains(#"<Initialization range="0-827"/>"#))
     }
 
     @Test("Protected (DRM) pictures and sounds are not played, and the manifest says it had them")
@@ -366,111 +332,99 @@ struct DASHManifestTests {
                 """))
         #expect(manifest.videos.count == 2)
         #expect(Set(manifest.videos.map(\.id)).count == 2)
-        for video in manifest.videos { #expect(manifest.text(videoID: video.id) != nil) }
+        for video in manifest.videos { #expect(manifest.address(videoID: video.id) != nil) }
     }
 
     // MARK: - Addresses
 
-    @Test("Relative addresses are made absolute from the manifest's folder, or its own BaseURL")
-    func makesBaseURLAbsolute() throws {
-        let body = #"<AdaptationSet contentType="video">\#(Self.video("v", 1280, 720, bandwidth: 1))</AdaptationSet>"#
-        let folder = try #require(Self.manifest(body)?.text())
-        #expect(folder.contains("<BaseURL>https://cdn.example/show/dash/</BaseURL>"), "The query is not part of it")
-
-        let relative = try #require(Self.manifest(body, base: "<BaseURL>../media/</BaseURL>")?.text())
-        #expect(relative.contains("<BaseURL>https://cdn.example/show/media/</BaseURL>"))
-        let absolute = try #require(Self.manifest(body, base: "<BaseURL>https://other.example/m/</BaseURL>")?.text())
-        #expect(absolute.contains("<BaseURL>https://other.example/m/</BaseURL>"))
-        #expect(absolute.components(separatedBy: "<BaseURL>https://other.example/").count == 2, "Only one at the top")
-        // The ones below it stay relative to it.
-        #expect(absolute.contains("<BaseURL>v.mp4</BaseURL>"))
-    }
-
-    @Test("Characters of addresses and templates survive the rewrite")
-    func keepsTemplates() throws {
-        let manifest = try #require(
-            Self.manifest(
-                """
-                <AdaptationSet contentType="video"><Representation id="a&amp;b" mimeType="video/mp4" bandwidth="1" width="2" height="2">\
-                <SegmentTemplate media="seg/$RepresentationID$/$Number$.m4s?a=1&amp;b=2" startNumber="1" duration="2"/>\
-                </Representation></AdaptationSet>
-                """))
-        let text = try #require(manifest.text())
-        #expect(text.contains(#"media="seg/$RepresentationID$/$Number$.m4s?a=1&amp;b=2""#))
-        #expect(text.contains(#"id="a&amp;b""#))
-    }
-
-    // MARK: - Timelines
-
-    @Test("A timeline that repeats a segment to the end of the period ends at it")
-    func expandsRepeatsToTheEnd() throws {
-        let timeline = { (s: String, duration: String) in
-            Self.manifest(
-                """
-                <AdaptationSet contentType="video"><SegmentTemplate timescale="1000" media="v_$Time$.m4s" initialization="i.mp4">\
-                <SegmentTimeline>\(s)</SegmentTimeline></SegmentTemplate>\(Self.video("v", 1280, 720, bandwidth: 1, inside: ""))</AdaptationSet>
-                """, duration: duration)?.text()
+    @Test("The resolver and the client name the representations alike, repeated ids too, and group pictures alike")
+    func namesAndGroupsAsTheClientDoes() throws {
+        // Two sets with a representation "1" each: the second is named by its place, as the client does.
+        let body = """
+            <AdaptationSet contentType="video"><SegmentTemplate media="a/$Number$" duration="1"/>\
+            \(Self.video("1", 1280, 720, bandwidth: 4_000_000))</AdaptationSet>\
+            <AdaptationSet contentType="video"><SegmentTemplate media="b/$Number$" duration="1"/>\
+            \(Self.video("1", 1280, 720, codecs: "hvc1.1.6.L120", bandwidth: 3_000_000))</AdaptationSet>\
+            <AdaptationSet contentType="audio" lang="en"><SegmentTemplate media="e/$Number$" duration="1"/>\
+            <Representation id="1" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
+            """
+        let data = Self.mpd(period: body)
+        let manifest = try #require(DASHManifest(data: data, url: Self.url))
+        let presentation = try DASHPresentation.parse(data, url: Self.url)
+        #expect(
+            Set(manifest.videos.map(\.id)) == Set(presentation.representations.filter { $0.kind == .video }.map(\.id)))
+        #expect(Set(manifest.videos.map(\.id)).count == 2)
+        #expect(presentation.representations.map(\.id) == ["1", "1.1", "2.1"])
+        // What each choice plays is the picture it names.
+        for video in manifest.videos {
+            let chosen = try DASHPlaylists.pictures(
+                of: presentation.representations.filter { $0.kind == .video }, selection: DASHSelection(video: video.id)
+            )
+            #expect(chosen.map(\.id) == [video.id])
+            #expect(chosen.first?.codecs.flatMap(CodecFamily.video(in:)) == video.family)
         }
-        // Ten seconds of two: five segments, the first and four repeats.
-        #expect(try #require(timeline(#"<S d="2000" r="-1"/>"#, "PT10S")).contains(#"<S d="2000" r="4"/>"#))
-        // A last segment the period ends in the middle of is one too.
-        #expect(try #require(timeline(#"<S d="2000" r="-1"/>"#, "PT9S")).contains(#"<S d="2000" r="4"/>"#))
-        // Up to the next segment that says where it starts.
-        let text = try #require(timeline(#"<S t="0" d="1000" r="-1"/><S t="5000" d="1000"/>"#, "PT10S"))
-        #expect(text.contains(#"<S d="1000" r="4" t="0"/>"#), "\(text)")
-        // Repeats counted are left as they are.
-        #expect(try #require(timeline(#"<S d="2000" r="2"/>"#, "PT10S")).contains(#"r="2""#))
+        #expect(Self.soundIDs(manifest) == ["2.1"])
+
+        // PQ and HLG of one codec are two groups for both.
+        func hdr(_ id: String, _ value: String) -> String {
+            Self.video(
+                id, 1920, 1080, codecs: "hvc1.2.4.L120", bandwidth: 5_000_000,
+                inside:
+                    #"<SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="\#(value)"/>"#
+            )
+        }
+        let ranges = try #require(
+            DASHManifest(
+                data: Self.mpd(
+                    period:
+                        #"<AdaptationSet contentType="video"><SegmentTemplate media="a/$Number$" duration="1"/>"#
+                        + hdr("pq", "16") + hdr("hlg", "18") + "</AdaptationSet>"), url: Self.url))
+        #expect(ranges.codecGroups.map(\.id).count == 2)
     }
-
-    @Test("The timeline of a representation takes the timescale of the template above it, and a period's offset")
-    func expandsWithInheritedTimescale() throws {
-        // Akamai's: 12288 ticks a second, segments of five seconds, 9 min 54 s: 119 segments (118 repeats).
-        let text = try #require(
-            Self.manifest(
-                """
-                <AdaptationSet contentType="video"><SegmentTemplate timescale="12288" media="v_$Time$.mp4">\
-                <SegmentTimeline><S d="61440" r="-1"/></SegmentTimeline></SegmentTemplate>\
-                \(Self.video("v", 1280, 720, bandwidth: 1, inside: ""))</AdaptationSet>
-                """, duration: "PT0H9M54.00S")?.text())
-        #expect(text.contains(#"r="118""#))
-        // A template of the representation that has no timescale of its own.
-        let inner = try #require(
-            Self.manifest(
-                """
-                <AdaptationSet contentType="video"><SegmentTemplate timescale="90000"/>\
-                <Representation id="v" mimeType="video/mp4" bandwidth="1" width="2" height="2">\
-                <SegmentTemplate media="v_$Time$.mp4"><SegmentTimeline><S d="180000" r="-1"/></SegmentTimeline>\
-                </SegmentTemplate></Representation></AdaptationSet>
-                """, duration: "PT10S")?.text())
-        #expect(inner.contains(#"r="4""#))
-    }
-
-    @Test("A period's own length and start are what its timeline ends at")
-    func usesThePeriodsLength() throws {
-        let data = Data(
-            """
-            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT60S"><Period start="PT10S" duration="PT6S">\
-            <AdaptationSet contentType="video"><SegmentTemplate timescale="1" media="v_$Time$.mp4"><SegmentTimeline>\
-            <S d="2" r="-1"/></SegmentTimeline></SegmentTemplate>\(Self.video("v", 1280, 720, bandwidth: 1, inside: ""))\
-            </AdaptationSet></Period></MPD>
-            """.utf8)
-        let text = try #require(DASHManifest(data: data, url: Self.url)?.text())
-        #expect(text.contains(#"r="2""#), "Six seconds of two")
-
-        let fromTheManifest = Data(
-            """
-            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT16S"><Period start="PT10S">\
-            <AdaptationSet contentType="video"><SegmentTemplate timescale="1" media="v_$Time$.mp4"><SegmentTimeline>\
-            <S d="2" r="-1"/></SegmentTimeline></SegmentTemplate>\(Self.video("v", 1280, 720, bandwidth: 1, inside: ""))\
-            </AdaptationSet></Period></MPD>
-            """.utf8)
-        #expect(try #require(DASHManifest(data: fromTheManifest, url: Self.url)?.text()).contains(#"r="2""#))
-    }
-
-    // MARK: - What is left to the demuxer
 
     @Test(
-        "A live manifest, one of several periods, one that cannot be read, and a timeline of an unknown length are not handled"
+        "A repeated id names the representation apart, but its templates' $RepresentationID$ stays the manifest's own")
+    func templatesKeepTheManifestsID() throws {
+        let body = """
+            <AdaptationSet contentType="video"><SegmentTemplate media="v/$RepresentationID$/$Number$.m4s" duration="1"/>\
+            \(Self.video("1", 1280, 720, bandwidth: 4_000_000))</AdaptationSet>\
+            <AdaptationSet contentType="audio" lang="en"><SegmentTemplate media="a/$RepresentationID$/$Number$.m4s" duration="1"/>\
+            <Representation id="1" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
+            """
+        let presentation = try DASHPresentation.parse(Self.mpd(period: body), url: Self.url)
+        #expect(presentation.representations.map(\.id) == ["1", "1.1"])
+        let urls = presentation.representations.map { $0.segments.first?.url.path ?? "" }
+        #expect(urls == ["/show/dash/v/1/1.m4s", "/show/dash/a/1/1.m4s"], "\(urls)")
+    }
+
+    @Test("A manifest without a type is a static one")
+    func readsAManifestWithoutAType() throws {
+        let data = Data(
+            """
+            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S"><Period>\
+            <AdaptationSet contentType="video">\(Self.video("v", 640, 360, bandwidth: 1))</AdaptationSet></Period></MPD>
+            """.utf8)
+        #expect(DASHManifest(data: data, url: Self.url)?.videos.map(\.id) == ["v"])
+    }
+
+    @Test("A choice is the manifest's address with the picture's or sound's id in its fragment, and reads back from it")
+    func choosesByTheFragment() throws {
+        let manifest = URL(string: "https://cdn.example/a/manifest.mpd?token=abc&x=1#old")!
+        #expect(DASHSelection().address(of: manifest) == "https://cdn.example/a/manifest.mpd?token=abc&x=1")
+        for id in ["v", "1080p", "a&b=c", "x#y %", "0.1", "é"] {
+            let video = try #require(URL(string: DASHSelection(video: id).address(of: manifest)))
+            #expect(video.query == "token=abc&x=1")
+            #expect(DASHPlaylists(media: video.absoluteString)?.selection == DASHSelection(video: id), "\(id)")
+            let audio = try #require(URL(string: DASHSelection(audio: id).address(of: manifest)))
+            #expect(DASHPlaylists(media: audio.absoluteString)?.selection == DASHSelection(audio: id), "\(id)")
+        }
+        #expect(DASHSelection(fragment: nil).isEmpty && DASHSelection(fragment: "section-2").isEmpty)
+    }
+
+    // MARK: - What is left to the client
+
+    @Test(
+        "A live manifest, one of several periods, and one that cannot be read are not handled: the client opens them as they are"
     )
     func declinesWhatItCannotHandle() {
         let video = #"<AdaptationSet contentType="video">\#(Self.video("v", 1280, 720, bandwidth: 1))</AdaptationSet>"#
@@ -483,14 +437,6 @@ struct DASHManifestTests {
         #expect(DASHManifest(data: periods, url: Self.url) == nil)
         #expect(DASHManifest(data: Data("not xml <".utf8), url: Self.url) == nil)
         #expect(DASHManifest(data: Data("<html/>".utf8), url: Self.url) == nil)
-        // `r="-1"` with no length of the period to count to.
-        let unknown = Data(
-            """
-            <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"><Period><AdaptationSet contentType="video">\
-            <SegmentTemplate timescale="1" media="v_$Time$.mp4"><SegmentTimeline><S d="2" r="-1"/></SegmentTimeline>\
-            </SegmentTemplate>\(Self.video("v", 1280, 720, bandwidth: 1, inside: ""))</AdaptationSet></Period></MPD>
-            """.utf8)
-        #expect(DASHManifest(data: unknown, url: Self.url) == nil)
     }
 
     @Test("A manifest of sound alone plays; the picture is none")
@@ -500,7 +446,7 @@ struct DASHManifestTests {
                 #"<AdaptationSet contentType="audio" lang="en"><Representation id="a" mimeType="audio/mp4" bandwidth="64000"/></AdaptationSet>"#
             ))
         #expect(manifest.videos.isEmpty && manifest.hasAudio)
-        #expect(try #require(manifest.text()).contains(#"id="a""#))
+        #expect(manifest.address() == "https://cdn.example/show/dash/manifest.mpd?token=abc")
     }
 
     @Test("The title comes from the manifest's program information")
@@ -563,8 +509,6 @@ extension DASHManifestTests {
                         + mp4 + "</AdaptationSet>" + Self.fileSound), url: Self.url))
         #expect(mixed.videos.map(\.id) == ["m"], "The larger WebM file is left out beside the MP4 the client reads")
         #expect(!mixed.playsAsFiles)
-        let mixedText = try #require(mixed.text())
-        #expect(mixedText.contains("m.mp4") && !mixedText.contains("w.webm"))
 
         let files = try #require(
             DASHManifest(
@@ -576,13 +520,12 @@ extension DASHManifestTests {
         #expect(files.playsAsFiles)
         #expect(files.videos.map(\.id) == ["hi", "lo"])
         #expect(files.file(videoID: "hi") == URL(string: "hi.webm", relativeTo: Self.url)?.absoluteURL)
-        let sounds = files.sounds { "inline:" + $0 }
+        let sounds = files.sounds()
         #expect(sounds.map(\.language) == ["en", "uk"])
         #expect(sounds.first?.path == URL(string: "en.webm", relativeTo: Self.url)?.absoluteURL.absoluteString)
-        // A sound of segments as a manifest of it alone: no picture, no other sound.
-        let alone = try #require(sounds.last?.path)
-        #expect(alone.hasPrefix("inline:") && alone.contains("uk/$Number$.m4s"))
-        #expect(!alone.contains("en.webm") && !alone.contains("hi.webm"))
+        // A sound of segments is the manifest's address with it as the choice: no picture, no other sound.
+        #expect(Self.soundIDs(files) == ["file:en.webm", "uk"])
+        #expect(sounds.last?.path == "https://cdn.example/show/dash/manifest.mpd?token=abc#nits-audio=uk")
     }
 }
 
@@ -607,9 +550,7 @@ extension DASHManifestTests {
         }
     }
 
-    @Test(
-        "Pictures played as files: an MP4 sound with its index goes to the client, one of an endless timeline is left out"
-    )
+    @Test("Pictures played as files: a sound with an MP4 index, or of segments, goes to the client as the choice")
     func soundsBesideFiles() throws {
         let indexedSound = """
             <AdaptationSet contentType="audio" lang="de"><Representation id="de" mimeType="audio/mp4" codecs="mp4a.40.2" \
@@ -621,7 +562,8 @@ extension DASHManifestTests {
             <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline></SegmentTemplate>\
             <Representation id="uk" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="1"/></AdaptationSet>
             """
-        // No length told: the template's timeline cannot be made to end, which refused the manifest before.
+        // No length told: a timeline that repeats to the end has nothing to count to; its sound is left out, as it would be
+        // a required one the client refuses.
         let manifest = try #require(
             DASHManifest(
                 data: Self.mpd(
@@ -629,8 +571,9 @@ extension DASHManifestTests {
                         + "</AdaptationSet>" + Self.fileSound + indexedSound + endless, duration: ""),
                 url: Self.url))
         #expect(manifest.playsAsFiles)
-        let sounds = manifest.sounds { "inline:" + $0 }
+        let sounds = manifest.sounds()
         #expect(sounds.map(\.language) == ["en", "de"])
-        #expect(sounds.last?.path.hasPrefix("inline:") == true && sounds.last?.path.contains("de.mp4") == true)
+        #expect(Self.soundIDs(manifest) == ["file:en.webm", "de"])
+        #expect(sounds[1].path.hasSuffix("#nits-audio=de"))
     }
 }

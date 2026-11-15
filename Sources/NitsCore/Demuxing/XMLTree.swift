@@ -1,8 +1,7 @@
 import Foundation
 
-/// An XML document as a tree of values, to read a manifest and write it again changed: element names, attributes (sorted
-/// by name) and text are kept as they are, namespaces included (prefixes are not resolved), comments and
-/// processing instructions are not.
+/// An XML document as a tree of values, to read a manifest: element names, attributes and text are kept as they are,
+/// namespaces included (prefixes are not resolved), comments and processing instructions are not.
 struct XMLTreeElement {
     var name: String
     var attributes: [(name: String, value: String)] = []
@@ -20,14 +19,6 @@ struct XMLTreeElement {
 
     func attribute(_ name: String) -> String? {
         attributes.first { $0.name == name }?.value
-    }
-
-    mutating func setAttribute(_ name: String, to value: String) {
-        if let index = attributes.firstIndex(where: { $0.name == name }) {
-            attributes[index].value = value
-        } else {
-            attributes.append((name, value))
-        }
     }
 
     /// The child elements.
@@ -56,46 +47,6 @@ struct XMLTreeElement {
         parser.delegate = builder
         guard parser.parse(), builder.stack.isEmpty else { return nil }
         return builder.root
-    }
-
-    /// The element as XML text.
-    func serialized() -> String {
-        var output = ""
-        write(to: &output)
-        return output
-    }
-
-    private func write(to output: inout String) {
-        output += "<\(name)"
-        for attribute in attributes {
-            output += " \(attribute.name)=\"\(Self.escaped(attribute.value, quotes: true))\""
-        }
-        guard !children.isEmpty else {
-            output += "/>"
-            return
-        }
-        output += ">"
-        for child in children {
-            switch child {
-            case .element(let element): element.write(to: &output)
-            case .text(let text): output += Self.escaped(text, quotes: false)
-            }
-        }
-        output += "</\(name)>"
-    }
-
-    private static func escaped(_ text: String, quotes: Bool) -> String {
-        var result = ""
-        for character in text {
-            switch character {
-            case "&": result += "&amp;"
-            case "<": result += "&lt;"
-            case ">": result += "&gt;"
-            case "\"" where quotes: result += "&quot;"
-            default: result.append(character)
-            }
-        }
-        return result
     }
 
     private final class Builder: NSObject, XMLParserDelegate {

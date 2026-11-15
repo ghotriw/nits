@@ -1,13 +1,12 @@
 import Foundation
 
-/// A DASH manifest (MPD) read by the resolver (`DASHManifestResolver`) and written again for the client.
+/// A DASH manifest (MPD) read by the resolver (`DASHManifestResolver`) for what it offers to choose from.
 ///
-/// The client (`DASHPlaylists`) reads the manifest itself; what the resolver keeps of it is the choices the client's
-/// player shows: the ladder of one codec and range (the pictures that follow the network as one; the best picture of
-/// each other codec is offered to choose from), the best audio of each language, nothing without a decoder (DRM, text,
-/// images), a timeline that ends, and an absolute `BaseURL`. Given to the demuxer inline (`MediaURL.inlineDASHManifest`).
-/// The rewriting was made for FFmpeg's DASH demuxer, which is gone; it goes when the resolver hands the address and its
-/// choices instead.
+/// The client (`DASHPlaylists`) reads the manifest itself and plays it; what the resolver keeps of it is the choices
+/// the player shows: the ladder of one codec and range (the pictures that follow the network as one; the best picture
+/// of each other codec is offered to choose from), the best audio of each language, nothing without a decoder (DRM,
+/// text, images). A choice is told to the client by the manifest's own address with the pictures' id in its fragment
+/// (`DASHSelection`, `address(videoID:)`): the manifest is not written again.
 ///
 /// Only a finished (`static`) manifest of one period is handled; for others the initializer returns nil, and the
 /// address is opened as it is.
@@ -25,6 +24,9 @@ package struct DASHManifest {
         package var isHDR: Bool
         /// The codec's family (`CodecFamily.video(in:)`); empty when the manifest tells none.
         package var family = ""
+        /// What switches with what, as the client groups them (`DASHPlaylists.pictures`): the codec, the supplemental codec
+        /// (Dolby Vision's on an HDR10 base) and the transfer (PQ, HLG, or neither).
+        package var group = ""
         /// Its media is segments, so that the demuxer can seek in it and switch to it at a position: a template, a list,
         /// or one MP4 file with its index (`SegmentBase`), whose segments the client's source reads from the index. One
         /// file without an index the client reads (WebM's is its `Cues`) is read from its start to either.
@@ -42,11 +44,12 @@ package struct DASHManifest {
 
     private let root: XMLTreeElement
     private let periodIndex: Int
-    private let periodDuration: Double?
     private let manifestURL: URL
     /// The pictures played, the best first.
     package let videos: [Video]
     private let videoPlaces: [String: Place]
+    /// The id of each representation played (`DASHElements.uniqueID`), as the client names it.
+    private let ids: [Place: String]
     /// The best sound of each language, the main one's first, with its language ("" when the manifest tells none).
     private let audio: [(place: Place, language: String)]
     private var audioPlaces: [Place] { audio.map(\.place) }
@@ -78,14 +81,12 @@ package struct DASHManifest {
         self.root = root
         self.manifestURL = url
         self.periodIndex = periods[0]
-        let start = period.attribute("start").flatMap(DASHElements.duration(of:)) ?? 0
-        self.periodDuration =
-            period.attribute("duration").flatMap(DASHElements.duration(of:))
-            ?? root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:)).map { $0 - start }
 
         var pictures: [(video: Video, place: Place, isKnownCodec: Bool)] = []
         var sounds: [(place: Place, language: String, bandwidth: Int, role: Int, isKnownCodec: Bool)] = []
         var hasProtected = false
+        var usedIDs = Set<String>()
+        var ids: [Place: String] = [:]
         for (setIndex, node) in period.children.enumerated() {
             guard case .element(let set) = node, set.localName == "AdaptationSet", !DASHElements.isTrickMode(set) else {
                 continue
@@ -104,6 +105,7 @@ package struct DASHManifest {
                     continue
                 }
                 let place = Place(set: setIndex, representation: index)
+                ids[place] = DASHElements.uniqueID(of: representation, set: setIndex, index: index, used: &usedIDs)
                 let value = { (name: String) in representation.attribute(name) ?? set.attribute(name) }
                 let bandwidth = representation.attribute("bandwidth").flatMap { Int($0) } ?? 0
                 if kind == "audio" {
@@ -123,15 +125,18 @@ package struct DASHManifest {
                     family.map(CodecFamily.isDolbyVision) == true
                     || (DASHElements.hdrTransfer(of: set) != nil)
                     || (DASHElements.hdrTransfer(of: representation) != nil)
+                let supplemental = value("scte214:supplementalCodecs").flatMap(CodecFamily.video)
+                let range = DASHElements.hdrTransfer(of: representation) ?? DASHElements.hdrTransfer(of: set)
+                let group = "\(family ?? "")|\(supplemental ?? "")|\(range?.rawValue ?? "")"
                 pictures.append(
                     (
                         Video(
-                            id: representation.attribute("id") ?? "\(setIndex).\(index)",
+                            id: ids[place] ?? "",
                             width: value("width").flatMap { Int($0) } ?? 0,
                             height: value("height").flatMap { Int($0) } ?? 0,
                             frameRate: value("frameRate").flatMap(DASHElements.frameRate(of:)),
                             codec: family.map(CodecFamily.displayName(ofVideo:)) ?? "", bandwidth: bandwidth,
-                            isHDR: isHDR, family: family ?? "",
+                            isHDR: isHDR, family: family ?? "", group: group,
                             isSegmented: Self.hasSegments(in: [representation, set, period])), place, family != nil
                     ))
             }
@@ -156,26 +161,21 @@ package struct DASHManifest {
         // would share the page's added sound (`ResolvedMedia.audioFiles`) with a manifest that carries its own. The
         // client reading `Cues` would make them pictures of the manifest again: then this goes (PLAN.md, 3b).
         if pictures.contains(where: \.video.isSegmented) { pictures.removeAll { !$0.video.isSegmented } }
-        // Each is offered; ids kept unique, and one that a second adaptation set lists again (the same size, codec and
-        // bitrate) once.
+        // Each is offered; one that a second adaptation set lists again (the same size, codec and bitrate) once.
         var seenKeys: Set<String> = []
-        var seenIDs: Set<String> = []
         var videos: [Video] = []
         var places: [String: Place] = [:]
-        for var picture in pictures {
+        for picture in pictures {
             let key =
                 "\(picture.video.width)x\(picture.video.height)@\(Int((picture.video.frameRate ?? 0).rounded()))"
-                + " \(picture.video.family) \(picture.video.isHDR) \(picture.video.bandwidth)"
+                + " \(picture.video.group) \(picture.video.isHDR) \(picture.video.bandwidth)"
             guard seenKeys.insert(key).inserted else { continue }
-            if !seenIDs.insert(picture.video.id).inserted {
-                picture.video.id = "\(picture.place.set).\(picture.place.representation)"
-                seenIDs.insert(picture.video.id)
-            }
             videos.append(picture.video)
             places[picture.video.id] = picture.place
         }
         self.videos = videos
         self.videoPlaces = places
+        self.ids = ids
 
         // The best audio of each language, the main one's language first. Of a language: the main track over one
         // without a role over a commentary or a description (a higher bitrate does not make those the sound of the
@@ -196,21 +196,15 @@ package struct DASHManifest {
         languages.sort { (bestSound[$0]?.role == 2) && !(bestSound[$1]?.role == 2) }
         self.audio = languages.compactMap { language in bestSound[language].map { ($0.place, language) } }
 
-        // Written once to know that it can be: a timeline that cannot be made to end is not for FFmpeg to seek in. Not
-        // when the pictures play as files: a sound of such a timeline is then left out alone (`sounds`).
-        let playsAsFiles = !videos.isEmpty && !videos.contains(where: \.isSegmented)
-        guard
-            videos.isEmpty && audio.isEmpty || playsAsFiles
-                || rewritten(videoIDs: videos.prefix(1).map(\.id)) != nil
-        else {
-            return nil
-        }
     }
 
-    /// The manifest with the picture `videoID` (the best one when nil) and the audio, as the demuxer is given it. Nil
-    /// when the picture is none of `videos`.
-    package func text(videoID: String? = nil) -> String? {
-        text(videoIDs: (videoID ?? videos.first?.id).map { [$0] } ?? [])
+    /// The address that plays the picture `videoID` (the best one when nil): the manifest's own, with the choice in its
+    /// fragment (`DASHSelection`), which the client reads; for a manifest of sound alone, its own address. Nil when the
+    /// picture is none of `videos`.
+    package func address(videoID: String? = nil) -> String? {
+        if videoID == nil, videos.isEmpty { return DASHSelection().address(of: manifestURL) }
+        guard let id = videoID ?? videos.first?.id, videoPlaces[id] != nil else { return nil }
+        return DASHSelection(video: id).address(of: manifestURL)
     }
 
     /// The pictures that can follow the network as one: those of the best one's codec and range (HDR or not), as
@@ -242,7 +236,7 @@ package struct DASHManifest {
     package func ladder(of video: Video) -> [Video] {
         guard video.isSegmented else { return [] }
         let rungs = videos.filter {
-            $0.family == video.family && $0.isHDR == video.isHDR && $0.bandwidth > 0 && $0.isSegmented
+            $0.group == video.group && $0.bandwidth > 0 && $0.isSegmented
         }
         return rungs.count > 1 ? rungs : []
     }
@@ -251,76 +245,7 @@ package struct DASHManifest {
     /// more than one (a ladder plays as one, its other codecs are these).
     package var codecGroups: [Video] {
         var seen = Set<String>()
-        return videos.filter { seen.insert("\($0.family) \($0.isHDR)").inserted }
-    }
-
-    /// The manifest with every picture of `ladder` and the audio, for the demuxer to switch between the pictures with
-    /// the network (`MediaDemuxer.variants`). It opens every representation at once, so it costs the opening of each;
-    /// nil without a ladder.
-    package func ladderText(of video: Video? = nil) -> String? {
-        let rungs = video.map(ladder(of:)) ?? ladder
-        guard !rungs.isEmpty else { return nil }
-        return text(videoIDs: rungs.map(\.id))
-    }
-
-    /// `rewritten` as the demuxer is given it.
-    private func text(videoIDs: [String], audio: [Place]? = nil) -> String? {
-        guard let rewritten = rewritten(videoIDs: videoIDs, audio: audio) else { return nil }
-        return #"<?xml version="1.0" encoding="UTF-8"?>"# + "\n" + rewritten.serialized()
-    }
-
-    private func rewritten(videoIDs: [String], audio: [Place]? = nil) -> XMLTreeElement? {
-        var kept: [Place] = audio ?? audioPlaces
-        for id in videoIDs.reversed() {
-            guard let place = videoPlaces[id] else { return nil }
-            kept.insert(place, at: 0)
-        }
-        guard !kept.isEmpty else { return nil }
-        guard case .element(var period) = root.children[periodIndex] else { return nil }
-        // The demuxer lists the streams in the order of the manifest: the picture, then the sounds in the order chosen.
-        var leading: [XMLTreeElement.Node] = []
-        var trailing: [XMLTreeElement.Node] = []
-        var sets: [(position: Int, node: XMLTreeElement.Node)] = []
-        for (setIndex, node) in period.children.enumerated() {
-            guard case .element(var set) = node, set.localName == "AdaptationSet" else {
-                if sets.isEmpty { leading.append(node) } else { trailing.append(node) }
-                continue
-            }
-            let representations = Set(kept.filter { $0.set == setIndex }.map(\.representation))
-            guard !representations.isEmpty else { continue }
-            set.children = set.children.enumerated().compactMap { index, child in
-                if case .element(let element) = child, element.localName == "Representation",
-                    !representations.contains(index)
-                {
-                    return nil
-                }
-                return child
-            }
-            sets.append((kept.firstIndex { $0.set == setIndex } ?? 0, .element(set)))
-        }
-        period.children = leading + sets.sorted { $0.position < $1.position }.map(\.node) + trailing
-        guard Self.expandTimelines(in: &period, timescale: nil, offset: 0, periodDuration: periodDuration) else {
-            return nil
-        }
-
-        var manifest = root
-        // The standard has `static` for a manifest without a type, FFmpeg's demuxer wants it said.
-        manifest.setAttribute("type", to: "static")
-        var rootChildren = root.children.filter { node in
-            if case .element(let element) = node { element.localName != "BaseURL" } else { true }
-        }
-        let base = XMLTreeElement(name: "BaseURL", children: [.text(absoluteBase)])
-        let periodPosition = rootChildren.firstIndex { node in
-            if case .element(let element) = node { element.localName == "Period" } else { false }
-        }
-        rootChildren.insert(.element(base), at: periodPosition ?? rootChildren.endIndex)
-        if let position = rootChildren.firstIndex(where: { node in
-            if case .element(let element) = node { element.localName == "Period" } else { false }
-        }) {
-            rootChildren[position] = .element(period)
-        }
-        manifest.children = rootChildren
-        return manifest
+        return videos.filter { seen.insert($0.group).inserted }
     }
 
     /// What the relative addresses of the manifest are relative to: its own `BaseURL`, or the folder of the manifest.
@@ -356,8 +281,8 @@ package struct DASHManifest {
 
     /// The best sound of each language, the main one's first: a file the client reads no index of as it is (FFmpeg reads
     /// it), any other as a manifest of it alone (the client reads it: segments, or a file with its `sidx`), written by
-    /// `inline` (the resolver's `data:` address).
-    package func sounds(inline: (String) -> String) -> [Sound] {
+    /// the manifest's address with that sound as the choice (`DASHSelection`).
+    package func sounds() -> [Sound] {
         guard case .element(let period) = root.children[periodIndex] else { return [] }
         return audio.compactMap { place, language in
             guard case .element(let set) = period.children[place.set],
@@ -369,11 +294,23 @@ package struct DASHManifest {
             {
                 path = url.absoluteString
             } else {
-                guard let text = text(videoIDs: [], audio: [place]) else { return nil }
-                path = inline(text)
+                guard let id = ids[place], !endsNever(representation, in: set, period: period) else { return nil }
+                path = DASHSelection(audio: id).address(of: manifestURL)
             }
             return Sound(path: path, language: language.isEmpty ? nil : language)
         }
+    }
+
+    /// A timeline that repeats a segment to the end (`<S r="-1"/>`) in a manifest that tells no length of its period: it
+    /// has no end the client could count to, so the sound of it is not played (it would be required, and refused).
+    private func endsNever(_ representation: XMLTreeElement, in set: XMLTreeElement, period: XMLTreeElement) -> Bool {
+        let repeats = [representation, set, period].flatMap { $0.elements(named: "SegmentTemplate") }
+            .flatMap { $0.elements(named: "SegmentTimeline") }.flatMap { $0.elements(named: "S") }
+            .contains { ($0.attribute("r").flatMap { Int($0) } ?? 0) < 0 }
+        let hasLength =
+            period.attribute("duration").flatMap(DASHElements.duration(of:)) != nil
+            || root.attribute("mediaPresentationDuration").flatMap(DASHElements.duration(of:)) != nil
+        return repeats && !hasLength
     }
 
     /// The file of the picture `videoID`; nil when it is none of `videos` or has no `BaseURL` of its own.
@@ -399,71 +336,6 @@ package struct DASHManifest {
             hasOwn = hasOwn || isOwn
         }
         return hasOwn ? url : nil
-    }
-
-    // MARK: - Timelines
-
-    /// Gives every `<S r="-1"/>` of the timelines in `element` its repeats: to the next segment that says where it
-    /// starts, or to the end of the period. False when that cannot be told (the period's length is unknown).
-    private static func expandTimelines(
-        in element: inout XMLTreeElement, timescale: Double?, offset: Double, periodDuration: Double?
-    ) -> Bool {
-        var timescale = timescale
-        var offset = offset
-        // What a level says of its segments (a template with a timescale) holds for the levels below it, which are
-        // its siblings in the manifest: an adaptation set's template for its representations'.
-        for child in element.elements where Self.isSegmentInfo(child) {
-            timescale = child.attribute("timescale").flatMap { Double($0) } ?? timescale
-            offset = child.attribute("presentationTimeOffset").flatMap { Double($0) } ?? offset
-        }
-        if element.localName == "SegmentTimeline" {
-            return expandRepeats(
-                in: &element, timescale: timescale ?? 1, offset: offset, periodDuration: periodDuration)
-        }
-        for index in element.children.indices {
-            guard case .element(var child) = element.children[index] else { continue }
-            guard expandTimelines(in: &child, timescale: timescale, offset: offset, periodDuration: periodDuration)
-            else { return false }
-            element.children[index] = .element(child)
-        }
-        return true
-    }
-
-    private static func isSegmentInfo(_ element: XMLTreeElement) -> Bool {
-        ["SegmentTemplate", "SegmentBase", "SegmentList"].contains(element.localName)
-    }
-
-    private static func expandRepeats(
-        in timeline: inout XMLTreeElement, timescale: Double, offset: Double, periodDuration: Double?
-    ) -> Bool {
-        let positions = timeline.children.indices.filter { index in
-            if case .element(let element) = timeline.children[index] { element.localName == "S" } else { false }
-        }
-        var time = 0.0
-        for (n, position) in positions.enumerated() {
-            guard case .element(var segment) = timeline.children[position],
-                let duration = segment.attribute("d")
-                    .flatMap({ Double($0) }), duration > 0
-            else { return false }
-            if let start = segment.attribute("t").flatMap({ Double($0) }) { time = start }
-            var repeats = segment.attribute("r").flatMap { Int($0) } ?? 0
-            // The manifest's numbers: a count past what one holds is a timeline not expanded, never a trap.
-            guard repeats < Int(Int32.max) else { return false }
-            if repeats < 0 {
-                var limit: Double?
-                if n + 1 < positions.count, case .element(let next) = timeline.children[positions[n + 1]] {
-                    limit = next.attribute("t").flatMap { Double($0) }
-                }
-                guard let end = limit ?? periodDuration.map({ $0 * timescale + offset }) else { return false }
-                let count = ((end - time) / duration - 1e-6).rounded(.up)
-                guard count.isFinite, abs(count) < Double(Int32.max) else { return false }
-                repeats = max(0, Int(count) - 1)
-                segment.setAttribute("r", to: String(repeats))
-                timeline.children[position] = .element(segment)
-            }
-            time += duration * Double(repeats + 1)
-        }
-        return true
     }
 }
 

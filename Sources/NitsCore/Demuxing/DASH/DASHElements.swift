@@ -48,6 +48,20 @@ enum DASHElements {
         return nil
     }
 
+    /// The id of a representation: its own, or where it is (its set's place and its own) when it has none or another
+    /// has it already in the period (ids are unique in a period by the standard; some manifests are not). The resolver
+    /// (`DASHManifest`) and the client (`DASHPresentation`) name them by this one rule, as a choice is told by the id.
+    static func uniqueID(
+        of representation: XMLTreeElement, set: Int, index: Int, used: inout Set<String>
+    ) -> String {
+        var id = representation.attribute("id") ?? "\(set).\(index)"
+        if !used.insert(id).inserted {
+            id = "\(set).\(index)"
+            used.insert(id)
+        }
+        return id
+    }
+
     /// "24", "30000/1001".
     static func frameRate(of text: String) -> Double? {
         let parts = text.split(separator: "/").compactMap { Double($0) }

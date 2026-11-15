@@ -266,11 +266,9 @@ struct SingleFileDASHTests {
         defer { try? FileManager.default.removeItem(at: made.directory) }
         let (server, manifestURL) = try Self.served(made, videos: [0, 1, 2])
         defer { server.stop() }
-        // The resolver hands the files as they are; their ladder is the client's.
+        // The resolver hands the manifest's address as it is; the files and their ladder are the client's.
         let media = try #require(try await DASHManifestResolver().resolve(manifestURL, headers: [:]))
-        let encoded = try #require(media.path.split(separator: ",").last)
-        let text = String(decoding: try #require(Data(base64Encoded: String(encoded))), as: UTF8.self)
-        #expect(text.contains("SegmentBase") && !text.contains("SegmentList"))
+        #expect(URL(string: media.path)?.path == manifestURL.path)
         #expect(media.videoFormats.isEmpty, "One codec: the rungs are the ladder's, not formats")
         #expect(server.requests.filter { $0.path.hasSuffix(".mp4") }.isEmpty, "The resolver read no index")
 

@@ -412,6 +412,65 @@ struct DASHPlaylistsTests {
         #expect(try Self.master(built).variants.map(\.codecs) == ["avc1.4d401f", "hvc1.2.4.L120"])
     }
 
+    private static let twoCodecs = Self.mpd(
+        """
+        <AdaptationSet contentType="video">\(Self.template)\
+        \(Self.video("avc-hi", 1920, 1080, bandwidth: 5_000_000))\
+        \(Self.video("avc-lo", 960, 540, bandwidth: 1_000_000))\
+        \(Self.video("hevc-hi", 1920, 1080, bandwidth: 3_000_000, codecs: "hvc1.2.4.L120"))\
+        \(Self.video("hevc-lo", 960, 540, bandwidth: 600_000, codecs: "hvc1.2.4.L120"))\
+        </AdaptationSet>
+        <AdaptationSet contentType="audio" lang="en">\(Self.template)\
+        <Representation id="en" codecs="mp4a.40.2" bandwidth="64000"/></AdaptationSet>
+        """)
+
+    @Test("A choice by the address plays the picture named with the ladder of its codec, and the sounds")
+    func choosesALadder() throws {
+        let presentation = try Self.parse(Self.twoCodecs)
+        func variants(_ selection: DASHSelection) throws -> [String?] {
+            let built = try DASHPlaylists.build(presentation, id: "t", selection: selection)
+            #expect(try Self.master(built).renditions.count == 1, "The sound stays")
+            return try Self.master(built).variants.map(\.codecs)
+        }
+        #expect(try variants(DASHSelection()).count == 4, "No choice: the manifest as it is")
+        #expect(try variants(DASHSelection(video: "hevc-hi")) == ["hvc1.2.4.L120", "hvc1.2.4.L120"])
+        #expect(
+            try variants(DASHSelection(video: "avc-lo")) == ["avc1.4d401f", "avc1.4d401f"], "Any rung names its ladder")
+    }
+
+    @Test("A picture without a bitrate told is no ladder: the choice plays it alone; one the manifest lacks is refused")
+    func choosesOnePicture() throws {
+        let data = Self.mpd(
+            """
+            <AdaptationSet contentType="video">\(Self.template)\
+            \(Self.video("a", 1920, 1080, bandwidth: 0))\(Self.video("b", 960, 540, bandwidth: 0))</AdaptationSet>
+            """)
+        let built = try DASHPlaylists.build(try Self.parse(data), id: "t", selection: DASHSelection(video: "b"))
+        #expect(try Self.master(built).variants.map(\.resolution?.height) == [540])
+        #expect(throws: HLSPlaylistSourceError.self) {
+            try DASHPlaylists.build(try Self.parse(data), id: "t", selection: DASHSelection(video: "missing"))
+        }
+    }
+
+    @Test("A sound chosen by the address is the stream alone, whichever the manifest's best is")
+    func choosesASound() throws {
+        let data = Self.mpd(
+            """
+            <AdaptationSet contentType="video">\(Self.template)\(Self.video("v", 1280, 720, bandwidth: 1))</AdaptationSet>
+            <AdaptationSet contentType="audio" lang="en">\(Self.template)\
+            <Representation id="en-hi" codecs="mp4a.40.2" bandwidth="128000"/>\
+            <Representation id="en-lo" codecs="mp4a.40.2" bandwidth="64000"/></AdaptationSet>
+            """)
+        let presentation = try Self.parse(data)
+        let best = try DASHPlaylists.build(presentation, id: "t")
+        #expect(best.entries.map(\.representation.id) == ["en-hi", "v"])
+        let chosen = try DASHPlaylists.build(presentation, id: "t", selection: DASHSelection(audio: "en-lo"))
+        #expect(chosen.master == nil && chosen.entries.map(\.representation.id) == ["en-lo"])
+        #expect(throws: HLSPlaylistSourceError.self) {
+            try DASHPlaylists.build(presentation, id: "t", selection: DASHSelection(audio: "v"))
+        }
+    }
+
     @Test("The best sound of each language as an audio rendition, the main one first; the variants name the group")
     func soundsAsRenditions() throws {
         func sound(_ id: String, lang: String, bandwidth: Int, codecs: String = "mp4a.40.2", role: String = "")
@@ -644,23 +703,27 @@ struct DASHPlaylistsTests {
 }
 
 extension DASHPlaylistsTests {
-    @Test("A demuxer's location names the source: an inline manifest with the address it came from or without, a .mpd")
+    @Test("A demuxer's location names the source: an inline manifest, or an address that ends in .mpd, with its choice")
     func sourceOfALocation() throws {
         let text = "<MPD>https://signed.example/videoplayback?sig=secret</MPD>"
-        let told = MediaURL.inlineDASHManifest(text, source: Self.url)
+        let told = MediaURL.inlineDASHManifest(text)
         #expect(MediaURL.isInlineDASHManifest(told))
         let contents = try #require(MediaURL.inlineDASHManifestContents(told))
-        #expect(contents.source == Self.url)
-        #expect(String(decoding: contents.manifest, as: UTF8.self) == text)
-        // Neither the manifest nor its address (which may be signed too) is logged.
+        #expect(String(decoding: contents, as: UTF8.self) == text)
+        // The manifest is not logged.
         let logged = MediaURL.loggable(told)
-        #expect(!logged.contains("cdn.example") && !logged.contains("secret"), "\(logged)")
+        #expect(!logged.contains("secret"), "\(logged)")
 
-        let withSource = try #require(DASHPlaylists(media: told))
-        #expect(withSource.address == Self.url && !withSource.allowsFiles)
-        // Without its address, relative addresses are relative to the master's key: none is served.
-        let bare = try #require(DASHPlaylists(media: MediaURL.inlineDASHManifest(text)))
-        #expect(bare.address == bare.masterURL && !bare.allowsFiles)
+        // An inline manifest tells no address: relative addresses are relative to the master's key, none is served.
+        let bare = try #require(DASHPlaylists(media: told))
+        #expect(bare.address == bare.masterURL && !bare.allowsFiles && bare.selection.isEmpty)
+
+        // The fragment is the choice, not a part of the address the requests go to.
+        let chosen = try #require(
+            DASHPlaylists(media: DASHSelection(video: "hd").address(of: Self.url)))
+        #expect(chosen.address == Self.url && chosen.selection == DASHSelection(video: "hd"))
+        let sound = try #require(DASHPlaylists(media: DASHSelection(audio: "uk").address(of: Self.url)))
+        #expect(sound.address == Self.url && sound.selection == DASHSelection(audio: "uk"))
 
         let network = try #require(DASHPlaylists(media: "https://cdn.example/a/.mpd"))
         #expect(network.address.absoluteString == "https://cdn.example/a/.mpd" && !network.allowsFiles)

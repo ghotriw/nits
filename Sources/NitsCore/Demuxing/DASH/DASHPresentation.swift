@@ -280,6 +280,7 @@ extension DASHPresentation {
     ) -> PeriodRead {
         var read = PeriodRead()
         var representations: [Representation] = []
+        var usedIDs = Set<String>()
         for (setIndex, node) in period.children.enumerated() {
             guard case .element(let set) = node, set.localName == "AdaptationSet" else { continue }
             guard !DASHElements.isTrickMode(set) else { continue }
@@ -296,8 +297,8 @@ extension DASHPresentation {
                     continue
                 }
                 let value = { (name: String) in element.attribute(name) ?? set.attribute(name) }
-                // As the resolver names one without an id (`DASHManifest`): its set and its place in it.
-                let id = element.attribute("id") ?? "\(setIndex).\(index)"
+                // As the resolver names it (`DASHElements.uniqueID`).
+                let id = DASHElements.uniqueID(of: element, set: setIndex, index: index, used: &usedIDs)
                 let bandwidth = element.attribute("bandwidth").flatMap { Int($0) } ?? 0
                 let base = baseURL(of: element, relativeTo: setBase)
                 let levels = [period, set, element]
@@ -305,8 +306,10 @@ extension DASHPresentation {
                 // played (a sound with no decoder, a lesser one of its language).
                 var told: Told
                 do throws(DASHPresentationError) {
+                    // The templates' `$RepresentationID$` is the id the manifest gives, not the unique one that names it.
                     told = try segmentsOf(
-                        levels: levels, base: base, id: id, bandwidth: bandwidth, mimeType: value("mimeType"),
+                        levels: levels, base: base, id: element.attribute("id") ?? "\(setIndex).\(index)",
+                        bandwidth: bandwidth, mimeType: value("mimeType"),
                         periodDuration: duration, live: live)
                     if isOfSeveral && told.index != nil {
                         throw .unsupported("one file (SegmentBase) in a manifest of several periods")

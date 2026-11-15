@@ -155,13 +155,11 @@ struct DASHClientTests {
 
     // MARK: - Routing (`MediaDemuxer.init`)
 
-    @Test("A demuxer opens the resolver's manifest with the client, with the address it came from")
+    @Test("A demuxer opens an inline manifest (a site's) with the client")
     func demuxerOpensWithTheClient() throws {
         guard let server = try Self.server() else { return }
         defer { server.stop() }
-        let address = try #require(URL(string: server.url("manifest.mpd")))
-        let demuxer = try #require(
-            MediaDemuxer(url: MediaURL.inlineDASHManifest(Self.manifest(server), source: address)))
+        let demuxer = try #require(MediaDemuxer(url: MediaURL.inlineDASHManifest(Self.manifest(server))))
         let input = try #require(demuxer.input as? HLSInput)
         #expect(input.streamingName == "DASH")
         #expect(demuxer.variants.count == SyntheticTestMediaFactory.dashLadderRungs.count)

@@ -6,7 +6,7 @@ import os
 /// playlist. The client plays them as it plays HLS's (`HLSInput`); see `.agents/dash-client/PLAN.md`.
 ///
 /// **Addresses.** The playlists are named by keys of the source's own (`nits-dash://<source>/…`), never fetched: the
-/// manifest (inline, from the resolver, or at `address`) is read once and every playlist is answered from it. What the
+/// manifest (inline, from a site's extractor, or at `address`) is read once and every playlist is answered from it. What the
 /// keys stand for stays here, so no lane's address carries a manifest.
 ///
 /// **One file.** A representation that is one MP4 file (`SegmentBase`) has its segments told by its index (`sidx`),
@@ -29,9 +29,11 @@ struct DASHPlaylists: HLSPlaylistSource {
 
     /// The key of the master playlist: what `HLSInput` opens.
     let masterURL: URL
-    /// Where the manifest came from (after redirects, for an inline one the resolver's): its relative addresses are
+    /// Where the manifest came from (after redirects; an inline one tells none): its relative addresses are
     /// relative to it, and the requests' headers are scoped by it.
     let address: URL
+    /// What of the manifest is played, as the address told (`DASHSelection`).
+    let selection: DASHSelection
     private let id: String
     let inline: Data?
     private let manifest = Store<Built>()
@@ -56,10 +58,13 @@ struct DASHPlaylists: HLSPlaylistSource {
     /// A live stream's history, when the manifest is one (`DASHHistory`): its playlists list up to the head.
     let history: DASHHistory?
 
-    /// The manifest at `address`, or `inline` (the resolver's, which came from `address`).
-    init(address: URL, inline: Data? = nil, clock: @escaping @Sendable () -> Date = { Date() }) {
+    /// The manifest at `address` (or `inline`, a copy of it), playing what `selection` names.
+    init(
+        address: URL, inline: Data? = nil, selection: DASHSelection = DASHSelection(),
+        clock: @escaping @Sendable () -> Date = { Date() }
+    ) {
         let id = UUID().uuidString.lowercased()
-        self.init(id: id, address: address, inline: inline, clock: clock)
+        self.init(id: id, address: address, inline: inline, selection: selection, clock: clock)
     }
 
     /// An inline manifest whose address is not told (one built from what a site lists): its addresses are absolute, and
@@ -70,10 +75,12 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     private init(
-        id: String, address: URL, inline: Data?, clock: @escaping @Sendable () -> Date, history: DASHHistory? = nil
+        id: String, address: URL, inline: Data?, selection: DASHSelection = DASHSelection(),
+        clock: @escaping @Sendable () -> Date, history: DASHHistory? = nil
     ) {
         self.clock = clock
         self.history = history
+        self.selection = selection
         self.id = id
         self.address = address
         self.inline = inline
@@ -93,8 +100,8 @@ struct DASHPlaylists: HLSPlaylistSource {
             }
             let id = UUID().uuidString.lowercased()
             self.init(
-                id: id, address: inline.source ?? URL(string: "\(Self.scheme)://\(id)/")!, inline: inline.manifest,
-                clock: clock, history: history)
+                id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline, clock: clock, history: history
+            )
             return
         }
         // A history is a manifest of keys the resolver made, never an address.
@@ -104,12 +111,16 @@ struct DASHPlaylists: HLSPlaylistSource {
         guard var address = isNetwork ? URL(string: normalized) : URL(fileURLWithPath: normalized),
             assumingManifest || address.lastPathComponent.lowercased().hasSuffix(".mpd")
         else { return nil }
-        // `HTTPS://`: the client's requests know a network address by its scheme in lower case.
+        // `HTTPS://`: the client's requests know a network address by its scheme in lower case. The fragment is the
+        // choice (`DASHSelection`), not a part of the address the requests go to.
+        var selection = DASHSelection()
         if isNetwork, var components = URLComponents(url: address, resolvingAgainstBaseURL: false) {
             components.scheme = components.scheme?.lowercased()
+            selection = DASHSelection(fragment: components.percentEncodedFragment)
+            components.fragment = nil
             address = components.url ?? address
         }
-        self.init(address: address)
+        self.init(address: address, selection: selection)
     }
 
     /// The client's input for this manifest, or nil with the reason recorded on `interrupt` (the opening's error). An
@@ -181,7 +192,7 @@ struct DASHPlaylists: HLSPlaylistSource {
                     data, servedFrom: servedFrom, now: clock().addingTimeInterval(offset))
             }
         }
-        return try DASHPlaylists.build(presentation, id: id)
+        return try DASHPlaylists.build(presentation, id: id, selection: selection)
     }
 
     // MARK: - Building
@@ -239,9 +250,37 @@ struct DASHPlaylists: HLSPlaylistSource {
     /// How far apart two segments' starts may be and still be one boundary, with no frame rate told.
     static let boundaryTolerance = 0.01
 
-    static func build(_ presentation: DASHPresentation, id: String) throws(HLSPlaylistSourceError) -> Built {
-        let videos = presentation.representations.filter { $0.kind == .video }
-        let sounds = bestSounds(presentation.representations.filter { $0.kind == .audio })
+    /// The pictures a choice plays: the one named and those that switch with it (one codec, supplemental codec and
+    /// range, each with a bitrate told; a ladder of two or more), else it alone. All of them without a choice.
+    static func pictures(
+        of videos: [DASHPresentation.Representation], selection: DASHSelection
+    ) throws(HLSPlaylistSourceError) -> [DASHPresentation.Representation] {
+        guard let id = selection.video else { return videos }
+        guard let chosen = videos.first(where: { $0.id == id }) else {
+            throw .unsupported("the picture '\(id)' the address names is not in the manifest")
+        }
+        let family = { (video: DASHPresentation.Representation) in
+            [video.codecs.flatMap(CodecFamily.video(in:)), video.supplementalCodecs.flatMap(CodecFamily.video(in:))]
+        }
+        let rungs = videos.filter {
+            family($0) == family(chosen) && $0.videoRange == chosen.videoRange && $0.bandwidth > 0
+        }
+        return chosen.bandwidth > 0 && rungs.count > 1 ? rungs : [chosen]
+    }
+
+    static func build(
+        _ presentation: DASHPresentation, id: String, selection: DASHSelection = DASHSelection()
+    ) throws(HLSPlaylistSourceError) -> Built {
+        var videos = presentation.representations.filter { $0.kind == .video }
+        var sounds = bestSounds(presentation.representations.filter { $0.kind == .audio })
+        if let audio = selection.audio {
+            // A sound alone: the manifest's other streams are the picture's file, or another sound's.
+            guard let chosen = presentation.representations.first(where: { $0.kind == .audio && $0.id == audio })
+            else { throw .unsupported("the sound '\(audio)' the address names is not in the manifest") }
+            (videos, sounds) = ([], [chosen])
+        } else {
+            videos = try pictures(of: videos, selection: selection)
+        }
         let isLive = presentation.live != nil
         let pictures = numberedPictures(videos, isLive: isLive)
         let played = pictures.map(\.representation) + sounds

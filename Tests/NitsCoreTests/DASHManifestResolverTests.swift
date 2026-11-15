@@ -49,7 +49,8 @@ struct DASHManifestResolverTests {
         // One codec: its rungs are the demuxer's variants, no other picture is there to choose from.
         #expect(media.videoFormats.isEmpty)
         #expect(media.headers == headers)
-        #expect(MediaURL.isInlineDASHManifest(media.path))
+        // The manifest's own address, the choice in its fragment: the client reads it as it plays any `.mpd`.
+        #expect(media.path == manifestURL.absoluteString + "#nits-video=high")
 
         let demuxer = try #require(MediaDemuxer(url: media.path, headers: media.headers))
         #expect(demuxer.hasVideo && demuxer.hasAudio)
@@ -235,8 +236,8 @@ extension DASHManifestResolverTests {
         #expect(media.audioFiles.map(\.isRequired) == [true, false])
         #expect(media.audioFiles.map(\.language) == ["en", "uk"])
         #expect(media.audioFiles.first?.url.absoluteString == server.url("en.webm"))
-        #expect(MediaURL.isInlineDASHManifest(media.audioFiles.last?.url.absoluteString ?? ""))
-        // Named by their language, not by an address (a manifest of it alone is a `data:` one).
+        #expect(media.audioFiles.last?.url.absoluteString == server.url("dash.mpd") + "#nits-audio=uk")
+        // Named by their language, not by an address (the manifest's, with the choice).
         #expect(
             media.audioFiles.map(\.title) == ["en", "uk"].map { Locale.current.localizedString(forLanguageCode: $0) })
     }

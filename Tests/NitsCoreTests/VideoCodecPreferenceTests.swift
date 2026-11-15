@@ -105,9 +105,8 @@ struct VideoCodecPreferenceTests {
         let manifest = try #require(Self.manifest(codecs: VideoCodecPreference()))
         #expect(manifest.codecGroups.map(\.id) == ["h-high", "v-high"])
         let vp9 = try #require(manifest.codecGroups.last)
-        let text = try #require(manifest.ladderText(of: vp9))
-        #expect(text.contains(#"id="v-high""#) && text.contains(#"id="v-low""#))
-        #expect(!text.contains(#"id="h-high""#))
+        #expect(manifest.ladder(of: vp9).map(\.id) == ["v-high", "v-low"])
+        #expect(manifest.address(videoID: vp9.id)?.hasSuffix("#nits-video=v-high") == true)
     }
 }
 
@@ -186,8 +185,8 @@ extension VideoCodecPreferenceTests {
         #expect(mp4.ladder.map(\.id) == ["hi", "lo"])
         let webm = try manifest("webm")
         #expect(webm.videos.map(\.isSegmented) == [false, false])
-        #expect(webm.ladder.isEmpty && webm.ladderText() == nil)
+        #expect(webm.ladder.isEmpty)
         // Each is still a picture to play.
-        #expect(webm.text(videoID: "hi") != nil)
+        #expect(webm.address(videoID: "hi") != nil)
     }
 }
