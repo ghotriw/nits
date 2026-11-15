@@ -6,6 +6,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @Suite("HLS discontinuities", .serialized, .hostDependent, .networkServer)
 struct HLSDiscontinuityTests {

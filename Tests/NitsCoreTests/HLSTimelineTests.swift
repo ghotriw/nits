@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// `HLSTimeline`: a rendition's segments on the playlist's timeline, live reloads merged by media sequence, and other
 /// renditions aligned to it.
@@ -135,7 +136,7 @@ struct HLSTimelineTests {
     func reloadSlides() throws {
         var timeline = HLSTimeline(try Self.playlist([6, 6, 6], sequence: 100))
         let firstLoad = timeline.entries
-        #expect(timeline.liveWindow == LiveWindow(start: 0, end: 18, hasSlid: true, hasEnded: false))
+        #expect(timeline.liveWindow == StreamingLiveWindow(start: 0, end: 18, hasSlid: true, hasEnded: false))
         #expect(timeline.reload(try Self.playlist([6, 6, 6], sequence: 100)) == .unchanged)
         // A re-listed segment's duration changed: its place stays as first loaded.
         #expect(timeline.reload(try Self.playlist([6, 6.5, 4, 6], sequence: 101)) == .updated(added: 2, expired: 1))
@@ -147,11 +148,11 @@ struct HLSTimelineTests {
         // Read before 100: 100 expired unread.
         #expect(timeline.next(after: Self.entry(99, start: -6)) == .expired(resumingAt: timeline.entries[0]))
         #expect(timeline.next(after: timeline.entries[3]) == .pending)
-        #expect(timeline.liveWindow == LiveWindow(start: 6, end: 28, hasSlid: true, hasEnded: false))
+        #expect(timeline.liveWindow == StreamingLiveWindow(start: 6, end: 28, hasSlid: true, hasEnded: false))
         // The stream ends: the window stays live, ended.
         #expect(
             timeline.reload(try Self.playlist([4, 6], sequence: 103, ended: true)) == .updated(added: 0, expired: 2))
-        #expect(timeline.liveWindow == LiveWindow(start: 18, end: 28, hasSlid: true, hasEnded: true))
+        #expect(timeline.liveWindow == StreamingLiveWindow(start: 18, end: 28, hasSlid: true, hasEnded: true))
         #expect(timeline.next(after: timeline.entries[1]) == .ended)
     }
 
@@ -165,7 +166,7 @@ struct HLSTimelineTests {
         var growing = HLSTimeline(try Self.playlist([6], sequence: 0))
         #expect(growing.liveWindow?.hasSlid == false)
         growing.reload(try Self.playlist([6, 6], sequence: 1))
-        #expect(growing.liveWindow == LiveWindow(start: 6, end: 18, hasSlid: true, hasEnded: false))
+        #expect(growing.liveWindow == StreamingLiveWindow(start: 6, end: 18, hasSlid: true, hasEnded: false))
     }
 
     @Test("A reload too late to match a segment: placed after the old end, the missed segments by count or by date")

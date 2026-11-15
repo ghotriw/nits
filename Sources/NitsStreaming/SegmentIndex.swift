@@ -119,7 +119,7 @@ package struct SegmentIndex: Equatable, Sendable {
     private struct Reference {
         var isIndex: Bool
         var size: Int64
-        var duration: Int64
+        package var duration: Int64
         var startsWithSAP: Bool
     }
 

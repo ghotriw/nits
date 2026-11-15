@@ -671,7 +671,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         // DASH: the client, told the manifest as playlists (`DASHPlaylists`). What it does not play (the source's refusal,
         // with its reason) is the opening's error: nothing falls back on FFmpeg's DASH demuxer, which is not built.
         // A live stream's history (`LiveHistory`) is the client's alone: its segments are named by keys only it resolves.
-        if let playlists = DASHPlaylists(media: url, history: liveHistory) {
+        if let playlists = DASHPlaylists(media: url, history: liveHistory?.streamHistory) {
             guard let input = playlists.makeInput(headers: headers, interrupt: interrupt) else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil

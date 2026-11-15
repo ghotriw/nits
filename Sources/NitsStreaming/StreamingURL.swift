@@ -20,6 +20,18 @@ package enum StreamingURL {
 
     private static let inlineDASHPrefix = "data:application/dash+xml;"
 
+    /// Normalizes an input path: a `file://` URL becomes its decoded path; a plain path is already one and stays as is
+    /// (a file may be named `a%41.mkv`).
+    package static func normalizeMediaPath(_ path: String) -> String {
+        if isNetworkURL(path) {
+            return path
+        }
+        if path.lowercased().hasPrefix("file://") {
+            return URL(string: path)?.path(percentEncoded: false) ?? String(path.dropFirst("file://".count))
+        }
+        return path
+    }
+
     /// `manifest` (the text of an MPD) as a location the demuxer opens. For a manifest built here, e.g. from the
     /// segments a site's extractor lists, whose own file would have to be kept somewhere and cleaned up. Its addresses
     /// are absolute: it tells no address it came from.

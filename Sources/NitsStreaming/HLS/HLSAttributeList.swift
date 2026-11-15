@@ -6,13 +6,13 @@ import Foundation
 /// Read leniently, as players read real playlists: a name is matched case-sensitively but anywhere a pair starts (not
 /// inside `SUPPLEMENTAL-CODECS` for `CODECS`), whitespace around pairs is skipped, a quoted string that never closes
 /// runs to the end of the line, and a word without `=` is dropped.
-struct HLSAttributeList: Sendable, Equatable {
+package struct HLSAttributeList: Sendable, Equatable {
     private(set) var values: [String: String] = [:]
     /// The names whose value was quoted: an enumerated string (`TYPE=AUDIO`) and a quoted one (`URI="…"`) are told
     /// apart where the RFC types them differently (`CLOSED-CAPTIONS=NONE` and `CLOSED-CAPTIONS="cc"`).
     private(set) var quoted: Set<String> = []
 
-    init(_ text: Substring) {
+    package init(_ text: Substring) {
         var rest = text[...]
         while !rest.isEmpty {
             rest = rest.drop { $0 == " " || $0 == "\t" || $0 == "," }
@@ -91,21 +91,21 @@ struct HLSAttributeList: Sendable, Equatable {
 }
 
 /// A byte range, `<length>[@<offset>]` (`EXT-X-BYTERANGE`, `EXT-X-MAP`'s `BYTERANGE`).
-struct HLSByteRange: Sendable, Equatable, Hashable {
-    var offset: Int64
-    var length: Int64
+package struct HLSByteRange: Sendable, Equatable, Hashable {
+    package var offset: Int64
+    package var length: Int64
 
     /// Nil for a range past `Int64.max`, which a playlist from the network may write.
-    init?(offset: Int64, length: Int64) {
+    package init?(offset: Int64, length: Int64) {
         guard offset >= 0, length >= 0, offset <= Int64.max - length else { return nil }
         self.offset = offset
         self.length = length
     }
 
-    var range: Range<Int64> { offset..<(offset + length) }
+    package var range: Range<Int64> { offset..<(offset + length) }
 
     /// The length and the offset if one is given; nil for a malformed range.
-    static func parse(_ text: some StringProtocol) -> (length: Int64, offset: Int64?)? {
+    package static func parse(_ text: some StringProtocol) -> (length: Int64, offset: Int64?)? {
         let parts = text.trimmingCharacters(in: .whitespaces).split(separator: "@", omittingEmptySubsequences: false)
         guard parts.count <= 2, let length = Int64(parts[0]), length >= 0 else { return nil }
         guard parts.count == 2 else { return (length, nil) }

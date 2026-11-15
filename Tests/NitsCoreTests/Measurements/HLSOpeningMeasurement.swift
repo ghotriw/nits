@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// Measurement (skipped unless asked for, see README.md): where the opening of a real HLS stream goes, and of a run
 /// opened by a seek. Each run opens the stream anew, decodes its first picture, seeks into it and decodes the picture

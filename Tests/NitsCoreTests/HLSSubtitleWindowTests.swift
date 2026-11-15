@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// Reads of a subtitle rendition outside playback (`EmbeddedSubtitleReader.readSubtitles(hls:in:interrupt:)`) over a
 /// playlist with a discontinuity: cues are placed by their sequence's offset, which only the pictures anchor.

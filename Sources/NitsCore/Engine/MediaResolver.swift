@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// Turns the address of a page (a video site's) into the streams that play it, before the media opens: the host's
 /// (Nits' yt-dlp). The load keeps the page's address: the history, the playlist and `PlayerEngine.currentPath` go by
@@ -77,34 +78,29 @@ public struct LiveHistory: Sendable, Equatable {
     /// known and whose length is not, and the length of those to come.
     public static let nominalSegmentDuration = 5.0
 
-    /// The address of segment `number` of the stream at `base` (YouTube's `sq=N`); `number` may be a manifest's
-    /// `$Number$`.
+    // The address format of a history's segments is the client's (`StreamHistory`); the resolvers that build a manifest
+    // for it (NitsKit) reach it here.
     package static func segmentAddress(_ base: String, number: String) -> String {
-        base + (base.contains("?") ? "&" : "?") + "sq=" + number
+        StreamHistory.segmentAddress(base, number: number)
     }
 
-    /// `segmentAddress` as a URL; nil when `base` is not one.
     package static func segmentURL(_ base: String, number: Int) -> URL? {
-        URL(string: segmentAddress(base, number: String(number)))
+        StreamHistory.segmentURL(base, number: number)
     }
 
-    /// The host of the addresses the manifest names, which no DNS knows: the client asks the source for the address of
-    /// each (`HLSPlaylistSource.address(of:)`).
-    package static let host = "live.nits.invalid"
+    package static var host: String { StreamHistory.host }
 
-    /// What a manifest names the stream `key` by: the address its segments are asked for (with `sq=N`) through the
-    /// source (`LiveSegmentSource.url(for:number:)`), not an address that exists.
     package static func streamAddress(_ key: String) -> String {
-        "https://\(host)/\(key)"
+        StreamHistory.streamAddress(key)
     }
 
-    /// The stream and the number of the segment `url` names, when it is one of the manifest's addresses.
     package static func segment(named url: URL) -> (key: String, number: Int)? {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.host == host,
-            let number = components.queryItems?.first(where: { $0.name == "sq" })?.value.flatMap({ Int($0) })
-        else { return nil }
-        let key = String(components.path.drop { $0 == "/" })
-        return key.isEmpty ? nil : (key, number)
+        StreamHistory.segment(named: url)
+    }
+
+    /// The client's view of it: the head's number and the source.
+    var streamHistory: StreamHistory {
+        StreamHistory(headNumber: headNumber, source: source.map(LiveSegmentSourceBridge.init))
     }
 
     public init(origin: Double, end: Double, headNumber: Int = 0, source: (any LiveSegmentSource)? = nil) {

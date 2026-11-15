@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// The part of a live HLS stream that can be played: from the first segment its playlist lists to the end of the last,
 /// in seconds on the timeline of the packets. Both ends move with real time, as the playlist slides.
@@ -46,4 +47,13 @@ extension MediaDemuxer {
         }
     }
 
+}
+
+extension LiveWindow {
+    /// The window the streaming client tells (`HLSInput.liveWindow()`).
+    init(_ window: StreamingLiveWindow) {
+        self.init(
+            start: window.start, end: window.end, hasSlid: window.hasSlid, hasEnded: window.hasEnded,
+            holdBack: window.holdBack)
+    }
 }

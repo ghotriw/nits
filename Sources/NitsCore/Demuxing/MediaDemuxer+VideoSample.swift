@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreMedia
 import Foundation
+internal import NitsStreaming
 import VideoToolbox
 
 extension MediaDemuxer {

@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 import os
 
 /// A dynamic MPD as playlists that slide: the clock the live edge is read off, the manifest fetched again when it says it
@@ -15,7 +16,7 @@ import os
 /// `minimumUpdatePeriod` has passed since the last fetch; asked sooner, the manifest held is read at the clock now.
 extension DASHPlaylists {
     /// A manifest as fetched, and when (the host's clock).
-    struct Fetched: Sendable {
+    package struct Fetched: Sendable {
         var data: Data
         var servedFrom: URL
         var at: Date
@@ -34,15 +35,15 @@ extension DASHPlaylists {
 
     /// What the live part of a source keeps: the manifest as last fetched, the server's clock, a presentation read at the
     /// clock now, and the numbers each timeline's segments were given.
-    final class LiveState: @unchecked Sendable {
+    package final class LiveState: @unchecked Sendable {
         /// What a timeline's segments were numbered, to continue the numbers when its window slides (ExoPlayer's
         /// `copyWithNewRepresentation` matches the end of the old index to the start of the new one).
-        struct Memory: Sendable {
+        package struct Memory: Sendable {
             var first: (start: Double, number: Int)
             var last: (start: Double, number: Int, duration: Double)
         }
 
-        struct State: Sendable {
+        package struct State: Sendable {
             var fetch = Store<Fetched>()
             /// The manifest last fetched whole: what a fetch that fails leaves the stream reading.
             var held: Fetched?
@@ -128,12 +129,12 @@ extension DASHPlaylists {
                         }
                     } catch {
                         if error == .interrupted { throw .load(error) }
-                        AppLog.warning(.demuxer, "DASH: the clock at \(url.host ?? "?") did not answer (\(error))")
+                        StreamingLog.warning("DASH: the clock at \(url.host ?? "?") did not answer (\(error))")
                     }
                     if server != nil { break }
                 }
             default:
-                AppLog.warning(.demuxer, "DASH: a clock of \(timing.scheme) is not read")
+                StreamingLog.warning("DASH: a clock of \(timing.scheme) is not read")
             }
             if let server { return server.timeIntervalSince(clock()) }
         }
@@ -186,7 +187,7 @@ extension DASHPlaylists {
             // come (shaka-player and dash.js keep it too); the next ask tries again. An abort is the caller's.
             if case .load(.interrupted) = error { throw error }
             guard let held = live.state.withLock({ $0.held }) else { throw error }
-            AppLog.warning(.demuxer, "DASH: the manifest did not load (\(error)); the one held is read again")
+            StreamingLog.warning("DASH: the manifest did not load (\(error)); the one held is read again")
             return held
         }
         return result
@@ -220,7 +221,7 @@ extension DASHPlaylists {
             guard case .unreadable = error, let held = live.state.withLock({ $0.held }),
                 held.generation != fetched.generation
             else { throw error }
-            AppLog.warning(.demuxer, "DASH: the manifest fetched does not read; the one held is read again")
+            StreamingLog.warning("DASH: the manifest fetched does not read; the one held is read again")
             used = held
             presentation = try self.presentation(
                 held.data, servedFrom: held.servedFrom, now: host.addingTimeInterval(offset), periodStart: periodStart)

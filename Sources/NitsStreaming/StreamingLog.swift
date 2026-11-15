@@ -6,7 +6,7 @@ import os
 /// Until a sink is installed lines are dropped (the client's own tests).
 package enum StreamingLog {
     package enum Level: Int, Sendable, Comparable {
-        case debug, info, warning, error
+        case debug, info, notice, warning, error
 
         package static func < (lhs: Level, rhs: Level) -> Bool { lhs.rawValue < rhs.rawValue }
     }

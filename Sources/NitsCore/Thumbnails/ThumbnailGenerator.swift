@@ -61,6 +61,7 @@ public final class ThumbnailGenerator: @unchecked Sendable {
         onProgress: @Sendable @escaping ([ThumbnailItem], Double) -> Void
     ) -> [ThumbnailItem] {
         guard !isCancelled else { return [] }
+        StreamingLogBridge.install()
 
         let cleanPath = MediaURL.normalizeMediaPath(path)
         // A finished HLS or DASH stream goes through Nits' own client: FFmpeg has neither demuxer left to open it.

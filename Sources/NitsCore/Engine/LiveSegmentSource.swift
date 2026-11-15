@@ -1,4 +1,5 @@
 import Foundation
+internal import NitsStreaming
 
 /// Where a live stream's newest segment is: its number and its start, in seconds of the stream's time.
 public struct LiveHead: Sendable, Equatable {
@@ -61,4 +62,36 @@ extension LiveSegmentSource {
     public var segmentWaitLimit: Duration { .seconds(60) }
     public var headPollInterval: Duration { .seconds(5) }
     public func hasEnded(shouldAbort: () -> Bool) -> Bool? { true }
+}
+
+/// A resolver's `LiveSegmentSource` as the streaming client's source of a history (`StreamHistorySource`).
+final class LiveSegmentSourceBridge: StreamHistorySource {
+    private let source: any LiveSegmentSource
+
+    init(_ source: any LiveSegmentSource) {
+        self.source = source
+    }
+
+    func url(for key: String, number: Int) -> URL? {
+        source.url(for: key, number: number)
+    }
+
+    func head(shouldAbort: () -> Bool) -> StreamHeadAnswer {
+        switch source.head(shouldAbort: shouldAbort) {
+        case .head(let head): .head(StreamHead(number: head.number, startTime: head.startTime))
+        case .answeredWithoutHead: .answeredWithoutHead
+        case .noAnswer: .noAnswer
+        }
+    }
+
+    func renewSignature(shouldAbort: () -> Bool) -> Bool {
+        source.renewSignature(shouldAbort: shouldAbort)
+    }
+
+    var segmentWaitLimit: Duration { source.segmentWaitLimit }
+    var headPollInterval: Duration { source.headPollInterval }
+
+    func hasEnded(shouldAbort: () -> Bool) -> Bool? {
+        source.hasEnded(shouldAbort: shouldAbort)
+    }
 }

@@ -12,13 +12,7 @@ public enum MediaURL {
     /// Normalizes an input path: a `file://` URL becomes its decoded path; a plain path is already one and stays as is
     /// (a file may be named `a%41.mkv`).
     public static func normalizeMediaPath(_ path: String) -> String {
-        if isNetworkURL(path) {
-            return path
-        }
-        if path.lowercased().hasPrefix("file://") {
-            return URL(string: path)?.path(percentEncoded: false) ?? String(path.dropFirst("file://".count))
-        }
-        return path
+        StreamingURL.normalizeMediaPath(path)
     }
 
     /// A saved HLS manifest whose media is on the network (`path` a file path, as `normalizeMediaPath`

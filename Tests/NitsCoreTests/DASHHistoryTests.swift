@@ -4,6 +4,7 @@ import Testing
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// What a test makes of the server of a live stream: the addresses, the head it reports, the signature it renews, and
 /// whether the stream is over. The waits are short (tens of milliseconds): they hold a slot of the network budget.
@@ -98,7 +99,7 @@ struct DASHHistoryListingTests {
     private static func history(
         source: TestLiveSource, head: Int, clock: TestClock = TestClock()
     ) -> (DASHHistory, TestClock) {
-        (DASHHistory(source: source, head: head, clock: { clock.read() }), clock)
+        (DASHHistory(source: LiveSegmentSourceBridge(source), head: head, clock: { clock.read() }), clock)
     }
 
     private static let never: @Sendable () -> Bool = { false }
@@ -276,7 +277,7 @@ struct DASHHistoryListingTests {
         let playlists = try #require(
             DASHPlaylists(
                 media: MediaURL.inlineDASHManifest(manifest.text()),
-                history: LiveHistory(origin: 0, end: 5, headNumber: 3, source: source)))
+                history: LiveHistory(origin: 0, end: 5, headNumber: 3, source: source).streamHistory))
         let named = try #require(URL(string: "https://live.nits.invalid/136?sq=7"))
         #expect(playlists.address(of: named)?.absoluteString == "https://media.example/136/7")
         let other = try #require(URL(string: "https://media.example/other?sq=7"))

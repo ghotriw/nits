@@ -268,37 +268,19 @@ enum EmbeddedSubtitleReader {
     static func readSubtitles(
         hls source: HLSSubtitleWindowSource, in range: ClosedRange<Double>, interrupt: FFmpegInterrupt? = nil
     ) -> (packets: Packets, covered: ClosedRange<Double>?)? {
-        guard let readable = source.readable(in: range) else { return (Packets(), nil) }
-        let covered = readable.range
-        let limit = readable.limit
-        let timebase = AVRational(num: 1, den: 1000)
-        // One condition for the transport (on URLSession's queue, where `Task.isCancelled` is never the task's), the lane
-        // and the loop: the interrupt, which the controller sets when it cancels the read.
-        let abort: @Sendable () -> Bool = { interrupt?.shouldInterruptFFmpeg == true }
         StreamingLogBridge.install()
-        let transport = HTTPSessionTransport(source: source.address, headers: source.headers, shouldAbort: abort)
-        transport.adopt(source.cookies())
-        let loader = HLSSegmentLoader(transport: transport, allowsFiles: source.allowsFiles)
-        let lane = HLSLane(
-            kind: .subtitle, url: source.url, timeline: source.timeline, variables: source.variables,
-            playlists: source.playlists, loader: loader, anchors: source.anchors, shouldAbort: abort)
-        defer { lane.close() }
-        lane.setStreams([HLSLane.StreamSlot(table: 0, timebase: timebase, type: AVMEDIA_TYPE_SUBTITLE)])
-        lane.reposition(at: covered.lowerBound)
-        var collector = PacketCollector(textCodec: AV_CODEC_ID_WEBVTT, timebase: timebase, index: 0)
-        var pkt = AVPacket()
-        while !isCancelled(interrupt) {
-            let code = lane.fill(before: limit.isFinite ? limit : nil)
-            if code == FFmpegErrorCode.eof || code == HLSLane.held {
-                return isCancelled(interrupt) ? nil : (collector.packets, covered)
-            }
-            guard code >= 0 else { return nil }
-            if lane.pendingTime > covered.upperBound { return (collector.packets, covered) }
-            lane.take(into: &pkt)
-            collector.add(&pkt)
-            av_packet_unref(&pkt)
+        // One condition for the transport (on URLSession's queue, where `Task.isCancelled` is never the task's) and the
+        // lane: the interrupt, which the controller sets when it cancels the read.
+        let abort: @Sendable () -> Bool = { interrupt?.shouldInterruptFFmpeg == true }
+        var collector = PacketCollector(
+            textCodec: AV_CODEC_ID_WEBVTT, timebase: AVRational(num: 1, den: 1000), index: 0)
+        let result = source.read(
+            in: range, shouldAbort: abort, isCancelled: { isCancelled(interrupt) }, packet: { collector.add(&$0) })
+        switch result {
+        case .unreadable: return (Packets(), nil)
+        case .read(let covered): return (collector.packets, covered)
+        case .failed: return nil
         }
-        return nil
     }
 
     /// The starts of each subtitle stream's packets by the file's own index, on the zero-based timeline, from a

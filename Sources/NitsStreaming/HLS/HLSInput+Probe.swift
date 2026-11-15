@@ -4,8 +4,10 @@ internal import NitsStreaming
 extension HLSInput {
     /// The length of a finished HLS stream (a playlist that ends), from its playlists alone: the top variant's, for a
     /// master. Nil for a live one, or one that doesn't load in time (`interrupt`). No segment is read.
-    static func finishedDuration(of address: String, headers: [String: String], interrupt: FFmpegInterrupt) -> Double? {
-        let url = MediaURL.normalizeMediaPath(address)
+    package static func finishedDuration(of address: String, headers: [String: String], interrupt: FFmpegInterrupt)
+        -> Double?
+    {
+        let url = StreamingURL.normalizeMediaPath(address)
         let isLocal = !HTTPSessionTransport.serves(url)
         guard let location = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }

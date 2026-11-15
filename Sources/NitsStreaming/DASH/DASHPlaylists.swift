@@ -24,7 +24,7 @@ import os
 ///
 /// A `static` manifest of several periods plays as one timeline, each period a discontinuity; what is not played yet is refused (`HLSPlaylistSourceError.unsupported`) with
 /// the reason.
-struct DASHPlaylists: HLSPlaylistSource {
+package struct DASHPlaylists: HLSPlaylistSource {
     /// The scheme of the keys.
     static let scheme = "nits-dash"
 
@@ -32,7 +32,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     let masterURL: URL
     /// Where the manifest came from (after redirects; an inline one tells none): its relative addresses are
     /// relative to it, and the requests' headers are scoped by it.
-    let address: URL
+    package let address: URL
     /// What of the manifest is played, as the address told (`DASHSelection`).
     let selection: DASHSelection
     private let id: String
@@ -55,12 +55,12 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// Its segments may be local files: a manifest read from a file.
-    let allowsFiles: Bool
+    package let allowsFiles: Bool
     /// A live stream's history, when the manifest is one (`DASHHistory`): its playlists list up to the head.
     let history: DASHHistory?
 
     /// The manifest at `address` (or `inline`, a copy of it), playing what `selection` names.
-    init(
+    package init(
         address: URL, inline: Data? = nil, selection: DASHSelection = DASHSelection(),
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -70,7 +70,7 @@ struct DASHPlaylists: HLSPlaylistSource {
 
     /// An inline manifest whose address is not told (one built from what a site lists): its addresses are absolute, and
     /// the relative ones fail, as relative to the master's key.
-    init(inline: Data) {
+    package init(inline: Data) {
         let id = UUID().uuidString.lowercased()
         self.init(id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline, clock: { Date() })
     }
@@ -89,11 +89,11 @@ struct DASHPlaylists: HLSPlaylistSource {
         allowsFiles = inline == nil && address.isFileURL
     }
 
-    /// The manifest a demuxer is asked to open at `path`: an inline one (`MediaURL.inlineDASHManifest`), or one at an
+    /// The manifest a demuxer is asked to open at `path`: an inline one (`StreamingURL.inlineDASHManifest`), or one at an
     /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other,
     /// unless `assumingManifest`: the address was found to serve a manifest by its bytes (`SniffedPlaylist`), whatever
     /// its name.
-    init?(media path: String, history liveHistory: LiveHistory? = nil, assumingManifest: Bool = false) {
+    package init?(media path: String, history liveHistory: StreamHistory? = nil, assumingManifest: Bool = false) {
         if let inline = StreamingURL.inlineDASHManifestContents(path) {
             let clock: @Sendable () -> Date = { Date() }
             let history = liveHistory?.source.map {
@@ -107,8 +107,8 @@ struct DASHPlaylists: HLSPlaylistSource {
         }
         // A history is a manifest of keys the resolver made, never an address.
         guard liveHistory == nil else { return nil }
-        let normalized = MediaURL.normalizeMediaPath(path)
-        let isNetwork = MediaURL.isNetworkURL(normalized)
+        let normalized = StreamingURL.normalizeMediaPath(path)
+        let isNetwork = StreamingURL.isNetworkURL(normalized)
         guard var address = isNetwork ? URL(string: normalized) : URL(fileURLWithPath: normalized),
             assumingManifest || address.lastPathComponent.lowercased().hasSuffix(".mpd")
         else { return nil }
@@ -128,7 +128,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     /// opening that went on without what the stream is not played without (the default sound, whose index the source
     /// refused) is refused too: not played silent. Asked of the source itself, not read off the interrupt's last error,
     /// which another failure (or an earlier attempt on the same context) may have written.
-    func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> HLSInput? {
+    package func makeInput(headers: [String: String], interrupt: FFmpegInterrupt) -> HLSInput? {
         let input = HLSInput(
             master: masterURL, playlists: self, source: address.absoluteString, allowsFiles: allowsFiles,
             headers: headers, interrupt: interrupt, streamingName: "DASH")
@@ -141,7 +141,8 @@ struct DASHPlaylists: HLSPlaylistSource {
         return nil
     }
 
-    func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader) throws(HLSPlaylistSourceError)
+    package func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader)
+        throws(HLSPlaylistSourceError)
         -> HLSPlaylist
     {
         guard url.scheme == Self.scheme, url.host == id else { throw .load(.notServed(url)) }
@@ -159,12 +160,12 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// A live stream's history names its segments by key and number; the signed address is the source's, as it is now.
-    func address(of url: URL) -> URL? {
-        guard let history, let segment = LiveHistory.segment(named: url) else { return url }
+    package func address(of url: URL) -> URL? {
+        guard let history, let segment = StreamHistory.segment(named: url) else { return url }
         return history.source.url(for: segment.key, number: segment.number)
     }
 
-    func renewAddresses(shouldAbort: () -> Bool) -> Bool {
+    package func renewAddresses(shouldAbort: () -> Bool) -> Bool {
         history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
@@ -200,7 +201,7 @@ struct DASHPlaylists: HLSPlaylistSource {
 
     /// The playlists of a presentation: the master (nil with no picture: the stream is the one sound's playlist, the
     /// first entry's), and an entry for each representation played, at its index in the keys.
-    struct Built: Sendable {
+    package struct Built: Sendable {
         var master: HLSMasterPlaylist?
         var entries: [Entry]
         /// The period's length, when told: the segments an index lists end with it.
@@ -212,7 +213,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// A representation played.
-    struct Entry: Sendable {
+    package struct Entry: Sendable {
         var representation: DASHPresentation.Representation
         var numbering: Numbering
         /// Its playlist, when the manifest tells its segments.
@@ -227,7 +228,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// The numbers an entry's segments take.
-    enum Numbering: Sendable, Equatable {
+    package enum Numbering: Sendable, Equatable {
         /// As its manifest says.
         case own
         /// Those of the ladder's best picture, known with the manifest.
@@ -237,7 +238,7 @@ struct DASHPlaylists: HLSPlaylistSource {
     }
 
     /// The numbers a picture's segments take, as `numberedPictures` tells them: the reference by itself.
-    enum PictureNumbering: Sendable, Equatable {
+    package enum PictureNumbering: Sendable, Equatable {
         case own
         case ladder([Int])
         case on(DASHPresentation.Representation, tolerance: Double)
@@ -340,7 +341,7 @@ struct DASHPlaylists: HLSPlaylistSource {
             case .ladder(let numbers): numbering = .ladder(numbers)
             case .on(let reference, let tolerance):
                 guard let position = pictures.firstIndex(where: { Self.isSame($0.representation, reference) }) else {
-                    AppLog.warning(.demuxer, "DASH: \(representation.id) is left out: its ladder's best is not played")
+                    StreamingLog.warning("DASH: \(representation.id) is left out: its ladder's best is not played")
                     continue
                 }
                 numbering = .on(reference: firstPicture + position, tolerance: tolerance)
@@ -415,8 +416,7 @@ struct DASHPlaylists: HLSPlaylistSource {
                 of: reference, periodDuration: built.periodDuration, loader: loader)
             guard let matched = Self.numbers(of: segments, on: referenceSegments, tolerance: tolerance) else {
                 let video = entry.representation
-                AppLog.warning(
-                    .demuxer,
+                StreamingLog.warning(
                     "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its index's segments do "
                         + "not start where \(reference.representation.id)'s do")
                 throw .unsupported("its segments do not start where \(reference.representation.id)'s do")
@@ -565,8 +565,7 @@ struct DASHPlaylists: HLSPlaylistSource {
                         of: video.segments, byTimeOn: reference.segments, numbers: reference.segments.map(\.number),
                         tolerance: tolerance, isStrict: true) != nil
                 else {
-                    AppLog.warning(
-                        .demuxer,
+                    StreamingLog.warning(
                         "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its segments do not "
                             + "start where \(reference.id)'s do")
                     continue
@@ -579,8 +578,7 @@ struct DASHPlaylists: HLSPlaylistSource {
                 continue
             }
             guard let numbers = numbers(of: video.segments, on: reference.segments, tolerance: tolerance) else {
-                AppLog.warning(
-                    .demuxer,
+                StreamingLog.warning(
                     "DASH: \(video.id) (\(video.bandwidth) bit/s) is left out of the ladder: its segments do not start "
                         + "where \(reference.id)'s do")
                 continue
@@ -611,7 +609,7 @@ extension DASHPlaylists {
     /// lanes ask for it at once. The read is made by the first caller that needs it, through its own loader; the others
     /// wait for it (in steps, each giving way to its own abort). A read that gave way to its caller's abort is no answer:
     /// those waiting for it read again themselves. A real failure is the answer of those that waited for it.
-    final class Store<Value: Sendable>: @unchecked Sendable {
+    package final class Store<Value: Sendable>: @unchecked Sendable {
         private struct State {
             var value: Value?
             /// The read going on, by its number.
@@ -636,12 +634,12 @@ extension DASHPlaylists {
         /// The value, once read.
         var current: Value? { state.withLock { $0.value } }
 
-        init() {
+        package init() {
             state = OSAllocatedUnfairLock(initialState: State())
         }
 
         /// A store whose value is already known (what the caller that opened the stream read).
-        init(value: Value) {
+        package init(value: Value) {
             state = OSAllocatedUnfairLock(initialState: State(value: value))
         }
 

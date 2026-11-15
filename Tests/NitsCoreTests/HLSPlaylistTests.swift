@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// `HLSPlaylist`: master and media playlists read from their text (RFC 8216 / 8216bis).
 @Suite("HLS playlist")

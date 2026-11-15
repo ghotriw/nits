@@ -10,11 +10,11 @@ import Foundation
 ///
 /// Another rendition of the same stream (a variant switched to, an audio rendition) is placed on the same timeline
 /// (`init(_:alignedTo:sharesSequenceNumbers:)`).
-struct HLSTimeline: Sendable, Equatable {
+package struct HLSTimeline: Sendable, Equatable {
     /// A segment and where it starts on the timeline, in seconds.
-    struct Entry: Sendable, Equatable {
+    package struct Entry: Sendable, Equatable {
         var segment: HLSSegment
-        var start: Double
+        package var start: Double
         /// `start` was read off the media (`measure`), not only summed from durations.
         var isMeasured = false
         /// The run of the timeline the entry was placed in (`epoch`): a restart numbers its segments again, and an entry of
@@ -22,11 +22,11 @@ struct HLSTimeline: Sendable, Equatable {
         var epoch = 0
 
         var end: Double { start + segment.duration }
-        var sequence: Int { segment.sequence }
+        package var sequence: Int { segment.sequence }
     }
 
     /// What a reload did.
-    enum ReloadChange: Sendable, Equatable {
+    package enum ReloadChange: Sendable, Equatable {
         /// The same segments, and no end.
         case unchanged
         /// Segments were added or dropped, or the playlist ended.
@@ -43,7 +43,7 @@ struct HLSTimeline: Sendable, Equatable {
     }
 
     /// What follows a segment, for a reader that read it.
-    enum Next: Sendable, Equatable {
+    package enum Next: Sendable, Equatable {
         case entry(Entry)
         /// The segments that followed left the window before they were read (or a late reload never saw them):
         /// reading goes on from this one, the first listed after.
@@ -112,15 +112,17 @@ struct HLSTimeline: Sendable, Equatable {
 
     var isEmpty: Bool { entries.isEmpty }
     /// Start of the first segment listed.
-    var start: Double { entries.first?.start ?? emptyStart }
+    package var start: Double { entries.first?.start ?? emptyStart }
     /// End of the last segment listed: the live edge of a live playlist, the duration of a finished one.
     var end: Double { entries.last?.end ?? emptyStart }
     var firstSequence: Int? { entries.first?.sequence }
     var lastSequence: Int? { entries.last?.sequence }
 
     /// The window of a playlist that was live when first loaded; nil for one finished then.
-    var liveWindow: LiveWindow? {
-        isLive ? LiveWindow(start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded, holdBack: holdBack) : nil
+    var liveWindow: StreamingLiveWindow? {
+        isLive
+            ? StreamingLiveWindow(start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded, holdBack: holdBack)
+            : nil
     }
 
     /// The segment listed with media sequence number `sequence`.
@@ -131,7 +133,7 @@ struct HLSTimeline: Sendable, Equatable {
 
     /// The index of the segment that holds `time`: the first for a time before the window, the last for its very end;
     /// nil past the end, or for an empty playlist. A segment of no duration holds no time.
-    func index(at time: Double) -> Int? {
+    package func index(at time: Double) -> Int? {
         guard let first = entries.first, time <= end else { return nil }
         var low = 0
         if time > first.start {

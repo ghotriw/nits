@@ -11,20 +11,20 @@ import Foundation
 ///
 /// Not read (out of scope): Low-Latency HLS (`EXT-X-PART`, `EXT-X-PRELOAD-HINT`, `EXT-X-SERVER-CONTROL`, `EXT-X-SKIP`),
 /// `EXT-X-I-FRAME-STREAM-INF`, `EXT-X-SESSION-DATA`, `EXT-X-CONTENT-STEERING`, `EXT-X-DATERANGE` (interstitials).
-enum HLSPlaylist: Sendable, Equatable {
+package enum HLSPlaylist: Sendable, Equatable {
     case master(HLSMasterPlaylist)
     case media(HLSMediaPlaylist)
 
     /// Reads a playlist served from `url`. `variables` are those a master playlist defined (`HLSMasterPlaylist.variables`),
     /// for a media playlist's `EXT-X-DEFINE:IMPORT`.
-    static func parse(_ data: Data, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
+    package static func parse(_ data: Data, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
         -> HLSPlaylist
     {
         guard let text = String(data: data, encoding: .utf8) else { throw .notText }
         return try parse(text, url: url, variables: variables)
     }
 
-    static func parse(_ text: String, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
+    package static func parse(_ text: String, url: URL, variables: [String: String] = [:]) throws(HLSPlaylistError)
         -> HLSPlaylist
     {
         var reader = HLSPlaylistReader(url: url, imported: variables)
@@ -32,7 +32,7 @@ enum HLSPlaylist: Sendable, Equatable {
     }
 }
 
-enum HLSPlaylistError: Error, Equatable {
+package enum HLSPlaylistError: Error, Equatable {
     /// Not UTF-8.
     case notText
     /// The first line is not `#EXTM3U`.
@@ -48,17 +48,17 @@ enum HLSPlaylistError: Error, Equatable {
 // MARK: - Master playlist
 
 /// The variants and renditions a master (multivariant) playlist lists.
-struct HLSMasterPlaylist: Sendable, Equatable {
+package struct HLSMasterPlaylist: Sendable, Equatable {
     var version: Int?
-    var variants: [HLSVariant] = []
+    package var variants: [HLSVariant] = []
     var renditions: [HLSRendition] = []
     /// `EXT-X-SESSION-KEY`: keys the media playlists use, to load ahead.
     var sessionKeys: [HLSKey] = []
     /// `EXT-X-INDEPENDENT-SEGMENTS`: every segment of every media playlist decodes without the one before.
     var hasIndependentSegments = false
-    var start: HLSStart?
+    package var start: HLSStart?
     /// The variables the playlist defined (`EXT-X-DEFINE`), which its media playlists may import.
-    var variables: [String: String] = [:]
+    package var variables: [String: String] = [:]
 
     /// The renditions of `type` in `group`.
     func renditions(_ type: HLSRendition.Kind, group: String) -> [HLSRendition] {
@@ -67,19 +67,19 @@ struct HLSMasterPlaylist: Sendable, Equatable {
 }
 
 /// `EXT-X-STREAM-INF`: a variant, the media playlist on the line that follows and the renditions it plays with.
-struct HLSVariant: Sendable, Equatable {
-    var url: URL
+package struct HLSVariant: Sendable, Equatable {
+    package var url: URL
     /// Peak bits a second; 0 when the playlist doesn't tell it.
-    var bandwidth: Int
+    package var bandwidth: Int
     var averageBandwidth: Int?
     var score: Double?
     /// `CODECS`, as written ("avc1.64001f,mp4a.40.2").
-    var codecs: String?
+    package var codecs: String?
     /// `SUPPLEMENTAL-CODECS` (Dolby Vision over HEVC: "dvh1.08.07/db4h").
-    var supplementalCodecs: String?
+    package var supplementalCodecs: String?
     var resolution: HLSResolution?
-    var frameRate: Double?
-    var videoRange: HLSVideoRange?
+    package var frameRate: Double?
+    package var videoRange: HLSVideoRange?
     var hdcpLevel: String?
     var audioGroup: String?
     var videoGroup: String?
@@ -88,32 +88,32 @@ struct HLSVariant: Sendable, Equatable {
     var closedCaptionsGroup: String?
 }
 
-struct HLSResolution: Sendable, Equatable, Hashable {
-    var width: Int
-    var height: Int
+package struct HLSResolution: Sendable, Equatable, Hashable {
+    package var width: Int
+    package var height: Int
 }
 
-enum HLSVideoRange: String, Sendable, Equatable {
+package enum HLSVideoRange: String, Sendable, Equatable {
     case sdr = "SDR"
     case pq = "PQ"
     case hlg = "HLG"
 }
 
 /// `EXT-X-MEDIA`: a rendition of a group, which variants name.
-struct HLSRendition: Sendable, Equatable {
-    enum Kind: String, Sendable, Equatable {
+package struct HLSRendition: Sendable, Equatable {
+    package enum Kind: String, Sendable, Equatable {
         case audio = "AUDIO"
         case video = "VIDEO"
         case subtitles = "SUBTITLES"
         case closedCaptions = "CLOSED-CAPTIONS"
     }
 
-    var type: Kind
+    package var type: Kind
     var groupID: String
     var name: String
     /// Its media playlist; nil for one carried in the variant's own segments (and for closed captions).
-    var url: URL?
-    var language: String?
+    package var url: URL?
+    package var language: String?
     var associatedLanguage: String?
     var isDefault = false
     var autoselect = false
@@ -127,7 +127,7 @@ struct HLSRendition: Sendable, Equatable {
 }
 
 /// `EXT-X-START`: where to start playing, from the start (`timeOffset` ≥ 0) or the end (< 0) of the playlist.
-struct HLSStart: Sendable, Equatable {
+package struct HLSStart: Sendable, Equatable {
     var timeOffset: Double
     var isPrecise = false
 }
@@ -135,8 +135,8 @@ struct HLSStart: Sendable, Equatable {
 // MARK: - Media playlist
 
 /// A media playlist: one rendition's segments.
-struct HLSMediaPlaylist: Sendable, Equatable {
-    enum Kind: String, Sendable, Equatable {
+package struct HLSMediaPlaylist: Sendable, Equatable {
+    package enum Kind: String, Sendable, Equatable {
         /// Segments are only added, none removed (a stream recorded as it goes).
         case event = "EVENT"
         /// Finished, never changes.
@@ -147,53 +147,53 @@ struct HLSMediaPlaylist: Sendable, Equatable {
     /// Seconds no segment's duration exceeds, rounded: a live playlist is reloaded about as often.
     var targetDuration: Double
     /// The media sequence number of the first segment listed.
-    var mediaSequence = 0
+    package var mediaSequence = 0
     /// The discontinuity sequence number of the first segment listed.
     var discontinuitySequence = 0
     /// The playlist says its discontinuity sequence (`EXT-X-DISCONTINUITY-SEQUENCE`): its numbers are the stream's, which
     /// every playlist of it shares (RFC 8216 6.2.4), not counted from what this playlist lists.
     var declaresDiscontinuitySequence = false
-    var type: Kind?
+    package var type: Kind?
     /// `EXT-X-ENDLIST`: no segment will be added.
-    var hasEnded = false
+    package var hasEnded = false
     var isIFramesOnly = false
     var hasIndependentSegments = false
-    var start: HLSStart?
+    package var start: HLSStart?
     /// How far behind the live edge the stream is meant to be played, seconds, when its source says (DASH's
     /// `suggestedPresentationDelay`; HLS's `HOLD-BACK` could fill it). Nil: the client's own margin.
     var holdBack: Double?
     /// How often the source says its playlist may change (DASH's `minimumUpdatePeriod`), seconds: a playlist is not taken
     /// as stuck before this has passed, however short its segments are. Nil: the target duration.
-    var updatePeriod: Double?
-    var segments: [HLSSegment] = []
+    package var updatePeriod: Double?
+    package var segments: [HLSSegment] = []
 
     /// A playlist that can still change: live, or an event going on.
     var isLive: Bool { !hasEnded && type != .vod }
     /// The sum of the segments' durations.
-    var duration: Double { segments.reduce(0) { $0 + $1.duration } }
+    package var duration: Double { segments.reduce(0) { $0 + $1.duration } }
 }
 
 /// A segment of a media playlist, with what applies to it of the tags before it.
-struct HLSSegment: Sendable, Equatable {
-    var url: URL
+package struct HLSSegment: Sendable, Equatable {
+    package var url: URL
     /// `EXTINF`'s duration, in seconds.
-    var duration: Double
+    package var duration: Double
     /// The media sequence number.
-    var sequence: Int
+    package var sequence: Int
     /// The discontinuity sequence number: segments of one number make a run whose timestamps continue one another.
     var discontinuitySequence: Int
     /// `EXT-X-DISCONTINUITY` before it: its timestamps, encoding or format need not continue the segment before.
     var isDiscontinuity = false
-    var byteRange: HLSByteRange?
+    package var byteRange: HLSByteRange?
     /// `EXT-X-MAP`: the init section its media needs (fragmented MP4's `moov`, a TS's PAT / PMT).
-    var initSection: HLSInitSection?
+    package var initSection: HLSInitSection?
     /// The key it is encrypted with; nil when clear.
     var key: HLSKey?
     /// The date of its first sample: its own `EXT-X-PROGRAM-DATE-TIME`, or the latest one before it plus the durations
     /// between, within a run (none after a discontinuity until a tag gives one).
     var programDateTime: Date?
     /// `EXT-X-GAP`: missing, not to be loaded.
-    var isGap = false
+    package var isGap = false
     /// `EXT-X-BITRATE`, kilobits a second.
     var bitrate: Int?
 
@@ -207,9 +207,9 @@ struct HLSSegment: Sendable, Equatable {
 }
 
 /// `EXT-X-MAP`.
-struct HLSInitSection: Sendable, Equatable, Hashable {
-    var url: URL
-    var byteRange: HLSByteRange?
+package struct HLSInitSection: Sendable, Equatable, Hashable {
+    package var url: URL
+    package var byteRange: HLSByteRange?
     /// The key in effect where the tag stands, which the init section is encrypted with (RFC 8216bis 4.4.4.5).
     var key: HLSKey?
 
@@ -223,14 +223,14 @@ struct HLSInitSection: Sendable, Equatable, Hashable {
 }
 
 /// `EXT-X-KEY` / `EXT-X-SESSION-KEY`.
-struct HLSKey: Sendable, Equatable, Hashable {
-    enum Method: Sendable, Equatable, Hashable {
+package struct HLSKey: Sendable, Equatable, Hashable {
+    package enum Method: Sendable, Equatable, Hashable {
         case aes128
         case sampleAES
         case sampleAESCTR
         case other(String)
 
-        init(_ text: String) {
+        package init(_ text: String) {
             switch text {
             case "AES-128": self = .aes128
             case "SAMPLE-AES": self = .sampleAES
@@ -241,7 +241,7 @@ struct HLSKey: Sendable, Equatable, Hashable {
     }
 
     var method: Method
-    var url: URL?
+    package var url: URL?
     var initializationVector: [UInt8]?
     /// `identity` when the tag names none.
     var keyFormat = "identity"
@@ -259,10 +259,10 @@ struct HLSKey: Sendable, Equatable, Hashable {
 // MARK: - Reading
 
 private struct HLSPlaylistReader {
-    let url: URL
+    package let url: URL
     /// A master playlist's variables, which `EXT-X-DEFINE:IMPORT` takes.
     let imported: [String: String]
-    var variables: [String: String] = [:]
+    package var variables: [String: String] = [:]
 
     var lineNumber = 0
     var sawMasterTag = false
@@ -284,7 +284,7 @@ private struct HLSPlaylistReader {
     /// A discontinuity before a URI line skipped (no `EXTINF`): the next segment's.
     var carriedDiscontinuity = false
     var discontinuities = 0
-    var initSection: HLSInitSection?
+    package var initSection: HLSInitSection?
     /// The keys in effect, one per `KEYFORMAT`: a key tag replaces the one of its format (RFC 8216 4.3.2.4, as hls.js and
     /// ExoPlayer read it), `METHOD=NONE` all of them.
     var keys: [HLSKey] = []
@@ -303,12 +303,12 @@ private struct HLSPlaylistReader {
         "EXT-X-I-FRAME-STREAM-INF", "EXT-X-SESSION-DATA", "EXT-X-CONTENT-STEERING",
     ]
 
-    init(url: URL, imported: [String: String]) {
+    package init(url: URL, imported: [String: String]) {
         self.url = url
         self.imported = imported
     }
 
-    mutating func read(_ text: String) throws(HLSPlaylistError) -> HLSPlaylist {
+    package mutating func read(_ text: String) throws(HLSPlaylistError) -> HLSPlaylist {
         var lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)[...]
         if let first = lines.first, first.hasPrefix("\u{FEFF}") {
             lines[lines.startIndex] = first.dropFirst()

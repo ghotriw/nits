@@ -2,7 +2,7 @@ import CFFmpeg
 import Foundation
 internal import NitsStreaming
 
-enum HLSSegmentReaderError: Error, Equatable {
+package enum HLSSegmentReaderError: Error, Equatable {
     case load(HLSSegmentLoadError)
     /// FFmpeg couldn't open or probe the segments' container (its error code).
     case open(Int32)
@@ -38,7 +38,7 @@ enum HLSSegmentReaderError: Error, Equatable {
 /// of such a reader belong to the context being read: copy what's needed from them before reading on.
 ///
 /// Not thread-safe: one thread reads, and closes.
-final class HLSSegmentReader {
+package final class HLSSegmentReader {
     private let loader: HLSSegmentLoader
     private let next: () -> HLSSegment?
     private let start: Double
@@ -52,9 +52,9 @@ final class HLSSegmentReader {
     /// The offsets a reader shares with the stream's other runs: `anchors`' for the run's discontinuity `sequence`,
     /// taken when they put its first packet within `tolerance` seconds of where the playlist does, as the reader's
     /// `role` may (`HLSTimestampAnchors.Role`).
-    struct Anchoring {
-        let anchors: HLSTimestampAnchors
-        let sequence: Int
+    package struct Anchoring {
+        package let anchors: HLSTimestampAnchors
+        package let sequence: Int
         let tolerance: Double
         let role: HLSTimestampAnchors.Role
         /// Told where the media puts each segment of the run: its sequence, and the time of its first picture (else its
@@ -116,7 +116,7 @@ final class HLSSegmentReader {
     private var bodyHasBytes = false
 
     /// How long the opening of the run took, by step (`HLSOpeningMeasure`): the measurement suites read it from the log.
-    struct OpenTiming {
+    package struct OpenTiming {
         /// Loading the init section, when the run has one.
         var initSection: Duration?
         /// Until the first segment's first bytes came (the init section included).
@@ -219,7 +219,7 @@ final class HLSSegmentReader {
     deinit { close() }
 
     /// The streams of the open context (all of the segments').
-    var streams: [UnsafeMutablePointer<AVStream>] {
+    package var streams: [UnsafeMutablePointer<AVStream>] {
         guard let context else { return [] }
         return (0..<Int(context.pointee.nb_streams)).compactMap { context.pointee.streams[$0] }
     }
@@ -231,7 +231,7 @@ final class HLSSegmentReader {
 
     /// The next packet, its timestamps on the timeline; FFmpeg's `av_read_frame` result: `AVERROR_EOF` at the end of
     /// the run, the load's error (`failure`) when a segment failed.
-    func read(_ packet: inout AVPacket) -> Int32 {
+    package func read(_ packet: inout AVPacket) -> Int32 {
         while true {
             if context == nil {
                 // A WebVTT run between two segments (or at an empty one): the next that has cues.
@@ -303,7 +303,7 @@ final class HLSSegmentReader {
         retainedFirst = nil
     }
 
-    func close() {
+    package func close() {
         if !(isFirstClaimed && body === retainedFirst) { body?.close() }
         body = nil
         closeContext()
@@ -637,7 +637,7 @@ final class HLSSegmentReader {
 /// The bytes a run's context reads: a head (the init section and the first segment), then each segment as it is
 /// asked for.
 private final class SegmentFeed: FFmpegInputSource {
-    enum Chunk {
+    package enum Chunk {
         case data(Data)
         case end
         /// FFmpeg's error for a load that failed.
@@ -654,7 +654,7 @@ private final class SegmentFeed: FFmpegInputSource {
         self.provider = provider
     }
 
-    func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
+    package func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32 {
         while position >= chunk.count {
             if ended { return FFmpegErrorCode.eof }
             switch provider() {
@@ -678,9 +678,9 @@ private final class SegmentFeed: FFmpegInputSource {
         return Int32(count)
     }
 
-    func seek(_ offset: Int64, _ whence: Int32) -> Int64 { Int64(-ENOSYS) }
+    package func seek(_ offset: Int64, _ whence: Int32) -> Int64 { Int64(-ENOSYS) }
 
-    func close() {}
+    package func close() {}
 }
 
 /// An `AVIOContext` that reads a `SegmentFeed`, which its opaque holds retained until `free`: FFmpeg's C callbacks have

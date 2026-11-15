@@ -4,7 +4,7 @@ import os
 /// `X-TIMESTAMP-MAP` of a WebVTT segment (RFC 8216 3.5): the cue time `local` (the file's own) is the MPEG-TS time
 /// `mpegts` (90 kHz ticks) of the media it goes with, so a cue at `t` is at `t + mpegts / 90000 - local` on that media's
 /// clock. Without the header, as RFC 8216 says, both are zero.
-struct HLSTimestampMap: Sendable, Equatable {
+package struct HLSTimestampMap: Sendable, Equatable {
     var mpegts: Int64 = 0
     var local: Double = 0
 
@@ -12,7 +12,7 @@ struct HLSTimestampMap: Sendable, Equatable {
     var shift: Double { Double(mpegts) / 90_000 - local }
 
     /// The map in the header of a WebVTT file (up to its first blank line); nil when it has none or can't be read.
-    static func parse(webVTT data: Data) -> HLSTimestampMap? {
+    package static func parse(webVTT data: Data) -> HLSTimestampMap? {
         // The header is a few lines; a file is read as far as the first cue.
         let head = String(decoding: data.prefix(4096), as: UTF8.self)
         let lines = head.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
@@ -25,7 +25,7 @@ struct HLSTimestampMap: Sendable, Equatable {
         return nil
     }
 
-    static func parse(value: Substring) -> HLSTimestampMap? {
+    package static func parse(value: Substring) -> HLSTimestampMap? {
         var map = HLSTimestampMap()
         var sawMPEGTS = false
         var sawLocal = false
@@ -80,8 +80,8 @@ struct HLSTimestampMap: Sendable, Equatable {
 /// first may be far into its segment. A WebVTT rendition has no timestamps of its own, and its cues take the offset of
 /// the sequence they are in (`cueOffset`); cues of a sequence nobody anchored (a subtitle playlist without the breaks
 /// the picture's has) take the offset the picture is read with.
-final class HLSTimestampAnchors: Sendable {
-    enum Role: Sendable {
+package final class HLSTimestampAnchors: Sendable {
+    package enum Role: Sendable {
         /// A variant's run: anchors, and is the offset cues fall back on.
         case picture
         /// An audio rendition's run: anchors.
@@ -102,7 +102,7 @@ final class HLSTimestampAnchors: Sendable {
     /// `first` (seconds of the media's clock, as read: unwrapped by `nearest`, which moves it by whole wraps nearest a
     /// time of the media's clock). Anchors the sequence when it has no offset yet, or one that doesn't fit. Cues take the
     /// sequence's offset as it is (`cueOffset`), else their own, and tell nothing.
-    func offset(
+    package func offset(
         of sequence: Int, start: Double, first: Double, tolerance: Double, role: Role,
         nearest: @Sendable (Double) -> Double
     ) -> Double {
@@ -114,8 +114,7 @@ final class HLSTimestampAnchors: Sendable {
                 offset = shared
             } else {
                 if let shared = state.offsets[sequence] {
-                    AppLog.info(
-                        .demuxer,
+                    StreamingLog.info(
                         "HLS: a run of discontinuity \(sequence) is \(String(format: "%.3f", shared - own)) s off the anchor, anchored anew"
                     )
                 }
@@ -151,9 +150,9 @@ final class HLSTimestampAnchors: Sendable {
 /// The ID3 tag packed audio segments (raw AAC, AC-3, E-AC-3, MP3) start with: its `PRIV` frame
 /// `com.apple.streaming.transportStreamTimestamp` is the MPEG-TS time (90 kHz, 33 bits) of the segment's first sample
 /// (RFC 8216 3.4), which the segment's own bytes carry no timestamps for.
-enum HLSPackedAudioTag {
+package enum HLSPackedAudioTag {
     /// The length of the ID3v2 tag `data` starts with (its header and body, and footer); nil when it starts with none.
-    static func length(_ data: Data) -> Int? {
+    package static func length(_ data: Data) -> Int? {
         let bytes = [UInt8](data.prefix(10))
         guard bytes.count == 10, bytes.starts(with: Array("ID3".utf8)), bytes[3] != 0xFF, bytes[4] != 0xFF,
             bytes[6..<10].allSatisfy({ $0 < 0x80 })
@@ -203,7 +202,7 @@ enum HLSPackedAudioTag {
 /// Timestamps of a stream that wraps (MPEG-TS's 33 bits at 90 kHz, every 26.5 hours) made one growing line: each value
 /// is read as the one nearest the last decode time, `wrap` ticks apart. A segment read after the wrap, or a picture's
 /// presentation time just past it while its decode time is before, both come out right.
-struct TimestampUnwrapper: Sendable {
+package struct TimestampUnwrapper: Sendable {
     let wrap: Int64
     private var offset: Int64 = 0
     private var reference: Int64?

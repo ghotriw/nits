@@ -5,23 +5,23 @@ internal import NitsStreaming
 // the interface names no demuxer type (`DemuxerInput`).
 
 /// The streams of a variant, by their indices in the input's table.
-struct VariantStreams {
-    let video: Int?
-    let audio: [Int]
+package struct VariantStreams {
+    package let video: Int?
+    package let audio: [Int]
     /// Subtitle renditions (`EXT-X-MEDIA` of type `SUBTITLES`): the subtitle streams other variants have too.
-    let subtitles: [Int]
-    let all: [Int]
+    package let subtitles: [Int]
+    package let all: [Int]
 }
 
 /// A variant as the input groups its streams; see `DemuxerInput.variantCandidates()`.
-struct VariantCandidate {
-    let id: Int
-    let bandwidth: Int
-    let streams: VariantStreams
+package struct VariantCandidate {
+    package let id: Int
+    package let bandwidth: Int
+    package let streams: VariantStreams
 }
 
 /// How far a variant's streams are described (`DemuxerInput.variantDescription(id:)`).
-enum VariantDescription: Sendable {
+package enum VariantDescription: Sendable {
     /// By its own read: the table's streams are its.
     case described
     /// As another variant, by what its manifest tells (an HLS rung's `CODECS`, `RESOLUTION`): its first read tells.
@@ -32,20 +32,20 @@ enum VariantDescription: Sendable {
 
 /// A segment of a variant that is being downloaded, as the input tells it while the read waits for its bytes
 /// (`DemuxerInput.observeSegments`, `pollSegments`).
-struct InFlightSegment: Sendable, Equatable {
+package struct InFlightSegment: Sendable, Equatable {
     /// The variants the lane belongs to (variants that differ in their audio group share a playlist).
-    let variants: [Int]
-    let sequence: Int
+    package let variants: [Int]
+    package let sequence: Int
     /// Seconds on the timeline the segment starts at, and how long it is.
-    let start: Double
-    let duration: Double
-    let progress: HTTPSessionInput.Progress
+    package let start: Double
+    package let duration: Double
+    package let progress: HTTPSessionInput.Progress
     /// The variant's own lane carries sound (muxed into the picture's segments, as in MPEG-TS), not a rendition.
-    let hasMuxedAudio: Bool
+    package let hasMuxedAudio: Bool
 }
 
 /// Why a variant cannot take over a segment whose download was given up (`DemuxerInput.canJoin`).
-enum JoinRefusal: String, Sendable {
+package enum JoinRefusal: String, Sendable {
     /// The input does not switch variants this way.
     case unsupported = "the input cannot join a segment"
     /// The variant lists no such segment (a live playlist that moved on) or it is a gap.

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// Measurement (skipped unless asked for, see README.md): what a reload of a long live window costs, a day of 5 s
 /// segments (YouTube's live history as a live playlist, `.agents/dash-client/PLAN.md` D7): a source building the

@@ -3,9 +3,9 @@ internal import NitsStreaming
 
 /// What an MPD's elements say, read the same way by the resolver's manifest (`DASHManifest`) and the client's source
 /// (`DASHPresentation`).
-enum DASHElements {
+package enum DASHElements {
     /// "video", "audio", "text"…: the `contentType`, else the first part of the `mimeType`.
-    static func kind(of element: XMLTreeElement) -> String? {
+    package static func kind(of element: XMLTreeElement) -> String? {
         // Some generators put the content type on a `ContentComponent` of the set instead.
         let contentType =
             element.attribute("contentType")
@@ -17,7 +17,7 @@ enum DASHElements {
     /// How much a sound is the sound of its language, by the roles of its set and of itself: 2 the main track, 1 one
     /// without a role (or a dub, which is the sound of its own language), 0 a commentary, a description, an alternative,
     /// or one with an `Accessibility` descriptor (audio description): played only when the language has nothing else.
-    static func roleRank(of representation: XMLTreeElement, in set: XMLTreeElement) -> Int {
+    package static func roleRank(of representation: XMLTreeElement, in set: XMLTreeElement) -> Int {
         // The standard allows both on the set and on the representation.
         let roles = (set.elements(named: "Role") + representation.elements(named: "Role"))
             .compactMap { $0.attribute("value")?.lowercased() }
@@ -29,7 +29,7 @@ enum DASHElements {
     }
 
     /// An adaptation set of I-frames for fast forward, not a picture to play.
-    static func isTrickMode(_ set: XMLTreeElement) -> Bool {
+    package static func isTrickMode(_ set: XMLTreeElement) -> Bool {
         (set.elements(named: "EssentialProperty") + set.elements(named: "SupplementalProperty")).contains {
             $0.attribute("schemeIdUri")?.contains("trickmode") == true
         }
@@ -37,7 +37,7 @@ enum DASHElements {
 
     /// The transfer the manifest's properties tell (`TransferCharacteristics`, H.273): 16 PQ, 18 HLG; nil when they
     /// tell none of those.
-    static func hdrTransfer(of element: XMLTreeElement) -> HLSVideoRange? {
+    package static func hdrTransfer(of element: XMLTreeElement) -> HLSVideoRange? {
         for property in element.elements(named: "EssentialProperty") + element.elements(named: "SupplementalProperty")
         where property.attribute("schemeIdUri")?.hasSuffix("TransferCharacteristics") == true {
             switch property.attribute("value") {
@@ -52,7 +52,7 @@ enum DASHElements {
     /// The id of a representation: its own, or where it is (its set's place and its own) when it has none or another
     /// has it already in the period (ids are unique in a period by the standard; some manifests are not). The resolver
     /// (`DASHManifest`) and the client (`DASHPresentation`) name them by this one rule, as a choice is told by the id.
-    static func uniqueID(
+    package static func uniqueID(
         of representation: XMLTreeElement, set: Int, index: Int, used: inout Set<String>
     ) -> String {
         var id = representation.attribute("id") ?? "\(set).\(index)"
@@ -64,7 +64,7 @@ enum DASHElements {
     }
 
     /// "24", "30000/1001".
-    static func frameRate(of text: String) -> Double? {
+    package static func frameRate(of text: String) -> Double? {
         let parts = text.split(separator: "/").compactMap { Double($0) }
         let rate: Double
         switch parts.count {
@@ -77,7 +77,7 @@ enum DASHElements {
     }
 
     /// An ISO 8601 duration ("PT0H9M54.00S", "P1DT2H") in seconds; years and months as 365 and 30 days.
-    static func duration(of text: String) -> Double? {
+    package static func duration(of text: String) -> Double? {
         guard text.hasPrefix("P") else { return nil }
         var seconds = 0.0
         var number = ""
@@ -107,7 +107,7 @@ enum DASHElements {
 
     /// An `xs:dateTime` ("2024-05-01T12:00:00.123Z", the zone optional: UTC then), as `availabilityStartTime`, `UTCTiming`
     /// and the `direct` scheme tell it.
-    static func dateTime(of text: String) -> Date? {
+    package static func dateTime(of text: String) -> Date? {
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let tIndex = text.firstIndex(of: "T") else { return nil }
         let time = text[tIndex...]
@@ -120,7 +120,7 @@ enum DASHElements {
     }
 
     /// "828-3067": the bytes from the first to the last, both included.
-    static func byteRange(of text: String) -> HLSByteRange? {
+    package static func byteRange(of text: String) -> HLSByteRange? {
         let parts = text.split(separator: "-").compactMap { Int64($0) }
         guard parts.count == 2, parts[0] >= 0, parts[1] >= parts[0] else { return nil }
         return HLSByteRange(offset: parts[0], length: parts[1] - parts[0] + 1)

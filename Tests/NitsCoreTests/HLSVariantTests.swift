@@ -6,6 +6,7 @@ import VideoToolbox
 import os
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 @Suite("HLS Variants")
 struct HLSVariantTests {

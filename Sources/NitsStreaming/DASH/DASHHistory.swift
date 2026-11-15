@@ -1,13 +1,14 @@
 import Foundation
+internal import NitsStreaming
 import os
 
-/// A live stream given as the segments of its past (`LiveHistory`), told as a playlist that grows: the manifest the
+/// A live stream given as the segments of its past (`StreamHistory`), told as a playlist that grows: the manifest the
 /// resolver made is static and goes on a day past the head (`SegmentedDASHManifest`), and what is listed of it is the
 /// segments up to the head the source tells, one less (the newest the server reports, less one: a segment reported and
 /// not served yet is never listed, so a segment that fails stays one rule for all the client's sources: it is skipped
-/// at once). A reload of the playlist asks the head, no more often than `LiveSegmentSource.headPollInterval`.
+/// at once). A reload of the playlist asks the head, no more often than `StreamHistorySource.headPollInterval`.
 ///
-/// **The end.** A head that stood still for `LiveSegmentSource.segmentWaitLimit` asks the source whether the stream is
+/// **The end.** A head that stood still for `StreamHistorySource.segmentWaitLimit` asks the source whether the stream is
 /// over (`hasEnded`): `true` ends the playlist after the head's segment, as a recording; `false` is a stream on the air
 /// and silent, waited for with no limit; `nil` is not told: with the server not answering it is the network, waited for;
 /// with it answering and the head standing still, it is the end after a few asks (`unknownRounds`).
@@ -16,9 +17,9 @@ import os
 /// time goes: what is listed starts as many seconds on as have passed (the engine slides its window the same way).
 /// The timeline's zero stays where the first segment was (`HLSTimeline` keeps the places of the segments it had).
 ///
-/// **The addresses.** A segment is named by its stream's key and number (`LiveHistory.segment(named:)`); the loader
+/// **The addresses.** A segment is named by its stream's key and number (`StreamHistory.segment(named:)`); the loader
 /// asks the source for the signed address at each request, and for a new signature when one is refused.
-final class DASHHistory: Sendable {
+package final class DASHHistory: Sendable {
     /// How many times `hasEnded` may fail to tell, with the server answering and its head standing still, before that is
     /// taken for the end of the stream.
     static let unknownRounds = 3
@@ -26,7 +27,7 @@ final class DASHHistory: Sendable {
     /// the source's to tell, not the lane's to guess.
     static let updatePeriod = 86_400.0
 
-    let source: any LiveSegmentSource
+    let source: any StreamHistorySource
 
     private struct State {
         /// The newest segment known to be there.
@@ -46,7 +47,7 @@ final class DASHHistory: Sendable {
     private let began: Date
 
     /// - Parameter head: The number of the newest segment when the manifest was made.
-    init(source: any LiveSegmentSource, head: Int, clock: @escaping @Sendable () -> Date) {
+    init(source: any StreamHistorySource, head: Int, clock: @escaping @Sendable () -> Date) {
         self.source = source
         self.clock = clock
         let now = clock()
@@ -125,7 +126,7 @@ final class DASHHistory: Sendable {
             }
             return nil
         }
-        if let found { AppLog.debug(.demuxer, "DASH history: the head moved to \(found)") }
+        if let found { StreamingLog.debug("DASH history: the head moved to \(found)") }
         let stood = state.withLock { clock().timeIntervalSince($0.lastMovement) }
         guard stood >= (source.segmentWaitLimit / .seconds(1)) else { return }
 
@@ -149,6 +150,6 @@ final class DASHHistory: Sendable {
                 }
             }
         }
-        if isEnded { AppLog.info(.demuxer, "DASH history: the stream is over, after segment \(head)") }
+        if isEnded { StreamingLog.info("DASH history: the stream is over, after segment \(head)") }
     }
 }

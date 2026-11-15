@@ -3,7 +3,7 @@ import Foundation
 internal import NitsStreaming
 import os
 
-enum HLSSegmentLoadError: Error, Equatable {
+package enum HLSSegmentLoadError: Error, Equatable {
     /// The load gave way to an abort (`HTTPSessionTransport.shouldAbort`): a seek, a close.
     case interrupted
     /// The server's answer, as FFmpeg's error for it (`AVERROR_HTTP_*`) or an I/O error.
@@ -28,7 +28,7 @@ enum HLSSegmentLoadError: Error, Equatable {
 ///
 /// Blocking, for the thread that reads a rendition (the demuxer's read-ahead, FFmpeg's own calls): interruptible
 /// through the transport's `shouldAbort`, checked every 50 ms while it waits for data.
-final class HLSSegmentLoader: Sendable {
+package final class HLSSegmentLoader: Sendable {
     private struct Cache {
         var initSections: [HLSInitSection: Data] = [:]
         var keys: [URL: Data] = [:]
@@ -37,7 +37,7 @@ final class HLSSegmentLoader: Sendable {
     fileprivate let transport: HTTPSessionTransport
     /// Local files are read too: the playlist itself is a file (a saved manifest). A playlist served over HTTP(S) never
     /// reaches the disk, whatever it lists.
-    let allowsFiles: Bool
+    package let allowsFiles: Bool
     private let cache: OSAllocatedUnfairLock<Cache>
     /// Interrupts this loader's requests besides the transport's `shouldAbort` (`aborting(when:)`).
     private let abort: (@Sendable () -> Bool)?
@@ -53,7 +53,8 @@ final class HLSSegmentLoader: Sendable {
     static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
 
-    init(transport: HTTPSessionTransport, allowsFiles: Bool = false, addresses: (any HLSPlaylistSource)? = nil) {
+    package init(transport: HTTPSessionTransport, allowsFiles: Bool = false, addresses: (any HLSPlaylistSource)? = nil)
+    {
         self.transport = transport
         self.allowsFiles = allowsFiles
         self.addresses = addresses
@@ -277,16 +278,16 @@ final class HLSSegmentLoader: Sendable {
 
 /// Where a lane's segment downloads tell how far they have got (`HLSSegmentLoader.watching`): the lane sets its
 /// handler once it is made, after the loader it reads with. Called on the thread that reads the segment, while it waits.
-final class HLSSegmentProgressRelay: @unchecked Sendable {
+package final class HLSSegmentProgressRelay: @unchecked Sendable {
     var handler: ((HLSSegment, HTTPSessionInput.Progress) -> Void)?
     /// The download last begun, for a check made while the thread that reads is idle (`HLSLane.pollProgress`): the
     /// download goes on in the background while the read-ahead is full, and nothing waits for it then.
     private let latest = OSAllocatedUnfairLock<(segment: HLSSegment, input: Weak<HTTPSessionInput>)?>(
         initialState: nil)
 
-    final class Weak<T: AnyObject>: @unchecked Sendable {
+    package final class Weak<T: AnyObject>: @unchecked Sendable {
         weak var value: T?
-        init(_ value: T) { self.value = value }
+        package init(_ value: T) { self.value = value }
     }
 
     func tell(_ segment: HLSSegment, _ progress: HTTPSessionInput.Progress) {
@@ -315,7 +316,7 @@ final class HLSSegmentProgressRelay: @unchecked Sendable {
 /// segment, which the opening reads to describe the picture and the demuxer then goes back to the start of) can be
 /// `replayed`: a new body gives the bytes read so far again and goes on with the same download, up to
 /// `HLSSegmentLoader.retainLimit` bytes.
-final class HLSSegmentBody {
+package final class HLSSegmentBody {
     private enum Source {
         case data(Data)
         case input(HTTPSessionInput, limit: Int64?)
@@ -334,7 +335,7 @@ final class HLSSegmentBody {
     /// The download was read through, and closed.
     private var isComplete = false
 
-    init(data: Data) {
+    package init(data: Data) {
         source = .data(data)
         buffer = []
     }
@@ -446,7 +447,7 @@ final class HLSSegmentBody {
     }
 
     /// Gives the download up (the segment is not read to its end).
-    func close() {
+    package func close() {
         guard case .input(let input, _) = source, !isFinished else { return }
         isFinished = true
         input.close()

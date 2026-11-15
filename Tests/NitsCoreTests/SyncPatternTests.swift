@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
+@testable import NitsStreaming
 
 /// A/V sync on the `flashClick` pattern: a white frame and a click at every whole second.
 ///

@@ -27,6 +27,7 @@ extension LogLevel {
         switch level {
         case .debug: self = .debug
         case .info: self = .info
+        case .notice: self = .notice
         case .warning: self = .warning
         case .error: self = .error
         }
@@ -38,7 +39,7 @@ extension StreamingLog.Level {
         switch level {
         case .debug: self = .debug
         case .info: self = .info
-        case .notice: self = .info
+        case .notice: self = .notice
         case .warning: self = .warning
         case .error: self = .error
         }

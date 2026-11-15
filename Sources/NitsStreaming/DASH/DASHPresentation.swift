@@ -10,63 +10,63 @@ internal import NitsStreaming
 /// segments: `IndexLocation`), inherited from the period and the adaptation set and overridden below; `BaseURL` at every
 /// level; `Initialization` and the template's `initialization`. Protected
 /// (`ContentProtection`), trick-play, text and image sets are left out.
-struct DASHPresentation: Sendable {
-    struct Segment: Sendable, Equatable {
-        var url: URL
-        var byteRange: HLSByteRange?
+package struct DASHPresentation: Sendable {
+    package struct Segment: Sendable, Equatable {
+        package var url: URL
+        package var byteRange: HLSByteRange?
         /// Seconds from the period's start (the presentation time less the `presentationTimeOffset`).
-        var start: Double
-        var duration: Double
+        package var start: Double
+        package var duration: Double
         /// Its `$Number$`: `startNumber` and its place in the representation.
-        var number: Int
+        package var number: Int
         /// The period it belongs to (a manifest of several: each is a discontinuity of the timeline).
-        var period = 0
+        package var period = 0
         /// Its period's initialization, in a representation of several periods (their inits differ); else the
         /// representation's.
-        var initSection: HLSInitSection?
+        package var initSection: HLSInitSection?
         /// Silence kept in its place: a period of a sound with none of its own (`merge`). Never requested.
-        var isGap = false
+        package var isGap = false
     }
 
-    struct Representation: Sendable, Equatable {
-        enum Kind: Sendable, Equatable {
+    package struct Representation: Sendable, Equatable {
+        package enum Kind: Sendable, Equatable {
             case video
             case audio
         }
 
-        var id: String
-        var kind: Kind
+        package var id: String
+        package var kind: Kind
         /// Bits per second; 0 when the manifest tells none.
-        var bandwidth: Int
-        var codecs: String?
+        package var bandwidth: Int
+        package var codecs: String?
         /// `scte214:supplementalCodecs` (Dolby Vision's on an HDR10 base layer).
-        var supplementalCodecs: String?
-        var width: Int?
-        var height: Int?
-        var frameRate: Double?
+        package var supplementalCodecs: String?
+        package var width: Int?
+        package var height: Int?
+        package var frameRate: Double?
         /// PQ or HLG as the manifest's properties tell; nil for neither.
-        var videoRange: HLSVideoRange?
-        var language: String?
+        package var videoRange: HLSVideoRange?
+        package var language: String?
         /// `DASHElements.roleRank`.
-        var roleRank: Int
+        package var roleRank: Int
         /// The index of its adaptation set in the period.
-        var set: Int
-        var initSection: HLSInitSection?
+        package var set: Int
+        package var initSection: HLSInitSection?
         /// The `presentationTimeOffset` in seconds: what its media's timestamps are ahead of the period's time.
-        var presentationTimeOffset: Double
+        package var presentationTimeOffset: Double
         /// Empty for one file (`index`) until its index is read (`segments(from:of:)`).
-        var segments: [Segment]
+        package var segments: [Segment]
         /// Where the index of a representation that is one file is (`SegmentBase`); nil for one of segments.
-        var index: IndexLocation?
+        package var index: IndexLocation?
         /// Its segments are told by a timeline of a live manifest: the manifest moves the timeline's first entry as it
         /// slides without telling the number it now has, so the source numbers the segments by their times (`LiveNumbers`).
-        var numbersByTime = false
+        package var numbersByTime = false
     }
 
     /// What a dynamic manifest tells besides its segments (ISO/IEC 23009-1 5.3.1.2).
-    struct Live: Sendable, Equatable {
+    package struct Live: Sendable, Equatable {
         /// A `UTCTiming` descriptor: how the client learns the server's clock.
-        struct Timing: Sendable, Equatable {
+        package struct Timing: Sendable, Equatable {
             var scheme: String
             var value: String
         }
@@ -74,16 +74,16 @@ struct DASHPresentation: Sendable {
         /// `availabilityStartTime`: the zero of the media's availability times.
         var availabilityStart: Date
         /// The period's start, seconds after `availabilityStart`.
-        var periodStart: Double
+        package var periodStart: Double
         /// `minimumUpdatePeriod`: how often the manifest may change; nil, never (a timeline counted by the clock).
-        var minimumUpdatePeriod: Double?
+        package var minimumUpdatePeriod: Double?
         /// `suggestedPresentationDelay`: how far behind the edge the stream is meant to be played.
-        var suggestedPresentationDelay: Double?
-        var timings: [Timing]
+        package var suggestedPresentationDelay: Double?
+        package var timings: [Timing]
         /// `Location`: where the next manifest is fetched from.
-        var location: URL?
+        package var location: URL?
         /// The period's time at the live edge, when read: the server's clock less `availabilityStart` and `periodStart`.
-        var edge: Double
+        package var edge: Double
         /// The window the segments were listed for, seconds: the manifest's depth, bounded by `maxHistory`.
         var depth: Double
 
@@ -99,25 +99,25 @@ struct DASHPresentation: Sendable {
     /// The index of a representation that is one MP4 file (`SegmentBase`): its `indexRange` (or `RepresentationIndex`),
     /// read by the source when the representation's playlist is asked for (dash.js and shaka-player read it then, not
     /// with the manifest).
-    struct IndexLocation: Sendable, Equatable {
+    package struct IndexLocation: Sendable, Equatable {
         /// The file.
         var media: URL
         /// Where the index is: the file, or a file of its own (`RepresentationIndex@sourceURL`).
-        var url: URL
-        var range: HLSByteRange
+        package var url: URL
+        package var range: HLSByteRange
         /// The index is a file of its own: its offsets count from the start of the media file.
-        var isExternal: Bool { url != media }
+        package var isExternal: Bool { url != media }
     }
 
     /// The pictures and sounds, in the manifest's order.
-    var representations: [Representation]
+    package var representations: [Representation]
     /// The period's length, when told: the segments an index lists end with it.
-    var periodDuration: Double?
+    package var periodDuration: Double?
     /// A dynamic manifest's clock and window; nil for a static one.
-    var live: Live?
+    package var live: Live?
 }
 
-enum DASHPresentationError: Error, Equatable {
+package enum DASHPresentationError: Error, Equatable {
     /// Not an MPD.
     case unreadable
     /// An MPD of what the client does not play yet.
@@ -134,7 +134,7 @@ extension DASHPresentation {
     /// The presentation `data` holds; `url` is where it came from (after redirects), what its addresses are relative to.
     /// A live manifest of several periods is read as the one that starts at `livePeriodStart` (the one played: a period
     /// told after it, an ad break of server-side insertion, ends it), and refused without one (at the opening).
-    static func parse(
+    package static func parse(
         _ data: Data, url: URL, now: Date? = nil, livePeriodStart: Double? = nil
     ) throws(DASHPresentationError) -> DASHPresentation {
         guard data.count <= sizeLimit else { throw .unsupported("a manifest over \(sizeLimit >> 20) MB") }
@@ -211,7 +211,7 @@ extension DASHPresentation {
             if result.hasProtected { throw .unsupported("its streams are protected (DRM)") }
             if let reason = result.skipped.first { throw .unsupported(reason) }
         } else if !result.skipped.isEmpty {
-            AppLog.warning(.demuxer, "DASH: left out \(result.skipped.joined(separator: "; "))")
+            StreamingLog.warning("DASH: left out \(result.skipped.joined(separator: "; "))")
         }
         return DASHPresentation(
             representations: result.representations, periodDuration: kept.count == 1 ? times[0].duration : nil,
@@ -220,7 +220,7 @@ extension DASHPresentation {
 
     /// What one period gave: its representations played, and those left out with the reason.
     private struct PeriodRead {
-        var representations: [Representation] = []
+        package var representations: [Representation] = []
         /// The representations left out, with the reason.
         var skipped: [String] = []
         /// Those of them that are pictures: a manifest of pictures, none played, is not played as its sound alone.
@@ -491,7 +491,7 @@ extension DASHPresentation {
     /// the file, numbered from 1, on the period's time (the index's times less the `presentationTimeOffset`). Those that
     /// start at the period's end or past it are left out and the last ends with it, as for a timeline (shaka-player fits
     /// an index to its period too).
-    static func segments(
+    package static func segments(
         from index: SegmentIndex, of representation: Representation, periodDuration: Double?
     ) -> [Segment] {
         guard let location = representation.index else { return [] }
@@ -597,7 +597,7 @@ extension DASHPresentation {
     /// them.
     private struct Information {
         var attributes: [String: String] = [:]
-        var timeline: XMLTreeElement?
+        package var timeline: XMLTreeElement?
         var initialization: XMLTreeElement?
         /// `SegmentBase`'s `RepresentationIndex`.
         var representationIndex: XMLTreeElement?
@@ -628,13 +628,13 @@ extension DASHPresentation {
 
         /// Values that are not counts or times (negative) are taken as not told.
         var timescale: Int64 { attributes["timescale"].flatMap { Int64($0) }.flatMap { $0 > 0 ? $0 : nil } ?? 1 }
-        var presentationTimeOffset: Int64 {
+        package var presentationTimeOffset: Int64 {
             attributes["presentationTimeOffset"].flatMap { Int64($0) }.flatMap { $0 >= 0 ? $0 : nil } ?? 0
         }
         var startNumber: Int {
             attributes["startNumber"].flatMap { Int($0) }.flatMap { (0...numberLimit).contains($0) ? $0 : nil } ?? 1
         }
-        var duration: Int64? { attributes["duration"].flatMap { Int64($0) }.flatMap { $0 > 0 ? $0 : nil } }
+        package var duration: Int64? { attributes["duration"].flatMap { Int64($0) }.flatMap { $0 > 0 ? $0 : nil } }
     }
 
     /// The highest `startNumber` taken: a number past it plus a representation's segments could not be counted.
@@ -652,12 +652,12 @@ extension DASHPresentation {
 
     /// What a representation's segment information tells: its segments, or for one file where its index is.
     private struct Told {
-        var initSection: HLSInitSection?
+        package var initSection: HLSInitSection?
         /// Seconds.
-        var presentationTimeOffset: Double
-        var segments: [Segment] = []
-        var index: IndexLocation?
-        var numbersByTime = false
+        package var presentationTimeOffset: Double
+        package var segments: [Segment] = []
+        package var index: IndexLocation?
+        package var numbersByTime = false
     }
 
     private static func segmentsOf(
@@ -807,8 +807,7 @@ extension DASHPresentation {
                         throw .unsupported("a timeline that goes back at \(Double(start) / Double(timescale)) s")
                     }
                     if Double(abs(start - time)) / Double(timescale) >= gapWarning {
-                        AppLog.warning(
-                            .demuxer,
+                        StreamingLog.warning(
                             "DASH: a timeline with a \(start > time ? "gap" : "overlap") of "
                                 + "\(Double(abs(start - time)) / Double(timescale)) s at \(Double(time) / Double(timescale)) s; "
                                 + "the segment before it is made to end there")
