@@ -4,8 +4,8 @@ internal import NitsStreaming
 import os
 
 /// An HLS stream read by Nits' own client, not FFmpeg's `hls.c`: the playlists are parsed and placed on a timeline
-/// (`HLSTimeline`), the segments downloaded (`HLSSegmentLoader`) and demuxed by FFmpeg's container demuxers
-/// (`HLSSegmentReader`), and the packets handed to `MediaDemuxer` through `DemuxerInput`, as a file's are.
+/// (`HLSTimeline`), the segments downloaded (`SegmentLoader`) and demuxed by FFmpeg's container demuxers
+/// (`SegmentReader`), and the packets handed to `MediaDemuxer` through `DemuxerInput`, as a file's are.
 ///
 /// The stream is read as **lanes** (`HLSLane`): a lane for each variant's playlist (its video, and the sound muxed into
 /// it) and for each audio and subtitle rendition with a playlist of its own. A lane is read as far as its next packet;
@@ -183,7 +183,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = HLSInput.answerLimit,
         streamingName: String = "HLS"
     ) {
-        // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`HLSSegmentLoader.allowsFiles`).
+        // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`SegmentLoader.allowsFiles`).
         let isLocal = allowsFiles && !HTTPSessionTransport.serves(url)
         self.interrupt = interrupt
         self.streamingName = streamingName
@@ -193,7 +193,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
         self.transport = transport
         meter = TransferAccount(meter: transport.meter)
-        let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal, addresses: playlists)
+        let loader = SegmentLoader(transport: transport, allowsFiles: isLocal, addresses: playlists)
         let shouldAbort: () -> Bool = { interrupt.shouldInterruptFFmpeg }
 
         func fail(_ message: String, code: Int32 = -EIO, level: StreamingLog.Level = .error) {
@@ -356,7 +356,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
             isProbing
             ? transport.skipSlowStart(
                 forSegmentsOn: reference.entry(at: startTime)?.segment.url.host, limit: Self.slowLinkLimit) : nil
-        let results = built.map { _ in Slot<HLSSegmentReaderError>() }
+        let results = built.map { _ in Slot<SegmentReaderError>() }
         let probedLanes = built.map { _ in Slot<Bool>() }
         let lanesToOpen = built
         let candidates =
@@ -367,7 +367,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         @Sendable func probe(_ index: Int, opening: HTTPSessionInput.Opening = .held) {
             // A subtitle rendition's streams are known without a read (its first segment may have no cues).
             guard let lane = lanesToOpen[index], lane.kind != .subtitle else { return }
-            do throws(HLSSegmentReaderError) {
+            do throws(SegmentReaderError) {
                 try lane.probe(at: probeTime, opening: opening)
                 probedLanes[index].set(true)
             } catch {
@@ -424,7 +424,7 @@ package final class HLSInput: StreamDescriptions, @unchecked Sendable {
         let modelSlot = Slot<Int>()
         if !isProbing {
             if let lane = built[0] {
-                do throws(HLSSegmentReaderError) { try lane.open(at: startTime) } catch { results[0].set(error) }
+                do throws(SegmentReaderError) { try lane.open(at: startTime) } catch { results[0].set(error) }
             }
         } else if candidates.isEmpty {
             DispatchQueue.concurrentPerform(iterations: built.count) {
@@ -1034,13 +1034,13 @@ private final class TransferAccount: NetworkReadAccount {
 
 /// The probes of the rungs that may describe a ladder at the opening (`HLSInput`'s `raceForModel`): the top's, and the
 /// next rung down's beside it once the top has not answered in time. The first to answer goes on; the other's requests
-/// are stopped (`HLSSegmentLoader.aborting(when:)`), which ends its probe with an error.
+/// are stopped (`SegmentLoader.aborting(when:)`), which ends its probe with an error.
 private final class ProbeRace: @unchecked Sendable {
     private struct State {
         var winner: Int?
         var running = 0
         var finished: Set<Int> = []
-        var errors: [Int: HLSSegmentReaderError] = [:]
+        var errors: [Int: SegmentReaderError] = [:]
         /// Probes interrupted because another had answered: no failure of their own.
         var stopped: Set<Int> = []
     }
@@ -1049,7 +1049,7 @@ private final class ProbeRace: @unchecked Sendable {
     private let group = DispatchGroup()
 
     /// Probes `lane` (at `index` of the opening's playlists) at `time` on a thread of its own.
-    package func start(_ index: Int, lane: HLSLane, at time: Double, loader: HLSSegmentLoader) {
+    package func start(_ index: Int, lane: HLSLane, at time: Double, loader: SegmentLoader) {
         state.withLock { $0.running += 1 }
         let state = state
         let changed = changed
@@ -1057,8 +1057,8 @@ private final class ProbeRace: @unchecked Sendable {
         let probeLoader = loader.aborting(when: lost)
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [group] in
-            let failure: HLSSegmentReaderError?
-            do throws(HLSSegmentReaderError) {
+            let failure: SegmentReaderError?
+            do throws(SegmentReaderError) {
                 try lane.probe(at: time, loader: probeLoader, opening: .start) {
                     state.withLock { if $0.winner == nil { $0.winner = index } }
                     changed.signal()
@@ -1091,7 +1091,7 @@ private final class ProbeRace: @unchecked Sendable {
     /// Whether the probe at `index` was stopped for another that answered first (interrupted after it had); a probe
     /// that failed on its own (a 404, a timeout) was not, whoever answered.
     func lost(_ index: Int) -> Bool { state.withLock { $0.stopped.contains(index) } }
-    func error(of index: Int) -> HLSSegmentReaderError? { state.withLock { $0.errors[index] } }
+    func error(of index: Int) -> SegmentReaderError? { state.withLock { $0.errors[index] } }
 
     /// Waits for a probe to answer or end, 50 ms at most.
     func waitForChange() { _ = changed.wait(timeout: .now() + .milliseconds(50)) }

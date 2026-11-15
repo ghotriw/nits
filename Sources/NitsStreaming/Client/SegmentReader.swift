@@ -2,15 +2,15 @@ import CFFmpeg
 import Foundation
 internal import NitsStreaming
 
-package enum HLSSegmentReaderError: Error, Equatable {
-    case load(HLSSegmentLoadError)
+package enum SegmentReaderError: Error, Equatable {
+    case load(SegmentLoadError)
     /// FFmpeg couldn't open or probe the segments' container (its error code).
     case open(Int32)
 
     /// FFmpeg's error code for it.
     var code: Int32 {
         switch self {
-        case .load(let load): HLSSegmentReader.code(for: load)
+        case .load(let load): SegmentReader.code(for: load)
         case .open(let code): code
         }
     }
@@ -38,8 +38,8 @@ package enum HLSSegmentReaderError: Error, Equatable {
 /// of such a reader belong to the context being read: copy what's needed from them before reading on.
 ///
 /// Not thread-safe: one thread reads, and closes.
-package final class HLSSegmentReader {
-    private let loader: HLSSegmentLoader
+package final class SegmentReader {
+    private let loader: SegmentLoader
     private let next: () -> HLSSegment?
     private let start: Double
     private let timelineShift: ((Int) -> Double?)?
@@ -75,9 +75,9 @@ package final class HLSSegmentReader {
     private var io: SegmentIO?
     private var feed: SegmentFeed?
     /// The segment being read of a continuous run, as it comes (`nextChunk`).
-    private var body: HLSSegmentBody?
+    private var body: SegmentBody?
     /// The body of the run's first segment, which a lane may keep (`claimFirstBody`) to replay it.
-    private var retainedFirst: HLSSegmentBody?
+    private var retainedFirst: SegmentBody?
     private var isFirstClaimed = false
     /// Seconds to add to the media's timestamps for the timeline. Known once the run's first packet is read (or
     /// at the open, from the streams' start times).
@@ -109,7 +109,7 @@ package final class HLSSegmentReader {
     private var segmentShift: Double = 0
     /// Why the run's bytes ended early, if they did (a segment that failed to load): `read` returns an error for it,
     /// not the end of the stream.
-    private(set) var failure: HLSSegmentLoadError?
+    private(set) var failure: SegmentLoadError?
     /// `next` returned nil: it isn't asked again, as it would hand the next run's first segment to this one.
     private var isEnded = false
     /// The segment being read (`body`) has handed out bytes: a failure of it ends the run inside a packet.
@@ -147,11 +147,11 @@ package final class HLSSegmentReader {
     /// first segment's first bytes came (its init section's before them): the server answers, whatever the analysis
     /// then takes.
     init(
-        loader: HLSSegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
+        loader: SegmentLoader, first: HLSSegment, start: Double, timelineShift: ((Int) -> Double?)? = nil,
         anchoring: Anchoring? = nil, probe: HTTPSessionInput.Opening? = nil, knownVideoDelay: Int? = nil,
-        firstBody: HLSSegmentBody? = nil, onAnswer: (() -> Void)? = nil,
+        firstBody: SegmentBody? = nil, onAnswer: (() -> Void)? = nil,
         next: @escaping () -> HLSSegment?
-    ) throws(HLSSegmentReaderError) {
+    ) throws(SegmentReaderError) {
         self.loader = loader
         self.start = start
         self.knownVideoDelay = knownVideoDelay
@@ -160,15 +160,15 @@ package final class HLSSegmentReader {
         self.next = next
         var head = Data()
         var data = Data()
-        var opened: HLSSegmentBody?
+        var opened: SegmentBody?
         let began = ContinuousClock.now
-        do throws(HLSSegmentLoadError) {
+        do throws(SegmentLoadError) {
             if let section = first.initSection {
                 head = try loader.initSection(section)
                 openTiming.initSection = ContinuousClock.now - began
             }
             // The segment's first bytes, as they come: enough to tell what it is.
-            let body: HLSSegmentBody
+            let body: SegmentBody
             if let firstBody {
                 body = firstBody
             } else {
@@ -194,7 +194,7 @@ package final class HLSSegmentReader {
         if isSegmentwise {
             // A cue file is small, and read whole.
             if let opened {
-                do throws(HLSSegmentLoadError) { data.append(try opened.rest()) } catch {
+                do throws(SegmentLoadError) { data.append(try opened.rest()) } catch {
                     opened.close()
                     throw .load(error)
                 }
@@ -261,9 +261,9 @@ package final class HLSSegmentReader {
         do {
             try openSegmentContext(try loader.segment(segment), sequence: segment.discontinuitySequence)
             return nil
-        } catch let error as HLSSegmentLoadError {
+        } catch let error as SegmentLoadError {
             failure = error
-        } catch let error as HLSSegmentReaderError {
+        } catch let error as SegmentReaderError {
             switch error {
             case .load(let load): failure = load
             case .open(let code): failure = .failed(code)
@@ -280,8 +280,8 @@ package final class HLSSegmentReader {
         context = nil
     }
 
-    /// The first segment's body, which this reader no longer closes: the lane keeps it (`HLSSegmentBody.replayedBody`).
-    func claimFirstBody() -> HLSSegmentBody? {
+    /// The first segment's body, which this reader no longer closes: the lane keeps it (`SegmentBody.replayedBody`).
+    func claimFirstBody() -> SegmentBody? {
         isFirstClaimed = true
         return retainedFirst
     }
@@ -317,7 +317,7 @@ package final class HLSSegmentReader {
         failure.map(Self.code(for:)) ?? FFmpegErrorCode.eof
     }
 
-    static func code(for error: HLSSegmentLoadError) -> Int32 {
+    static func code(for error: SegmentLoadError) -> Int32 {
         switch error {
         case .interrupted: FFmpegErrorCode.exit
         case .failed(let code): code
@@ -334,7 +334,7 @@ package final class HLSSegmentReader {
     }
 
     /// One context over the init section and the segments, the first given; the others pulled from `next`.
-    private func openContinuousContext(_ head: Data) throws(HLSSegmentReaderError) {
+    private func openContinuousContext(_ head: Data) throws(SegmentReaderError) {
         let feed = SegmentFeed(head: head) { [weak self] in self?.nextChunk() ?? .end }
         self.feed = feed
         delivered = Int64(head.count)
@@ -357,7 +357,7 @@ package final class HLSSegmentReader {
     private func nextChunk() -> SegmentFeed.Chunk {
         while true {
             if let current = body {
-                do throws(HLSSegmentLoadError) {
+                do throws(SegmentLoadError) {
                     if let chunk = try current.next() {
                         bodyHasBytes = true
                         delivered += Int64(chunk.count)
@@ -375,7 +375,7 @@ package final class HLSSegmentReader {
             bodyHasBytes = false
             segmentStarts.append((delivered, segment, segmentsStarted))
             segmentsStarted += 1
-            do throws(HLSSegmentLoadError) {
+            do throws(SegmentLoadError) {
                 body = try loader.segmentBody(segment)
             } catch {
                 return fail(error)
@@ -387,13 +387,13 @@ package final class HLSSegmentReader {
     /// One that failed before any of its bytes came ends them as the end of the stream does, so the container demuxer
     /// hands out what it still holds of the segment before (MPEG-TS's last packets, which only an end flushes); one
     /// that failed inside its bytes, or an abort, with the error (a packet cut short is not passed on).
-    private func fail(_ error: HLSSegmentLoadError) -> SegmentFeed.Chunk {
+    private func fail(_ error: SegmentLoadError) -> SegmentFeed.Chunk {
         failure = error
         return bodyHasBytes || error == .interrupted ? .failed(Self.code(for: error)) : .end
     }
 
     /// A context over one WebVTT segment, of discontinuity `sequence`.
-    private func openSegmentContext(_ data: Data, sequence: Int) throws(HLSSegmentReaderError) {
+    private func openSegmentContext(_ data: Data, sequence: Int) throws(SegmentReaderError) {
         closeContext()
         io?.free()
         io = nil
@@ -415,7 +415,7 @@ package final class HLSSegmentReader {
         openTiming.bytes = Int64(data.count)
     }
 
-    private func openContext(over feed: SegmentFeed) throws(HLSSegmentReaderError) {
+    private func openContext(over feed: SegmentFeed) throws(SegmentReaderError) {
         guard let io = SegmentIO(source: feed) else { throw .open(-ENOMEM) }
         self.io = io
         guard let allocated = avformat_alloc_context() else { throw .open(-ENOMEM) }

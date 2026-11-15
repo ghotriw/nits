@@ -11,7 +11,7 @@ extension HLSInput {
         let isLocal = !HTTPSessionTransport.serves(url)
         guard let location = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
         let transport = HTTPSessionTransport(source: url, headers: headers) { interrupt.shouldInterruptFFmpeg }
-        let loader = HLSSegmentLoader(transport: transport, allowsFiles: isLocal)
+        let loader = SegmentLoader(transport: transport, allowsFiles: isLocal)
         guard let first = try? loader.playlist(location),
             let parsed = try? HLSPlaylist.parse(first.data, url: first.servedFrom)
         else { return nil }

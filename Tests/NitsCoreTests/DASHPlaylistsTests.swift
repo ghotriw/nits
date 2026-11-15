@@ -524,7 +524,7 @@ struct DASHPlaylistsTests {
         )
         let source = DASHPlaylists(address: Self.url, inline: data)
         let transport = HTTPSessionTransport(source: Self.url.absoluteString, headers: [:]) { false }
-        let loader = HLSSegmentLoader(transport: transport)
+        let loader = SegmentLoader(transport: transport)
         #expect(source.masterURL.scheme == "nits-dash")
         guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)
         else {

@@ -174,12 +174,12 @@ struct DASHLiveTests {
         DASHPlaylists(address: url, inline: data, clock: { at(now.withLock { $0 }) })
     }
 
-    static func loader() -> HLSSegmentLoader {
-        HLSSegmentLoader(transport: HTTPSessionTransport(source: url.absoluteString, headers: [:]) { false })
+    static func loader() -> SegmentLoader {
+        SegmentLoader(transport: HTTPSessionTransport(source: url.absoluteString, headers: [:]) { false })
     }
 
     /// The media playlist of the source's first picture.
-    static func media(_ source: DASHPlaylists, _ loader: HLSSegmentLoader) throws -> HLSMediaPlaylist {
+    static func media(_ source: DASHPlaylists, _ loader: SegmentLoader) throws -> HLSMediaPlaylist {
         guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader),
             let variant = master.variants.first,
             case .media(let media) = try source.playlist(at: variant.url, variables: [:], loader: loader)
@@ -372,8 +372,8 @@ struct DASHLiveTests {
         #expect(fetches() == 2)
     }
 
-    static func loader(for address: URL) -> HLSSegmentLoader {
-        HLSSegmentLoader(transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false })
+    static func loader(for address: URL) -> SegmentLoader {
+        SegmentLoader(transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false })
     }
 
     @Test(

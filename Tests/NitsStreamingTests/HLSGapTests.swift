@@ -20,7 +20,7 @@ struct HLSGapTests {
         guard case .media(let playlist) = try HLSPlaylist.parse(text, url: url) else { throw CancellationError() }
         return HLSLane(
             kind: .audio, url: url, timeline: HLSTimeline(playlist), variables: [:], playlists: HLSServedPlaylists(),
-            loader: HLSSegmentLoader(
+            loader: SegmentLoader(
                 transport: HTTPSessionTransport(source: url.absoluteString, headers: [:]) { false }),
             anchors: HLSTimestampAnchors(), shouldAbort: { abort.withLock { $0 } })
     }
@@ -51,8 +51,8 @@ struct HLSGapTests {
     @Test("A lane started in the gaps that end a finished playlist is finished: no request, the end")
     func startInTrailingGaps() throws {
         let lane = try Self.lane(gaps: [2, 3])
-        #expect(throws: HLSSegmentReaderError.self) { try lane.open(at: 10) }
-        #expect(throws: HLSSegmentReaderError.self) { try lane.probe(at: 10) }
+        #expect(throws: SegmentReaderError.self) { try lane.open(at: 10) }
+        #expect(throws: SegmentReaderError.self) { try lane.probe(at: 10) }
         lane.reposition(at: 10)
         // A gap asked for would fail to load and be skipped (a code of failure, not the end).
         #expect(lane.fill() == FFmpegErrorCode.eof)

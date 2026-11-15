@@ -2,7 +2,7 @@ import CFFmpeg
 import Foundation
 
 /// An input served by Nits instead of FFmpeg's protocols: what an `AVIOContext`'s callbacks read (an HLS segment,
-/// `HLSSegmentReader`).
+/// `SegmentReader`).
 package protocol FFmpegInputSource: AnyObject {
     func read(_ buffer: UnsafeMutablePointer<UInt8>, _ size: Int32) -> Int32
     /// `avio_seek`'s `offset` and `whence` (`AVSEEK_SIZE` among them).

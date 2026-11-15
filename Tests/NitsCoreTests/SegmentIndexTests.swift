@@ -311,7 +311,7 @@ struct SingleFileDASHTests {
         let address = made.directory.appendingPathComponent("dash.mpd")
         try Data(text.utf8).write(to: address)
         let source = DASHPlaylists(address: address)
-        let loader = HLSSegmentLoader(
+        let loader = SegmentLoader(
             transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false }, allowsFiles: true)
         guard case .master(let master) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)
         else {
@@ -377,7 +377,7 @@ extension SegmentIndexTests {
             """.utf8
         ).write(to: address)
         let source = DASHPlaylists(address: address)
-        let loader = HLSSegmentLoader(
+        let loader = SegmentLoader(
             transport: HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false }, allowsFiles: true)
         do throws(HLSPlaylistSourceError) {
             guard case .media(let media) = try source.playlist(at: source.masterURL, variables: [:], loader: loader)

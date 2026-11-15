@@ -7,7 +7,7 @@ internal import NitsStreaming
 package enum HLSOpeningMeasure {
     /// The opening of the input: playlists, probes, and the whole (`HLSInput.init`). Info.
     static let opening = "HLS opening:"
-    /// A run of segments opened, with its steps (`HLSSegmentReader.OpenTiming`). Debug.
+    /// A run of segments opened, with its steps (`SegmentReader.OpenTiming`). Debug.
     static let run = "HLS run:"
     /// What the opening's transfers brought, at the points its rate could be read at and past the slow start it skips
     /// (`HTTPSessionInput.OpeningLimit.rateReport`), with the round trip, the rate told and the wait for it. Info.

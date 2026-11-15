@@ -178,7 +178,7 @@ package final class HTTPSessionTransport: Sendable {
 /// take theirs: measured together, the link's busy time over every transfer, a window of an audio segment alone (half
 /// a megabyte on a connection idle since its last, which TCP starts slowly again) measured 24 Mbit/s of 300.
 ///
-/// Requests stay one at a time (`HLSSegmentLoader`). Asking for the next segment
+/// Requests stay one at a time (`SegmentLoader`). Asking for the next segment
 /// while one is read hides its answer's wait, but over HTTP/1.1 the server sends the body with the answer: side by
 /// side, the one read, needed first, came in at half the rate (a live stream at 1.5 Mbit/s: the read-ahead empty for
 /// 7 s), and a task suspended once answered took its body all the same, into the socket's buffer.

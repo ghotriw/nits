@@ -9,7 +9,7 @@ package protocol HLSPlaylistSource: Sendable {
     /// The playlist at `url`: a master or a media playlist. `variables`: those a master defined, which a media playlist
     /// may import (`EXT-X-DEFINE:IMPORT`). What it requests goes through `loader`, the caller's: on its transport and
     /// giving way to its abort, as the caller's segments do.
-    func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader) throws(HLSPlaylistSourceError)
+    func playlist(at url: URL, variables: [String: String], loader: SegmentLoader) throws(HLSPlaylistSourceError)
         -> HLSPlaylist
 
     /// Where a request for `url`, an address a playlist lists (a segment's, an init section's), really goes: asked by the
@@ -30,7 +30,7 @@ extension HLSPlaylistSource {
 
 package enum HLSPlaylistSourceError: Error, Equatable {
     /// It did not load.
-    case load(HLSSegmentLoadError)
+    case load(SegmentLoadError)
     /// It loaded, but does not read as a playlist.
     case unreadable(HLSPlaylistError)
     /// It reads, as what the client does not play (yet): the reason. The stream may be opened otherwise.
@@ -39,7 +39,7 @@ package enum HLSPlaylistSourceError: Error, Equatable {
     /// FFmpeg's error for it (`AVERROR_EXIT` for an abort).
     var code: Int32 {
         switch self {
-        case .load(let error): HLSSegmentReader.code(for: error)
+        case .load(let error): SegmentReader.code(for: error)
         case .unreadable: -EIO
         case .unsupported: -ENOSYS
         }
@@ -49,7 +49,7 @@ package enum HLSPlaylistSourceError: Error, Equatable {
 /// Playlists an HLS server serves: loaded, and read from their text against the address they were served from (after
 /// redirects).
 package struct HLSServedPlaylists: HLSPlaylistSource {
-    package func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader)
+    package func playlist(at url: URL, variables: [String: String], loader: SegmentLoader)
         throws(HLSPlaylistSourceError)
         -> HLSPlaylist
     {

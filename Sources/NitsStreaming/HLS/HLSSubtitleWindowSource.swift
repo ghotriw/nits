@@ -76,7 +76,7 @@ extension HLSSubtitleWindowSource {
         let timebase = AVRational(num: 1, den: 1000)
         let transport = HTTPSessionTransport(source: address, headers: headers, shouldAbort: shouldAbort)
         transport.adopt(cookies())
-        let loader = HLSSegmentLoader(transport: transport, allowsFiles: allowsFiles)
+        let loader = SegmentLoader(transport: transport, allowsFiles: allowsFiles)
         let lane = HLSLane(
             kind: .subtitle, url: url, timeline: timeline, variables: variables, playlists: playlists, loader: loader,
             anchors: anchors, shouldAbort: shouldAbort)

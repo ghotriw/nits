@@ -13,7 +13,7 @@ struct HLSSegmentPipelineTests {
     private struct Stand {
         let server: TestHTTPServer
         let directory: URL
-        let loader: HLSSegmentLoader
+        let loader: SegmentLoader
         let transport: HTTPSessionTransport
 
         func playlist(_ name: String) throws -> HLSMediaPlaylist {
@@ -37,7 +37,7 @@ struct HLSSegmentPipelineTests {
         let server = try TestHTTPServer(root: directory)
         let transport = HTTPSessionTransport(source: server.url("x.m3u8"), headers: [:]) { false }
         return Stand(
-            server: server, directory: directory, loader: HLSSegmentLoader(transport: transport), transport: transport)
+            server: server, directory: directory, loader: SegmentLoader(transport: transport), transport: transport)
     }
 
     /// Every packet of a run, as (stream kind, pts, dts) in seconds on the timeline.
@@ -47,7 +47,7 @@ struct HLSSegmentPipelineTests {
         let dts: Double
     }
 
-    private static func drain(_ reader: HLSSegmentReader) -> (packets: [Packet], code: Int32) {
+    private static func drain(_ reader: SegmentReader) -> (packets: [Packet], code: Int32) {
         var packets: [Packet] = []
         let pointer = av_packet_alloc()!
         defer {
@@ -71,11 +71,11 @@ struct HLSSegmentPipelineTests {
     /// A reader of the segments from `index` that share `playlist`'s first one's init section and discontinuity.
     private static func reader(
         _ stand: Stand, _ playlist: HLSMediaPlaylist, from index: Int = 0, start: Double
-    ) throws(HLSSegmentReaderError) -> HLSSegmentReader {
+    ) throws(SegmentReaderError) -> SegmentReader {
         let first = playlist.segments[index]
         var cursor = index + 1
         let segments = playlist.segments
-        return try HLSSegmentReader(loader: stand.loader, first: first, start: start) {
+        return try SegmentReader(loader: stand.loader, first: first, start: start) {
             guard cursor < segments.count, segments[cursor].initSection == first.initSection,
                 segments[cursor].discontinuitySequence == first.discontinuitySequence
             else { return nil }
@@ -113,7 +113,7 @@ struct HLSSegmentPipelineTests {
         behavior.failure = .status(404)
         stand.server.setDefaultBehavior(behavior)
         let segment = try stand.playlist("v0.m3u8").segments[0]
-        #expect(throws: HLSSegmentLoadError.self) { try stand.loader.segment(segment) }
+        #expect(throws: SegmentLoadError.self) { try stand.loader.segment(segment) }
     }
 
     @Test("An AES-128 segment is decrypted with the key's bytes and the sequence number as IV; the key is fetched once")
@@ -316,7 +316,7 @@ struct HLSSegmentPipelineTests {
         // The task's cancellation ends it (cut short: a failure) before the reader comes back, as a reader busy elsewhere
         // finds it. Bytes it buffered are not read either: the segment is read again by another variant.
         _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .milliseconds(300))
-        #expect(throws: HLSSegmentLoadError.interrupted) { try body.next(1024) }
+        #expect(throws: SegmentLoadError.interrupted) { try body.next(1024) }
     }
 
     @Test("A first segment that doesn't load fails the opening")
@@ -327,7 +327,7 @@ struct HLSSegmentPipelineTests {
         behavior.failure = .status(404)
         stand.server.setDefaultBehavior(behavior)
         let media = try stand.playlist("v0.m3u8")
-        #expect(throws: HLSSegmentReaderError.self) { try Self.reader(stand, media, start: 0) }
+        #expect(throws: SegmentReaderError.self) { try Self.reader(stand, media, start: 0) }
     }
 
     @Test("WebVTT segments are placed by their X-TIMESTAMP-MAP and the media's shift")
@@ -368,7 +368,7 @@ struct HLSSegmentPipelineTests {
         var cursor = 1
         var asked = 0
         let shift: (Int) -> Double? = { _ in -5 }
-        let reader = try HLSSegmentReader(loader: stand.loader, first: segments[0], start: 0, timelineShift: shift) {
+        let reader = try SegmentReader(loader: stand.loader, first: segments[0], start: 0, timelineShift: shift) {
             asked += 1
             guard cursor < segments.count else { return nil }
             defer { cursor += 1 }
@@ -408,7 +408,7 @@ struct HLSSegmentPipelineTests {
         defer { stand.server.stop() }
         let segments = try stand.playlist("s.m3u8").segments
         var cursor = 1
-        let reader = try HLSSegmentReader(loader: stand.loader, first: segments[0], start: 0) {
+        let reader = try SegmentReader(loader: stand.loader, first: segments[0], start: 0) {
             guard cursor < segments.count else { return nil }
             defer { cursor += 1 }
             return segments[cursor]
@@ -442,7 +442,7 @@ struct HLSSegmentPipelineTests {
         let wrapSeconds = Double(Int64(1) << 33) / 90_000
         // timeline = media + shift, so the media's clock at `start` is `start - shift`.
         let shift: (Int) -> Double? = { _ in 100 - (wrapSeconds - 1) }
-        let reader = try HLSSegmentReader(
+        let reader = try SegmentReader(
             loader: stand.loader, first: segment, start: 100, timelineShift: shift
         ) { nil }
         let pointer = av_packet_alloc()!

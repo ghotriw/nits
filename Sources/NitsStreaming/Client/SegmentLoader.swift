@@ -3,7 +3,7 @@ import Foundation
 internal import NitsStreaming
 import os
 
-package enum HLSSegmentLoadError: Error, Equatable {
+package enum SegmentLoadError: Error, Equatable {
     /// The load gave way to an abort (`HTTPSessionTransport.shouldAbort`): a seek, a close.
     case interrupted
     /// The server's answer, as FFmpeg's error for it (`AVERROR_HTTP_*`) or an I/O error.
@@ -28,7 +28,7 @@ package enum HLSSegmentLoadError: Error, Equatable {
 ///
 /// Blocking, for the thread that reads a rendition (the demuxer's read-ahead, FFmpeg's own calls): interruptible
 /// through the transport's `shouldAbort`, checked every 50 ms while it waits for data.
-package final class HLSSegmentLoader: Sendable {
+package final class SegmentLoader: Sendable {
     private struct Cache {
         var initSections: [HLSInitSection: Data] = [:]
         var keys: [URL: Data] = [:]
@@ -42,13 +42,13 @@ package final class HLSSegmentLoader: Sendable {
     /// Interrupts this loader's requests besides the transport's `shouldAbort` (`aborting(when:)`).
     private let abort: (@Sendable () -> Bool)?
     /// Told how far each segment download has got while the reader waits for it (`watching`).
-    private let relay: HLSSegmentProgressRelay?
+    private let relay: SegmentProgressRelay?
     /// Where the addresses the playlists list really go, and what renews them (`HLSPlaylistSource.address(of:)`).
     private let addresses: (any HLSPlaylistSource)?
     /// Init sections and keys kept at most: a stream has a few; a playlist that changes them every segment (a key per
     /// segment is common, rotating ones) must not grow the cache for good.
     static let cacheLimit = 32
-    /// A run's first segment is retained to be replayed (`HLSSegmentBody.replayedBody`), up to this
+    /// A run's first segment is retained to be replayed (`SegmentBody.replayedBody`), up to this
     /// many bytes (a 4K segment of six seconds is some 30 MB).
     static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
@@ -63,7 +63,7 @@ package final class HLSSegmentLoader: Sendable {
         relay = nil
     }
 
-    private init(sharing loader: HLSSegmentLoader, abort: (@Sendable () -> Bool)?, relay: HLSSegmentProgressRelay?) {
+    private init(sharing loader: SegmentLoader, abort: (@Sendable () -> Bool)?, relay: SegmentProgressRelay?) {
         transport = loader.transport
         allowsFiles = loader.allowsFiles
         addresses = loader.addresses
@@ -73,28 +73,28 @@ package final class HLSSegmentLoader: Sendable {
     }
 
     /// The same loader whose segment downloads tell `relay` how far they have got.
-    func watching(_ relay: HLSSegmentProgressRelay) -> HLSSegmentLoader {
-        HLSSegmentLoader(sharing: self, abort: abort, relay: relay)
+    func watching(_ relay: SegmentProgressRelay) -> SegmentLoader {
+        SegmentLoader(sharing: self, abort: abort, relay: relay)
     }
 
     /// The same loader (transport, kept init sections and keys) whose requests also give way to `abort`: a probe of the
     /// opening that another one beat (`HLSInput`'s race), stopped without stopping the stream.
-    func aborting(when abort: @escaping @Sendable () -> Bool) -> HLSSegmentLoader {
-        HLSSegmentLoader(sharing: self, abort: abort, relay: relay)
+    func aborting(when abort: @escaping @Sendable () -> Bool) -> SegmentLoader {
+        SegmentLoader(sharing: self, abort: abort, relay: relay)
     }
 
     /// Whether this loader's requests give way now: the transport's abort or its own.
     var isAborted: Bool { transport.shouldAbort() || abort?() == true }
 
     /// The segment's bytes, decrypted.
-    func segment(_ segment: HLSSegment) throws(HLSSegmentLoadError) -> Data {
+    func segment(_ segment: HLSSegment) throws(SegmentLoadError) -> Data {
         var data = try download(segment.url, range: segment.byteRange)
         if let key = segment.key { data = try decrypt(data, key: key, iv: segment.initializationVector) }
         return data
     }
 
     /// The init section's bytes, decrypted (one load per `EXT-X-MAP` in effect).
-    func initSection(_ section: HLSInitSection) throws(HLSSegmentLoadError) -> Data {
+    func initSection(_ section: HLSInitSection) throws(SegmentLoadError) -> Data {
         if let cached = cache.withLock({ $0.initSections[section] }) { return cached }
         var loaded = try download(section.url, range: section.byteRange)
         if let key = section.key { loaded = try decrypt(loaded, key: key, iv: section.initializationVector) }
@@ -107,12 +107,12 @@ package final class HLSSegmentLoader: Sendable {
     }
 
     /// The bytes of `range` of `url`: a part of a file that is not a segment (a DASH file's index).
-    func bytes(of url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
+    func bytes(of url: URL, range: HLSByteRange) throws(SegmentLoadError) -> Data {
         try download(url, range: range)
     }
 
     /// A playlist's text and where it was served from, after redirects (its relative URIs are read against that).
-    func playlist(_ url: URL) throws(HLSSegmentLoadError) -> (data: Data, servedFrom: URL) {
+    func playlist(_ url: URL) throws(SegmentLoadError) -> (data: Data, servedFrom: URL) {
         if url.isFileURL {
             guard allowsFiles else { throw .notServed(url) }
             return (try file(url, range: nil), url)
@@ -132,7 +132,7 @@ package final class HLSSegmentLoader: Sendable {
     }
 
     /// The `Date` of the answer at `url`, its body not read (`UTCTiming` `http-head`): the server's clock, to the second.
-    func serverDate(of url: URL) throws(HLSSegmentLoadError) -> Date? {
+    func serverDate(of url: URL) throws(SegmentLoadError) -> Date? {
         guard !url.isFileURL else { return nil }
         switch transport.open(
             url.absoluteString, offset: 0, end: nil, followsRedirects: true,
@@ -150,7 +150,7 @@ package final class HLSSegmentLoader: Sendable {
 
     // MARK: Decryption
 
-    private func decrypt(_ data: Data, key: HLSKey, iv: [UInt8]?) throws(HLSSegmentLoadError) -> Data {
+    private func decrypt(_ data: Data, key: HLSKey, iv: [UInt8]?) throws(SegmentLoadError) -> Data {
         guard key.isDecryptable, let keyURL = key.url, let iv, iv.count == kCCBlockSizeAES128 else {
             throw .unsupportedEncryption(key.method == .aes128 ? "AES-128 with \(key.keyFormat)" : "\(key.method)")
         }
@@ -176,7 +176,7 @@ package final class HLSSegmentLoader: Sendable {
         return output
     }
 
-    private func keyData(_ url: URL) throws(HLSSegmentLoadError) -> Data {
+    private func keyData(_ url: URL) throws(SegmentLoadError) -> Data {
         if let cached = cache.withLock({ $0.keys[url] }) { return cached }
         let data = try download(url, range: nil)
         cache.withLock { cache in
@@ -206,7 +206,7 @@ package final class HLSSegmentLoader: Sendable {
 
     /// The body of `url`, or of its `range`. A range the server answers whole (the transport leaves that to FFmpeg
     /// otherwise) is asked for as the file and cut.
-    private func download(_ url: URL, range: HLSByteRange?) throws(HLSSegmentLoadError) -> Data {
+    private func download(_ url: URL, range: HLSByteRange?) throws(SegmentLoadError) -> Data {
         if let range, range.length == 0 { return Data() }
         if url.isFileURL { return try file(url, range: range) }
         let opened = open(url) { address in
@@ -229,7 +229,7 @@ package final class HLSSegmentLoader: Sendable {
     }
 
     /// A byte range the server answers whole: the file, cut to the range.
-    private func wholeFile(_ url: URL, range: HLSByteRange) throws(HLSSegmentLoadError) -> Data {
+    private func wholeFile(_ url: URL, range: HLSByteRange) throws(SegmentLoadError) -> Data {
         guard
             case .input(let input) = open(
                 url,
@@ -244,12 +244,12 @@ package final class HLSSegmentLoader: Sendable {
     }
 
     /// A segment with a byte range, as the file cut (no request for the range first: the server has answered it whole).
-    fileprivate func wholeFileSegment(_ segment: HLSSegment) throws(HLSSegmentLoadError) -> Data {
+    fileprivate func wholeFileSegment(_ segment: HLSSegment) throws(SegmentLoadError) -> Data {
         guard let range = segment.byteRange else { throw .notServed(segment.url) }
         return try wholeFile(segment.url, range: range)
     }
 
-    private func read(_ input: HTTPSessionInput, limit: Int = .max) throws(HLSSegmentLoadError) -> Data {
+    private func read(_ input: HTTPSessionInput, limit: Int = .max) throws(SegmentLoadError) -> Data {
         defer { input.close() }
         var body = Data()
         if let length = input.answeredLength, length > 0, length < Int64(Int32.max) {
@@ -276,9 +276,9 @@ package final class HLSSegmentLoader: Sendable {
     }
 }
 
-/// Where a lane's segment downloads tell how far they have got (`HLSSegmentLoader.watching`): the lane sets its
+/// Where a lane's segment downloads tell how far they have got (`SegmentLoader.watching`): the lane sets its
 /// handler once it is made, after the loader it reads with. Called on the thread that reads the segment, while it waits.
-package final class HLSSegmentProgressRelay: @unchecked Sendable {
+package final class SegmentProgressRelay: @unchecked Sendable {
     var handler: ((HLSSegment, HTTPSessionInput.Progress) -> Void)?
     /// The download last begun, for a check made while the thread that reads is idle (`HLSLane.pollProgress`): the
     /// download goes on in the background while the read-ahead is full, and nothing waits for it then.
@@ -307,16 +307,16 @@ package final class HLSSegmentProgressRelay: @unchecked Sendable {
 }
 
 /// A segment's bytes as they come: the demuxer starts on a segment's first bytes while the rest is still on the way
-/// (`HLSSegmentLoader.segmentBody`), as FFmpeg's `hls.c` reads one, so the first picture of a segment does not wait for
+/// (`SegmentLoader.segmentBody`), as FFmpeg's `hls.c` reads one, so the first picture of a segment does not wait for
 /// the whole of it (30 MB for a 4K segment of six seconds, on a link that may take seconds to carry them). Not for an
-/// encrypted segment, which is decrypted as one stream (`HLSSegmentLoader.segment`), nor one the transport leaves to
+/// encrypted segment, which is decrypted as one stream (`SegmentLoader.segment`), nor one the transport leaves to
 /// the loader's other path: those arrive whole.
 ///
 /// Blocking, interruptible as the loader's downloads are. A body that `retains` what it hands out (a run's first
 /// segment, which the opening reads to describe the picture and the demuxer then goes back to the start of) can be
 /// `replayed`: a new body gives the bytes read so far again and goes on with the same download, up to
-/// `HLSSegmentLoader.retainLimit` bytes.
-package final class HLSSegmentBody {
+/// `SegmentLoader.retainLimit` bytes.
+package final class SegmentBody {
     private enum Source {
         case data(Data)
         case input(HTTPSessionInput, limit: Int64?)
@@ -347,7 +347,7 @@ package final class HLSSegmentBody {
     }
 
     /// The next bytes, at most `count`; nil at the end of the segment.
-    func next(_ count: Int = 64 << 10) throws(HLSSegmentLoadError) -> Data? {
+    func next(_ count: Int = 64 << 10) throws(SegmentLoadError) -> Data? {
         if replayed < replay.count {
             let end = min(replayed + count, replay.count)
             defer { replayed = end }
@@ -371,7 +371,7 @@ package final class HLSSegmentBody {
                 let chunk = Data(buffer[0..<Int(result)])
                 if retained != nil {
                     retained?.append(chunk)
-                    if received > HLSSegmentLoader.retainLimit { retained = nil }
+                    if received > SegmentLoader.retainLimit { retained = nil }
                 }
                 return chunk
             }
@@ -388,14 +388,14 @@ package final class HLSSegmentBody {
     }
 
     /// The download tells `relay` how far it has got, for a body that a loader other than the lane's made (a probe's).
-    func watch(_ relay: HLSSegmentProgressRelay, segment: HLSSegment) {
+    func watch(_ relay: SegmentProgressRelay, segment: HLSSegment) {
         guard case .input(let input, _) = source else { return }
         input.onProgress = { [segment] progress in relay.tell(segment, progress) }
         relay.began(segment, input)
     }
 
     /// Everything that is left.
-    func rest() throws(HLSSegmentLoadError) -> Data {
+    func rest() throws(SegmentLoadError) -> Data {
         var all = Data()
         while let chunk = try next() { all.append(chunk) }
         return all
@@ -412,21 +412,21 @@ package final class HLSSegmentBody {
 
     /// A body that gives what this one handed out again, and goes on with its download, which it takes over: this one
     /// is done with. Nil when it didn't retain (or outgrew the limit): the segment is to be asked for again.
-    func replayedBody() -> HLSSegmentBody? {
+    func replayedBody() -> SegmentBody? {
         if case .data(let data) = source, !isFinished {
             isFinished = true
-            return HLSSegmentBody(data: data)
+            return SegmentBody(data: data)
         }
         guard let kept = retained, !isFinished || isComplete else { return nil }
-        let body: HLSSegmentBody
+        let body: SegmentBody
         switch source {
         case .data(let data):
-            body = HLSSegmentBody(data: data)
+            body = SegmentBody(data: data)
         case .input(let input, let limit):
             if isComplete {
-                body = HLSSegmentBody(data: kept)
+                body = SegmentBody(data: kept)
             } else {
-                body = HLSSegmentBody(input: input, limit: limit, retains: true)
+                body = SegmentBody(input: input, limit: limit, retains: true)
                 body.received = received
                 body.replay = kept
                 body.retained = kept
@@ -456,19 +456,19 @@ package final class HLSSegmentBody {
     deinit { close() }
 }
 
-extension HLSSegmentLoader {
-    /// The segment's bytes as they arrive (`HLSSegmentBody`): the download starts now and the caller reads as it comes.
+extension SegmentLoader {
+    /// The segment's bytes as they arrive (`SegmentBody`): the download starts now and the caller reads as it comes.
     /// `opening`: a probe of the stream's description (`HLSLane.probe`), which FFmpeg's analysis reads as far as it
     /// needs: the request is the opening's (`HTTPSessionTransport.open(opening:)`), counted in its rate and in no
     /// adaptive-bitrate sample; held to a small buffer so that the server sends little more than is read, but for the
     /// segment playback starts on (`.start`). `retains`: the body can be `replayed`.
     func segmentBody(
         _ segment: HLSSegment, opening: HTTPSessionInput.Opening? = nil, retains: Bool = false
-    ) throws(HLSSegmentLoadError) -> HLSSegmentBody {
+    ) throws(SegmentLoadError) -> SegmentBody {
         if segment.key != nil || segment.byteRange?.length == 0 {
-            return HLSSegmentBody(data: try self.segment(segment))
+            return SegmentBody(data: try self.segment(segment))
         }
-        if segment.url.isFileURL { return HLSSegmentBody(data: try file(segment.url, range: segment.byteRange)) }
+        if segment.url.isFileURL { return SegmentBody(data: try file(segment.url, range: segment.byteRange)) }
         let range = segment.byteRange
         var onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)?
         if let relay { onProgress = { [segment] progress in relay.tell(segment, progress) } }
@@ -481,19 +481,19 @@ extension HLSSegmentLoader {
         switch opened {
         case .input(let input):
             relay?.began(segment, input)
-            return HLSSegmentBody(input: input, limit: range?.length, retains: retains)
+            return SegmentBody(input: input, limit: range?.length, retains: retains)
         case .failed(let code):
             throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
         case .notServed:
             // A range the server answers whole (the request is already made once): the file, cut.
-            return HLSSegmentBody(data: try wholeFileSegment(segment))
+            return SegmentBody(data: try wholeFileSegment(segment))
         }
     }
 }
 
-extension HLSSegmentLoader {
+extension SegmentLoader {
     /// A local file's bytes, or those of its `range` (mapped, not copied, while it is read).
-    fileprivate func file(_ url: URL, range: HLSByteRange?) throws(HLSSegmentLoadError) -> Data {
+    fileprivate func file(_ url: URL, range: HLSByteRange?) throws(SegmentLoadError) -> Data {
         guard allowsFiles else { throw .notServed(url) }
         let whole: Data
         do {

@@ -111,7 +111,7 @@ struct DASHClientTests {
         let address = URL(string: server.url("manifest.mpd"))!
         let source = DASHPlaylists(address: address)
         let transport = HTTPSessionTransport(source: address.absoluteString, headers: [:]) { false }
-        let loader = HLSSegmentLoader(transport: transport)
+        let loader = SegmentLoader(transport: transport)
         let aborted = OSAllocatedUnfairLock(initialState: false)
         let first = loader.aborting { aborted.withLock { $0 } }
 
@@ -127,7 +127,7 @@ struct DASHClientTests {
         }
         let outcomes = OSAllocatedUnfairLock<[String: Result<Bool, HLSPlaylistSourceError>]>(initialState: [:])
         let group = DispatchGroup()
-        func ask(_ name: String, through reader: HLSSegmentLoader) {
+        func ask(_ name: String, through reader: SegmentLoader) {
             group.enter()
             DispatchQueue.global().async {
                 let result = Result { () throws(HLSPlaylistSourceError) in

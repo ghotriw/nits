@@ -108,7 +108,7 @@ extension DASHPlaylists {
     /// Seconds the server's clock is ahead of the host's, as the manifest's `UTCTiming` tells; 0 when none answers. A
     /// descriptor that fails or is not understood is passed over for the next; an abort is the caller's.
     func clockOffset(
-        of timings: [DASHPresentation.Live.Timing], loader: HLSSegmentLoader
+        of timings: [DASHPresentation.Live.Timing], loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> Double {
         for timing in timings {
             let scheme = timing.scheme.replacingOccurrences(of: "urn:mpeg:dash:utc:", with: "")
@@ -160,7 +160,7 @@ extension DASHPlaylists {
 
     /// The manifest as of now: the one held, or a fetch of it if its `minimumUpdatePeriod` has passed. Made by the first
     /// caller that finds it due, through its own loader; the others wait for it (`Store`).
-    private func fetched(loader: HLSSegmentLoader) throws(HLSPlaylistSourceError) -> Fetched {
+    private func fetched(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> Fetched {
         let host = clock()
         let (store, generation) = live.state.withLock { state -> (Store<Fetched>, Int) in
             if inline == nil, let current = state.fetch.current, let period = state.updatePeriod,
@@ -175,7 +175,7 @@ extension DASHPlaylists {
         do throws(HLSPlaylistSourceError) {
             result = try store.value(loader: loader) { loader throws(HLSPlaylistSourceError) in
                 let location = live.state.withLock { $0.location } ?? address
-                do throws(HLSSegmentLoadError) {
+                do throws(SegmentLoadError) {
                     let (data, servedFrom) = try loader.playlist(location)
                     return Fetched(data: data, servedFrom: servedFrom, at: clock(), generation: generation)
                 } catch {
@@ -195,7 +195,7 @@ extension DASHPlaylists {
 
     /// The presentation at the clock now, from the manifest as last fetched: shared by the asks that come together (the
     /// opening's, two lanes').
-    func snapshot(loader: HLSSegmentLoader) throws(HLSPlaylistSourceError) -> DASHPresentation {
+    func snapshot(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> DASHPresentation {
         let fetched = try fetched(loader: loader)
         let host = clock()
         let reused = live.state.withLock { state -> DASHPresentation? in
@@ -241,7 +241,7 @@ extension DASHPlaylists {
 
     /// The playlist of the entry at `index` as the clock now has it.
     func livePlaylist(
-        _ index: Int, of built: Built, loader: HLSSegmentLoader
+        _ index: Int, of built: Built, loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
         let presentation = try snapshot(loader: loader)
         let entry = built.entries[index]

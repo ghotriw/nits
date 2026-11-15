@@ -5,7 +5,7 @@ import os
 
 /// One rendition of an HLS stream being read: the variant's playlist (its video, and the sound muxed into it) or an
 /// audio rendition's. It owns the rendition's timeline (reloaded while the stream is live), the reader of the run being
-/// read (`HLSSegmentReader`) and the next packet it would hand out, which `HLSInput` compares with the other lanes'
+/// read (`SegmentReader`) and the next packet it would hand out, which `HLSInput` compares with the other lanes'
 /// to interleave them by decode time.
 ///
 /// Reading is lazy: a seek or a track change only says where to start (`reposition(at:)`); the next `fill` opens the
@@ -35,8 +35,8 @@ package final class HLSLane: @unchecked Sendable {
     private let variables: [String: String]
     /// Where a reload of the playlist comes from.
     private let playlists: any HLSPlaylistSource
-    private var loader: HLSSegmentLoader
-    private let progressRelay: HLSSegmentProgressRelay
+    private var loader: SegmentLoader
+    private let progressRelay: SegmentProgressRelay
     private let shouldAbort: () -> Bool
     /// The offsets of the stream's timestamps, which its lanes share (`HLSTimestampAnchors`): a run of the lane's takes or
     /// sets its sequence's, a subtitle rendition's cues are placed by them.
@@ -49,15 +49,15 @@ package final class HLSLane: @unchecked Sendable {
     /// Whether the lane is read at all: one of its streams is. A lane nothing reads downloads nothing.
     private(set) var isRead = true
 
-    private var reader: HLSSegmentReader?
-    /// The body of the first segment of the run last opened (`HLSSegmentReader.claimFirstBody`): a seek or the demuxer's
+    private var reader: SegmentReader?
+    /// The body of the first segment of the run last opened (`SegmentReader.claimFirstBody`): a seek or the demuxer's
     /// rewind to the start opens the same segment again, which then replays what was read and goes on with the same
     /// download (the opening reads the first segment to describe the picture, and the demuxer goes back to its start).
     /// Kept while the lane is read, until its run goes on to the next segment; one segment, not the stream's.
-    private var startBody: HLSSegmentBody?
+    private var startBody: SegmentBody?
     private var startSegment: (url: URL, range: HLSByteRange?)?
 
-    private func keepStart(of reader: HLSSegmentReader, _ segment: HLSSegment) {
+    private func keepStart(of reader: SegmentReader, _ segment: HLSSegment) {
         startBody?.close()
         startBody = reader.claimFirstBody()
         startSegment = (segment.url, segment.byteRange)
@@ -84,7 +84,7 @@ package final class HLSLane: @unchecked Sendable {
     /// The extradata the video last read had, to tell a run that brings others (a new `EXT-X-MAP`).
     private var lastExtradata: Data?
     /// The reorder depth of the lane's picture (0 without one), from its probe: its runs analyse only as many frames as
-    /// tell where they start (`HLSSegmentReader.knownVideoDelay`). Nil for a lane not probed: its runs are analysed in full.
+    /// tell where they start (`SegmentReader.knownVideoDelay`). Nil for a lane not probed: its runs are analysed in full.
     private var videoDelay: Int?
     private var needsExtradataCheck = false
     /// A forward seek's landing, not yet reached: packets before it are dropped.
@@ -109,14 +109,14 @@ package final class HLSLane: @unchecked Sendable {
 
     package init(
         kind: Kind, url: URL, timeline: HLSTimeline, variables: [String: String], playlists: any HLSPlaylistSource,
-        loader: HLSSegmentLoader, anchors: HLSTimestampAnchors, shouldAbort: @escaping () -> Bool
+        loader: SegmentLoader, anchors: HLSTimestampAnchors, shouldAbort: @escaping () -> Bool
     ) {
         self.kind = kind
         self.url = url
         self.timeline = timeline
         self.variables = variables
         self.playlists = playlists
-        let relay = HLSSegmentProgressRelay()
+        let relay = SegmentProgressRelay()
         progressRelay = relay
         self.loader = loader.watching(relay)
         self.shouldAbort = shouldAbort
@@ -230,7 +230,7 @@ package final class HLSLane: @unchecked Sendable {
 
     /// The segment a lane opens or is probed at: where `readable` says; at a live edge in gaps, the last one before them
     /// that is not a gap (the lane is only described from it, or the stream opens in the history of the window).
-    private func openingEntry(_ found: HLSTimeline.Entry) throws(HLSSegmentReaderError) -> HLSTimeline.Entry {
+    private func openingEntry(_ found: HLSTimeline.Entry) throws(SegmentReaderError) -> HLSTimeline.Entry {
         switch readable(found) {
         case .entry(let entry): return entry
         case .ended: throw .open(-EINVAL)
@@ -250,7 +250,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// Opens the first run at the segment that holds `time` and probes its streams: the first reader the lane keeps.
-    func open(at time: Double) throws(HLSSegmentReaderError) {
+    func open(at time: Double) throws(SegmentReaderError) {
         guard let found = timeline.entry(at: time) else { throw .open(-EINVAL) }
         let entry = try openingEntry(found)
         nextRunReason = .open
@@ -265,15 +265,15 @@ package final class HLSLane: @unchecked Sendable {
     /// sequence.
     /// `loader` stands in for the lane's own (one that gives way to an abort of the probe alone); `opening`: how its
     /// request is read while the demuxer opens (`.start` for the segment playback starts on); `onAnswer` is told once the
-    /// server answered (`HLSSegmentReader`).
+    /// server answered (`SegmentReader`).
     func probe(
-        at time: Double, loader probeLoader: HLSSegmentLoader? = nil, opening: HTTPSessionInput.Opening = .held,
+        at time: Double, loader probeLoader: SegmentLoader? = nil, opening: HTTPSessionInput.Opening = .held,
         onAnswer: (() -> Void)? = nil
-    ) throws(HLSSegmentReaderError) {
+    ) throws(SegmentReaderError) {
         guard let found = timeline.entry(at: time) else { throw .open(-EINVAL) }
         let entry = try openingEntry(found)
         let began = ContinuousClock.now
-        let probed = try HLSSegmentReader(
+        let probed = try SegmentReader(
             loader: probeLoader ?? loader, first: entry.segment, start: entry.start, timelineShift: timelineShift,
             probe: opening, onAnswer: onAnswer
         ) { nil }
@@ -306,7 +306,7 @@ package final class HLSLane: @unchecked Sendable {
     /// The run opened and not yet logged: logged with its first packet (`fill`), or as redone.
     private var openedRun:
         (
-            reason: RunReason, replayed: Bool, sequence: Int, timing: HLSSegmentReader.OpenTiming,
+            reason: RunReason, replayed: Bool, sequence: Int, timing: SegmentReader.OpenTiming,
             began: ContinuousClock.Instant
         )?
 
@@ -373,7 +373,7 @@ package final class HLSLane: @unchecked Sendable {
     /// variant before it has been read. False when the probe fails (still to be described) or finds other streams.
     func describeByProbe(at time: Double) -> Bool {
         guard let describe = describeFirstRun else { return !isRejected }
-        do throws(HLSSegmentReaderError) { try probe(at: time) } catch { return false }
+        do throws(SegmentReaderError) { try probe(at: time) } catch { return false }
         describeFirstRun = nil
         if describe(readerStreams) {
             endProbe()
@@ -466,7 +466,7 @@ package final class HLSLane: @unchecked Sendable {
     /// measured too, and dropped once a run holds it or these are used up.
     private static let maxRedos = 2
 
-    /// The media says where `segment` starts (`HLSSegmentReader.Anchoring.onSegmentStart`): the timeline takes it
+    /// The media says where `segment` starts (`SegmentReader.Anchoring.onSegmentStart`): the timeline takes it
     /// (`HLSTimeline.measure`), and a seek's run, whose first segment the playlist's durations chose, restarts at the
     /// segment that holds the target by the corrected timeline when that is another (the chosen one started after the
     /// target, or ended before it).
@@ -644,7 +644,7 @@ package final class HLSLane: @unchecked Sendable {
             if reader == nil {
                 switch nextRunStart() {
                 case .start(let entry):
-                    do throws(HLSSegmentReaderError) { try startRun(at: entry) } catch {
+                    do throws(SegmentReaderError) { try startRun(at: entry) } catch {
                         seekTarget = nil
                         redo = nil
                         resume = entry
@@ -794,7 +794,7 @@ package final class HLSLane: @unchecked Sendable {
     }
 
     /// The position in `streams` of the reader's stream `index`: the streams the input keeps, in order.
-    private func slotIndex(of index: Int, in reader: HLSSegmentReader) -> Int? {
+    private func slotIndex(of index: Int, in reader: SegmentReader) -> Int? {
         guard let stream = reader.stream(at: index), HLSInput.keeps(stream, in: kind) else { return nil }
         let type = stream.pointee.codecpar.pointee.codec_type
         // By kind and place among the streams of that kind, as the table was described: a later run may list them in
@@ -880,12 +880,12 @@ package final class HLSLane: @unchecked Sendable {
         }
     }
 
-    private func startRun(at first: HLSTimeline.Entry) throws(HLSSegmentReaderError) {
+    private func startRun(at first: HLSTimeline.Entry) throws(SegmentReaderError) {
         let began = ContinuousClock.now
         let reason = nextRunReason
         nextRunReason = .next
         // Before the reader: probing reads on into the next segments, asking `nextSegment` for them from this one.
-        var replay: HLSSegmentBody?
+        var replay: SegmentBody?
         if let kept = startBody {
             // Closed before the reader opens: what it still downloads would share the link with the segment waited for.
             startBody = nil
@@ -904,7 +904,7 @@ package final class HLSLane: @unchecked Sendable {
             initSection: first.segment.initSection, discontinuity: first.segment.discontinuitySequence)
         isOpening = true
         defer { isOpening = false }
-        let opened = try HLSSegmentReader(
+        let opened = try SegmentReader(
             loader: loader, first: first.segment, start: first.start,
             timelineShift: kind == .subtitle ? timelineShift : nil,
             anchoring: .init(

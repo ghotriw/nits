@@ -141,7 +141,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
         return nil
     }
 
-    package func playlist(at url: URL, variables: [String: String], loader: HLSSegmentLoader)
+    package func playlist(at url: URL, variables: [String: String], loader: SegmentLoader)
         throws(HLSPlaylistSourceError)
         -> HLSPlaylist
     {
@@ -169,7 +169,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
         history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
-    private func read(loader: HLSSegmentLoader) throws(HLSPlaylistSourceError) -> Built {
+    private func read(loader: SegmentLoader) throws(HLSPlaylistSourceError) -> Built {
         let data: Data
         let servedFrom: URL
         if let inline {
@@ -388,7 +388,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// The playlist of the entry at `index`: told by the manifest, or by the index of its file, read now if no caller
     /// has (and the index of the picture it is numbered on), and built once.
     private func mediaPlaylist(
-        _ index: Int, of built: Built, loader: HLSSegmentLoader
+        _ index: Int, of built: Built, loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
         if built.isLive { return try livePlaylist(index, of: built, loader: loader) }
         let entry = built.entries[index]
@@ -403,7 +403,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     }
 
     private static func indexedPlaylist(
-        of entry: Entry, in built: Built, loader: HLSSegmentLoader
+        of entry: Entry, in built: Built, loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> HLSMediaPlaylist {
         let segments = try Self.segments(of: entry, periodDuration: built.periodDuration, loader: loader)
         var numbers: [Int]?
@@ -428,7 +428,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
 
     /// The segments of `entry`: the manifest's, or those of its file's index, read once for every caller.
     private static func segments(
-        of entry: Entry, periodDuration: Double?, loader: HLSSegmentLoader
+        of entry: Entry, periodDuration: Double?, loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> [DASHPresentation.Segment] {
         guard let store = entry.index, let location = entry.representation.index else {
             return entry.representation.segments
@@ -451,7 +451,7 @@ package struct DASHPlaylists: HLSPlaylistSource {
     /// The index at `location`: its range, then each box a reference points to outside the bytes read, as many as
     /// `SegmentIndex.requestLimit` allows and `SegmentIndex.sizeLimit` bytes in all.
     static func readIndex(
-        _ location: DASHPresentation.IndexLocation, loader: HLSSegmentLoader
+        _ location: DASHPresentation.IndexLocation, loader: SegmentLoader
     ) throws(HLSPlaylistSourceError) -> SegmentIndex {
         func bytes(_ offset: Int64, _ length: Int64) throws(HLSPlaylistSourceError) -> Data {
             guard let range = HLSByteRange(offset: offset, length: length) else {
@@ -652,7 +652,7 @@ extension DASHPlaylists {
         }
 
         func value(
-            loader: HLSSegmentLoader, read: (HLSSegmentLoader) throws(HLSPlaylistSourceError) -> Value
+            loader: SegmentLoader, read: (SegmentLoader) throws(HLSPlaylistSourceError) -> Value
         ) throws(HLSPlaylistSourceError) -> Value {
             var waitingFor: Int?
             while true {
