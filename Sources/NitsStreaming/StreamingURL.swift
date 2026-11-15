@@ -43,7 +43,14 @@ package enum StreamingURL {
     /// be decoded.
     package static func inlineDASHManifestContents(_ path: String) -> Data? {
         guard isInlineDASHManifest(path), let comma = path.firstIndex(of: ",") else { return nil }
-        return Data(base64Encoded: String(path[path.index(after: comma)...]))
+        let rest = path[path.index(after: comma)...]
+        return Data(base64Encoded: String(rest.prefix { $0 != "#" }))
+    }
+
+    /// The fragment of an inline manifest's location (`DASHSelection`: what of it is played), nil when it has none.
+    package static func inlineDASHManifestFragment(_ path: String) -> String? {
+        guard isInlineDASHManifest(path), let hash = path.firstIndex(of: "#") else { return nil }
+        return String(path[path.index(after: hash)...])
     }
 
     /// `path` as written to the log: an inline manifest holds the streams' signed URLs, kilobytes of them.

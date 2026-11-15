@@ -113,7 +113,9 @@ package struct DASHPresentation: Sendable {
         var format: Format = .mp4
         /// Where the index is: the file, or a file of its own (`RepresentationIndex@sourceURL`).
         package var url: URL
-        package var range: ByteRange
+        /// Nil when the manifest tells none (`SegmentBase` without `indexRange`): the source finds it in the file when the
+        /// playlist is asked for (`SingleFileLayout`).
+        package var range: ByteRange?
         /// The index is a file of its own: its offsets count from the start of the media file.
         package var isExternal: Bool { url != media }
     }
@@ -717,7 +719,15 @@ extension DASHPresentation {
                 indexURL = url
             }
         }
-        guard let rangeText else { throw .unsupported("one file without an index range") }
+        guard let rangeText else {
+            // No range: the file's own start tells where its index is, when the file is the index's too (not
+            // `RepresentationIndex@sourceURL`); the initialization is the manifest's, else what that finds.
+            guard indexURL == base else { throw .unsupported("one file without an index range") }
+            return Told(
+                initSection: try initSection(information.initialization, base: base),
+                presentationTimeOffset: Double(information.presentationTimeOffset) / Double(information.timescale),
+                index: IndexLocation(media: base, format: format, url: base, range: nil))
+        }
         guard let range = DASHElements.byteRange(of: rangeText) else {
             throw .unsupported("an index range it cannot read (\(rangeText))")
         }

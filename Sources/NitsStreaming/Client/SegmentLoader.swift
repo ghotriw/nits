@@ -91,6 +91,14 @@ package final class SegmentLoader: Sendable {
         return data
     }
 
+    /// An init section whose bytes are already read (the start of a file whose layout was found from it): not asked for again.
+    func keep(_ section: InitSection, data: Data) {
+        cache.withLock { cache in
+            if cache.initSections.count >= Self.cacheLimit { cache.initSections.removeAll() }
+            cache.initSections[section] = data
+        }
+    }
+
     /// The init section's bytes, decrypted (one load per `EXT-X-MAP` in effect).
     func initSection(_ section: InitSection) throws(SegmentLoadError) -> Data {
         if let cached = cache.withLock({ $0.initSections[section] }) { return cached }

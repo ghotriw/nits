@@ -233,8 +233,12 @@ package struct DASHManifest {
         .contains { $0.attribute("range")?.hasPrefix("0-") == true && $0.attribute("sourceURL") == nil }
         return nodes.contains { node in
             node.elements(named: "SegmentBase").contains {
-                ($0.attribute("indexRange") != nil || !$0.elements(named: "RepresentationIndex").isEmpty)
-                    && (!isWebM || hasStart)
+                if $0.attribute("indexRange") != nil || !$0.elements(named: "RepresentationIndex").isEmpty {
+                    return !isWebM || hasStart
+                }
+                // No index range: the client finds the index in the file itself (`SingleFileLayout`), unless the
+                // initialization is a file of its own, which it cannot place the index against.
+                return $0.elements(named: "Initialization").allSatisfy { $0.attribute("sourceURL") == nil }
             }
         }
     }

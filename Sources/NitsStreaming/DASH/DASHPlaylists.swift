@@ -60,6 +60,8 @@ package struct DASHPlaylists: PlaylistSource {
     package let allowsFiles: Bool
     /// A live stream's history, when the manifest is one (`DASHHistory`): its playlists list up to the head.
     let history: DASHHistory?
+    /// What a manifest of keys (`StreamAddresses`) is given its files' signed addresses by; nil: its addresses are real.
+    let addresses: (any StreamAddressSource)?
 
     /// The manifest at `address` (or `inline`, a copy of it), playing what `selection` names.
     package init(
@@ -79,10 +81,12 @@ package struct DASHPlaylists: PlaylistSource {
 
     private init(
         id: String, address: URL, inline: Data?, selection: DASHSelection = DASHSelection(),
-        clock: @escaping @Sendable () -> Date, history: DASHHistory? = nil
+        clock: @escaping @Sendable () -> Date, history: DASHHistory? = nil,
+        addresses: (any StreamAddressSource)? = nil
     ) {
         self.clock = clock
         self.history = history
+        self.addresses = addresses
         self.selection = selection
         self.id = id
         self.address = address
@@ -95,7 +99,10 @@ package struct DASHPlaylists: PlaylistSource {
     /// address whose name ends in `.mpd` (a file's or the network's; Unified Streaming's is `…/.mpd`). Nil for any other,
     /// unless `assumingManifest`: the address was found to serve a manifest by its bytes (`SniffedPlaylist`), whatever
     /// its name.
-    package init?(media path: String, history liveHistory: StreamHistory? = nil, assumingManifest: Bool = false) {
+    package init?(
+        media path: String, history liveHistory: StreamHistory? = nil, addresses: (any StreamAddressSource)? = nil,
+        assumingManifest: Bool = false
+    ) {
         if let inline = StreamingURL.inlineDASHManifestContents(path) {
             let clock: @Sendable () -> Date = { Date() }
             let history = liveHistory?.source.map {
@@ -103,8 +110,9 @@ package struct DASHPlaylists: PlaylistSource {
             }
             let id = UUID().uuidString.lowercased()
             self.init(
-                id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline, clock: clock, history: history
-            )
+                id: id, address: URL(string: "\(Self.scheme)://\(id)/")!, inline: inline,
+                selection: DASHSelection(fragment: StreamingURL.inlineDASHManifestFragment(path)), clock: clock,
+                history: history, addresses: addresses)
             return
         }
         // A history is a manifest of keys the resolver made, never an address.
@@ -163,12 +171,14 @@ package struct DASHPlaylists: PlaylistSource {
 
     /// A live stream's history names its segments by key and number; the signed address is the source's, as it is now.
     package func address(of url: URL) -> URL? {
+        if let addresses, let key = StreamAddresses.key(of: url) { return addresses.address(forKey: key) }
         guard let history, let segment = StreamHistory.segment(named: url) else { return url }
         return history.source.url(for: segment.key, number: segment.number)
     }
 
     package func renewAddresses(shouldAbort: () -> Bool) -> Bool {
-        history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
+        if let addresses { return addresses.renewAddresses(shouldAbort: shouldAbort) }
+        return history?.source.renewSignature(shouldAbort: shouldAbort) ?? false
     }
 
     private func read(loader: SegmentLoader) throws(PlaylistSourceError) -> Built {
@@ -455,24 +465,112 @@ package struct DASHPlaylists: PlaylistSource {
         }
         let representation = entry.representation
         return try store.value(loader: loader) { loader throws(PlaylistSourceError) in
-            let index = try readIndex(location, initSection: representation.initSection, loader: loader)
+            var location = location
+            var found: Located?
+            if location.range == nil {
+                // The manifest tells no index range: the file's start does (`SingleFileLayout`).
+                let located = try locate(location, loader: loader)
+                location.range = located.index
+                found = located
+            }
+            let initSection = representation.initSection ?? found?.initSection
+            let index = try readIndex(
+                location, initSection: initSection, prefix: found?.prefix ?? Data(), loader: loader)
             // A switch or a seek lands on a segment's start: a picture's must be a keyframe. A sound's index may leave
             // it unsaid.
             if representation.kind == .video && !index.startsWithSAP {
                 throw .unsupported("an index whose segments do not all start with a keyframe")
             }
-            let segments = DASHPresentation.segments(
+            var segments = DASHPresentation.segments(
                 from: index, of: representation, periodDuration: periodDuration)
             guard !segments.isEmpty else { throw .unsupported("an index of no segments in the period") }
+            // The initialization the start told is the segments' (the representation tells none).
+            if representation.initSection == nil, let initSection {
+                for position in segments.indices { segments[position].initSection = initSection }
+            }
             return segments
         }
     }
 
+    /// What the start of a file told of it (`locate`): its initialization, its index, and the bytes read to find them.
+    private struct Located {
+        var initSection: InitSection
+        var index: ByteRange
+        /// The file's first bytes, the initialization and often the index among them (they are not asked for again).
+        var prefix: Data
+    }
+
+    /// The initialization and the index of a file whose manifest tells where neither is: its first bytes, as many as the
+    /// walk of its boxes needs (`SingleFileLayout.firstRead` to begin), then the index when it was not among them.
+    /// Init and index are adjacent in the files of this profile: one request reads both.
+    private static func locate(
+        _ location: DASHPresentation.IndexLocation, loader: SegmentLoader
+    ) throws(PlaylistSourceError) -> Located {
+        var prefix = Data()
+        var length = SingleFileLayout.firstRead
+        var found: SingleFileLayout.Found?
+        var rounds = 0
+        while found == nil {
+            rounds += 1
+            guard rounds <= 8 else { throw .unsupported("a file whose start does not tell where its index is") }
+            // The part not read yet; a file shorter than asked for answers with fewer bytes.
+            let more = try indexBytes(
+                of: location, offset: Int64(prefix.count), length: length - Int64(prefix.count), loader: loader,
+                prefix: prefix)
+            guard !more.isEmpty else { throw .unsupported("a file that ends before its index") }
+            prefix += more
+            let reading: SingleFileLayout.Reading
+            do throws(SegmentIndex.Failure) {
+                reading =
+                    location.format == .webm
+                    ? try MatroskaCues.locate(in: prefix) : try SegmentIndex.locate(in: prefix)
+            } catch {
+                throw Self.refusal(error)
+            }
+            switch reading {
+            case .found(let layout):
+                found = layout
+            case .needsStart(let upTo):
+                guard upTo <= SingleFileLayout.startLimit else {
+                    throw .unsupported("a start of more than \(SingleFileLayout.startLimit) bytes")
+                }
+                length = min(max(upTo, Int64(prefix.count) * 2), SingleFileLayout.startLimit)
+                guard length > Int64(prefix.count) else {
+                    throw .unsupported("a start of more than \(SingleFileLayout.startLimit) bytes")
+                }
+            case .needsCuesHeader(let offset, let initEnd):
+                let header = try indexBytes(of: location, offset: offset, length: 16, loader: loader)
+                do throws(SegmentIndex.Failure) {
+                    found = try MatroskaCues.cues(atHeader: header, offset: offset, initEnd: initEnd)
+                } catch {
+                    throw Self.refusal(error)
+                }
+            }
+        }
+        guard let layout = found, layout.initialization.length <= Int64(prefix.count),
+            layout.index.length <= SegmentIndex.sizeLimit
+        else { throw .unsupported("an index of more than \(SegmentIndex.sizeLimit) bytes") }
+        // The index follows the bytes read (or begins inside them): the rest of it comes with one request.
+        if layout.index.offset <= Int64(prefix.count), layout.index.range.upperBound > Int64(prefix.count) {
+            prefix += try indexBytes(
+                of: location, offset: Int64(prefix.count),
+                length: layout.index.range.upperBound - Int64(prefix.count), loader: loader)
+        }
+        let section = InitSection(url: location.media, byteRange: layout.initialization)
+        loader.keep(section, data: prefix.prefix(Int(layout.initialization.length)))
+        return Located(initSection: section, index: layout.index, prefix: prefix)
+    }
+
+    /// `length` bytes of the index's file from `offset`, from `prefix` (the file's start already read) when they are in it.
     private static func indexBytes(
-        of location: DASHPresentation.IndexLocation, offset: Int64, length: Int64, loader: SegmentLoader
+        of location: DASHPresentation.IndexLocation, offset: Int64, length: Int64, loader: SegmentLoader,
+        prefix: Data = Data()
     ) throws(PlaylistSourceError) -> Data {
         guard let range = ByteRange(offset: offset, length: length) else {
             throw .unsupported("an index past the end of what a file holds")
+        }
+        if !location.isExternal, range.range.upperBound <= Int64(prefix.count) {
+            return prefix.subdata(in: Int(range.offset)..<Int(range.range.upperBound))
         }
         do {
             return try loader.bytes(of: location.url, range: range)
@@ -490,16 +588,17 @@ package struct DASHPlaylists: PlaylistSource {
     /// The index of a WebM file: its `Cues` (the index range), read with the file's start (`initSection`, from its first
     /// byte), which tells where the Segment's data is, from where the cues' positions count.
     private static func readCues(
-        _ location: DASHPresentation.IndexLocation, initSection: InitSection?, loader: SegmentLoader
+        _ location: DASHPresentation.IndexLocation, range: ByteRange, initSection: InitSection?, prefix: Data,
+        loader: SegmentLoader
     ) throws(PlaylistSourceError) -> SegmentIndex {
         guard let initSection else { throw .unsupported("a WebM file without its initialization") }
         let cues = try indexBytes(
-            of: location, offset: location.range.offset, length: location.range.length, loader: loader)
+            of: location, offset: range.offset, length: range.length, loader: loader, prefix: prefix)
         let header: Data
         do { header = try loader.initSection(initSection) } catch { throw .load(error) }
         do throws(SegmentIndex.Failure) {
             return try MatroskaCues.read(
-                header: header, cues: cues, cuesOffset: location.isExternal ? nil : location.range.offset)
+                header: header, cues: cues, cuesOffset: location.isExternal ? nil : range.offset)
         } catch {
             throw refusal(error)
         }
@@ -508,13 +607,18 @@ package struct DASHPlaylists: PlaylistSource {
     /// The index at `location`: its range, then each box a reference points to outside the bytes read, as many as
     /// `SegmentIndex.requestLimit` allows and `SegmentIndex.sizeLimit` bytes in all.
     static func readIndex(
-        _ location: DASHPresentation.IndexLocation, initSection: InitSection?, loader: SegmentLoader
+        _ location: DASHPresentation.IndexLocation, initSection: InitSection?, prefix: Data = Data(),
+        loader: SegmentLoader
     ) throws(PlaylistSourceError) -> SegmentIndex {
-        if location.format == .webm { return try readCues(location, initSection: initSection, loader: loader) }
-        func bytes(_ offset: Int64, _ length: Int64) throws(PlaylistSourceError) -> Data {
-            try indexBytes(of: location, offset: offset, length: length, loader: loader)
+        guard let range = location.range else { throw .unsupported("one file without an index range") }
+        if location.format == .webm {
+            return try readCues(
+                location, range: range, initSection: initSection, prefix: prefix, loader: loader)
         }
-        var chunks = [(offset: location.range.offset, data: try bytes(location.range.offset, location.range.length))]
+        func bytes(_ offset: Int64, _ length: Int64) throws(PlaylistSourceError) -> Data {
+            try indexBytes(of: location, offset: offset, length: length, loader: loader, prefix: prefix)
+        }
+        var chunks = [(offset: range.offset, data: try bytes(range.offset, range.length))]
         var total = Int64(chunks[0].data.count)
         var asked: Set<Int64> = []
         while true {
