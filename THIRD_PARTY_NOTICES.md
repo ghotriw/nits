@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Nits is licensed under the [MIT License](https://github.com/ghotriw/nits/blob/main/LICENSE), except for the parts listed below.
+Nits is licensed under the [Apache License 2.0](https://github.com/ghotriw/nits/blob/main/LICENSE), except for the parts listed below.
 
 ## Bundled libraries
 

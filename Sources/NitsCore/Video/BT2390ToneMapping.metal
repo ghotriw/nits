@@ -5,7 +5,7 @@
  * the PQ-space ITU-R BT.2390 EETF spline and the 0.18 / 0.90 / 0.20 desaturation step.
  * Copyright (C) the mpv developers; modifications copyright (C) 2026 Andrii Honcharov.
  *
- * Unlike the rest of Nits (MIT), this file is licensed under the GNU Lesser General Public
+ * Unlike the rest of Nits (Apache-2.0), this file is licensed under the GNU Lesser General Public
  * License as published by the Free Software Foundation; either version 2.1 of the License,
  * or (at your option) any later version. See THIRD_PARTY_NOTICES.md.
  *

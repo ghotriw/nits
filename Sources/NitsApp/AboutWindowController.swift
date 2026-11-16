@@ -73,7 +73,7 @@ private struct AboutView: View {
                     Text(copyright).foregroundStyle(.secondary)
                 }
                 if let licenseURL = Self.licenseURL {
-                    Link("MIT License", destination: licenseURL)
+                    Link("Apache License 2.0", destination: licenseURL)
                 }
             }
             .font(.system(size: 11))

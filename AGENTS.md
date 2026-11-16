@@ -19,7 +19,7 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
   (`get_platform_compatibility`) — Apple APIs change faster than training data.
 - **`.ref/`** — reference implementations and third-party sources for algorithms, format parsing,
   shader math and pipeline behaviour. Adapt, don't copy: results must follow the rules below.
-  Nits is MIT, so licenses limit what may enter `Sources/` (ideas and behaviour are always fine):
+  Nits is Apache-2.0, so licenses limit what may enter `Sources/` (ideas and behaviour are always fine):
   - GPL: never port code, not even translated.
   - LGPL (`mpv`, `ffmpeg`, `gstreamer`): only into a separate file with an LGPL-2.1-or-later
     header and attribution, listed in `THIRD_PARTY_NOTICES.md` (see `BT2390ToneMapping.metal`).

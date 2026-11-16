@@ -10,9 +10,9 @@
  * two channels limit at once lose up to ~7% of chroma. Lightness above white maps to white.
  *
  * Copyright (C) 2026 Andrii Honcharov.
- * Licensed under the MIT License. See LICENSE in the project root.
+ * Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <metal_stdlib>

@@ -137,6 +137,7 @@ fi
 
 # Nits' own license and third-party notices (LGPL code is shipped even with --no-dylibs)
 cp "$DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
+cp "$DIR/NOTICE" "$RESOURCES_DIR/NOTICE"
 mkdir -p "$RESOURCES_DIR/ThirdPartyLicenses"
 cp "$DIR/THIRD_PARTY_NOTICES.md" "$RESOURCES_DIR/ThirdPartyLicenses/"
 

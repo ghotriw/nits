@@ -405,7 +405,7 @@ from 1.0 it is SemVer's (breaking → major, `feat` → minor, else patch).
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
 
 Bundled FFmpeg (LGPL-2.1+), dav1d (BSD-2-Clause), libass (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak, and the mpv-derived tone-mapping shader
 (LGPL-2.1+), keep their own licenses — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
