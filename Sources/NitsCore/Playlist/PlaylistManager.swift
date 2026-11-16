@@ -181,8 +181,14 @@ public final class PlaylistManager: Sendable {
 
     // MARK: - Navigation
 
-    /// Advances to the next item based on current index, search filter, and repeat mode.
-    /// - Parameter isUserAction: If true (e.g. user pressed Next button or shortcut), advances to next item even if repeatMode is .one.
+    /// Whether `playNext(isUserAction: true)` moves anywhere: to another item than the current one, the last
+    /// wrapping to the first (respects current search filter).
+    public var hasNextWrappingAround: Bool { hasPreviousWrappingAround }
+
+    /// Advances to the next item based on current index and search filter. Repeat modes are the automatic advance's
+    /// at the end of an item; as in VLC they don't bind the Next button.
+    /// - Parameter isUserAction: If true (e.g. user pressed Next button or shortcut), advances to the next item even
+    ///   if repeatMode is .one, and from the last item to the first whatever the repeat mode (a single item stays).
     @discardableResult
     public func playNext(isUserAction: Bool = false) -> PlaylistItem? {
         let sequence = activeSequence
@@ -198,6 +204,9 @@ public final class PlaylistManager: Sendable {
         {
             if activeIdx + 1 < sequence.count {
                 targetItem = sequence[activeIdx + 1]
+            } else if isUserAction {
+                // The only item: reloading it would only lose the position.
+                targetItem = sequence.count > 1 ? sequence[0] : nil
             } else if repeatMode == .all {
                 targetItem = sequence[0]
             } else {
@@ -219,48 +228,54 @@ public final class PlaylistManager: Sendable {
         return targetItem
     }
 
-    /// Moves to the previous item, or signals to restart the current track if played past threshold.
+    /// Whether `playPrevious(restartsMedia: false)` moves anywhere: to another item than the current one, the first
+    /// wrapping to the last (respects current search filter).
+    public var hasPreviousWrappingAround: Bool {
+        let sequence = activeSequence
+        guard let currentId = currentItem?.id else { return !sequence.isEmpty }
+        return sequence.contains { $0.id != currentId }
+    }
+
+    /// Moves to the previous item; from the first one to the last, as VLC does, whatever the repeat mode. With
+    /// `restartsMedia` (`PlayerConfiguration.previousRestartsMedia`) it signals a restart of the current item instead
+    /// when played past `restartThresholdSeconds`, or at the start of the sequence unless repeating all.
     public func playPrevious(
+        restartsMedia: Bool = false,
         restartThresholdSeconds: Double = 3.0,
         currentPlaybackTime: Double = 0.0
     ) -> (item: PlaylistItem?, shouldRestart: Bool) {
-        // If played for more than threshold seconds, restart current track regardless of search filter
-        if currentPlaybackTime > restartThresholdSeconds, let currentItem {
+        // Played past the threshold: restart the current item regardless of the search filter.
+        if restartsMedia, currentPlaybackTime > restartThresholdSeconds, let currentItem {
             return (currentItem, true)
         }
 
         let sequence = activeSequence
         guard !sequence.isEmpty else { return (nil, false) }
 
-        let targetItem: PlaylistItem?
-        var shouldRestart = false
-
+        let targetItem: PlaylistItem
         if let currentId = currentItem?.id,
             let activeIdx = sequence.firstIndex(where: { $0.id == currentId })
         {
             if activeIdx > 0 {
                 targetItem = sequence[activeIdx - 1]
-            } else if repeatMode == .all {
+            } else if restartsMedia, repeatMode != .all || sequence.count == 1 {
+                return (sequence[activeIdx], true)
+            } else if sequence.count > 1 {
                 targetItem = sequence[sequence.count - 1]
             } else {
-                // At start of playlist/filter with repeat off: restart current track
-                targetItem = sequence[activeIdx]
-                shouldRestart = true
+                // The only item: reloading it would only lose the position.
+                return (nil, false)
             }
         } else {
             // Currently playing item is not in the filtered results: jump to the last filtered item
             targetItem = sequence[sequence.count - 1]
         }
 
-        guard let targetItem else {
-            return (nil, false)
-        }
-
-        if !shouldRestart, let originalIndex = items.firstIndex(where: { $0.id == targetItem.id }) {
+        if let originalIndex = items.firstIndex(where: { $0.id == targetItem.id }) {
             currentIndex = originalIndex
             onCurrentItemChanged?(targetItem)
         }
-        return (targetItem, shouldRestart)
+        return (targetItem, false)
     }
 
     /// Selects and plays an item by its index.

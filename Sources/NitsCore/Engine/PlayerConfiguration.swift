@@ -68,6 +68,10 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// (default false). The speed chosen for a media is saved with it either way; one only kept isn't.
     public var carriesPlaybackRate: Bool
 
+    /// Whether Previous restarts the media when it has played past 3 s or there's no previous item, rather than
+    /// always moving to the previous item, the playlist's first to its last, as VLC does (default false).
+    public var previousRestartsMedia: Bool
+
     /// Fraction of video duration after which it is considered completed (default 0.95).
     public var resumeEndThresholdRatio: Double
 
@@ -183,6 +187,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         resumeMaximumUnwatchedTail: Double = PlayerConfiguration.defaultResumeMaximumUnwatchedTail,
         synchronousLocalLoads: Bool = false,
         carriesPlaybackRate: Bool = PlayerConfiguration.defaultCarriesPlaybackRate,
+        previousRestartsMedia: Bool = PlayerConfiguration.defaultPreviousRestartsMedia,
         subtitleFontSize: Double = SubtitleStyle.defaultFontSize,
         subtitleFontName: String = SubtitleStyle.defaultFontName,
         subtitleFontWeight: String = SubtitleStyle.defaultFontWeight,
@@ -226,6 +231,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.resumeMaximumUnwatchedTail = resumeMaximumUnwatchedTail
         self.synchronousLocalLoads = synchronousLocalLoads
         self.carriesPlaybackRate = carriesPlaybackRate
+        self.previousRestartsMedia = previousRestartsMedia
         self.subtitleFontSize = subtitleFontSize
         self.subtitleFontName = subtitleFontName
         self.subtitleFontWeight = subtitleFontWeight
@@ -273,6 +279,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     public static let defaultApplyDolbyVisionTrims = false
     public static let defaultResumePlayback = true
     public static let defaultCarriesPlaybackRate = false
+    public static let defaultPreviousRestartsMedia = false
     public static let defaultAutoLoadFolderMedia = true
     public static let defaultSeekStepSeconds: Double = 5.0
     public static let defaultExactSeekOnSinglePress = true
@@ -284,6 +291,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
     /// What the settings offer for it, in seconds; a stored value outside is clamped.
     public static let resumeMaximumUnwatchedTailRange: ClosedRange<Double> = 60.0...1800.0
     public static let keyCarriesPlaybackRate = "Nits.carriesPlaybackRate"
+    public static let keyPreviousRestartsMedia = "Nits.previousRestartsMedia"
     public static let keySubtitleFontSize = "Nits.subtitleFontSize"
     public static let keySubtitleFontName = "Nits.subtitleFontName"
     public static let keySubtitleFontWeight = "Nits.subtitleFontWeight"
@@ -351,6 +359,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
         if userDefaults.object(forKey: keyCarriesPlaybackRate) != nil {
             config.carriesPlaybackRate = userDefaults.bool(forKey: keyCarriesPlaybackRate)
+        }
+        if userDefaults.object(forKey: keyPreviousRestartsMedia) != nil {
+            config.previousRestartsMedia = userDefaults.bool(forKey: keyPreviousRestartsMedia)
         }
         if let fontSize = userDefaults.object(forKey: keySubtitleFontSize) as? NSNumber {
             config.subtitleFontSize = fontSize.doubleValue
@@ -466,6 +477,7 @@ public struct PlayerConfiguration: Sendable, Equatable {
         userDefaults.set(resumeEndThresholdRatio, forKey: Self.keyResumeEndThresholdRatio)
         userDefaults.set(resumeMaximumUnwatchedTail, forKey: Self.keyResumeMaximumUnwatchedTail)
         userDefaults.set(carriesPlaybackRate, forKey: Self.keyCarriesPlaybackRate)
+        userDefaults.set(previousRestartsMedia, forKey: Self.keyPreviousRestartsMedia)
         userDefaults.set(subtitleFontSize, forKey: Self.keySubtitleFontSize)
         userDefaults.set(subtitleFontName, forKey: Self.keySubtitleFontName)
         userDefaults.set(subtitleFontWeight, forKey: Self.keySubtitleFontWeight)

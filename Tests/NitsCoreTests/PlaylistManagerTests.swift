@@ -105,16 +105,61 @@ struct PlaylistManagerTests {
         manager.selectItem(at: 1)
 
         // Played past threshold (e.g. 5 seconds): restart current track without decrementing index
-        let restartResult = manager.playPrevious(restartThresholdSeconds: 3.0, currentPlaybackTime: 5.0)
+        let restartResult = manager.playPrevious(
+            restartsMedia: true, restartThresholdSeconds: 3.0, currentPlaybackTime: 5.0)
         #expect(restartResult.shouldRestart == true)
         #expect(restartResult.item?.url == urls[1])
         #expect(manager.currentIndex == 1)
 
         // Played before threshold (e.g. 1 second): jump to previous track
-        let jumpResult = manager.playPrevious(restartThresholdSeconds: 3.0, currentPlaybackTime: 1.0)
+        let jumpResult = manager.playPrevious(
+            restartsMedia: true, restartThresholdSeconds: 3.0, currentPlaybackTime: 1.0)
         #expect(jumpResult.shouldRestart == false)
         #expect(jumpResult.item?.url == urls[0])
         #expect(manager.currentIndex == 0)
+
+        // At the first item with repeat off: restart it
+        let firstResult = manager.playPrevious(restartsMedia: true)
+        #expect(firstResult.shouldRestart == true)
+        #expect(firstResult.item?.url == urls[0])
+        #expect(manager.currentIndex == 0)
+    }
+
+    @Test("Previous moves to the previous item whatever the position, the first wrapping to the last")
+    func testPlayPreviousWithoutRestart() {
+        let manager = PlaylistManager()
+        let urls = (1...3).map { URL(fileURLWithPath: "/tmp/track\($0).mp4") }
+        manager.append(urls: urls)
+        manager.selectItem(at: 1)
+
+        let back = manager.playPrevious(restartThresholdSeconds: 3.0, currentPlaybackTime: 600.0)
+        #expect(back.shouldRestart == false)
+        #expect(back.item?.url == urls[0])
+        #expect(manager.hasPreviousWrappingAround)
+
+        // Repeat off, as VLC: the first goes to the last.
+        let wrapped = manager.playPrevious(currentPlaybackTime: 600.0)
+        #expect(wrapped.shouldRestart == false)
+        #expect(wrapped.item?.url == urls[2])
+        #expect(manager.currentIndex == 2)
+    }
+
+    @Test("Previous with a single item does nothing unless it restarts")
+    func testPlayPreviousSingleItem() {
+        let manager = PlaylistManager()
+        let url = URL(fileURLWithPath: "/tmp/only.mp4")
+        manager.append(urls: [url])
+        manager.selectItem(at: 0)
+        #expect(!manager.hasPreviousWrappingAround)
+
+        let none = manager.playPrevious(currentPlaybackTime: 600.0)
+        #expect(none.item == nil)
+        #expect(none.shouldRestart == false)
+
+        manager.repeatMode = .all
+        let restart = manager.playPrevious(restartsMedia: true)
+        #expect(restart.shouldRestart == true)
+        #expect(restart.item?.url == url)
     }
 
     @Test("Repeat mode one repeats current item")
@@ -175,7 +220,8 @@ struct PlaylistManagerTests {
         #expect(manager.playNext() == nil)
 
         // Verifying code review point 2: playPrevious must restart track if over threshold even if search result is empty
-        let prevWhileEmptyFilter = manager.playPrevious(restartThresholdSeconds: 3.0, currentPlaybackTime: 10.0)
+        let prevWhileEmptyFilter = manager.playPrevious(
+            restartsMedia: true, restartThresholdSeconds: 3.0, currentPlaybackTime: 10.0)
         #expect(prevWhileEmptyFilter.shouldRestart == true)
         #expect(prevWhileEmptyFilter.item?.title.contains("Inception") == true)
 
@@ -518,6 +564,35 @@ struct PlaylistManagerTests {
         // User explicit action (⌘→, isUserAction: true) advances to track 2
         let userNext = manager.playNext(isUserAction: true)
         #expect(userNext?.filename == "track2.mp4")
+    }
+
+    @Test("Next by hand wraps from the last item to the first whatever the repeat mode; the automatic advance doesn't")
+    func testPlayNextWrapsOnUserAction() {
+        let manager = PlaylistManager()
+        let urls = (1...3).map { URL(fileURLWithPath: "/tmp/track\($0).mp4") }
+        manager.append(urls: urls)
+        manager.selectItem(at: 2)
+        #expect(manager.repeatMode == .off)
+        #expect(manager.hasNextWrappingAround)
+
+        #expect(manager.playNext(isUserAction: false) == nil)
+        #expect(manager.currentIndex == 2)
+
+        let wrapped = manager.playNext(isUserAction: true)
+        #expect(wrapped?.url == urls[0])
+        #expect(manager.currentIndex == 0)
+    }
+
+    @Test("Next by hand with a single item does nothing")
+    func testPlayNextSingleItem() {
+        let manager = PlaylistManager()
+        manager.append(urls: [URL(fileURLWithPath: "/tmp/only.mp4")])
+        manager.selectItem(at: 0)
+        manager.repeatMode = .all
+        #expect(!manager.hasNextWrappingAround)
+        #expect(manager.playNext(isUserAction: true) == nil)
+        // Repeating all, the end of the only item still plays it again.
+        #expect(manager.playNext(isUserAction: false)?.url.lastPathComponent == "only.mp4")
     }
 
     @Test("PlaylistManager automatically parses playlist file passed to append(urls:)")

@@ -53,6 +53,24 @@ struct HostTrackNavigationTests {
         #expect(engine.trackNavigation == TrackNavigation())
     }
 
+    @Test("Without a previous item in the host's queue, Previous does nothing unless it restarts")
+    func previousWithoutHostItem() {
+        let (engine, requests) = makeHostEngine()
+        engine.isLoaded = true
+        #expect(!engine.canPlayPrevious)
+        #expect(engine.playPrevious() == nil)
+
+        engine.trackNavigation = TrackNavigation(hasPrevious: true, previousTitle: "Episode 0")
+        #expect(engine.canPlayPrevious)
+        #expect(engine.playPrevious() == "Episode 0")
+        #expect(requests.value == [.previous])
+
+        var config = engine.configuration
+        config.previousRestartsMedia = true
+        engine.applyConfiguration(config)
+        #expect(engine.canPlayPrevious, "Restarting, Previous is there whenever media is loaded")
+    }
+
     @Test("Without the host's queue, navigation follows the playlist")
     func playlistWithoutHost() {
         let engine = PlayerEngine.makeForTesting()
@@ -66,17 +84,19 @@ struct HostTrackNavigationTests {
 @Suite("Host track navigation during playback", .serialized, .realtimePlayback, .backstopTimeLimit)
 @MainActor
 struct HostTrackNavigationPlaybackTests {
-    private func makeHostEngine() -> (PlayerEngine, LockIsolated<[TrackNavigationDirection]>) {
-        let engine = PlayerEngine.makeForTesting()
+    private func makeHostEngine(
+        configuration: PlayerConfiguration = PlayerConfiguration()
+    ) -> (PlayerEngine, LockIsolated<[TrackNavigationDirection]>) {
+        let engine = PlayerEngine.makeForTesting(configuration: configuration)
         let requests = LockIsolated<[TrackNavigationDirection]>([])
         engine.onTrackNavigation = { direction in requests.withValue { $0.append(direction) } }
         return (engine, requests)
     }
 
-    @Test("Previous goes to the host's previous item in the first seconds, else restarts")
+    @Test("Restarting, Previous goes to the host's previous item in the first seconds, else restarts")
     func previousFollowsRestartThreshold() async throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
-        let (engine, requests) = makeHostEngine()
+        let (engine, requests) = makeHostEngine(configuration: PlayerConfiguration(previousRestartsMedia: true))
         defer { engine.stop() }
         engine.load(MediaLoadRequest(path: path, trackNavigation: TrackNavigation(hasPrevious: true)))
         try #require(await engine.waitForPlayback())

@@ -735,7 +735,12 @@ flowchart TD
     (`TrackNavigation`: `hasNext`, `hasPrevious`, optional titles for the OSD) comes with each load
     (`openStream(trackNavigation:)`, `MediaLoadRequest.trackNavigation`) or later (`setTrackNavigation(_:)`).
   - One press, one request: Next / Previous turn off after calling the host until its next load. Previous keeps the
-    playlist rule: past 3 s, or without a previous item, it restarts the media.
+    playlist rule: by default it always moves to the previous item (the playlist's first to its last, as VLC; the host's
+    queue: nothing without one); with `previousRestartsMedia` past 3 s, or without a previous item, it restarts the media.
+    VLC and IINA never restart on the media key (IINA restarts only the first item, from `⌘←` alone), so restarting
+    is opt-in: it lost the place in the video on a press meant for the previous one. Next by hand likewise wraps from
+    the playlist's last item to its first whatever the repeat mode: as in VLC, repeat governs only the automatic
+    advance at the end of an item. A single item never reloads itself on either button.
   - The end of the media is left to the host (`onPlaybackEnded`): no repeat-one restart, no auto-advance. Repeat-one
     no longer reports an end in any mode.
   - Navigation state lives in the engine (`canPlayNext` / `canPlayPrevious`), so every entry point follows it, and

@@ -403,19 +403,25 @@ extension PlayerEngine {
         )
     }
 
-    /// Played past this many seconds, Previous restarts the media instead of moving to the previous item.
+    /// With `PlayerConfiguration.previousRestartsMedia`, played past this many seconds, Previous restarts the media
+    /// instead of moving to the previous item.
     static let previousRestartThreshold = 3.0
 
     /// Whether Next moves anywhere: in the host's queue when the host keeps one (`onTrackNavigation`), else in
-    /// `playlist`.
+    /// `playlist`, whose last item wraps to its first whatever the repeat mode.
     public var canPlayNext: Bool {
-        onTrackNavigation != nil ? trackNavigation.hasNext : playlist.hasNext
+        onTrackNavigation != nil ? trackNavigation.hasNext : playlist.hasNextWrappingAround
     }
 
-    /// Whether Previous does anything. It restarts the media when there's no previous item, so with the host's
-    /// queue it's available whenever media is loaded.
+    /// Whether Previous does anything. With `previousRestartsMedia` it restarts the media when there's no previous
+    /// item, so it's available whenever media is loaded; without, only when there's an item to move to (the
+    /// playlist's first wraps to its last).
     public var canPlayPrevious: Bool {
-        onTrackNavigation != nil ? isLoaded : playlist.currentItem != nil
+        let restartsMedia = configuration.previousRestartsMedia
+        if onTrackNavigation != nil {
+            return isLoaded && (restartsMedia || trackNavigation.hasPrevious)
+        }
+        return playlist.currentItem != nil && (restartsMedia || playlist.hasPreviousWrappingAround)
     }
 
     /// Moves to the next item: asks the host's queue for it, or loads the playlist's. Returns the item's title for
@@ -436,17 +442,20 @@ extension PlayerEngine {
         return item.title
     }
 
-    /// Restarts the media if played past `previousRestartThreshold` or there's no previous item, otherwise moves to
-    /// the previous item (the host's or the playlist's). Returns the title of the media played next for the OSD.
+    /// Moves to the previous item (the host's or the playlist's; the playlist's first wraps to its last). With
+    /// `previousRestartsMedia` it restarts the media instead if played past `previousRestartThreshold` or there's no
+    /// previous item. Returns the title of the media played next for the OSD.
     @discardableResult
     public func playPrevious() -> String? {
+        let restartsMedia = configuration.previousRestartsMedia
         if let onTrackNavigation {
             guard isLoaded else { return nil }
-            guard currentTime <= Self.previousRestartThreshold, trackNavigation.hasPrevious else {
+            if restartsMedia, currentTime > Self.previousRestartThreshold || !trackNavigation.hasPrevious {
                 seek(to: 0)
                 play()
                 return mediaTitle
             }
+            guard trackNavigation.hasPrevious else { return nil }
             let title = trackNavigation.previousTitle
             // Like `playNext`: one press, one item.
             trackNavigation.hasPrevious = false
@@ -455,6 +464,7 @@ extension PlayerEngine {
             return title
         }
         let (item, shouldRestart) = playlist.playPrevious(
+            restartsMedia: restartsMedia,
             restartThresholdSeconds: Self.previousRestartThreshold,
             currentPlaybackTime: currentTime
         )

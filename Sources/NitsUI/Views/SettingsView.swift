@@ -68,6 +68,9 @@ public struct SettingsView: View {
     @AppStorage(PlayerConfiguration.keyExactSeekOnSinglePress)
     private var exactSeekOnSinglePress: Bool = PlayerConfiguration.defaultExactSeekOnSinglePress
 
+    @AppStorage(PlayerConfiguration.keyPreviousRestartsMedia)
+    private var previousRestartsMedia: Bool = PlayerConfiguration.defaultPreviousRestartsMedia
+
     @AppStorage(PlayerConfiguration.keyVideoScaling)
     private var videoScaling: VideoScaling = PlayerConfiguration.defaultVideoScaling
 
@@ -530,6 +533,21 @@ public struct SettingsView: View {
                     .onChange(of: exactSeekOnSinglePress) { _, _ in
                         notifyChange()
                     }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Previous restarts the video first", isOn: $previousRestartsMedia)
+                        .onChange(of: previousRestartsMedia) { _, _ in
+                            notifyChange()
+                        }
+                    Text(
+                        previousRestartsMedia
+                            ? "Previous goes back to the start of the video once it has played past 3 seconds, or when there is no previous one."
+                            : "Previous always goes to the previous video; from the first one in a playlist, to the last."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             } header: {
                 Text("Seeking & Navigation")
             } footer: {

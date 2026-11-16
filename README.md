@@ -181,7 +181,9 @@ controller.setTrackNavigation(TrackNavigation(hasNext: true, hasPrevious: true, 
 
 - After calling the host, Next (or Previous) stays off until the next load, so repeated presses don't skip several
   episodes.
-- Previous restarts the episode when it has played past 3 s or there's no previous one.
+- Previous always asks for the previous episode, and does nothing without one. With
+  `PlayerConfiguration.previousRestartsMedia` (Settings: "Previous restarts the video first") it restarts the episode
+  instead when it has played past 3 s or there's no previous one.
 - With `onTrackNavigation` set the end of the media is left to the host: Nits doesn't repeat or advance, and
   `onPlaybackEnded` is the signal to auto-play the next episode.
 
