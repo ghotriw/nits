@@ -95,6 +95,8 @@ struct HLSVariantTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let low = try #require(demuxer.variants.last)
+        // The only switch is the one asked for below: an automatic one before it would splice earlier.
+        demuxer.setAdaptiveBitrate(false)
         demuxer.startReadAhead(limits: .init(seconds: 1, bytes: 50 << 20, backBytes: 20 << 20))
 
         var pictures: [(pts: Double, width: Int32)] = []
@@ -143,10 +145,14 @@ struct HLSVariantTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let low = try #require(demuxer.variants.last)
+        // Automatic choice stays on (the cache's rules differ from a choice by hand: `selectVariant(id:)`, below), but
+        // its decisions are put off before the read-ahead starts: on a fast link it would otherwise switch on its own
+        // or step back up right after the splice, and the wait could miss the moment the switch has ended before the
+        // next one begins. The test asks for the variant itself, as a decision would (`requested`).
+        demuxer.queueLock.withLock { demuxer.adaptiveBitrate.nextDecision = .greatestFiniteMagnitude }
         demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
         var count = 0
         while count < 20, demuxer.nextVideoSample() != nil { count += 1 }
-        // Adaptive bitrate asks as this does; `selectVariant(id:)` is the user's choice (below).
         demuxer.variantSelection.withLock { $0.requested = low.id }
         try #require(Self.waitForSplice(of: low.id, in: demuxer), "The switch didn't splice")
         #expect(demuxer.seekWithinCache(to: demuxer.videoStartTime + 0.2, exact: true) == true)
@@ -160,6 +166,8 @@ struct HLSVariantTests {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
         let low = try #require(demuxer.variants.last)
+        // The only switch is the one chosen below (which turns automatic choice off anyway).
+        demuxer.setAdaptiveBitrate(false)
         demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
         var count = 0
         while count < 20, demuxer.nextVideoSample() != nil { count += 1 }
@@ -175,6 +183,9 @@ struct HLSVariantTests {
     func cachedSeekInOneVariant() throws {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let demuxer = try #require(MediaDemuxer(url: path))
+        // No switch at all: a splice in the packets read would refuse the seek back. With no switch, the cache serves
+        // a choice by hand as it does automatic choice.
+        demuxer.setAdaptiveBitrate(false)
         demuxer.startReadAhead(limits: .init(seconds: 3, bytes: 50 << 20, backBytes: 20 << 20))
         var count = 0
         while count < 90, demuxer.nextVideoSample() != nil { count += 1 }
