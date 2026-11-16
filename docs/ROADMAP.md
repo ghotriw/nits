@@ -227,8 +227,9 @@ flowchart TD
 > Support modern adaptive web media streams with multi-rendition quality switching.
 
 - [x] **3.5.1. HTTP Live Streaming (HLS) Multi-Rendition Demuxing:**
-  Built on FFmpeg's HLS demuxer, which parses multivariant playlists and exposes each variant as an `AVProgram` (its
-  `BANDWIDTH` as `variant_bitrate`). A client of our own (as VLC's and GStreamer's) is left for DASH / LL-HLS.
+  First built on FFmpeg's HLS demuxer, which parses multivariant playlists and exposes each variant as an `AVProgram`
+  (its `BANDWIDTH` as `variant_bitrate`); the steps below up to Nits' own client describe that stage. HLS and DASH are
+  now read by Nits' own client (`Sources/NitsStreaming/`, see `docs/HLS.md`), and FFmpeg's HLS demuxer is not built.
   - [x] Variant selection: `MediaDemuxer.variants`, the highest bandwidth played, the other variants' streams
     discarded (`AVDISCARD_ALL`) so their segments aren't downloaded; their audio no longer lists as extra tracks.
     Rewinding to the start works on HLS (no byte seeks): the first third of a second was lost.
@@ -874,7 +875,6 @@ flowchart TD
     archive (`deps_config.sh`), which CI and releases restore.
   - A `vX.Y.Z` tag builds, verifies and publishes a ZIP release (`release.yml`); the version comes from the tag.
     Installed through the Homebrew cask `ghotriw/tap/nits`.
-  - [ ] Notarization: the app is ad-hoc signed; notarizing needs a Developer ID.
 
 ---
 

@@ -18,7 +18,8 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
 
 **Video & HDR**
 - HDR10, HDR10+, HLG and Dolby Vision on XDR displays; BT.2390 tone mapping to SDR on other screens, scene-adaptive
-  from Dolby Vision (Profiles 5, 8.1, 8.4) and HDR10+ dynamic metadata
+  from Dolby Vision (Profiles 5, 8.1, 8.4) and HDR10+ dynamic metadata; optional Dolby Vision L2 trims and an
+  adjustable SDR white level
 - HEVC, H.264, AV1, VP9 and Apple ProRes decoded in VideoToolbox (in hardware where the chip has it, AV1 on M3 and
   later, dav1d otherwise); DNxHR, VC-1, MPEG-1/2, MPEG-4 Part 2 (DivX / Xvid), VP8, Theora, RealVideo and any other
   codec FFmpeg decodes in software
@@ -38,20 +39,25 @@ System Settings → Privacy & Security → Open Anyway. The Homebrew cask does t
   position and scale
 
 **Streaming**
-- HTTP / HTTPS with custom headers, read ahead
-- HLS with adaptive bitrate and a manual quality picker
+- HTTP / HTTPS with custom headers; read ahead, and seeks back into what was read need no new request
+- HLS and MPEG-DASH through Nits' own client: adaptive bitrate, a manual quality picker, ads and splices
+  (discontinuities), manifests of several periods and of single MP4 / WebM files; your preferred video and audio
+  codec order
+- Live streams: seek within the window and go back to live
 - Video sites (YouTube and others) through yt-dlp, found on the system (`brew install yt-dlp deno`), with
-  SponsorBlock skip buttons
+  SponsorBlock skip buttons; YouTube videos with adaptive bitrate, dubbed audio tracks and HDR, live streams from
+  up to a day back
 
 **Player**
 - Keyboard-first: layout-independent shortcuts, scrubbing with a held arrow key, frame stepping, playback speed
+  (remembered per file)
 - OSD, Quick Settings, customizable control bar
-- Playlists (M3U, PLS, XSPF, CUE) and folders; resume where you left off, recent media
+- Playlists (M3U, PLS, XSPF, CUE) and folders, with shuffle and repeat; resume where you left off, recent media
 - macOS integration: Now Playing media keys, Control Center, sleep prevention
 
 **Embedding**
 - `NitsKit` / `NitsCore` for host apps: a player window, the player with its controls in a window of the
-  host's (`PlayerSession`), or a bare video view with an engine API
+  host's (`PlayerSession`), with a compact mini-player mode, or a bare video view with an engine API
 - Media server client hooks: skip intro / next episode buttons, Up Next cards, host-driven episode queue, the
   host's own buttons over the picture
 
