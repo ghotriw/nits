@@ -25,8 +25,8 @@ package final class HTTPSessionTransport: Sendable {
         case input(HTTPSessionInput)
         /// FFmpeg's error for the request: the server's answer, or `AVERROR_EXIT` for an interrupted open.
         case failed(Int32)
-        /// Not served here: FFmpeg opens it.
-        case notServed
+        /// Not served here (FFmpeg opens it), and why.
+        case notServed(NotServedReason)
     }
 
     package let meter = NetworkTransferMeter()
@@ -128,7 +128,7 @@ package final class HTTPSessionTransport: Sendable {
         opening: HTTPSessionInput.Opening? = nil, followsRedirects: Bool = false, abort: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (HTTPSessionInput.Progress) -> Void)? = nil
     ) -> Opened {
-        guard let requestURL = URL(string: url) else { return .notServed }
+        guard let requestURL = URL(string: url) else { return .notServed(.invalidAddress) }
         var request = URLRequest(url: requestURL)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         let interrupts: @Sendable () -> Bool
@@ -309,7 +309,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
     private enum Answer {
         case open
         case failed(Int32)
-        case notServed
+        case notServed(NotServedReason)
     }
 
     private struct State {
@@ -360,6 +360,9 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         var isReported = false
         /// The task asked for a piece of the body (`makeTask`), and the body goes on past it once it ends.
         var isChunked = false
+        /// Where the piece asked for ends (the body's position past its last byte): a body whose size the answer doesn't
+        /// tell (`Content-Range: bytes 0-262143/*`, a live YouTube segment's) goes on while each piece comes whole.
+        var pieceEnd: Int64?
         /// Of `received` and `transferSeconds`, what came while the demuxer opened (`OpeningLimit`): the rungs of a
         /// ladder read side by side, each with a share of the link, not a sample of its rate.
         var limitedBytes = 0
@@ -624,6 +627,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         var request = request
         var last = end.map { $0 - 1 }
         state.isChunked = false
+        state.pieceEnd = nil
         state.isOpeningTask = openingLimit?.isLimited == true
         if state.isOpeningTask, opening == .start {
             // Whole, and read on past the opening: what comes after it is a sample, as any segment's.
@@ -638,6 +642,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
             if last.map({ chunkLast < $0 }) ?? true {
                 last = chunkLast
                 state.isChunked = true
+                state.pieceEnd = chunkLast + 1
             }
         }
         if position > 0 || last != nil {
@@ -746,7 +751,8 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         switch state.withLock({ $0.answer }) {
         case .open?: return .input(self)
         case .failed(let code)?: return .failed(code)
-        case .notServed?, nil: return .notServed
+        case .notServed(let reason)?: return .notServed(reason)
+        case nil: return .failed(-EIO)  // Not after the wait: an answer came.
         }
     }
 
@@ -940,6 +946,12 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
             if case .open? = state.answer {
                 // Asked for again, from the bytes received on: only that range carries on the body.
                 let position = offset + Int64(state.received)
+                if state.answeredLength == nil, (response as? HTTPURLResponse)?.statusCode == 416 {
+                    // A body of unknown size that ended with the piece before: nothing past it, the body is whole.
+                    state.answeredLength = Int64(state.received)
+                    state.isFinished = true
+                    return false
+                }
                 guard let http = response as? HTTPURLResponse, http.statusCode == 206,
                     http.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(position)-") == true
                 else {
@@ -957,12 +969,9 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
             if state.isChunked, case .open = answer.answer, let http = response as? HTTPURLResponse,
                 http.statusCode == 206
             {
-                // A piece of the body: what it carries is the whole body's, to the request's end or the file's.
-                if let total = end ?? answer.fileSize {
-                    answered.remaining = total - offset
-                } else {
-                    answered.answer = .notServed
-                }
+                // A piece of the body: what it carries is the whole body's, to the request's end or the file's; of
+                // unknown size, the body goes on while its pieces come whole (`didCompleteWithError`).
+                answered.remaining = (end ?? answer.fileSize).map { $0 - offset }
             }
             state.answer = answered.answer
             state.answeredAt = state.answeredAt ?? .now
@@ -1031,10 +1040,13 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
                 state.retries += 1
                 return Self.retryDelays[state.retries - 1]
             }
-            // A piece of the body ended with more to come: the next is asked for when the buffer has run down.
-            if error == nil, state.isChunked, !state.isClosed, !state.isFinished, case .open? = state.answer,
-                let total = state.answeredLength, Int64(state.received) < total
-            {
+            // A piece of the body ended with more to come: the next is asked for when the buffer has run down. Of a
+            // body of unknown size, a piece shorter than asked is its end (a server cutting a range short is not told
+            // apart from it): asking past it for a 416 would add a round trip to every opening, for a server not seen.
+            let position = offset + Int64(state.received)
+            let hasMore =
+                state.answeredLength.map { Int64(state.received) < $0 } ?? (state.pieceEnd == position)
+            if error == nil, state.isChunked, !state.isClosed, !state.isFinished, case .open? = state.answer, hasMore {
                 // Asked for by the reader (`read`), not now: a rung of a ladder that isn't played is not read on, and
                 // would otherwise download its segment to `highWater` once the opening is done.
                 state.needsContinuation = true
@@ -1115,20 +1127,22 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
     private static func answer(to response: URLResponse, url: URL, offset: Int64, end: Int64?, followsRedirects: Bool)
         -> (answer: Answer, fileSize: Int64?, remaining: Int64?)
     {
-        guard let http = response as? HTTPURLResponse else { return (.notServed, nil, nil) }
+        guard let http = response as? HTTPURLResponse else { return (.notServed(.notHTTP), nil, nil) }
         // Answered from another address: a redirect followed, which FFmpeg is to open itself, unless it was asked to follow.
-        guard followsRedirects || http.url?.absoluteString == url.absoluteString else { return (.notServed, nil, nil) }
+        guard followsRedirects || http.url?.absoluteString == url.absoluteString else {
+            return (.notServed(.redirected(host: http.url?.host)), nil, nil)
+        }
         let length = http.expectedContentLength >= 0 ? http.expectedContentLength : nil
         switch http.statusCode {
         case 200:
             // The whole file: for a range from its start too, then cut at its end.
-            guard offset == 0 else { return (.notServed, nil, nil) }
+            guard offset == 0 else { return (.notServed(.rangeAnsweredWhole), nil, nil) }
             return (.open, length, end ?? length)
         case 206:
             // `bytes 0-131071/12000000`: from the offset asked for, the size after the slash (`*` when unknown).
             guard let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
                 contentRange.hasPrefix("bytes \(offset)-")
-            else { return (.notServed, nil, nil) }
+            else { return (.notServed(.rangeMismatch(http.value(forHTTPHeaderField: "Content-Range"))), nil, nil) }
             let fileSize = contentRange.split(separator: "/").last.flatMap { Int64($0) }
             return (.open, fileSize, length)
         case 400: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "0", "0")), nil, nil)
@@ -1138,8 +1152,11 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         case 429: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "2", "9")), nil, nil)
         case 400..<500: return (.failed(FFmpegErrorCode.tag(0xF8, "4", "X", "X")), nil, nil)
         case 500..<600: return (.failed(FFmpegErrorCode.tag(0xF8, "5", "X", "X")), nil, nil)
-        // A redirect (not followed) and the rest: FFmpeg's to open.
-        default: return (.notServed, nil, nil)
+        // A redirect (not followed: its answer is the 3xx itself, from the address asked) and the rest: FFmpeg's to open.
+        case 300..<400:
+            let target = http.value(forHTTPHeaderField: "Location").flatMap { URL(string: $0, relativeTo: url)?.host }
+            return (.notServed(.redirected(host: target)), nil, nil)
+        default: return (.notServed(.status(http.statusCode, host: http.url?.host ?? url.host)), nil, nil)
         }
     }
 }

@@ -30,6 +30,9 @@ final class TestHTTPServer: Sendable {
         var redirect: String?
         /// A `Set-Cookie` header with the answer.
         var setCookie: String?
+        /// A range is answered without the file's size (`Content-Range: bytes 0-262143/*`), as a live YouTube
+        /// segment's still being written is, and a range from past the end with 416.
+        var hidesSize = false
     }
 
     enum Failure: Sendable {
@@ -255,6 +258,14 @@ final class TestHTTPServer: Sendable {
                 }
                 continue
             }
+            if behavior.hidesSize, let range = headers["range"], range.hasPrefix("bytes="),
+                let start = Int(range.dropFirst(6).prefix { $0 != "-" }), start >= contents.count
+            {
+                guard await send(response(status: 416, headers: ["Content-Length": "0"]), on: connection) else {
+                    return
+                }
+                continue
+            }
             var body = contents[...]
             var status = 200
             var responseHeaders = ["Content-Type": contentType(of: path), "Accept-Ranges": "bytes"]
@@ -266,7 +277,8 @@ final class TestHTTPServer: Sendable {
                 }
                 body = contents[range]
                 status = 206
-                responseHeaders["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound)/\(contents.count)"
+                let size = behavior.hidesSize ? "*" : String(contents.count)
+                responseHeaders["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound)/\(size)"
             }
             responseHeaders["Content-Length"] = String(body.count)
             if behavior.closesConnection { responseHeaders["Connection"] = "close" }

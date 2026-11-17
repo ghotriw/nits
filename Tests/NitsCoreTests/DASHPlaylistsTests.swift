@@ -550,11 +550,11 @@ struct DASHPlaylistsTests {
         }
         #expect(media.segments.count == 3)
         let other = DASHPlaylists(address: Self.url, inline: data)
-        #expect(throws: PlaylistSourceError.load(.notServed(variant.url))) {
+        #expect(throws: PlaylistSourceError.load(.notServed(variant.url, reason: .unknownAddress))) {
             try other.playlist(at: variant.url, variables: [:], loader: loader)
         }
         let unknown = source.multivariantURL.appendingPathComponent("9")
-        #expect(throws: PlaylistSourceError.load(.notServed(unknown))) {
+        #expect(throws: PlaylistSourceError.load(.notServed(unknown, reason: .unknownAddress))) {
             try source.playlist(at: unknown, variables: [:], loader: loader)
         }
     }

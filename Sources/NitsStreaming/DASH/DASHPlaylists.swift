@@ -155,7 +155,7 @@ package struct DASHPlaylists: PlaylistSource {
         throws(PlaylistSourceError)
         -> StreamingPlaylist
     {
-        guard url.scheme == Self.scheme, url.host == id else { throw .load(.notServed(url)) }
+        guard url.scheme == Self.scheme, url.host == id else { throw .load(.notServed(url, reason: .unknownAddress)) }
         let built = try manifest.value(loader: loader) { loader throws(PlaylistSourceError) in
             try read(loader: loader)
         }
@@ -165,7 +165,7 @@ package struct DASHPlaylists: PlaylistSource {
         }
         guard let index = url.pathComponents.dropFirst().first.flatMap({ Int($0) }),
             built.entries.indices.contains(index)
-        else { throw .load(.notServed(url)) }
+        else { throw .load(.notServed(url, reason: .unknownAddress)) }
         return .media(try mediaPlaylist(index, of: built, loader: loader))
     }
 
@@ -436,7 +436,7 @@ package struct DASHPlaylists: PlaylistSource {
             return history.listing(of: playlist, shouldAbort: { loader.isAborted })
         }
         if let playlist = entry.playlist { return playlist }
-        guard let indexed = entry.indexed else { throw .load(.notServed(multivariantURL)) }
+        guard let indexed = entry.indexed else { throw .load(.notServed(multivariantURL, reason: .noSegments)) }
         return try indexed.value(loader: loader) { loader throws(PlaylistSourceError) in
             try Self.indexedPlaylist(of: entry, in: built, loader: loader)
         }

@@ -336,3 +336,46 @@ extension HTTPSessionOpeningLimitTests {
         #expect(sampled > 0 && sampled <= Self.size - whileOpening, "\(sampled) bytes sampled of \(Self.size)")
     }
 }
+
+extension HTTPSessionOpeningLimitTests {
+    @Test(
+        "Asked for in pieces from a server that doesn't tell the size (a live YouTube segment): read on while pieces come whole",
+        arguments: [
+            // Shorter than a piece (a live AAC segment), two pieces exactly (the third is answered 416), and between.
+            80_000, 2 * HTTPSessionInput.openingHighWater, 2 * HTTPSessionInput.openingHighWater + 75_000,
+        ])
+    func readsPiecesOfUnknownSize(size: Int) throws {
+        let (server, directory) = try Self.server()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let expected = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try expected.write(to: directory.appendingPathComponent("live"))
+        var behavior = TestHTTPServer.Behavior()
+        behavior.hidesSize = true
+        server.setBehavior(behavior, forPaths: { $0 == "live" })
+        let transport = HTTPSessionTransport(source: server.url("live"), headers: [:]) { false }
+        guard
+            case .input(let input) = transport.open(server.url("live"), offset: 0, end: nil, opening: .held)
+        else {
+            Issue.record("not served")
+            return
+        }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 << 10)
+        while true {
+            let got = input.read(&buffer, Int32(buffer.count))
+            if got <= 0 {
+                #expect(got == FFmpegErrorCode.eof, "the body ended with \(got), not its end")
+                break
+            }
+            bytes += buffer[0..<Int(got)]
+        }
+        input.close()
+        #expect(bytes == expected, "\(bytes.count) of \(size) bytes")
+        // A piece for every whole one and the one past them: short, or answered 416.
+        let pieces = size / HTTPSessionInput.openingHighWater + 1
+        #expect(server.requests.filter { $0.path == "live" }.count == pieces)
+    }
+}

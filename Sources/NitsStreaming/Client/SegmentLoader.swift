@@ -7,8 +7,8 @@ package enum SegmentLoadError: Error, Equatable {
     case interrupted
     /// The server's answer, as FFmpeg's error for it (`AVERROR_HTTP_*`) or an I/O error.
     case failed(Int32)
-    /// The address wasn't served by the transport (not HTTP(S), or answered in a way it leaves to FFmpeg).
-    case notServed(URL)
+    /// The address wasn't served by the transport (not HTTP(S), or answered in a way it leaves to FFmpeg), and why.
+    case notServed(URL, reason: NotServedReason)
     /// Encryption Nits doesn't decrypt (SAMPLE-AES, a key format other than `identity`, a key without an address).
     case unsupportedEncryption(String)
     /// The key isn't the 16 bytes of AES-128.
@@ -120,7 +120,7 @@ package final class SegmentLoader: Sendable {
     /// A playlist's text and where it was served from, after redirects (its relative URIs are read against that).
     func playlist(_ url: URL) throws(SegmentLoadError) -> (data: Data, servedFrom: URL) {
         if url.isFileURL {
-            guard allowsFiles else { throw .notServed(url) }
+            guard allowsFiles else { throw .notServed(url, reason: .fileNotAllowed) }
             return (try file(url, range: nil), url)
         }
         switch transport.open(
@@ -132,8 +132,8 @@ package final class SegmentLoader: Sendable {
             return (try read(input), servedFrom)
         case .failed(let code):
             throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
-        case .notServed:
-            throw .notServed(url)
+        case .notServed(let reason):
+            throw .notServed(url, reason: reason)
         }
     }
 
@@ -149,8 +149,8 @@ package final class SegmentLoader: Sendable {
             return input.serverDate
         case .failed(let code):
             throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
-        case .notServed:
-            throw .notServed(url)
+        case .notServed(let reason):
+            throw .notServed(url, reason: reason)
         }
     }
 
@@ -228,30 +228,31 @@ package final class SegmentLoader: Sendable {
             return body
         case .failed(let code):
             throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
-        case .notServed:
-            guard let range else { throw .notServed(url) }
+        case .notServed(let reason):
+            guard let range else { throw .notServed(url, reason: reason) }
             return try wholeFile(url, range: range)
         }
     }
 
     /// A byte range the server answers whole: the file, cut to the range.
     private func wholeFile(_ url: URL, range: ByteRange) throws(SegmentLoadError) -> Data {
-        guard
-            case .input(let input) = open(
-                url,
-                {
-                    transport.open(
-                        $0, offset: 0, end: nil, followsRedirects: true, abort: abort)
-                })
-        else { throw .notServed(url) }
+        let input: HTTPSessionInput
+        switch open(url, { transport.open($0, offset: 0, end: nil, followsRedirects: true, abort: abort) }) {
+        case .input(let opened): input = opened
+        case .failed(let code): throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
+        case .notServed(let reason): throw .notServed(url, reason: reason)
+        }
         let whole = try read(input, limit: Int(range.range.upperBound))
         guard whole.count >= range.range.upperBound else { throw .rangeOutsideFile(url) }
         return whole.subdata(in: Int(range.offset)..<Int(range.range.upperBound))
     }
 
     /// A segment with a byte range, as the file cut (no request for the range first: the server has answered it whole).
-    fileprivate func wholeFileSegment(_ segment: MediaSegment) throws(SegmentLoadError) -> Data {
-        guard let range = segment.byteRange else { throw .notServed(segment.url) }
+    /// One without a range was not served, for `reason`.
+    fileprivate func wholeFileSegment(
+        _ segment: MediaSegment, notServed reason: NotServedReason
+    ) throws(SegmentLoadError) -> Data {
+        guard let range = segment.byteRange else { throw .notServed(segment.url, reason: reason) }
         return try wholeFile(segment.url, range: range)
     }
 
@@ -490,9 +491,9 @@ extension SegmentLoader {
             return SegmentBody(input: input, limit: range?.length, retains: retains)
         case .failed(let code):
             throw code == FFmpegErrorCode.exit ? .interrupted : .failed(code)
-        case .notServed:
+        case .notServed(let reason):
             // A range the server answers whole (the request is already made once): the file, cut.
-            return SegmentBody(data: try wholeFileSegment(segment))
+            return SegmentBody(data: try wholeFileSegment(segment, notServed: reason))
         }
     }
 }
@@ -500,7 +501,7 @@ extension SegmentLoader {
 extension SegmentLoader {
     /// A local file's bytes, or those of its `range` (mapped, not copied, while it is read).
     fileprivate func file(_ url: URL, range: ByteRange?) throws(SegmentLoadError) -> Data {
-        guard allowsFiles else { throw .notServed(url) }
+        guard allowsFiles else { throw .notServed(url, reason: .fileNotAllowed) }
         let whole: Data
         do {
             whole = try Data(contentsOf: url, options: .mappedIfSafe)
