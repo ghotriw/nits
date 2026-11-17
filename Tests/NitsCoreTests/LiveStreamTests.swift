@@ -346,7 +346,7 @@ extension LiveStreamPlaylistTests {
         #expect(engine.live.isLive)
 
         let window = try #require(engine.live.window())
-        // Starts behind the edge by the margin (a segment's size, as FFmpeg reads from).
+        // Starts behind the edge by the margin (three target durations, the playlist telling no hold-back).
         let edge = try #require(engine.live.edgeTarget())
         #expect(abs(engine.currentTime - edge) < 2.5, "started at \(engine.currentTime), edge \(edge) in \(window)")
         #expect(engine.live.isAtEdge(engine.currentTime))
@@ -360,13 +360,29 @@ extension LiveStreamPlaylistTests {
         #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
         #expect(engine.currentTime <= (engine.live.window()?.end ?? 0) + 0.5)
 
-        // Into the middle, then back to the edge.
-        engine.seek(to: window.start + window.length / 2)
+        // To the start (the middle of a window of 20 s is within the reach of the edge), then back to the edge.
+        engine.seek(to: window.start)
         #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
         #expect(!engine.live.isAtEdge(engine.currentTime))
         engine.seekToLiveEdge()
         #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
         #expect(engine.live.isAtEdge(engine.currentTime))
+
+        // At the edge, a skip forward cut to it never takes the picture back: it is not made, or lands past it.
+        let beforeSkip = engine.currentTime
+        engine.seekRelative(by: 60, exact: false)
+        #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
+        #expect(engine.currentTime >= beforeSkip - 0.05, "from \(beforeSkip) to \(engine.currentTime)")
+
+        // From the window's start, a skip forward cut to the edge lands on the keyframe before it, not on the next one,
+        // in the margin.
+        engine.seek(to: engine.live.window()?.start ?? 0)
+        #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
+        engine.seekRelative(by: 600, exact: false)
+        #expect(engine.chase?.bound == .end && engine.chase?.forward == false)
+        #expect(await engine.waitUntil { !engine.isSeeking && engine.chase == nil })
+        let edgeAfterSkip = try #require(engine.live.edgeTarget())
+        #expect(engine.currentTime <= edgeAfterSkip + 0.1, "landed at \(engine.currentTime), edge \(edgeAfterSkip)")
     }
 }
 
@@ -602,6 +618,84 @@ extension LiveStreamTests {
         #expect(live.shouldRecoverReading(isStopped: true, now: t0 + .seconds(101)))
         #expect(!live.shouldRecoverReading(isStopped: true, now: t0 + .seconds(105)))
         #expect(live.shouldRecoverReading(isStopped: true, now: t0 + .seconds(106)))
+    }
+
+    @MainActor
+    @Test("Near the edge a seek lands on the keyframe before, and a step forward from the edge stands")
+    func landingNearTheEdge() {
+        let live = LiveStream()
+        // YouTube's history: 5 s segments, a hold-back of 15 s; "go live" lands at 585.
+        live.begin(isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 15, segmentDuration: 5))
+        let now = ContinuousClock.now
+        // A keyframe after the target is up to a segment on: up to 580 it is at most the edge.
+        #expect(live.allowsLandingAfter(570, now: now))
+        #expect(live.allowsLandingAfter(580, now: now))
+        #expect(!live.allowsLandingAfter(581, now: now))
+        #expect(!live.allowsLandingAfter(585, now: now))
+        // Cut to the edge (585), a keyframe step lands on the keyframe before it, after 580: past a picture before 580,
+        // it goes; from within a segment of the target it may be behind the picture, and stands.
+        #expect(!live.holdsStepForward(from: 575, to: 585, exact: false, now: now))
+        #expect(!live.holdsStepForward(from: 579, to: 585, exact: false, now: now))
+        // On a keyframe a segment before the target, the one before the target may be the picture's own.
+        #expect(live.holdsStepForward(from: 580, to: 585, exact: false, now: now))
+        #expect(live.holdsStepForward(from: 582, to: 585, exact: false, now: now))
+        // A small step near the edge, from a keyframe: the one before its target may be the picture's own.
+        #expect(live.holdsStepForward(from: 582, to: 584, exact: false, now: now))
+        // Further back, a step lands on the keyframe after its target, which is never behind the picture.
+        #expect(!live.holdsStepForward(from: 560, to: 570, exact: false, now: now))
+        // An exact step lands on its target: it stands only when the edge cut it to the picture or before.
+        #expect(!live.holdsStepForward(from: 582, to: 585, exact: true, now: now))
+        #expect(live.holdsStepForward(from: 586, to: 585, exact: true, now: now))
+
+        // Without a segment duration told, the hold-back stands for it.
+        let untold = LiveStream()
+        untold.begin(isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 15))
+        #expect(untold.allowsLandingAfter(570, now: now))
+        #expect(!untold.allowsLandingAfter(571, now: now))
+
+        let ended = LiveStream()
+        ended.begin(
+            isLive: true, window: LiveWindow(start: 0, end: 600, hasEnded: true, holdBack: 15, segmentDuration: 5))
+        #expect(ended.allowsLandingAfter(599, now: now))
+        #expect(!ended.holdsStepForward(from: 599, to: 600, exact: false, now: now))
+    }
+
+    @MainActor
+    @Test("At the edge counts as far as the edge reckoned may come to lead the listing the start was measured from")
+    func atEdgeCoversTheLeadOfTheEdgeReckoned() {
+        let now = ContinuousClock.now
+        // YouTube's history: hold-back 15 s, a listing that lags up to 15 s (a segment and two polls of the head);
+        // started 15 s behind, seen 23.4 s behind the edge reckoned later, playing all the while.
+        let history = LiveStream()
+        history.begin(
+            isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 15, segmentDuration: 5, edgeLag: 15), at: now
+        )
+        #expect(history.isAtEdge(600 - 23.4, now: now))
+        #expect(history.isAtEdge(600 - 34, now: now))
+        #expect(!history.isAtEdge(600 - 35, now: now))
+        // A playlist reloaded every target duration (6 s segments, three of them held back): a reload's lag.
+        let playlist = LiveStream()
+        playlist.begin(
+            isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 18, segmentDuration: 6, edgeLag: 6), at: now)
+        #expect(playlist.isAtEdge(600 - 28, now: now))
+        #expect(!playlist.isAtEdge(600 - 29, now: now))
+        // A window that tells no lag keeps the hold-back and the slack.
+        let untold = LiveStream()
+        untold.begin(isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 15), at: now)
+        #expect(untold.isAtEdge(600 - 19, now: now))
+        #expect(!untold.isAtEdge(600 - 20, now: now))
+    }
+
+    @MainActor
+    @Test(
+        "The margin is the greatest hold-back told: a variant with longer segments does not move the edge back and forth"
+    )
+    func marginKeepsTheGreatestHoldBack() {
+        let live = LiveStream()
+        let now = ContinuousClock.now
+        live.begin(isLive: true, window: LiveWindow(start: 0, end: 600, holdBack: 18), at: now)
+        live.update(window: LiveWindow(start: 0, end: 601, holdBack: 12), at: now)
+        #expect(abs((live.edgeTarget(now: now) ?? 0) - (601 - 18)) < 0.01)
     }
 
     @MainActor

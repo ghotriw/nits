@@ -13,16 +13,28 @@ public struct LiveWindow: Equatable, Sendable {
     public var hasSlid: Bool
     /// The playlist ended (`EXT-X-ENDLIST`): this is its last window, a recording that no longer grows or slides.
     public var hasEnded: Bool
-    /// How far behind the edge the stream says it is meant to be played, seconds, when it says (a DASH manifest's
-    /// `suggestedPresentationDelay`). Nil: `LiveStream.edgeMargin`.
+    /// How far behind the edge the stream is meant to be played, seconds: what it says (a DASH manifest's
+    /// `suggestedPresentationDelay`), else as many as its segments need (the client's, a few target durations). Nil:
+    /// `LiveStream.edgeMargin`.
     public var holdBack: Double?
+    /// The longest a segment is (the playlist's target duration), seconds: keyframes are at most this far apart, as a
+    /// segment begins with one. Nil when not told.
+    public var segmentDuration: Double?
+    /// How far the end may trail the newest segment published, seconds: a reload of the playlist (a segment), or more
+    /// for a source whose listing lags (a live history's head is polled). Nil when not told.
+    public var edgeLag: Double?
 
-    public init(start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false, holdBack: Double? = nil) {
+    public init(
+        start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false, holdBack: Double? = nil,
+        segmentDuration: Double? = nil, edgeLag: Double? = nil
+    ) {
         self.start = start
         self.end = end
         self.hasSlid = hasSlid
         self.hasEnded = hasEnded
         self.holdBack = holdBack
+        self.segmentDuration = segmentDuration
+        self.edgeLag = edgeLag
     }
 
     public var length: Double { end - start }
@@ -54,6 +66,6 @@ extension LiveWindow {
     init(_ window: StreamingLiveWindow) {
         self.init(
             start: window.start, end: window.end, hasSlid: window.hasSlid, hasEnded: window.hasEnded,
-            holdBack: window.holdBack)
+            holdBack: window.holdBack, segmentDuration: window.targetDuration, edgeLag: window.edgeLag)
     }
 }

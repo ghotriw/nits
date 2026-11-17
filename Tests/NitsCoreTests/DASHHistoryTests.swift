@@ -118,6 +118,17 @@ struct DASHHistoryListingTests {
         #expect(listed.mediaSequence == 10)
         #expect(listed.isLive)
         #expect(listed.updatePeriod == DASHHistory.updatePeriod)
+        // Behind the edge by a segment and two polls of the head (5 + 2 × 5 s): the edge stands still between them.
+        #expect(listed.holdBack == 15)
+        // The listed edge trails the newest published by as much: the engine counts it into being at the edge.
+        #expect(listed.listingLag == 15)
+    }
+
+    @Test("A head polled less often than a segment comes keeps the picture further behind the edge")
+    func holdBackCoversThePoll() {
+        let slow = TestLiveSource(base: "https://media.example", waitLimit: .seconds(60), pollInterval: .seconds(10))
+        let (history, _) = Self.history(source: slow, head: 50)
+        #expect(history.listing(of: Self.playlist(), shouldAbort: Self.never).holdBack == 25)
     }
 
     @Test("A head of the first segment lists it anyway: a stream of one segment is not empty")

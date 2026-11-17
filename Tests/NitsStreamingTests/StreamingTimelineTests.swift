@@ -135,7 +135,11 @@ struct StreamingTimelineTests {
     func reloadSlides() throws {
         var timeline = StreamingTimeline(try Self.playlist([6, 6, 6], sequence: 100))
         let firstLoad = timeline.entries
-        #expect(timeline.liveWindow == StreamingLiveWindow(start: 0, end: 18, hasSlid: true, hasEnded: false))
+        // No hold-back told: three target durations behind the edge (RFC 8216 6.3.3).
+        #expect(
+            timeline.liveWindow
+                == StreamingLiveWindow(
+                    start: 0, end: 18, hasSlid: true, hasEnded: false, holdBack: 18, targetDuration: 6, edgeLag: 6))
         #expect(timeline.reload(try Self.playlist([6, 6, 6], sequence: 100)) == .unchanged)
         // A re-listed segment's duration changed: its place stays as first loaded.
         #expect(timeline.reload(try Self.playlist([6, 6.5, 4, 6], sequence: 101)) == .updated(added: 2, expired: 1))
@@ -147,11 +151,16 @@ struct StreamingTimelineTests {
         // Read before 100: 100 expired unread.
         #expect(timeline.next(after: Self.entry(99, start: -6)) == .expired(resumingAt: timeline.entries[0]))
         #expect(timeline.next(after: timeline.entries[3]) == .pending)
-        #expect(timeline.liveWindow == StreamingLiveWindow(start: 6, end: 28, hasSlid: true, hasEnded: false))
+        // The 6.5 s segment raised the target duration to 7: the hold-back follows the latest load's.
+        #expect(
+            timeline.liveWindow
+                == StreamingLiveWindow(
+                    start: 6, end: 28, hasSlid: true, hasEnded: false, holdBack: 21, targetDuration: 7, edgeLag: 7))
         // The stream ends: the window stays live, ended.
         #expect(
             timeline.reload(try Self.playlist([4, 6], sequence: 103, ended: true)) == .updated(added: 0, expired: 2))
-        #expect(timeline.liveWindow == StreamingLiveWindow(start: 18, end: 28, hasSlid: true, hasEnded: true))
+        #expect(
+            timeline.liveWindow == StreamingLiveWindow(start: 18, end: 28, hasSlid: true, hasEnded: true))
         #expect(timeline.next(after: timeline.entries[1]) == .ended)
     }
 
@@ -165,7 +174,10 @@ struct StreamingTimelineTests {
         var growing = StreamingTimeline(try Self.playlist([6], sequence: 0))
         #expect(growing.liveWindow?.hasSlid == false)
         growing.reload(try Self.playlist([6, 6], sequence: 1))
-        #expect(growing.liveWindow == StreamingLiveWindow(start: 6, end: 18, hasSlid: true, hasEnded: false))
+        #expect(
+            growing.liveWindow
+                == StreamingLiveWindow(
+                    start: 6, end: 18, hasSlid: true, hasEnded: false, holdBack: 18, targetDuration: 6, edgeLag: 6))
     }
 
     @Test("A reload too late to match a segment: placed after the old end, the missed segments by count or by date")

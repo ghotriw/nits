@@ -76,8 +76,11 @@ extension PlayerEngine {
     }
 
     /// - Parameter minFramePTS: For a forward frame step, the earliest frame it may land on (see `ChaseTarget`).
-    func seek(to seconds: Double, exact: Bool, forward: Bool, minFramePTS: Double? = nil) {
+    func seek(to seconds: Double, exact: Bool, forward requestedForward: Bool, minFramePTS: Double? = nil) {
         let target = clampedSeekTarget(seconds)
+        let bound = live.bound(of: seconds)
+        // Near a live stream's edge it lands on the keyframe before its target, not the one after, in the margin.
+        let forward = requestedForward && live.allowsLandingAfter(target)
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
         live.seeked(to: target)
@@ -99,7 +102,7 @@ extension PlayerEngine {
 
         // 2. Immediate responsive UI update (0ms latency for exact seek)
         chase = ChaseTarget(
-            seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS, bound: live.bound(of: seconds))
+            seconds: target, exact: exact, forward: forward, minFramePTS: minFramePTS, bound: bound)
         if exact {
             currentTime = target
             subtitles.timeDidChange(to: target, .tick)
@@ -470,13 +473,18 @@ extension PlayerEngine {
         // On slow frame-threaded streams (e.g. software AV1), rapid keypresses advance the goal,
         // while the demuxer chases the latest target to prevent stale frame freezes.
         let baseTime = chase?.seconds ?? currentTime
-        let isFirstInBurst = relativeSeekBurst.press(at: baseTime)
-
-        let isExact = !media.hasVideo || (exactSeekOnSinglePress && isFirstInBurst)
-        let isForward = seconds > 0 && !isExact
+        // Exact or not as the press would start the burst: known before it is pressed, for a step held at the edge.
+        let isExact = !media.hasVideo || (exactSeekOnSinglePress && !relativeSeekBurst.isStarted)
+        if holdsLiveStepForward(from: baseTime, by: seconds, exact: isExact) {
+            return relativeSeekBurst.offset(landingAt: baseTime) ?? 0
+        }
+        relativeSeekBurst.press(at: baseTime)
+        let targetSeconds = clampedSeekTarget(baseTime + seconds)
+        // As `seek` makes it: the same as the seek in flight's, for a press to be told the same seek.
+        let isForward = seconds > 0 && !isExact && live.allowsLandingAfter(targetSeconds)
 
         let target = ChaseTarget(
-            seconds: clampedSeekTarget(baseTime + seconds), exact: isExact, forward: isForward, minFramePTS: nil,
+            seconds: targetSeconds, exact: isExact, forward: isForward, minFramePTS: nil,
             bound: live.bound(of: baseTime + seconds))
         if isSeekInFlight(toPressed: target) {
             return relativeSeekBurst.offset(landingAt: target.seconds) ?? 0
@@ -487,6 +495,12 @@ extension PlayerEngine {
         seek(to: baseTime + seconds, exact: isExact, forward: isForward)
 
         return relativeSeekBurst.offset(landingAt: chase?.seconds ?? currentTime) ?? 0
+    }
+
+    /// A step forward from `from` that a live stream's edge leaves nowhere to go, but behind the picture or onto it
+    /// again (`LiveStream.holdsStepForward`): it is not made.
+    private func holdsLiveStepForward(from: Double, by seconds: Double, exact: Bool) -> Bool {
+        seconds > 0 && live.holdsStepForward(from: from, to: clampedSeekTarget(from + seconds), exact: exact)
     }
 
     /// Where a seek to `seconds` goes: within the media; of a live stream, within the window its playlist lists.
@@ -507,11 +521,14 @@ extension PlayerEngine {
     public func seekRelative(by seconds: Double, exact: Bool) {
         resetRelativeSeekBurst()
         let baseTime = chase?.seconds ?? currentTime
+        if holdsLiveStepForward(from: baseTime, by: seconds, exact: exact) { return }
         // Forward keyframe steps must land on the next keyframe; a backward search on sparse-GOP
         // streams (AV1) would snap back to the current keyframe and the position would never advance.
-        let forward = seconds > 0 && !exact
+        // Near a live stream's edge, as `seek` makes it (`allowsLandingAfter`).
+        let targetSeconds = clampedSeekTarget(baseTime + seconds)
+        let forward = seconds > 0 && !exact && live.allowsLandingAfter(targetSeconds)
         let target = ChaseTarget(
-            seconds: clampedSeekTarget(baseTime + seconds), exact: exact, forward: forward, minFramePTS: nil,
+            seconds: targetSeconds, exact: exact, forward: forward, minFramePTS: nil,
             bound: live.bound(of: baseTime + seconds))
         if isSeekInFlight(toPressed: target) { return }
         seek(to: baseTime + seconds, exact: exact, forward: forward)

@@ -59,6 +59,13 @@ package struct StreamingTimeline: Sendable, Equatable {
     private(set) var targetDuration: Double
     /// How far behind the edge the source says to play (`MediaPlaylist.holdBack`); the latest load's.
     private(set) var holdBack: Double?
+    /// How far behind the edge a live stream is joined and its window's edge is kept: the source's hold-back, else
+    /// `StreamingInput.edgeMargin` target durations.
+    var edgeHoldBack: Double { holdBack ?? StreamingInput.edgeMargin * targetDuration }
+    /// How far the last segment listed may trail the newest published (`MediaPlaylist.listingLag`); the latest load's.
+    private(set) var listingLag: Double?
+    /// The same, or a reload's: a playlist is reloaded every target duration at the edge.
+    var edgeLag: Double { listingLag ?? targetDuration }
     /// The source's update period (`MediaPlaylist.updatePeriod`), the latest load's.
     private(set) var updatePeriod: Double?
     private(set) var hasEnded: Bool
@@ -85,6 +92,7 @@ package struct StreamingTimeline: Sendable, Equatable {
     init(_ playlist: MediaPlaylist, start: Double = 0) {
         targetDuration = playlist.targetDuration
         holdBack = playlist.holdBack
+        listingLag = playlist.listingLag
         updatePeriod = playlist.updatePeriod
         hasEnded = !playlist.isLive
         isLive = playlist.isLive
@@ -121,7 +129,10 @@ package struct StreamingTimeline: Sendable, Equatable {
     /// The window of a playlist that was live when first loaded; nil for one finished then.
     var liveWindow: StreamingLiveWindow? {
         isLive
-            ? StreamingLiveWindow(start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded, holdBack: holdBack)
+            ? StreamingLiveWindow(
+                start: start, end: end, hasSlid: hasSlid, hasEnded: hasEnded,
+                holdBack: hasEnded ? nil : edgeHoldBack, targetDuration: hasEnded ? nil : targetDuration,
+                edgeLag: hasEnded ? nil : edgeLag)
             : nil
     }
 
@@ -393,6 +404,7 @@ package struct StreamingTimeline: Sendable, Equatable {
     private mutating func accept(_ playlist: MediaPlaylist) {
         targetDuration = playlist.targetDuration
         holdBack = playlist.holdBack
+        listingLag = playlist.listingLag
         updatePeriod = playlist.updatePeriod
         hasEnded = !playlist.isLive
     }

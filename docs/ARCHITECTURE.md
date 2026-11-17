@@ -613,9 +613,21 @@ lists to the end of the last. Both ends move with real time.
   `PlayerEngine` feeds it at every tick (`trackLiveWindow`) and
   resets it with the media. The timeline stays in the stream's own timestamps (an hour into a broadcast, not zero): the
   UI maps them onto the window.
-- **Start and seeks.** A live stream starts `edgeMargin` (6 s) behind the edge, whatever the requested or saved start.
-  Seeks go through `clampedSeekTarget` into the window: `startMargin` (10 s) after its start, as the oldest segments
-  expire from the server while they are fetched, and `edgeMargin` before its end. A picture whose place has expired
+- **Start and seeks.** A live stream starts behind the edge by the window's `holdBack`, whatever the requested or saved
+  start: the source's (`suggestedPresentationDelay`), else three target durations, and for a history of numbered
+  segments a segment and two polls of the head (`DASHHistory.holdBack`: the listed edge stands still between them, and
+  YouTube's 5 s segments played 6 s behind it stood buffering at the end of each). `edgeMargin` (6 s) is only for a
+  window that tells none. Seeks go through `clampedSeekTarget` into the window: `startMargin` (10 s) after its start, as
+  the oldest segments expire from the server while they are fetched, and the hold-back before its end. A keyframe seek
+  within a segment of where "go live" lands lands on the keyframe before its target, not the next one: that one is up
+  to a segment on, into the margin (`allowsLandingAfter`; the window tells its target duration as `segmentDuration`). A
+  step forward that would land so behind the picture or on it again (from within a segment of its target) is not made
+  (`holdsStepForward`). The margin is the greatest hold-back told, so that a variant of longer segments does not move the
+  edge and the badge back and forth. The badge counts as at the edge up to the hold-back, 4 s more, and the window's
+  `edgeLag` more, 10 s at least (`isAtEdge`): the edge reckoned is the freshest listing's of the last minute, which may
+  come to lead the one the start was measured from by as much as a listing trails what is published (a reload, a
+  target duration; a live history's poll of its head and a segment, `DASHHistory.listingLag`: started 15 s behind, it
+  was seen 23 s behind, playing all the while). A picture whose place has expired
   from the playlist (a long pause) is brought back into the window by the tick. The repeats of a key held at an end are
   one seek, though the end moves with the clock while it goes: a `ChaseTarget` remembers the end its target was cut to
   (`bound`), and a press cut to the same end does not start the seek over; a skip that stops short of the edge is not

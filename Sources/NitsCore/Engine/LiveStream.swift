@@ -25,8 +25,9 @@ public final class LiveStream {
     /// Within this many seconds of the live edge counts as being at it: an HLS player starts a few segments behind the
     /// edge (FFmpeg three, 6 s of 2 s segments), so exactly at the edge is never where playback is.
     nonisolated public static let edgeTolerance = 10.0
-    /// Where "go live" and the start of a live stream land: behind the edge by this much, the newest segment still
-    /// being written is not played.
+    /// How far behind the edge "go live" and the start of a live stream land when the window tells no hold-back of its
+    /// own. The streaming client's windows always tell one (the source's, else three target durations): this is for
+    /// windows made otherwise.
     nonisolated public static let edgeMargin = 6.0
     /// How far into the window a seek to its start lands: the oldest segments expire from the server while they are
     /// fetched, and the window's start, which moves on with time, would be behind the target by the time it is read.
@@ -61,9 +62,11 @@ public final class LiveStream {
         (instant - clockOrigin) / .seconds(1)
     }
 
-    /// How far behind the edge "go live", the start and a seek land: the stream's own hold-back when it tells one, else
-    /// `edgeMargin`.
-    private var margin: Double { reportedWindow?.holdBack ?? Self.edgeMargin }
+    /// How far behind the edge "go live", the start and a seek land: the stream's own hold-back when it tells one (the
+    /// greatest told: a variant whose target duration is longer must not move the edge and the badge back and forth),
+    /// else `edgeMargin`.
+    private var margin: Double { largestHoldBack ?? Self.edgeMargin }
+    private var largestHoldBack: Double?
 
     /// The playlist ended: the window is the last one, and standing.
     public var isEnded: Bool { reportedWindow?.hasEnded == true }
@@ -75,7 +78,9 @@ public final class LiveStream {
         let end = max(reportedWindow.end, clock(now) + edgeOffset)
         let start = isSliding ? reportedWindow.start + clock(now) - clock(reportedAt) : reportedWindow.start
         return LiveWindow(
-            start: min(start, end), end: end, hasSlid: reportedWindow.hasSlid, holdBack: reportedWindow.holdBack)
+            // The hold-back as kept (`margin`): the greatest told, not the latest.
+            start: min(start, end), end: end, hasSlid: reportedWindow.hasSlid, holdBack: largestHoldBack,
+            segmentDuration: reportedWindow.segmentDuration, edgeLag: reportedWindow.edgeLag)
     }
 
     /// A new media was loaded.
@@ -98,6 +103,7 @@ public final class LiveStream {
         edgeSamples.append((time, window.end - time))
         edgeSamples.removeAll { $0.clock < time - Self.edgeMemory }
         edgeOffset = edgeSamples.map(\.offset).max()
+        if let holdBack = window.holdBack { largestHoldBack = max(largestHoldBack ?? holdBack, holdBack) }
         reportedWindow = window
         reportedAt = now
     }
@@ -107,6 +113,7 @@ public final class LiveStream {
         reportedWindow = nil
         edgeOffset = nil
         edgeSamples = []
+        largestHoldBack = nil
         isSliding = false
         rateBeforeEdge = nil
         returnsToRateBeforeEdge = false
@@ -124,8 +131,18 @@ public final class LiveStream {
     /// Whether `time` is at the live edge, for the badge to be red. A stream that is not live, or has ended, is not.
     public func isAtEdge(_ time: Double, now: ContinuousClock.Instant = .now) -> Bool {
         guard !isEnded, let window = window(at: now) else { return false }
-        return window.end - time <= max(Self.edgeTolerance, margin + Self.edgeTolerance - Self.edgeMargin)
+        return window.end - time <= max(Self.edgeTolerance, margin + Self.edgeSlack + edgeLead)
     }
+
+    /// How far past the hold-back still counts as at the edge: a stall or two of the picture there.
+    nonisolated static let edgeSlack = edgeTolerance - edgeMargin
+
+    /// How far the edge reckoned (the freshest listing's of the last minute, `window`) may come to be ahead of the one
+    /// the start or "go live" was measured from: as far as a listing may trail what is published, which the window
+    /// tells (`LiveWindow.edgeLag`: a reload of the playlist, or a poll of a live history's head and more). YouTube's
+    /// history: started 15 s behind, the picture was 23 s behind the edge reckoned half a minute on, playing all the
+    /// while, and the badge grey.
+    private var edgeLead: Double { reportedWindow?.edgeLag ?? 0 }
 
     /// The speed a picture at `time` played at `rate` is to play at now, `nil` to keep it. Faster than real time, at the
     /// edge, it would play the segments as fast as the stream makes them and stand buffering for the next, again and
@@ -192,6 +209,31 @@ public final class LiveStream {
         guard !wasAtEdge, let window = window(at: now), let edge = edgeTarget(now: now) else { return nil }
         let target = streamTime - origin
         return target >= window.start + Self.startMargin && target < edge ? target : nil
+    }
+
+    /// The longest a segment is, and so the farthest apart two keyframes are (a segment begins with one): the window's
+    /// target duration, else the hold-back (which is a segment at least).
+    private var segmentDuration: Double { reportedWindow?.segmentDuration ?? margin }
+
+    /// Whether a keyframe seek to `seconds` may land on the keyframe after it. Not within a segment of where "go live"
+    /// lands: that keyframe is up to a segment on, into the margin, and the picture would play into segments not listed
+    /// yet (a skip forward from 6 s behind YouTube's edge landed 1.4 s behind it, and stood buffering at the end of every
+    /// segment). It lands on the keyframe before. A stream that ended has no edge to keep away from.
+    func allowsLandingAfter(_ seconds: Double, now: ContinuousClock.Instant = .now) -> Bool {
+        guard let edge = edgeTarget(now: now) else { return true }
+        return seconds <= edge - segmentDuration
+    }
+
+    /// Whether a step forward from `time` to `target` (clamped) has nowhere to go but behind `time` or onto it again: an
+    /// exact one, when the edge cut it to `time` or before; a keyframe one that lands on the keyframe before its target
+    /// (`allowsLandingAfter`), when `time` is within a segment of the target (there is a keyframe in every segment, so
+    /// further back it is one past `time`).
+    func holdsStepForward(
+        from time: Double, to target: Double, exact: Bool, now: ContinuousClock.Instant = .now
+    ) -> Bool {
+        guard isLive, !isEnded else { return false }
+        if exact { return target <= time }
+        return !allowsLandingAfter(target, now: now) && time >= target - segmentDuration
     }
 
     /// `seconds` within the window: of a stream that ended, all of it; of one that goes on, from a margin after its

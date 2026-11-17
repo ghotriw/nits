@@ -162,6 +162,9 @@ package struct MediaPlaylist: Sendable, Equatable {
     /// How far behind the live edge the stream is meant to be played, seconds, when its source says (DASH's
     /// `suggestedPresentationDelay`; HLS's `HOLD-BACK` could fill it). Nil: the client's own margin.
     var holdBack: Double?
+    /// How far the last segment listed may trail the newest published, seconds, when the source knows it to be more
+    /// than a reload's (a target duration): `DASHHistory`'s lists up to its head as last polled. Nil: a reload's.
+    var listingLag: Double?
     /// How often the source says its playlist may change (DASH's `minimumUpdatePeriod`), seconds: a playlist is not taken
     /// as stuck before this has passed, however short its segments are. Nil: the target duration.
     package var updatePeriod: Double?

@@ -158,7 +158,8 @@ stream's; see "Live streams" in `docs/ARCHITECTURE.md`. The playlist side is the
   `MediaDemuxer.publishLiveWindow` reads it on the reading thread into `liveWindowState`, a lock of its own like
   `readAheadState`, with the time it first saw the window (`LiveReport.loadedAt`: the load's, which the engine, reading
   it much later after a pause, moves the window on from). Only the variant playing's playlist sets it (an audio rendition
-  has a window and an end of its own). The join is `edgeMargin` (3) target durations behind the edge (RFC 8216 6.3.3); a
+  has a window and an end of its own). The join is the source's hold-back, else `edgeMargin` (3) target durations behind the edge (RFC 8216 6.3.3;
+  `StreamingTimeline.edgeHoldBack`, which the window tells the engine as its `holdBack`, so "go live" and seeks keep it too); a
   rewind goes back to that join point; a lane read behind the window reloads before its next segment (`reloadIfStale`),
   so segments that expired meanwhile are skipped rather than failed; a playlist unchanged for 3.5 target durations
   (ExoPlayer's coefficient) ends the lane with `-ETIMEDOUT`, and three failed reloads in a row stop it.

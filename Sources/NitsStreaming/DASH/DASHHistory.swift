@@ -67,6 +67,9 @@ package final class DASHHistory: Sendable {
         playlist.type = nil
         playlist.hasEnded = isEnded
         playlist.updatePeriod = isEnded ? nil : Self.updatePeriod
+        playlist.holdBack =
+            isEnded ? nil : max(full.holdBack ?? 0, Self.holdBack(targetDuration: full.targetDuration, source: source))
+        playlist.listingLag = isEnded ? nil : Self.listingLag(targetDuration: full.targetDuration, source: source)
         guard let first = full.segments.first?.sequence else { return playlist }
         // The last listed: up to the segment before the head, at least the first.
         let lastNumber = max(isEnded ? head : head - 1, first)
@@ -82,6 +85,24 @@ package final class DASHHistory: Sendable {
         playlist.segments = Array(full.segments[start..<end])
         playlist.mediaSequence = playlist.segments.first?.sequence ?? first
         return playlist
+    }
+
+    /// How far behind the edge the stream is joined and kept. The listed edge is the segment before the head, and it
+    /// stands still between two asks of the head (`headPollInterval`, and the reload that asks it): YouTube's 5 s segments
+    /// came in every 6.2 s, two at a time now and then, so the edge stood up to a poll and a segment behind the newest
+    /// published. Behind it by a segment and two polls, or the client's few target durations if more, the picture
+    /// does not play into a segment not listed yet (6 s behind, it stood buffering at the end of one).
+    static func holdBack(targetDuration: Double, source: any StreamHistorySource) -> Double {
+        let poll = source.headPollInterval / .seconds(1)
+        return max(StreamingInput.edgeMargin * targetDuration, targetDuration + 2 * poll)
+    }
+
+    /// How far the listed edge may trail the newest segment published: a poll of the head (and the reload that asks
+    /// it, which the second poll of `holdBack` stands for) and a segment, when the head moved by two since the last.
+    /// The engine reckons the edge from the freshest listing, so a start measured from a staler one is seen this much
+    /// further behind later (started 15 s behind, the picture was seen 23 s behind, playing all the while).
+    static func listingLag(targetDuration: Double, source: any StreamHistorySource) -> Double {
+        targetDuration + 2 * (source.headPollInterval / .seconds(1))
     }
 
     /// The index after the last segment numbered at most `number` (the numbers rise).

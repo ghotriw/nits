@@ -24,10 +24,13 @@ struct RelativeSeekBurst {
     private(set) var isInFlight = false
     /// Where the burst started: the position its offset is reported from. `nil` before its first seek.
     private(set) var startTime: Double?
+    /// A seek of it was pressed: the next press does not start it.
+    var isStarted: Bool { startTime != nil }
 
-    /// A relative seek from `baseTime`; returns whether it starts the burst.
+    /// A relative seek from `baseTime`; returns whether it starts the burst (`isStarted` was false).
+    @discardableResult
     mutating func press(at baseTime: Double) -> Bool {
-        let isFirst = startTime == nil
+        let isFirst = !isStarted
         if isFirst {
             startTime = baseTime
         }

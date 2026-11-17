@@ -9,15 +9,26 @@ package struct StreamingLiveWindow: Equatable, Sendable {
     package var hasSlid: Bool
     /// The playlist ended: this is its last window.
     package var hasEnded: Bool
-    /// How far behind the edge the stream says it is meant to be played, when it says (a DASH manifest's
-    /// `suggestedPresentationDelay`).
+    /// How far behind the edge the stream is meant to be played: what it says (a DASH manifest's
+    /// `suggestedPresentationDelay`), else a few target durations (`StreamingTimeline.edgeHoldBack`).
     package var holdBack: Double?
+    /// The longest a segment may be (the playlist's target duration), seconds: a keyframe at least this often, as a
+    /// segment begins with one. Nil once the playlist ended.
+    package var targetDuration: Double?
+    /// How far the end may trail the newest segment published, seconds (`StreamingTimeline.edgeLag`). Nil once the
+    /// playlist ended.
+    package var edgeLag: Double?
 
-    package init(start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false, holdBack: Double? = nil) {
+    package init(
+        start: Double, end: Double, hasSlid: Bool = false, hasEnded: Bool = false, holdBack: Double? = nil,
+        targetDuration: Double? = nil, edgeLag: Double? = nil
+    ) {
         self.start = start
         self.end = end
         self.hasSlid = hasSlid
         self.hasEnded = hasEnded
         self.holdBack = holdBack
+        self.targetDuration = targetDuration
+        self.edgeLag = edgeLag
     }
 }

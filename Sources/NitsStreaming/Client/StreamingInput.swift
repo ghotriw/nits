@@ -320,7 +320,7 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         let isLive = referencePlaylist.isLive
         let startTime =
             isLive
-            ? max(reference.start, reference.end - (reference.holdBack ?? Self.edgeMargin * reference.targetDuration))
+            ? max(reference.start, reference.end - reference.edgeHoldBack)
             : reference.start
         isLivePlaylist = isLive
         durationSeconds = isLive ? 0 : reference.end - reference.start
