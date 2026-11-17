@@ -87,6 +87,8 @@ extension PlayerEngine {
         isLoaded = false
         currentTime = 0
         media = MediaInfo()
+        // Real time at a live edge is the stream's, not a speed to carry to the next media.
+        let rateToCarry = live.rateBeforeEdge ?? playbackRate
         live.reset()
         loadError = nil
         nominalFrameDuration = 1.0 / 24.0
@@ -101,7 +103,7 @@ extension PlayerEngine {
         thumbnailManager.reset()
         audioDelay = 0
         audioSink.setDelay(.zero)
-        playbackRate = playbackRateMemory.reset(current: playbackRate, carries: configuration.carriesPlaybackRate)
+        playbackRate = playbackRateMemory.reset(current: rateToCarry, carries: configuration.carriesPlaybackRate)
         // The file's aspect override and crop, zoom and pan; the scaling lasts the session.
         restoreVideoGeometry(from: nil)
 
@@ -757,7 +759,7 @@ extension PlayerEngine {
     private var preferencesForHistory: PlaybackPreferences {
         var preferences = PlaybackPreferences(
             audioDelay: audioDelay,
-            playbackRate: playbackRateMemory.preference(for: playbackRate),
+            playbackRate: playbackRateMemory.preference(for: live.rateBeforeEdge ?? playbackRate),
             videoAspectRatio: videoGeometry.aspectRatio ?? PlaybackPreferences.noGeometryOverride,
             videoCrop: videoGeometry.crop ?? PlaybackPreferences.noGeometryOverride
         )

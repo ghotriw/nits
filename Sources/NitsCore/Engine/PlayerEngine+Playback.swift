@@ -30,6 +30,9 @@ extension PlayerEngine {
         // update (up to 50 ms back) and, aligned with buffered audio, hold it for an output latency — a stutter.
         if isPlaying { return }
 
+        // Paused at a live edge and resumed behind it: the speed from before the edge, as after a seek back.
+        live.resumed(at: currentTime)
+
         // The load's start still runs on `seekQueue` (`isLoadStartPending`): the feeders would read from before its
         // start position. Playing from now on, as after a start right away; the start, once in, starts the pipeline.
         if isLoadStartPending {
@@ -367,15 +370,21 @@ extension PlayerEngine {
         let clamped = max(0.5, min(rounded, 4.0))
         // Choosing the speed already in effect (kept from the previous media) still makes it this media's.
         playbackRateMemory.choose()
-        if clamped != playbackRate {
-            playbackRate = clamped
+        // Faster than real time at a live edge waits for behind it: the edge would slow it again at once.
+        let rate = live.chosenRate(clamped, at: currentTime)
+        if rate != clamped {
+            AppLog.info(.engine, "Playback rate \(clamped)x held for behind the live edge")
+        }
+        if rate != playbackRate {
+            playbackRate = rate
             AppLog.info(.engine, "Playback rate changed to \(playbackRate)x")
         }
         saveCurrentPlaybackProgress()
     }
 
     public func stepPlaybackRate(by delta: Double) {
-        let target = ((playbackRate + delta) * 10).rounded() / 10.0
+        // From the speed held for behind a live edge, not the real time played there.
+        let target = (((live.rateBeforeEdge ?? playbackRate) + delta) * 10).rounded() / 10.0
         setPlaybackRate(target)
     }
 

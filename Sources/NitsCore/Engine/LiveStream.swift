@@ -49,6 +49,11 @@ public final class LiveStream {
     private static let edgeMemory = 60.0
     /// The start moves with the clock: it changed between two loads.
     private var isSliding = false
+    /// The speed the picture played at before the edge slowed it to real time (`adjustedRate`): the one it plays at
+    /// behind the edge, saved with the stream and carried to the next media in place of real time.
+    private(set) var rateBeforeEdge: Double?
+    /// A seek landed behind the edge: the next tick plays at `rateBeforeEdge` again.
+    private var returnsToRateBeforeEdge = false
 
     public init() {}
 
@@ -103,6 +108,8 @@ public final class LiveStream {
         edgeOffset = nil
         edgeSamples = []
         isSliding = false
+        rateBeforeEdge = nil
+        returnsToRateBeforeEdge = false
         lastWindowRecoveryAt = nil
         readRecoveries = 0
         lastReadRecoveryAt = nil
@@ -118,6 +125,54 @@ public final class LiveStream {
     public func isAtEdge(_ time: Double, now: ContinuousClock.Instant = .now) -> Bool {
         guard !isEnded, let window = window(at: now) else { return false }
         return window.end - time <= max(Self.edgeTolerance, margin + Self.edgeTolerance - Self.edgeMargin)
+    }
+
+    /// The speed a picture at `time` played at `rate` is to play at now, `nil` to keep it. Faster than real time, at the
+    /// edge, it would play the segments as fast as the stream makes them and stand buffering for the next, again and
+    /// again: it plays in real time there, and at the speed it had again once the user leaves the edge behind, a seek
+    /// back or a pause (`seeked(to:)`, `resumed(at:)`). Not after a stall, which leaves the picture behind the edge
+    /// too: the speed coming back there would take it to the edge it stalled at, and back to real time, again and
+    /// again. Slower is fine, it only falls behind.
+    func adjustedRate(_ rate: Double, at time: Double, now: ContinuousClock.Instant = .now) -> Double? {
+        if let held = holdAtEdge(rate, at: time, now: now) { return held }
+        guard returnsToRateBeforeEdge, let before = rateBeforeEdge else { return nil }
+        rateBeforeEdge = nil
+        returnsToRateBeforeEdge = false
+        return before
+    }
+
+    /// A seek to `target`: behind the edge, the speed from before it comes back (`adjustedRate`); at it, it doesn't.
+    func seeked(to target: Double, now: ContinuousClock.Instant = .now) {
+        returnsToRateBeforeEdge = rateBeforeEdge != nil && !isAtEdge(target, now: now)
+    }
+
+    /// Playing again at `time` after a pause: like a seek, the user's leaving the edge behind (`seeked(to:)`).
+    func resumed(at time: Double, now: ContinuousClock.Instant = .now) {
+        seeked(to: time, now: now)
+    }
+
+    /// The seek was the engine's own (the window moved past the picture, the reading stopped), not one back: the speed
+    /// stays real time, or the picture would rush back to the edge it stalled at.
+    func recovered() {
+        returnsToRateBeforeEdge = false
+    }
+
+    /// The speed to play at when the user chose `rate` with the picture at `time`. Faster than real time at the edge is
+    /// held for behind it (`rateBeforeEdge`), as the edge would slow it at once; any other speed is played, and is the
+    /// one behind the edge too.
+    func chosenRate(_ rate: Double, at time: Double, now: ContinuousClock.Instant = .now) -> Double {
+        returnsToRateBeforeEdge = false
+        if let held = holdAtEdge(rate, at: time, now: now) { return held }
+        rateBeforeEdge = nil
+        return rate
+    }
+
+    /// Real time for faster than it at the edge, holding `rate` for behind it; `nil` elsewhere, or for real time and
+    /// slower.
+    private func holdAtEdge(_ rate: Double, at time: Double, now: ContinuousClock.Instant) -> Double? {
+        guard rate > 1, isAtEdge(time, now: now) else { return nil }
+        rateBeforeEdge = rate
+        return 1
     }
 
     /// Where "go live" seeks to; `nil` when not live, or ended: there is no edge.

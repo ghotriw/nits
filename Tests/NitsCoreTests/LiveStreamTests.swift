@@ -147,6 +147,73 @@ struct LiveStreamTests {
     }
 
     @MainActor
+    @Test("Faster than real time slows to it at the edge and comes back after a seek behind it; slower stays")
+    func rateAtTheEdge() {
+        let live = LiveStream()
+        live.begin(isLive: true, window: LiveWindow(start: 100, end: 160, hasSlid: true))
+        let now = ContinuousClock.now
+        // Behind the edge: as it is.
+        #expect(live.adjustedRate(2, at: 120, now: now) == nil)
+        #expect(live.adjustedRate(0.5, at: 158, now: now) == nil)
+        #expect(live.adjustedRate(1, at: 158, now: now) == nil)
+        // At it: real time.
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        #expect(live.rateBeforeEdge == 2)
+        #expect(live.adjustedRate(1, at: 158, now: now) == nil)
+        // Behind it without a seek (a stall, a pause): still real time, or it would rush to the edge and stall again.
+        #expect(live.adjustedRate(1, at: 120, now: now) == nil)
+        // A seek to the edge keeps real time; one behind it brings the speed back, once.
+        live.seeked(to: 158, now: now)
+        #expect(live.adjustedRate(1, at: 158, now: now) == nil)
+        live.seeked(to: 120, now: now)
+        #expect(live.adjustedRate(1, at: 120, now: now) == 2)
+        #expect(live.rateBeforeEdge == nil)
+        #expect(live.adjustedRate(2, at: 120, now: now) == nil)
+        // A pause that left the picture behind the edge brings it back too; one at it doesn't.
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        live.resumed(at: 158, now: now)
+        #expect(live.adjustedRate(1, at: 158, now: now) == nil)
+        live.resumed(at: 120, now: now)
+        #expect(live.adjustedRate(1, at: 120, now: now) == 2)
+        // The engine's own seek (a recovery) is not a seek back.
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        live.seeked(to: 120, now: now)
+        live.recovered()
+        #expect(live.adjustedRate(1, at: 120, now: now) == nil)
+        live.seeked(to: 120, now: now)
+        #expect(live.adjustedRate(1, at: 120, now: now) == 2)
+
+        // Faster chosen at the edge waits for behind it; real time or slower chosen there is the speed behind it too.
+        #expect(live.chosenRate(1.5, at: 158, now: now) == 1)
+        #expect(live.rateBeforeEdge == 1.5)
+        #expect(live.adjustedRate(1, at: 158, now: now) == nil)
+        live.seeked(to: 120, now: now)
+        #expect(live.adjustedRate(1, at: 120, now: now) == 1.5)
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        #expect(live.chosenRate(0.75, at: 158, now: now) == 0.75)
+        live.seeked(to: 120, now: now)
+        #expect(live.adjustedRate(0.75, at: 120, now: now) == nil)
+        #expect(live.chosenRate(2, at: 120, now: now) == 2)
+
+        // The stream ends at the edge: a seek back brings the speed back.
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        live.update(window: LiveWindow(start: 100, end: 160, hasSlid: true, hasEnded: true), at: now)
+        live.seeked(to: 120, now: now)
+        #expect(live.adjustedRate(1, at: 120, now: now) == 2)
+
+        // A new media forgets it.
+        live.begin(isLive: true, window: LiveWindow(start: 100, end: 160, hasSlid: true))
+        #expect(live.adjustedRate(2, at: 158, now: now) == 1)
+        live.begin(isLive: true, window: LiveWindow(start: 100, end: 160, hasSlid: true))
+        #expect(live.rateBeforeEdge == nil)
+        // Not live, or ended: no edge to catch up with.
+        live.begin(isLive: false, window: nil)
+        #expect(live.adjustedRate(2, at: 158, now: now) == nil)
+        live.begin(isLive: true, window: LiveWindow(start: 100, end: 160, hasEnded: true))
+        #expect(live.adjustedRate(2, at: 158, now: now) == nil)
+    }
+
+    @MainActor
     @Test("A stream that tells its hold-back is played that far behind the edge, and is at it there")
     func holdBack() {
         let live = LiveStream()

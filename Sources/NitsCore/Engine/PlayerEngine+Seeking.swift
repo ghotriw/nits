@@ -20,15 +20,27 @@ extension PlayerEngine {
     func trackLiveWindow(at seconds: Double) {
         guard live.isLive else { return }
         if let report = demuxer?.liveReport { live.update(window: report.window, at: report.loadedAt) }
-        guard !live.isEnded, !isSeeking, chase == nil else { return }
+        guard !isSeeking, chase == nil else { return }
+        // Real time at the edge ("go live", or played faster until there), the speed it had again after a seek behind
+        // it, of a stream that ended since too. Not the user's choice of speed (`setPlaybackRate`), which would forget
+        // the one to go back to.
+        if let rate = live.adjustedRate(playbackRate, at: seconds) {
+            let event = rate == 1 ? "Live edge reached" : "Seeked behind the live edge"
+            AppLog.info(.engine, "\(event): playback rate \(playbackRate)x -> \(rate)x")
+            playbackRate = rate
+        }
+        guard !live.isEnded else { return }
+        // The seeks below are the engine's own, not a seek back: the speed stays (`LiveStream.recovered`).
         if live.shouldRecoverWindow(at: seconds), let window = live.window() {
             AppLog.info(.engine, "Live window moved past the picture (\(seconds)s < \(window.start)s): seeking into it")
             seek(to: window.start + LiveStream.startMargin * 2, exact: false)
+            live.recovered()
         } else if live.shouldRecoverReading(isStopped: demuxer?.isEOF == true) {
             // The playlist failed to load for good (a server error, `max_reload` spent) and what was read is played:
             // the picture would stand with the clock going on. A seek puts the demuxer right and reads again.
             AppLog.warning(.engine, "The live stream stopped reading at \(seconds)s: seeking to read again")
             seek(to: seconds, exact: false)
+            live.recovered()
         }
     }
 
@@ -68,6 +80,7 @@ extension PlayerEngine {
         let target = clampedSeekTarget(seconds)
         AppLog.info(.engine, "Seek requested to seconds: \(target), exact: \(exact), forward: \(forward)")
         guard demuxer != nil else { return }
+        live.seeked(to: target)
 
         // The end-of-media wait of an earlier seek in the burst, and the audio join of one that resumed
         chaseSettleTask?.cancel()
