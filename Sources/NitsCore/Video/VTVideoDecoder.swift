@@ -23,6 +23,9 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     private var nextFrameId: UInt64 = 1
     private var inFlightFrames: [UInt64: FrameContext] = [:]
     private var cachedPixelAspectRatio: RationalAspectRatio?
+    /// `decode` calls running now. A session takes one at a time: two at once (two video feeders) left a call hung in
+    /// `VTDecompressionSessionDecodeFrame`, so an overlap is logged as the bug it is.
+    private let activeDecodes = OSAllocatedUnfairLock(initialState: 0)
 
     public var lastDecodeStatus: OSStatus {
         lock.lock()
@@ -71,6 +74,14 @@ public final class VTVideoDecoder: VideoDecoderProtocol, @unchecked Sendable {
     public func decode(sampleBuffer: CMSampleBuffer) {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else {
             return
+        }
+        let overlapping = activeDecodes.withLock { active -> Int in
+            active += 1
+            return active - 1
+        }
+        defer { activeDecodes.withLock { $0 -= 1 } }
+        if overlapping > 0 {
+            AppLog.warning(.video, "VideoToolbox decode called while \(overlapping) other decode call(s) still run")
         }
 
         lock.lock()

@@ -425,11 +425,6 @@ extension PlayerEngine {
 
         // Playback-start preroll: the anchor frame is now on screen, so a held clock may start.
         startPendingClockIfPrerolled()
-
-        // Backpressure check: if feeding was paused due to full frame buffer, resume when queue drops to <= 25 frames
-        if frameQueue.count <= 25 && isVideoDrainPaused.withLock({ $0 }) {
-            checkBackpressureAndResumeIfNeeded()
-        }
     }
 
     /// Notes when this tick's callback ran and how long reading the synchronizer clock took.

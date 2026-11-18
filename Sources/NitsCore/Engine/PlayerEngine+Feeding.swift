@@ -5,21 +5,6 @@ import Foundation
 import os
 
 extension PlayerEngine {
-    nonisolated func checkBackpressureAndResumeIfNeeded() {
-        let shouldResume = isVideoDrainPaused.withLock { isPaused -> Bool in
-            if isPaused {
-                isPaused = false
-                return true
-            }
-            return false
-        }
-        guard shouldResume, isFeeding.withLock({ $0 }) else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.isFeeding.withLock({ $0 }) else { return }
-            self.startFeedingVideo()
-        }
-    }
-
     func stopFeedingVideo() {
         videoFeedingTask?.cancel()
         videoFeedingTask = nil
@@ -188,7 +173,9 @@ extension PlayerEngine {
     ) async {
         let sampleCountLock = OSAllocatedUnfairLock(initialState: 0)
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
-            // Cooperative backpressure: pause decoding when queue has >= 40 frames
+            // Cooperative backpressure: pause decoding when queue has >= 40 frames, go on by itself at 25. Nothing else
+            // may restart the feeder for it: a new feeder beside this one, which goes on anyway, decoded at the same
+            // time as it, and a VideoToolbox session hung in `VTDecompressionSessionDecodeFrame` that way.
             if queue.count >= 40 {
                 drainPausedLock.withLock { $0 = true }
                 while !Task.isCancelled && queue.count > 25 && feedingLock.withLock({ $0 }) {
