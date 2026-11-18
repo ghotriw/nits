@@ -7,9 +7,11 @@ import os
 ///
 /// The adaptive formats yt-dlp lists for a live stream (`formats=incomplete`) are numbered segments of one URL
 /// (`…&sq=N`), each with its own initialization data, which the server keeps for days (a week for a 24/7 stream). The
-/// window is built as a DASH manifest of them (`SegmentedDASHManifest`) from the first the server still has to the
-/// newest, on the stream's own timeline: the times of segments are read from the segments (`FragmentStartTime`), as
-/// their lengths are not one, a few at an hour's distance (`SegmentedDASHManifest.window(through:…)`).
+/// window is built as a DASH manifest of them (`SegmentedDASHManifest`; every format the page lists, in the sets of an
+/// ordinary video's manifest: `YouTubeFormatGrouping`) from the first the server still has to the newest, on the
+/// stream's own timeline: the times of segments are read from the segments of an MP4 stream (`FragmentStartTime`;
+/// `reference(of:)`: the segments of one number start together in every format), as their lengths are not one, a few at
+/// an hour's distance (`SegmentedDASHManifest.window(through:…)`).
 ///
 /// The server's answers carry the head: a request without `sq` gets the newest segment, and every answer, a 404
 /// included, tells its number (`X-Sequence-Num`, `X-Head-Seqnum`) and time (`X-Head-Time-Millis`).
@@ -113,11 +115,19 @@ enum YouTubeLiveHistory {
         return Answer(http, data: data)
     }
 
-    /// The window of the stream `streams` are the segments of (the first is read for times; the others share them).
+    /// The stream whose segments are read for times: an MP4 (a `moof` has the time; a WebM's clusters are not read), a
+    /// picture's before a sound's. The segments of one number start at the same time in every format and container (the
+    /// sound a few milliseconds later), so what this one tells serves them all.
+    static func reference(of streams: [SegmentedDASHManifest.Stream]) -> SegmentedDASHManifest.Stream? {
+        let readable = streams.filter { $0.container == "mp4" }
+        return readable.first { $0.kind == .video } ?? readable.first
+    }
+
+    /// The window of the stream `streams` are the segments of (`reference(of:)` is read for times; the others share them).
     static func window(
         of streams: [SegmentedDASHManifest.Stream], headers: [String: String], fetch: @escaping Fetch = urlSession
     ) async throws -> Window {
-        guard let reference = streams.first else { throw Failure.noHead }
+        guard let reference = reference(of: streams) else { throw Failure.noHead }
         // Requests made so far, and when each part began: the log of a slow load says which part it was.
         let asked = OSAllocatedUnfairLock(initialState: 0)
         let counting: Fetch = { request in

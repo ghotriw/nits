@@ -278,12 +278,15 @@ Accepted for now, noted for later.
 
 ## Live streams: a window of a few segments, and an outage that stands the picture
 
-**A live stream's history is capped at 1080p60 SDR H.264, as HLS is (2026-11-07).** The segments of the streams called 4K
-or HDR hold more: 2160p in VP9 (WebM), and on one of seven, AV1 with HDR10 in MP4. Not taken: a WebM has no `moof` for
-`FragmentStartTime` (its clusters' timecodes would be read instead), and AV1 at 4K60 is software decoding (dav1d) on a Mac
-without a hardware decoder. To judge first: which formats the Mac decodes in hardware (`VideoDecoderFactory`), so that the
-selector (`YTDLPResolver.liveHistorySelector`) asks for the best of those; HDR10 AV1 MP4 is the case that costs nothing in
-the parser. The load times are logged by part now (`YouTubeLiveHistory.Timings` in the yt-dlp log, "Opened … in" in the
+**A live stream's history has what an ordinary video has (2026-11-18); what is left.** The history's manifest is made of every
+incomplete format the page lists, grouped as an ordinary video's (`YouTubeFormatGrouping`): a ladder with adaptive bitrate
+per codec, the codec by `VideoCodecPreference` and by hand, VP9 in WebM and, where a page lists them, 2160p and HDR (AV1
+HDR10 in MP4). Left: (1) the 2160p / HDR streams were not tried end to end (Sky News lists 1080p at most; those tiers are on
+another CDN host, as `DASHHistoryPlaybackTests` has them redirected); (2) a stream whose address the renewal no longer
+gets (the page stopped listing that format) keeps the old one, and once it expires the lane skips its segments as holes
+instead of dropping the rung from the ladder, and each such segment costs a 403, a renewal through yt-dlp (seconds) and only then the skip, while adaptive bitrate may keep choosing the rung; (3) the hand switch was checked by its parts (the request keeps the position,
+`LiveStream.keptTarget`) and in the demuxer, not by hand in the app; (4) whether AV1 at 4K60 should be offered at all on a Mac
+without a hardware decoder is `VideoCodecPreference`'s question, as for an ordinary video. The load times are logged by part now (`YouTubeLiveHistory.Timings` in the yt-dlp log, "Opened … in" in the
 engine's), for the 43 s load seen once (the likeliest the search for the edge of the history, which takes 41 s on a
 server that answers 404, 500 and 503 for seconds each: the line says "by looking for the edge of the history" if so).
 

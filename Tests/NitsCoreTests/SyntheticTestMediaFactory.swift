@@ -208,6 +208,10 @@ public enum SyntheticTestMediaFactory {
         /// segment of a copied stream late: 7s are made, 6 listed). As `dashLadder` otherwise,
         /// without audio: `video0`, `video1`. `filename` is `video0/0`
         case dashLadderCaptions
+        /// Four one-second segments (4s, 25 fps, a keyframe each) of a VP9 picture in two rungs (160x90 and 320x180) as a
+        /// live stream's history lists them: each a WebM of its own (the EBML header, a Segment of unknown length as YouTube's live muxer writes it, and a
+        /// keyframe at the start), the times running on from segment to segment. No audio: `video0`, `video1`. `filename` is `video0/0`
+        case dashSegmentsWebM
 
         /// Presets whose picture stream carries closed captions put in by `captionedStream`.
         var hasCaptionSEI: Bool {
@@ -376,6 +380,8 @@ public enum SyntheticTestMediaFactory {
                 return "synth_dash_ladder/video0/0"
             case .dashLadderCaptions:
                 return "synth_dash_ladder_captions/video0/0"
+            case .dashSegmentsWebM:
+                return "synth_dash_segments_webm/video0/0"
             }
         }
     }
@@ -514,13 +520,16 @@ public enum SyntheticTestMediaFactory {
             }
         }
 
-        if preset == .dashSegments || preset == .dashLadder || preset == .dashLadderCaptions {
+        if preset == .dashSegments || preset == .dashLadder || preset == .dashLadderCaptions
+            || preset == .dashSegmentsWebM
+        {
             let directory = tmpDir.appendingPathComponent(".partial-\(UUID().uuidString)-dash")
             defer { try? FileManager.default.removeItem(at: directory) }
             let made =
                 switch preset {
                 case .dashLadder: makeDASHLadder(ffmpeg, in: directory, preset: preset)
                 case .dashLadderCaptions: makeDASHCaptionLadder(ffmpeg, in: directory, preset: preset)
+                case .dashSegmentsWebM: makeDASHSegmentsWebM(ffmpeg, in: directory, preset: preset)
                 default: makeDASHSegments(ffmpeg, in: directory, preset: preset)
                 }
             guard made else { return nil }
@@ -1034,6 +1043,30 @@ public enum SyntheticTestMediaFactory {
         return true
     }
 
+    /// `dashSegmentsWebM`: each rung cut into WebM files of a second (`live=1`: no sizes, no cues) by FFmpeg's segment muxer, `video0/N`, `video1/N`.
+    private static func makeDASHSegmentsWebM(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
+        for (index, size) in ["160x90", "320x180"].enumerated() {
+            let folder = directory.appendingPathComponent("video\(index)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let arguments = [
+                "-f", "lavfi", "-i", "testsrc2=size=\(size):rate=25:duration=4", "-c:v", "libvpx-vp9", "-g", "25",
+                "-keyint_min", "25", "-b:v", index == 0 ? "100k" : "300k", "-f", "segment", "-segment_time", "1",
+                "-segment_format", "webm", "-segment_format_options", "live=1", "-reset_timestamps", "0",
+                folder.appendingPathComponent("%d.webm").path,
+            ]
+            guard runFFmpeg(ffmpeg, arguments: arguments, preset: preset) else { return false }
+            // Served as the server does: a segment is a number, with no extension.
+            for number in 0..<4 {
+                let file = folder.appendingPathComponent("\(number)")
+                guard (try? FileManager.default.moveItem(at: file.appendingPathExtension("webm"), to: file)) != nil
+                else {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
     /// `dashLadderCaptions`: each rung a raw H.264 stream given the captions, copied into the DASH muxer's segments.
     private static func makeDASHCaptionLadder(_ ffmpeg: String, in directory: URL, preset: Preset) -> Bool {
         let made = directory.appendingPathComponent("made", isDirectory: true)
@@ -1134,7 +1167,7 @@ public enum SyntheticTestMediaFactory {
         let url = URL(fileURLWithPath: target)
         if preset.isHLS { return url.deletingLastPathComponent().path }
         switch preset {
-        case .dashSegments, .dashLadder, .dashLadderCaptions:
+        case .dashSegments, .dashLadder, .dashLadderCaptions, .dashSegmentsWebM:
             return url.deletingLastPathComponent().deletingLastPathComponent().path
         default: return nil
         }
@@ -1242,7 +1275,7 @@ public enum SyntheticTestMediaFactory {
             .hlsDiscontinuityTiming, .hlsDiscontinuityFMP4, .hlsDiscontinuityFMP4AudioRendition,
             .hlsDiscontinuityFlashClick, .hlsLiveAds, .hlsShortFragments, .hlsPackedAudio,
             .dashSegments, .dashLadder,
-            .dashLadderCaptions:
+            .dashLadderCaptions, .dashSegmentsWebM:
             return []  // Made by `generateMedia`.
         case .captionsC608MOV, .captionsC608FragmentedMOV:
             return [

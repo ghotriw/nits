@@ -146,7 +146,7 @@ struct MediaResolverChain: MediaResolver {
         return Self.offeringChoices(of: found, codecs: codecs, audioCodecs: audioCodecs)
     }
 
-    /// A host's manifest that names its files by keys (`ResolvedMedia.files`, inline) gets what an `.mpd` of the network
+    /// A host's manifest that names its files by keys (`ResolvedMedia.files`, or a live history's `liveHistory`, inline) gets what an `.mpd` of the network
     /// does (`DASHManifestResolver`): the pictures of each codec to choose from, the codec `codecs` prefers first, each
     /// choice the manifest's own location with the picture in its fragment (`DASHSelection`). The manifest is the host's
     /// and stays as it made it; one that cannot be read, or plays as files, is returned as it is.
@@ -154,7 +154,8 @@ struct MediaResolverChain: MediaResolver {
         of media: ResolvedMedia, codecs: VideoCodecPreference,
         audioCodecs: AudioCodecPreference = AudioCodecPreference()
     ) -> ResolvedMedia {
-        guard media.files != nil, media.liveHistory == nil, media.videoFormats.isEmpty,
+        // A live stream's history (`liveHistory`) names its streams by keys too, its addresses the live source's.
+        guard media.files != nil || media.liveHistory != nil, media.videoFormats.isEmpty,
             let data = StreamingURL.inlineDASHManifestContents(media.path)
         else { return media }
         // What the choices' addresses are made against: no address, as the manifest has none of its own.

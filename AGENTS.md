@@ -244,7 +244,7 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   set from the format context (`configureVideoStream` runs again at a variant switch). Background: "Live streams" in
   `docs/ARCHITECTURE.md` and "Live playlists" in `docs/HLS.md`.
 - **A live stream's history as numbered segments** (`ResolvedMedia.liveHistory`, YouTube's `&sq=N`; `AppSettings.liveHistory`) is
-  the client's alone (`DASHHistory`, in `DASHPlaylists`): it lists the static manifest the resolver made (a day past the
+  the client's alone (`DASHHistory`, in `DASHPlaylists`): it lists the static manifest the resolver made, of every incomplete format the page lists grouped as an ordinary video's (`YouTubeFormatGrouping`; a ladder per codec, the codec chosen by `offeringChoices`; a day past the
   head) up to the segment before the head the source tells (`LiveSegmentSource.head`, asked by a reload no more often than
   `headPollInterval`), and the window is the input's like any live playlist's. The timeline is rebased to zero, and
   `MediaInfo.timelineOrigin` is the stream's time at that zero (`LiveHistory.origin`), so a position is saved as its time

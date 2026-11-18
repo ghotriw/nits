@@ -11,11 +11,19 @@ public struct ResolvedSource: Sendable, Equatable {
     /// viewer chose, kept; `title` and the artwork are what shows.
     public func switching(
         to id: String, startTime: Double, audioTrack: String?, subtitleTrack: String? = nil, title: String,
-        artworkData: Data?, artworkURL: URL?
+        artworkData: Data?, artworkURL: URL?, atLiveEdge: Bool = false
     ) -> (request: MediaLoadRequest, media: ResolvedMedia)? {
         guard id != media.selectedVideoFormatID, let switched = media.selecting(videoFormat: id) else { return nil }
         var request = request
-        request.startTime = startTime
+        if let history = media.liveHistory {
+            // A live stream's history keeps its position, the edge when it was there, in the stream's own time (the
+            // position plus the window's origin): a load that resolves again makes a window with another origin.
+            request.livePosition = atLiveEdge ? .edge : .streamTime(startTime + history.origin)
+            request.startTime = nil
+        } else {
+            request.livePosition = nil
+            request.startTime = startTime
+        }
         request.audioTrack = audioTrack
         request.subtitleTrack = subtitleTrack
         request.title = title

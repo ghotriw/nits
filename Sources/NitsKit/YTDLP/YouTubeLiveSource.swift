@@ -19,6 +19,9 @@ final class YouTubeLiveSource: LiveSegmentSource {
 
     private struct State {
         var urls: [String: String]
+        /// The keys the last renewal did not bring (the page stopped listing them): their addresses are the old ones, which
+        /// expire and are refused, so they are left out of when to renew and of whom to ask for the head.
+        var stale: Set<String> = []
         var renewal: (id: Int, task: Task<Bool, Never>)?
         var renewals = 0
         /// The id of the last renewal begun, failed ones too: a late waiter of a failed one must not end the next.
@@ -32,21 +35,26 @@ final class YouTubeLiveSource: LiveSegmentSource {
     private let headRequest: HeadRequest
     private let refreshMargin: Double
     private let refresher = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// The stream the head is asked of (the one the window's times are read from), while its address is current.
+    private let headKey: String?
     let segmentWaitLimit: Duration
     let headPollInterval: Duration
 
     /// - Parameters:
     ///   - urls: The signed address of each stream, by key, without a segment's number.
+    ///   - headKey: The stream the head is asked of; any one that is current when it is nil or no longer is.
     ///   - headers: What the requests for the head are sent with (the page's, the player's user agent).
     ///   - refreshMargin: How long before the earliest address expires it is renewed, seconds.
     init(
-        urls: [String: String], headers: [String: String], segmentWaitLimit: Duration = .seconds(60),
+        urls: [String: String], headKey: String? = nil, headers: [String: String],
+        segmentWaitLimit: Duration = .seconds(60),
         headPollInterval: Duration = .seconds(5),
         refreshMargin: Double = 1800, renew: @escaping Renew, isOver: @escaping Over = { true },
         headRequest: @escaping HeadRequest = urlSessionHead
     ) {
         self.state = OSAllocatedUnfairLock(initialState: State(urls: urls))
         self.headers = headers
+        self.headKey = headKey
         self.segmentWaitLimit = segmentWaitLimit
         self.headPollInterval = headPollInterval
         self.refreshMargin = refreshMargin
@@ -85,7 +93,11 @@ final class YouTubeLiveSource: LiveSegmentSource {
     }
 
     func head(shouldAbort: () -> Bool) -> LiveHeadAnswer {
-        guard let base = state.withLock({ $0.urls.sorted { $0.key < $1.key }.first?.value }),
+        guard
+            let base = state.withLock({ state -> String? in
+                if let headKey, !state.stale.contains(headKey), let address = state.urls[headKey] { return address }
+                return state.urls.filter { !state.stale.contains($0.key) }.min { $0.key < $1.key }?.value
+            }),
             let url = URL(string: base)
         else { return .noAnswer }
         // A request without a number gets the newest segment; every answer, a refusal too, tells the head.
@@ -146,8 +158,9 @@ final class YouTubeLiveSource: LiveSegmentSource {
                 do {
                     let fresh = try await renew()
                     state.withLock { state in
-                        // A stream the renewal does not name keeps the address it has.
+                        // A stream the renewal does not name keeps the address it has, and is stale.
                         state.urls.merge(fresh) { _, new in new }
+                        state.stale = Set(state.urls.keys).subtracting(fresh.keys)
                     }
                     return true
                 } catch {
@@ -169,8 +182,9 @@ final class YouTubeLiveSource: LiveSegmentSource {
     }
 
     /// Seconds until the earliest address is to be renewed; an hour when none says when it expires.
-    private func secondsUntilRefresh() -> Double {
-        let expiries = state.withLock { $0.urls.values }.compactMap { Self.expiry(of: $0) }
+    func secondsUntilRefresh() -> Double {
+        let expiries = state.withLock { state in state.urls.filter { !state.stale.contains($0.key) }.values }
+            .compactMap { Self.expiry(of: $0) }
         guard let earliest = expiries.min() else { return 3600 }
         return max(1, earliest.timeIntervalSinceNow - refreshMargin)
     }

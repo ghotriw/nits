@@ -126,6 +126,30 @@ struct YouTubeLiveSourceTests {
         #expect(ContinuousClock.now - started < .seconds(3))
     }
 
+    @Test("A stream the renewal no longer brings is left out of the next renewal's time and of the head's asking")
+    func staleStreamsAreLeftOut() async throws {
+        let expired = "https://media.example/v?itag=299&expire=1000000000&sig=old"
+        let current = "https://media.example/a?itag=140&expire=4000000000&sig=old"
+        let asked = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let source = YouTubeLiveSource(
+            urls: ["299": expired, "140": current], headKey: "299", headers: [:], refreshMargin: 1800,
+            renew: { ["140": "https://media.example/a?itag=140&expire=4000000000&sig=new"] },
+            headRequest: { request, _ in
+                asked.withLock { $0.append(request.url?.absoluteString ?? "") }
+                return nil
+            })
+        // The stream asked for the head is the one named; the expired one counts for when to renew, while it is current.
+        _ = source.head(shouldAbort: { false })
+        #expect(asked.withLock { $0 }.last == expired)
+        #expect(source.secondsUntilRefresh() == 1)
+        let renewed = await onThread { source.renewSignature(shouldAbort: { false }) }
+        #expect(renewed)
+        // Not brought by the renewal: its old address, which is refused, asks for no renewal and no head.
+        #expect(source.secondsUntilRefresh() > 3600)
+        _ = source.head(shouldAbort: { false })
+        #expect(asked.withLock { $0 }.last?.contains("itag=140") == true)
+    }
+
     @Test("The signature is renewed before it expires, not once it was refused")
     func renewsAheadOfExpiry() async throws {
         let calls = OSAllocatedUnfairLock(initialState: 0)

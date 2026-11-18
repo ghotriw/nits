@@ -90,14 +90,12 @@ public final class YTDLPResolver: MediaResolver {
     /// again: what `YouTubeLiveSource` renews them with. The manifest does not change, only the signature of what it names.
     func liveSegmentURLs(of page: URL, headers: [String: String], keys: Set<String>) async throws -> [String: String] {
         let info = try await liveInfo(of: page, headers: headers)
-        var urls: [String: String] = [:]
-        for format in info.formats ?? [] {
-            guard let id = format.formatID, keys.contains(id), format.protocol == "https",
-                let url = format.url, YTDLPInfo.isBroadcastSegment(url: url)
-            else { continue }
-            urls[id] = url
-        }
-        guard Set(urls.keys) == keys else {
+        // What the page still lists of the streams the manifest names: the history has many (a ladder of each codec), and a
+        // renewal that finds one fewer is no reason to fail the rest. A stream not renewed keeps its old address, which
+        // the server refuses once it expires (`YouTubeLiveSource` merges what it gets). None of them is the manifest no
+        // longer being the page's.
+        let urls = info.liveHistoryAddresses().filter { keys.contains($0.key) }
+        guard !urls.isEmpty else {
             throw MediaResolutionError("The live stream's formats are no longer those it was made of")
         }
         return urls
@@ -118,9 +116,11 @@ public final class YTDLPResolver: MediaResolver {
     }()
 
     /// Asked first when a live stream's history is wanted: the adaptive formats of a live stream, which yt-dlp marks
-    /// "incomplete" (no other page has one), in MP4 and H.264: the segments' start times are read from their `moof`
-    /// (`FragmentStartTime`; a WebM's clusters have none), and what the Mac decodes in hardware at any size and frame
-    /// rate. A stream without them falls through to `formatSelector`'s (its HLS playlist).
+    /// "incomplete" (no other page has one), in MP4 and H.264. It only says whether the page has a history (what
+    /// `YTDLPInfo.liveHistoryFormats` tests); the manifest is made of every incomplete format the page lists, not of
+    /// these two, and the start times are read from an MP4 of them (`FragmentStartTime` reads a `moof`; a WebM's clusters
+    /// have none: `YouTubeLiveHistory.reference(of:)`), which this selector's choice always has. A stream without them
+    /// falls through to `formatSelector`'s (its HLS playlist).
     static let liveHistorySelector =
         "bv*[format_note*=incomplete][ext=mp4][vcodec^=avc1]+ba[format_note*=incomplete][ext=m4a]"
 
@@ -240,12 +240,15 @@ public final class YTDLPResolver: MediaResolver {
             let historyStarted = ContinuousClock.now
             do {
                 let streamHeaders = formats.first?.httpHeaders ?? info.httpHeaders ?? [:]
+                let streams = info.liveHistoryStreams(of: formats)
                 var window = try await YouTubeLiveHistory.window(
-                    of: info.segmentStreams(of: formats), headers: streamHeaders, fetch: liveHistoryFetch)
+                    of: streams, headers: streamHeaders, fetch: liveHistoryFetch)
                 // The manifest names the streams by keys; the addresses are the source's, which renews them.
                 let keys = Set(window.signedURLs.keys)
                 window.source = YouTubeLiveSource(
-                    urls: window.signedURLs, headers: streamHeaders, segmentWaitLimit: liveSegmentWaitLimit,
+                    urls: window.signedURLs, headKey: YouTubeLiveHistory.reference(of: streams)?.id,
+                    headers: streamHeaders,
+                    segmentWaitLimit: liveSegmentWaitLimit,
                     refreshMargin: liveRefreshMargin,
                     renew: { [self] in try await liveSegmentURLs(of: url, headers: headers, keys: keys) },
                     isOver: { [self] in try await liveStreamIsOver(page: url, headers: headers) },

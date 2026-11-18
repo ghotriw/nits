@@ -244,13 +244,54 @@ struct YTDLPInfo: Decodable, Sendable {
             videoFormats: pictures, selectedVideoFormatID: picture?.formatID)
     }
 
-    /// The picture and sound `-f` chose of a YouTube live stream or premiere on the air that are numbered segments of
-    /// one URL (`…&sq=N`, which `formats=incomplete` lists: `YouTubeLiveHistory`); `nil` for any other page.
+    /// The formats of a YouTube live stream or premiere on the air that are numbered segments of one URL (`…&sq=N`, which
+    /// `formats=incomplete` lists: `YouTubeLiveHistory`); `nil` for any other page. Not only the picture and sound `-f`
+    /// chose (that is the test that the page has a history): every one the page lists, as an ordinary video's manifest has
+    /// them (`YouTubeFormatManifest`), keyed as it keys them, so the history has a ladder to follow the network on and a
+    /// codec to choose.
     func liveHistoryFormats() -> [Format]? {
         guard isLive == true, extractorKey == "Youtube", let chosen = requestedFormats, !chosen.isEmpty,
             chosen.allSatisfy({ $0.protocol == "https" && Self.isBroadcastSegment(url: $0.url) })
         else { return nil }
-        return chosen
+        // The incomplete ones among the broadcast formats, and what `-f` chose whatever the page's list says of it.
+        var listed = keyedBroadcastFormats.filter { $0.formatNote?.contains("incomplete") == true }
+        for format in chosen {
+            var keyed = format
+            keyed.formatID = YouTubeFormatManifest.key(of: format)
+            if !listed.contains(where: { $0.formatID == keyed.formatID }) { listed.append(keyed) }
+        }
+        return listed
+    }
+
+    /// The page's broadcast formats (video-only or audio-only, unprotected, in a container the client reads), keyed as an
+    /// ordinary video's are. The one list the manifest's keys and a renewal's are made from, so they are the same.
+    private var keyedBroadcastFormats: [Format] {
+        YouTubeFormatManifest.keyed(
+            (formats ?? []).filter { YouTubeFormatManifest.isListed($0) && Self.isBroadcastSegment(url: $0.url) })
+    }
+
+    /// The signed address of each broadcast format the page lists now, by key: what a renewal asks for. Not only the
+    /// incomplete ones: a renewal takes what is there of the streams the manifest was made of.
+    func liveHistoryAddresses() -> [String: String] {
+        YouTubeFormatManifest.addresses(ofKeyed: keyedBroadcastFormats)
+    }
+
+    /// The streams of a history's manifest: the pictures in sets that switch with each other (`YouTubeFormatGrouping`, as an
+    /// ordinary video's manifest has them), then the sound of each language.
+    func liveHistoryStreams(of formats: [Format]) -> [SegmentedDASHManifest.Stream] {
+        var streams: [SegmentedDASHManifest.Stream] = []
+        for (index, set) in YouTubeFormatGrouping.pictureSets(of: formats).enumerated() {
+            streams += set.compactMap {
+                segmentStream(
+                    of: $0, group: "video\(index)", hdrTransfer: YouTubeFormatGrouping.transfer(of: $0.dynamicRange))
+            }
+        }
+        for (index, set) in YouTubeFormatGrouping.soundSets(of: formats, splitsContainers: true).enumerated() {
+            streams += set.formats.compactMap {
+                segmentStream(of: $0, group: "audio\(index)", language: set.language, isOriginal: set.isOriginal)
+            }
+        }
+        return streams
     }
 
     /// Whether `url` is a segment of a broadcast on the air: a live stream (`yt_live_broadcast`) or a premiere
@@ -284,21 +325,26 @@ struct YTDLPInfo: Decodable, Sendable {
     /// its sound is in its segments).
     func segmentStreams(of formats: [Format]) -> [SegmentedDASHManifest.Stream] {
         let ordered = formats.filter(\.hasVideo) + formats.filter { !$0.hasVideo }
-        return ordered.compactMap { format -> SegmentedDASHManifest.Stream? in
-            guard let url = format.url else { return nil }
-            let container =
-                switch format.ext?.lowercased() {
-                case "m4a", "mp4", nil: "mp4"
-                case "weba", "webm": "webm"
-                case let other?: other
-                }
-            let codec = format.hasVideo ? format.vcodec : format.acodec
-            return .init(
-                kind: format.hasVideo ? .video : .audio, id: format.formatID ?? "0", container: container,
-                codecs: codec == "none" ? nil : codec, bandwidth: (format.tbr ?? format.abr).map { Int($0 * 1000) },
-                width: format.width, height: format.height, frameRate: format.fps, sampleRate: format.sampleRate,
-                url: url)
-        }
+        return ordered.compactMap { segmentStream(of: $0) }
+    }
+
+    private func segmentStream(
+        of format: Format, group: String? = nil, hdrTransfer: Int? = nil, language: String? = nil,
+        isOriginal: Bool = true
+    ) -> SegmentedDASHManifest.Stream? {
+        guard let url = format.url else { return nil }
+        let container =
+            switch format.ext?.lowercased() {
+            case "m4a", "mp4", nil: "mp4"
+            case "weba", "webm": "webm"
+            case let other?: other
+            }
+        let codec = format.hasVideo ? format.vcodec : format.acodec
+        return .init(
+            kind: format.hasVideo ? .video : .audio, id: format.formatID ?? "0", container: container,
+            codecs: codec == "none" ? nil : codec, bandwidth: (format.tbr ?? format.abr).map { Int($0 * 1000) },
+            width: format.width, height: format.height, frameRate: format.fps, sampleRate: format.sampleRate,
+            group: group, hdrTransfer: hdrTransfer, language: language, isOriginal: isOriginal, url: url)
     }
 
     /// The manifest playing `formats` (all `isSegmented`); `nil` when it can't tell how many segments there are.

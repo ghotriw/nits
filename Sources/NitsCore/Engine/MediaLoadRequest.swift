@@ -117,6 +117,17 @@ public struct MediaLoadRequest: Sendable, Equatable {
     /// resume position; `nil` leaves resuming to `PlayerConfiguration.resumePlayback`.
     public var startTime: Double?
 
+    /// Where a live stream's history loaded again starts (another picture of it: `ResolvedSource.switching`), in place of
+    /// `startTime`, which a live stream does not have (it starts at its edge, or where it was left). `nil`: as any load.
+    package var livePosition: LivePosition?
+
+    package enum LivePosition: Equatable, Sendable {
+        /// The edge, where it was playing.
+        case edge
+        /// A time of the stream itself (a position plus the window's origin: the window a load makes may be another one).
+        case streamTime(Double)
+    }
+
     /// Optional track identifier or language name to select for audio upon loading.
     public var audioTrack: String?
 

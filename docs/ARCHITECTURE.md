@@ -665,13 +665,26 @@ numbered segments of one URL (`…&sq=N`) the server keeps for days; so are thos
   within seconds of its target, on the segment's keyframe. Every run says where it starts (`t=`), from the exact lengths:
   the demuxer adds up lengths in whole milliseconds, up to half of one off in each segment, which is a third of a second
   over a run of an hour and would pile up over a day of runs. `SegmentTimeSearch.oldestAvailable` finds the first segment the server still has.
-- **The picture is H.264 in MP4, up to 1080p60 and SDR, on purpose, and that is what HLS gives too.** The times of
-  segments are read from the `moof` of an MP4 (`FragmentStartTime`), which a WebM (VP9, YouTube's 1440p and 2160p) has
-  none of, and AV1 in MP4 is more than a software decoder does at 4K60. Measured on seven live streams called 4K or HDR
-  (2026-11-07): the HLS playlist of every one ended at 1080p (or 1014p) in H.264 and SDR; their segments hold 2160p in
-  VP9 (SDR), and on one in AV1 with HDR10. So the history loses nothing against HLS, and 4K / HDR of a live stream is a
-  gain to be had (`docs/OPEN_ISSUES.md`). The sound is the same (the 144 kbit/s AAC, itag 140, which HLS's "high" is made
-  of, by its address).
+- **The manifest has every incomplete format the page lists, grouped as an ordinary video's.** Pictures by codec family, dynamic range
+  and container (the 60 fps rule at 720p and up), the sound of each language a set of its own: one rule for both
+  (`YouTubeFormatGrouping`, NitsKit), told to `SegmentedDASHManifest` as a `group` of each stream, which makes one
+  `AdaptationSet` of each. So the history has a ladder with adaptive bitrate (the client reads the rungs of a codec as
+  variants, as for any `.mpd`), and the codec is chosen as for one: `MediaResolverChain.offeringChoices` offers the codecs by
+  `VideoCodecPreference`, each choice the manifest's own location with the picture in its fragment (`DASHSelection`), the
+  history (`liveHistory`) kept. `-f`'s two formats (`YTDLPResolver.liveHistorySelector`, H.264 MP4 and AAC) only say that the
+  page has a history. The segments of one number start at the same time in every format and container, so the times are read
+  from one MP4 stream (`YouTubeLiveHistory.reference(of:)`: a WebM's clusters have no `moof`) and serve them all. VP9 in WebM
+  plays: each segment is a WebM of its own (YouTube's live muxer writes the Segment with no length), and FFmpeg's Matroska
+  demuxer reads the segments as one stream (real segments of Sky News, four in a row: all 600 pictures; a muxer that writes the
+  lengths gives 2 of 4, and is not what YouTube sends). 2160p and HDR (VP9 HDR10, AV1 HDR10 in MP4) come in as the page lists them.
+  The sound is AAC (itag 139, 140) by its address.
+- **A hand switch of the picture** (codec or rung: `selectVideoFormat`) loads the history again with the choice, and
+  `MediaLoadRequest.livePosition` makes it start where the picture was (the request carries the stream's time, so a load that resolves again, with another `origin`, lands in the same place), at the
+  edge when it was there (`LiveStream.keptTarget`, `isAtEdge`); a live stream's start is otherwise always the edge, or where it
+  was left.
+- **A renewal takes what the page still lists** (`YTDLPResolver.liveSegmentURLs`): with a ladder of a dozen streams one fewer in yt-dlp's
+  answer is no reason to fail the rest, only none of them is; a stream not renewed keeps its old address, and once it expires the
+  lane skips its segments as holes after a 403 and a renewal each (it does not drop the rung).
 - **Depth is a day** (`YouTubeLiveHistory.maxHistory`) on purpose: the server's edge answers 404, 500 and 503 for seconds
   per request, finding it cost 41 s of start on NASA's stream, and a day is as deep as the web player's DVR.
 - **The head is followed by the playlist's reloads** (`DASHHistory`). The manifest, static, goes on a day past the head

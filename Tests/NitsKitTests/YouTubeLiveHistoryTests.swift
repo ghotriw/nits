@@ -217,7 +217,7 @@ struct YouTubeLiveHistoryTests {
     @Test("Only a YouTube live stream's adaptive segments are a history; its best HLS picture is the way back")
     func recognisesLiveHistory() throws {
         let live = try info(Self.liveJSON)
-        #expect(live.liveHistoryFormats()?.count == 2)
+        #expect(live.liveHistoryFormats()?.count == 2)  // the page lists no more of them
         #expect(live.choosingHLS()?.requestedFormats?.first?.formatID == "311")
         // Not a stream on the air, not YouTube, not segments of a live broadcast.
         #expect(
@@ -390,5 +390,146 @@ struct YouTubeLiveHistoryTests {
         #expect(renewed)
         let address = source.url(for: "134", number: 4001)?.absoluteString
         #expect(address?.hasSuffix("source=yt_premiere_broadcast&sig=fresh&sq=4001") == true)
+    }
+}
+
+/// A live stream's history made of every incomplete format the page lists, as an ordinary video's manifest is: a ladder
+/// of each codec, the sound of each language, the start times read from an MP4.
+@Suite("YouTube live history of all formats")
+struct YouTubeLiveHistoryLadderTests {
+    private static func format(
+        _ id: String, _ vcodec: String, _ height: Int, ext: String = "mp4", fps: Int = 30, range: String = "SDR"
+    ) -> String {
+        """
+        {"url": "https://rr1.googlevideo.example/videoplayback?itag=\(id)&source=yt_live_broadcast&sig=old",
+         "protocol": "https", "vcodec": "\(vcodec)", "acodec": "none", "format_id": "\(id)", "ext": "\(ext)",
+         "format_note": "\(height)p (incomplete)", "width": \(height * 16 / 9), "height": \(height), "fps": \(fps),
+         "tbr": \(height), "dynamic_range": "\(range)"}
+        """
+    }
+
+    private static func sound(_ id: String) -> String {
+        """
+        {"url": "https://rr1.googlevideo.example/videoplayback?itag=\(id)&source=yt_live_broadcast&sig=old",
+         "protocol": "https", "vcodec": "none", "acodec": "mp4a.40.2", "format_id": "\(id)", "ext": "m4a",
+         "format_note": "medium (incomplete)", "abr": 128, "asr": 44100}
+        """
+    }
+
+    /// A page listing a WebM first, then H.264 and VP9 ladders and two sounds; `-f` chose 137 and 140.
+    private static func page(extra: [String] = []) -> String {
+        let formats =
+            [
+                format("278", "vp09.00.10.08", 144, ext: "webm"), format("134", "avc1.4D401E", 360),
+                format("137", "avc1.640028", 1080), format("243", "vp09.00.10.08", 360, ext: "webm"),
+                format("248", "vp09.00.10.08", 1080, ext: "webm"), sound("139"), sound("140"),
+            ] + extra
+        return """
+            {"_type": "video", "id": "umLWFz4izTM", "title": "Live", "extractor_key": "Youtube", "is_live": true,
+             "requested_formats": [\(format("137", "avc1.640028", 1080)), \(sound("140"))],
+             "formats": [\(formats.joined(separator: ","))]}
+            """
+    }
+
+    private func info(_ json: String) throws -> YTDLPInfo {
+        try JSONDecoder().decode(YTDLPInfo.self, from: Data(json.utf8))
+    }
+
+    @Test("Every incomplete format of the page is in the history, grouped as an ordinary video's are")
+    func groupsAllFormats() throws {
+        let page = try info(Self.page())
+        let formats = try #require(page.liveHistoryFormats())
+        #expect(Set(formats.compactMap(\.formatID)) == ["278", "134", "137", "243", "248", "139", "140"])
+        let streams = page.liveHistoryStreams(of: formats)
+        // A set for each codec and container, the pictures first, one for the sound.
+        #expect(Set(streams.compactMap(\.group)).count == 3)
+        #expect(streams.filter { $0.group == streams[0].group }.map(\.id) == ["278", "243", "248"])
+        #expect(streams.first { $0.id == "134" }?.group == streams.first { $0.id == "137" }?.group)
+        #expect(streams.first { $0.id == "140" }?.group == streams.first { $0.id == "139" }?.group)
+        let manifest = SegmentedDASHManifest(streams: streams, segmentDuration: 5, segmentCount: 10).text()
+        #expect(manifest.components(separatedBy: "<AdaptationSet").count - 1 == 3)
+        #expect(manifest.components(separatedBy: "<Representation").count - 1 == 7)
+        #expect(manifest.contains(#"mimeType="video/webm""#))
+    }
+
+    @Test("A ladder keeps its 60 fps rungs at 720p and above, as an ordinary video's does")
+    func keepsSixtyFramesPerSecond() throws {
+        let page = try info(Self.page(extra: [Self.format("299", "avc1.64002a", 1080, fps: 60)]))
+        let formats = try #require(page.liveHistoryFormats())
+        let ids = page.liveHistoryStreams(of: formats).map(\.id)
+        #expect(ids.contains("299") && !ids.contains("137"))
+        #expect(ids.contains("134"))
+    }
+
+    @Test("HDR pictures are marked with their transfer")
+    func marksHDR() throws {
+        let page = try info(Self.page(extra: [Self.format("337", "vp09.02.10.10", 2160, ext: "webm", range: "HDR10")]))
+        let streams = page.liveHistoryStreams(of: try #require(page.liveHistoryFormats()))
+        #expect(streams.first { $0.id == "337" }?.hdrTransfer == 16)
+        #expect(streams.first { $0.id == "248" }?.hdrTransfer == nil)
+        let text = SegmentedDASHManifest(streams: streams, segmentDuration: 5, segmentCount: 1).text()
+        #expect(text.contains(#"value="16""#))
+    }
+
+    @Test("The times of the segments are read from an MP4, not from the WebM the page lists first")
+    func readsAnMP4() throws {
+        let page = try info(Self.page())
+        let streams = page.liveHistoryStreams(of: try #require(page.liveHistoryFormats()))
+        #expect(streams[0].container == "webm")
+        let reference = try #require(YouTubeLiveHistory.reference(of: streams))
+        #expect(reference.container == "mp4" && reference.kind == .video)
+        // Without a picture in an MP4, a sound in one; with neither, no window.
+        let sounds = streams.filter { $0.kind == .audio || $0.container == "webm" }
+        #expect(YouTubeLiveHistory.reference(of: sounds)?.kind == .audio)
+        #expect(YouTubeLiveHistory.reference(of: streams.filter { $0.container == "webm" }) == nil)
+    }
+
+    @Test("A renewal takes what the page still lists of the streams, and fails only when it lists none")
+    func renewsASubset() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NitsYTDLP-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func resolver(_ json: String, name: String) throws -> YTDLPResolver {
+            let answer = directory.appendingPathComponent("\(name).json")
+            try json.write(to: answer, atomically: true, encoding: .utf8)
+            let script = directory.appendingPathComponent(name)
+            try "#!/bin/sh\ncat '\(answer.path)'\n".write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            return YTDLPResolver(locator: YTDLPLocator(customPath: script.path), liveHistory: true)
+        }
+        let keys: Set<String> = ["134", "137", "140", "243"]
+        // The page lists a format fewer (243): the others are renewed.
+        let fewer = Self.page().replacingOccurrences(of: "itag=243", with: "itag=243&gone")
+        let all = try await resolver(Self.page(), name: "all").liveSegmentURLs(
+            of: YTDLPResolverTests.page, headers: [:], keys: keys)
+        #expect(Set(all.keys) == keys)
+        let subset = try await resolver(
+            fewer.replacingOccurrences(of: #""format_id": "243""#, with: #""format_id": "244""#), name: "fewer"
+        )
+        .liveSegmentURLs(of: YTDLPResolverTests.page, headers: [:], keys: keys)
+        #expect(Set(subset.keys) == ["134", "137", "140"])
+        // Not one of them: the manifest is no longer the page's.
+        let none = Self.page().replacingOccurrences(of: "\"format_id\": \"1", with: "\"format_id\": \"9")
+            .replacingOccurrences(of: "\"format_id\": \"2", with: "\"format_id\": \"8")
+        await #expect(throws: MediaResolutionError.self) {
+            _ = try await resolver(none, name: "none").liveSegmentURLs(
+                of: YTDLPResolverTests.page, headers: [:], keys: keys)
+        }
+    }
+}
+
+@Suite("YouTube format grouping")
+struct YouTubeFormatGroupingTests {
+    @Test("A language's sound in two containers is two sets: an AdaptationSet has one MIME type")
+    func soundsByContainer() throws {
+        let json = """
+            [{"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "language": "en"},
+             {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "language": "en"},
+             {"format_id": "139", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.5", "language": "en"}]
+            """
+        let formats = try JSONDecoder().decode([YTDLPInfo.Format].self, from: Data(json.utf8))
+        let sets = YouTubeFormatGrouping.soundSets(of: formats, splitsContainers: true)
+        #expect(sets.map { $0.formats.compactMap(\.formatID) } == [["140", "139"], ["251"]])
+        #expect(sets.allSatisfy { $0.language == "en" && $0.isOriginal })
     }
 }

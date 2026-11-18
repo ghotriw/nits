@@ -591,6 +591,7 @@ extension PlayerEngine {
             saved: saved,
             readSubtitleFiles: subtitleFiles,
             requestedStartTime: request.startTime,
+            livePosition: request.livePosition,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
             resolvedTitle: resolvedTitle,
@@ -674,6 +675,7 @@ extension PlayerEngine {
             readSubtitleFiles: MediaSubtitleFiles.read(
                 subtitleFilesLookup(for: path, files: request.subtitleFiles, saved: saved)),
             requestedStartTime: request.startTime,
+            livePosition: request.livePosition,
             requestedAudioTrack: request.audioTrack,
             requestedSubtitleTrack: request.subtitleTrack,
             reporting: reporting
@@ -983,6 +985,7 @@ extension PlayerEngine {
         subtitleFiles: [MediaLoadRequest.SubtitleFile] = [],
         saved savedTracks: PlaybackPreferences?, readSubtitleFiles: MediaSubtitleFiles,
         requestedStartTime: Double?,
+        livePosition: MediaLoadRequest.LivePosition? = nil,
         requestedAudioTrack: String?, requestedSubtitleTrack: String?,
         resolvedTitle: String? = nil,
         resolvedChapters: [MediaChapter] = [],
@@ -1174,7 +1177,17 @@ extension PlayerEngine {
             // the window still holds it.
             // (A start the request asks for is not to be overridden by what was saved, here as for any media: but a live
             // stream has no time to be asked for in but the stream's own, so it starts at the edge.)
-            if media.isLiveHistory, configuration.resumePlayback, requestedStartTime == nil,
+            if media.isLiveHistory, let position = livePosition {
+                // The same stream's history loaded again (another picture of it, chosen by hand): the stream's time the
+                // request names is kept, where the window (whose origin this load's is) still holds it; the edge when it
+                // was watched there.
+                switch position {
+                case .edge: effectiveStartTime = edge
+                case .streamTime(let time):
+                    effectiveStartTime = live.keptTarget(time - media.timelineOrigin) ?? edge
+                }
+                AppLog.info(.engine, "Keeping a live stream's history at \(effectiveStartTime)s")
+            } else if media.isLiveHistory, configuration.resumePlayback, requestedStartTime == nil,
                 let saved = historyStore.savedLivePosition(for: mediaIdentity),
                 let resumed = live.resumeTarget(
                     streamTime: saved.position, wasAtEdge: saved.wasAtEdge, origin: media.timelineOrigin)
@@ -1189,6 +1202,9 @@ extension PlayerEngine {
                     "Starting a live stream at its edge: \(edge)s"
                         + (requestedStartTime.map { " (the start requested, \($0)s, is ignored)" } ?? ""))
             }
+        } else if media.isLiveHistory, case .streamTime(let time)? = livePosition {
+            // A history that has ended has no edge: the picture stays where it was.
+            effectiveStartTime = max(0, time - media.timelineOrigin)
         } else if let explicit = requestedStartTime {
             effectiveStartTime = min(max(0.0, explicit), max(0.0, self.media.duration - 1.0))
             AppLog.info(.engine, "Using explicit start time: \(effectiveStartTime)s (ignoring history)")

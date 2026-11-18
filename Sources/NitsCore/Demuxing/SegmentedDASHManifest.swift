@@ -4,7 +4,9 @@ internal import NitsStreaming
 /// A DASH manifest (MPD) for streams a site gives as numbered segments of one URL, as YouTube's recording of a live
 /// stream that just ended (`http_dash_segments` formats with `…&sq=N` segments), which yt-dlp lists but no HTTP file
 /// holds. The DASH client plays it: a picture and its audio are two lanes, and it seeks
-/// by segment. Each segment holds the stream's initialization data. Given to the demuxer inline
+/// by segment. Each segment holds the stream's initialization data (in a WebM, its header).
+/// Streams that share a `group` are one `AdaptationSet`: the rungs of a ladder (a picture's codec, range and container) or a
+/// language's sound, as the resolver groups them; a stream with none is a set of its own. Given to the demuxer inline
 /// (`MediaURL.inlineDASHManifest`): a format of the resolver's, not for hosts to open.
 package struct SegmentedDASHManifest: Sendable {
     package struct Stream: Equatable, Sendable {
@@ -23,13 +25,27 @@ package struct SegmentedDASHManifest: Sendable {
         package var height: Int?
         package var frameRate: Double?
         package var sampleRate: Int?
+        /// Streams with the same group switch with each other and share an `AdaptationSet` (a picture's codec, range and
+        /// container; a sound's language); nil: a set of its own.
+        package var group: String?
+        /// The transfer of H.273 (16 PQ, 18 HLG) an HDR picture is marked with (`DASHElements.hdrTransfer`).
+        package var hdrTransfer: Int?
+        /// A sound's language, and whether it is the original (the main one) or a dub.
+        package var language: String?
+        package var isOriginal = true
         /// The URL of the segments, without their number: `sq=` and the number are added.
         package var url: String
 
         package init(
             kind: Kind, id: String, container: String, codecs: String? = nil, bandwidth: Int? = nil,
-            width: Int? = nil, height: Int? = nil, frameRate: Double? = nil, sampleRate: Int? = nil, url: String
+            width: Int? = nil, height: Int? = nil, frameRate: Double? = nil, sampleRate: Int? = nil,
+            group: String? = nil, hdrTransfer: Int? = nil,
+            language: String? = nil, isOriginal: Bool = true, url: String
         ) {
+            self.group = group
+            self.hdrTransfer = hdrTransfer
+            self.language = language
+            self.isOriginal = isOriginal
             self.kind = kind
             self.id = id
             self.container = container
@@ -119,31 +135,62 @@ package struct SegmentedDASHManifest: Sendable {
                 + #"profiles="urn:mpeg:dash:profile:isoff-live:2011" mediaPresentationDuration="PT\#(total)S">"#,
             "<Period>",
         ]
+        // A set holds the streams of one group, in the order they are listed; a stream with no group is a set of its own.
+        var sets: [[Stream]] = []
+        var setOfGroup: [String: Int] = [:]
         for stream in streams {
-            let kind = stream.kind == .video ? "video" : "audio"
-            var attributes = [#"id="\#(Self.escaped(stream.id))""#]
-            if let codecs = stream.codecs { attributes.append(#"codecs="\#(Self.escaped(codecs))""#) }
-            if let width = stream.width, let height = stream.height {
-                attributes.append(#"width="\#(width)" height="\#(height)""#)
+            if let group = stream.group, let index = setOfGroup[group] {
+                sets[index].append(stream)
+            } else {
+                if let group = stream.group { setOfGroup[group] = sets.count }
+                sets.append([stream])
             }
-            if let frameRate = stream.frameRate, frameRate > 0 { attributes.append(#"frameRate="\#(frameRate)""#) }
-            if let sampleRate = stream.sampleRate { attributes.append(#"audioSamplingRate="\#(sampleRate)""#) }
-            attributes.append(#"bandwidth="\#(stream.bandwidth ?? 0)""#)
-            let media = Self.escaped(LiveHistory.segmentAddress(stream.url, number: "$Number$"))
-            // The timeline, not just a duration, ends the stream at its last segment: FFmpeg counts one segment more
-            // from the duration alone, and asks the server for a segment that is not there.
-            lines += [
-                #"<AdaptationSet mimeType="\#(kind)/\#(Self.escaped(stream.container))" segmentAlignment="true">"#,
-                "<Representation \(attributes.joined(separator: " "))>",
-                #"<SegmentTemplate timescale="1000" startNumber="\#(firstNumber)" media="\#(media)">"#,
-                "<SegmentTimeline>\(timeline)</SegmentTimeline>",
-                "</SegmentTemplate>",
-                "</Representation>",
-                "</AdaptationSet>",
-            ]
+        }
+        for set in sets {
+            guard let first = set.first else { continue }
+            let kind = first.kind == .video ? "video" : "audio"
+            var setAttributes = #"mimeType="\#(kind)/\#(Self.escaped(first.container))" segmentAlignment="true""#
+            var setChildren: [String] = []
+            if first.kind == .audio, first.group != nil {
+                if let language = first.language, !language.isEmpty {
+                    setAttributes += #" lang="\#(Self.escaped(language))""#
+                }
+                setChildren.append(
+                    #"<Role schemeIdUri="urn:mpeg:dash:role:2011" value="\#(first.isOriginal ? "main" : "dub")"/>"#)
+            }
+            lines.append("<AdaptationSet \(setAttributes)>")
+            lines += setChildren
+            for stream in set {
+                var attributes = [#"id="\#(Self.escaped(stream.id))""#]
+                if let codecs = stream.codecs { attributes.append(#"codecs="\#(Self.escaped(codecs))""#) }
+                if let width = stream.width, let height = stream.height {
+                    attributes.append(#"width="\#(width)" height="\#(height)""#)
+                }
+                if let frameRate = stream.frameRate, frameRate > 0 { attributes.append(#"frameRate="\#(frameRate)""#) }
+                if let sampleRate = stream.sampleRate { attributes.append(#"audioSamplingRate="\#(sampleRate)""#) }
+                attributes.append(#"bandwidth="\#(stream.bandwidth ?? 0)""#)
+                let media = Self.escaped(LiveHistory.segmentAddress(stream.url, number: "$Number$"))
+                let property = stream.hdrTransfer.map(Self.transferProperty) ?? ""
+                // The timeline, not just a duration, ends the stream at its last segment: FFmpeg counts one segment more
+                // from the duration alone, and asks the server for a segment that is not there.
+                lines += [
+                    "<Representation \(attributes.joined(separator: " "))>\(property)",
+                    #"<SegmentTemplate timescale="1000" startNumber="\#(firstNumber)" media="\#(media)">"#,
+                    "<SegmentTimeline>\(timeline)</SegmentTimeline>",
+                    "</SegmentTemplate>",
+                    "</Representation>",
+                ]
+            }
+            lines.append("</AdaptationSet>")
         }
         lines += ["</Period>", "</MPD>"]
         return lines.joined(separator: "\n")
+    }
+
+    /// The element that marks a picture HDR by its transfer (`DASHElements.hdrTransfer` reads it): 16 PQ, 18 HLG. Also what
+    /// the manifest of an ordinary video's files marks its pictures with.
+    package static func transferProperty(_ transfer: Int) -> String {
+        #"<EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="\#(transfer)"/>"#
     }
 
     /// `text` as XML character data in an attribute.

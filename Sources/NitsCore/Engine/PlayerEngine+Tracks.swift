@@ -133,7 +133,8 @@ extension PlayerEngine {
         guard
             let (request, media) = source.switching(
                 to: id, startTime: rereadPosition, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
-                title: mediaTitle, artworkData: artworkData, artworkURL: artworkURL)
+                title: mediaTitle, artworkData: artworkData, artworkURL: artworkURL,
+                atLiveEdge: live.isAtEdge(rereadPosition))
         else { return }
         let wasPaused = playbackState == .paused
         AppLog.info(.engine, "Switching to video format \(id)")

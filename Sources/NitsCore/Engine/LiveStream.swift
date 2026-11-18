@@ -198,6 +198,14 @@ public final class LiveStream {
         return max(window.start, window.end - margin)
     }
 
+    /// Where a live stream's history loaded again opens when it was playing at `time` of its timeline, which the new load
+    /// shares: there, held inside the window (a margin after its start: the oldest segments expire as they are fetched)
+    /// and no nearer the edge than "go live" lands. `nil`: no window.
+    func keptTarget(_ time: Double, now: ContinuousClock.Instant = .now) -> Double? {
+        guard let window = window(at: now), let edge = edgeTarget(now: now) else { return nil }
+        return min(max(time, window.start + Self.startMargin), edge)
+    }
+
     /// Where a live stream's history opens when it was left at `streamTime` (the stream's own time, which the engine's is
     /// that minus `origin`): there, if the window still holds it. Not at the edge (a stream left there is watched live
     /// again, whatever the time that has passed since), nor before the window's start, which moves on with the clock (a

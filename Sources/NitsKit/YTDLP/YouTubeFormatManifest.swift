@@ -20,14 +20,12 @@ struct YouTubeFormatManifest {
 
     /// A format of the page this reads: video-only or audio-only, over `https`, unprotected, with a file's address and a
     /// container the client's source reads (`mp4`, `m4a`, `webm`).
-    fileprivate static func isListed(_ format: YTDLPInfo.Format) -> Bool {
+    static func isListed(_ format: YTDLPInfo.Format) -> Bool {
         guard format.protocol == "https", format.url != nil, let id = format.formatID, format.hasDRM != true,
             !id.hasSuffix("-drc"), format.formatNote?.contains("DRC") != true,
             ["mp4", "m4a", "webm"].contains(format.ext?.lowercased() ?? "")
         else { return false }
-        let hasVideo = !(format.vcodec ?? "").isEmpty && format.vcodec != "none"
-        let hasAudio = !(format.acodec ?? "").isEmpty && format.acodec != "none"
-        return hasVideo != hasAudio
+        return YouTubeFormatGrouping.hasPicture(format) != YouTubeFormatGrouping.hasSound(format)
     }
 
     private static func attribute(_ value: String) -> String {
@@ -40,40 +38,17 @@ struct YouTubeFormatManifest {
         return "\(isVideo ? "video" : "audio")/\(container)"
     }
 
-    /// The transfer of H.273 an HDR picture is marked with (`DASHElements.hdrTransfer`): 16 PQ, 18 HLG.
-    private static func transfer(of range: String?) -> Int? {
-        switch range {
-        case "HDR10", "HDR10+", "DV": 16
-        case "HLG": 18
-        default: nil
-        }
-    }
-
     /// The manifest of `formats`; nil when they hold no picture or no sound to make one of (the page plays as it did).
     init?(formats: [YTDLPInfo.Format]) {
         let listed = Self.keyed(formats.filter(Self.isListed))
-        let pictures = listed.filter { !($0.vcodec ?? "").isEmpty && $0.vcodec != "none" }
-        let sounds = listed.filter { !($0.acodec ?? "").isEmpty && $0.acodec != "none" }
+        let pictures = listed.filter(YouTubeFormatGrouping.hasPicture)
+        let sounds = listed.filter(YouTubeFormatGrouping.hasSound)
         guard !pictures.isEmpty, !sounds.isEmpty else { return nil }
 
         var keys = Set<String>()
         var sets: [String] = []
         // Pictures that may switch with each other share a set: a codec, a range, a container.
-        var groups: [String: [YTDLPInfo.Format]] = [:]
-        var order: [String] = []
-        for picture in pictures {
-            let family = (picture.vcodec ?? "").split(separator: ".").first.map(String.init) ?? ""
-            let key = "\(family)|\(picture.dynamicRange ?? "SDR")|\(picture.ext?.lowercased() ?? "")"
-            if groups[key] == nil { order.append(key) }
-            groups[key, default: []].append(picture)
-        }
-        for key in order {
-            guard var group = groups[key] else { continue }
-            // As YouTube's player does: at 720p and above a ladder keeps its 60 fps rungs and drops the 30 fps ones, so that
-            // adaptive bitrate never swaps frame rates (the picture would step between 30 and 60 fps).
-            if group.contains(where: { ($0.height ?? 0) >= 720 && ($0.fps ?? 0) > 30 }) {
-                group.removeAll { ($0.height ?? 0) >= 720 && ($0.fps ?? 0) <= 30 }
-            }
+        for group in YouTubeFormatGrouping.pictureSets(of: pictures) {
             var representations = ""
             for format in group {
                 guard let id = format.formatID else { continue }
@@ -89,9 +64,8 @@ struct YouTubeFormatManifest {
                 }
                 attributes += #" bandwidth="\#(Int(((format.tbr ?? 0) * 1000).rounded()))""#
                 let property =
-                    Self.transfer(of: format.dynamicRange).map {
-                        #"<EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="\#($0)"/>"#
-                    } ?? ""
+                    YouTubeFormatGrouping.transfer(of: format.dynamicRange).map(SegmentedDASHManifest.transferProperty)
+                    ?? ""
                 representations +=
                     "<Representation \(attributes)>\(property)<BaseURL>\(MediaFileKey.address(id))</BaseURL><SegmentBase/>"
                     + "</Representation>"
@@ -99,21 +73,9 @@ struct YouTubeFormatManifest {
             sets.append(#"<AdaptationSet contentType="video">\#(representations)</AdaptationSet>"#)
         }
 
-        // The sound of each language: the original (yt-dlp ranks it highest, and notes it) is the main one, the others dubs.
-        var languages: [String: [YTDLPInfo.Format]] = [:]
-        var languageOrder: [String] = []
-        for sound in sounds {
-            let language = sound.language ?? ""
-            if languages[language] == nil { languageOrder.append(language) }
-            languages[language, default: []].append(sound)
-        }
-        let best = languages.values.compactMap { $0.map { $0.languagePreference ?? -1 }.max() }.max() ?? -1
-        for language in languageOrder {
-            guard let group = languages[language] else { continue }
-            let preference = group.map { $0.languagePreference ?? -1 }.max() ?? -1
-            let isOriginal =
-                group.contains { $0.formatNote?.lowercased().contains("original") == true }
-                || (languages.count == 1) || (preference == best && best > 0)
+        // The sound of each language: the original is the main one, the others dubs.
+        for soundSet in YouTubeFormatGrouping.soundSets(of: sounds) {
+            let (language, group, isOriginal) = (soundSet.language, soundSet.formats, soundSet.isOriginal)
             var representations = ""
             for format in group {
                 guard let id = format.formatID else { continue }
@@ -160,8 +122,13 @@ extension YouTubeFormatManifest {
 
     /// The signed address of each file the manifest of `formats` names, by key.
     static func addresses(of formats: [YTDLPInfo.Format]) -> [String: String] {
+        addresses(ofKeyed: keyed(formats.filter(isListed)))
+    }
+
+    /// The signed address of each of `formats`, already keyed (`keyed(_:)`), by key.
+    static func addresses(ofKeyed formats: [YTDLPInfo.Format]) -> [String: String] {
         var urls: [String: String] = [:]
-        for format in Self.keyed(formats.filter(Self.isListed)) {
+        for format in formats {
             if let key = format.formatID, let url = format.url { urls[key] = url }
         }
         return urls
