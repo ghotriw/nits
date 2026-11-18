@@ -63,6 +63,7 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
 | `isFocused = true` in `.onAppear` | `.defaultFocus(_:_:)` + `window.initialFirstResponder = hostingView` |
 | `Unmanaged.toOpaque()` C callbacks | Swift closures / concurrency |
 | Allocating objects in SwiftUI computed properties | `@State` or an owning controller |
+| A closure as a lock's bare state (`OSAllocatedUnfairLock<(@Sendable (T) -> Void)?>`, a closure typealias too) | The closure in a struct (`StreamingLane.ProgressObserverSlot`): every `withLock` read wraps a bare one in two more thunks, until a long run overflows the stack |
 
 The intentional exceptions: display-layer `enqueueSampleBuffer:` / `flush` go through cached
 selectors (see Video pipeline); FFmpeg's C callbacks on an `AVFormatContext` (`interrupt_callback`, `io_open` /

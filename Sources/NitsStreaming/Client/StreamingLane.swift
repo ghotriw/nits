@@ -137,18 +137,42 @@ package final class StreamingLane: @unchecked Sendable {
     /// stands on the input it waits for, and the check of the picture's download is made from whichever it is
     /// (`MediaDemuxer.noteSegmentInFlight` polls the pictures' lanes from a rendition's wait). Set by `StreamingInput`, once open.
     func observeProgress(_ observer: @escaping @Sendable (SegmentInFlight) -> Void) {
-        progressObserver.withLock { $0 = observer }
+        progressObserver.set(observer)
     }
 
-    private let progressObserver = OSAllocatedUnfairLock<(@Sendable (SegmentInFlight) -> Void)?>(initialState: nil)
+    /// Where the lane keeps its observer of downloads, set from another thread than the one that tells it.
+    ///
+    /// The closure is held in a struct, not as the lock's bare state: a closure held as the generic state is
+    /// reabstracted on its way in and out of every `withLock`'s `inout`, gaining two thunks a read that each call then
+    /// went through, until a long run of segments overflowed the reading thread's stack.
+    final class ProgressObserverSlot: Sendable {
+        private struct Observer: Sendable {
+            let call: @Sendable (SegmentInFlight) -> Void
+        }
+
+        private let observer = OSAllocatedUnfairLock<Observer?>(initialState: nil)
+
+        func set(_ observer: @escaping @Sendable (SegmentInFlight) -> Void) {
+            self.observer.withLock { $0 = Observer(call: observer) }
+        }
+
+        /// False with no observer set, which leaves `segment` unmade.
+        @discardableResult
+        func tell(_ segment: @autoclosure () -> SegmentInFlight) -> Bool {
+            guard let observer = observer.withLock({ $0 }) else { return false }
+            observer.call(segment())
+            return true
+        }
+    }
+
+    private let progressObserver = ProgressObserverSlot()
 
     /// `current` is the segment the reader downloads: it is set before the reader asks for the segment's bytes.
     private func segmentProgress(_ segment: MediaSegment, _ progress: HTTPSessionInput.Progress) {
-        guard isRead, !isOpening, let observer = progressObserver.withLock({ $0 }),
-            let entry = current,
-            entry.sequence == segment.sequence, entry.segment.url == segment.url
+        guard isRead, !isOpening, let entry = current, entry.sequence == segment.sequence,
+            entry.segment.url == segment.url
         else { return }
-        observer(
+        progressObserver.tell(
             SegmentInFlight(
                 sequence: entry.sequence, start: entry.start, duration: segment.duration, progress: progress))
     }
