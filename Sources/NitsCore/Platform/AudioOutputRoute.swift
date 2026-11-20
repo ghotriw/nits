@@ -34,6 +34,11 @@ protocol AudioOutputRoute: AnyObject {
     /// Neither blocks the calling thread (activating takes a while, and the system warns of an interface that hangs on
     /// it): `activate` calls `completion` on the main actor once the session is active, at once when it already is, or
     /// could not be activated (playback goes on without it, not stuck). The engine starts the clock from there.
+    /// The route tells when the output device restarts its IO under a running clock (`onRunningChange`, macOS: Bluetooth
+    /// switching its stream), which the engine answers by re-anchoring the clock (`AudioOutputInterruptionDetector`). A
+    /// route that does not (iOS) leaves the engine to re-anchor after a change of output by itself.
+    var reportsOutputRestarts: Bool { get }
+
     func activate(_ completion: @escaping @MainActor () -> Void)
     func deactivate()
 

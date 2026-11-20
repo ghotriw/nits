@@ -69,7 +69,7 @@ extension PlayerEngine {
 
     /// What a pause and resume does, without touching the user-facing playback state: restarts the renderer's audio
     /// queue and anchors it to the clock again.
-    private func reanchorClockForAudio() {
+    func reanchorClockForAudio() {
         haltPlaybackPipeline()
         startFeeding()
         startSynchronizerClockAfterPreroll(at: playbackClock.currentTime(), alignWithBufferedAudio: true)

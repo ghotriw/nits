@@ -19,6 +19,8 @@
 
         init() {}
 
+        var reportsOutputRestarts: Bool { true }
+
         func activate(_ completion: @escaping @MainActor () -> Void) { completion() }
 
         func deactivate() {}

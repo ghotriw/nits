@@ -12,6 +12,9 @@
 
         init() {}
 
+        /// iOS has no signal for the output device restarting its IO: the engine re-anchors itself after a change of output.
+        var reportsOutputRestarts: Bool { false }
+
         /// `onRunningChange` never fires: the HAL's device IO notifications are a macOS thing (Bluetooth startup).
         func startMonitoring(
             binding renderer: AVSampleBufferAudioRenderer, onChange: @escaping @MainActor () -> Void,
@@ -25,20 +28,37 @@
                 center.addObserver(
                     forName: AVAudioSession.routeChangeNotification, object: AVAudioSession.sharedInstance(),
                     queue: .main
-                ) {
-                    notification in
+                ) { notification in
                     let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                     let reason = raw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+                    let previous =
+                        (notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+                        as? AVAudioSessionRouteDescription)
+                        .map(Self.outputs(of:)) ?? []
+                    let current = Self.outputs(of: AVAudioSession.sharedInstance().currentRoute)
                     MainActor.assumeIsolated {
+                        let name = reason.map(Self.name(of:)) ?? "reason \(raw ?? 0)"
+                        let outputsDiffer = previous != current
+                        // What the engine is told: a lost device pauses; another output, or a change the system calls a new
+                        // device / override / wake / configuration, moves the renderer. A change of category alone (our own
+                        // activation sets it) with the same outputs keeps the output: the renderer needs nothing.
+                        let action: String
                         switch reason {
                         case .oldDeviceUnavailable:
+                            action = "route lost"
+                            AppLog.info(
+                                .audio,
+                                "Audio route change: \(name), outputs \(previous) -> \(current); \(action)")
                             onRouteLost()
-                        case .newDeviceAvailable, .override, .unknown, .wakeFromSleep:
-                            onChange()
+                            return
+                        case .newDeviceAvailable, .override, .unknown, .wakeFromSleep, .routeConfigurationChange:
+                            action = "output changed"
                         default:
-                            // A category or configuration change keeps the output; the renderer needs nothing.
-                            break
+                            action = outputsDiffer ? "output changed" : "ignored (same outputs)"
                         }
+                        AppLog.info(
+                            .audio, "Audio route change: \(name), outputs \(previous) -> \(current); \(action)")
+                        if action == "output changed" { onChange() }
                     }
                 })
             observers.append(
@@ -149,6 +169,25 @@
             for waiter in ready { waiter() }
             sessionQueue.async {
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
+        }
+
+        /// The ports an output is made of, as `name (type)`, for comparing routes and for the log.
+        nonisolated private static func outputs(of route: AVAudioSessionRouteDescription) -> [String] {
+            route.outputs.map { "\($0.portName) (\($0.portType.rawValue))" }
+        }
+
+        nonisolated private static func name(of reason: AVAudioSession.RouteChangeReason) -> String {
+            switch reason {
+            case .unknown: "unknown"
+            case .newDeviceAvailable: "newDeviceAvailable"
+            case .oldDeviceUnavailable: "oldDeviceUnavailable"
+            case .categoryChange: "categoryChange"
+            case .override: "override"
+            case .wakeFromSleep: "wakeFromSleep"
+            case .noSuitableRouteForCategory: "noSuitableRouteForCategory"
+            case .routeConfigurationChange: "routeConfigurationChange"
+            @unknown default: "reason \(reason.rawValue)"
             }
         }
 

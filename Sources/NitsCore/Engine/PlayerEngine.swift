@@ -605,6 +605,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var automaticAudioFlushCount = 0
     @ObservationIgnored
     var audioFlushObserver: (any NSObjectProtocol)?
+    /// The re-anchor that follows a change of output on a route that does not report output restarts.
+    @ObservationIgnored
+    var routeChangeReanchorTask: Task<Void, Never>?
+    /// Re-anchors made after a change of output, for diagnostics and tests.
+    @ObservationIgnored
+    var audioRouteReanchors = 0
+    /// How long after a change of output the clock is re-anchored: the switch (Bluetooth most of all) takes a moment, and the
+    /// output latency the start aligns with is the new device's only once it is done.
+    nonisolated static let routeChangeSettleTime: Duration = .milliseconds(300)
     /// Refreshes `currentMetrics` twice a second, with the process's CPU and memory, for a view showing them (the
     /// performance HUD); off, they change only when media loads, and no timer runs.
     public var isCollectingMetrics: Bool = false {
@@ -872,9 +881,48 @@ public final class PlayerEngine: PlayerEngineProtocol {
         audioRenderer.allowedAudioSpatializationFormats = .monoStereoAndMultichannel
         audioRenderer.audioTimePitchAlgorithm = .timeDomain
 
-        if isPlaying {
-            audioSink.flush()
-            audioDecoder?.flush()
+        let status = audioRenderer.status
+        let error = audioRenderer.error.map { "\($0)" } ?? "none"
+        guard isPlaying else {
+            AppLog.info(
+                .audio, "Audio output changed while paused (renderer status \(status.rawValue), error \(error))")
+            return
+        }
+        audioSink.flush()
+        audioDecoder?.flush()
+        let isRestartReported = audioOutputRoute.reportsOutputRestarts
+        AppLog.info(
+            .audio,
+            "Audio output changed while playing at \(String(format: "%.3f", playbackClock.currentTime().seconds))s: "
+                + "flushed the renderer (status \(status.rawValue), error \(error)) and the decoder; "
+                + (isRestartReported ? "the route reports output restarts" : "re-anchoring the clock shortly"))
+        // A route that reports the device restarting its IO (macOS) has the clock re-anchored by that report. Without it
+        // the flushed renderer is left to a clock that runs on, and the audio does not come back until a pause and play
+        // would re-anchor it (the output latency, too, is the new device's).
+        if !isRestartReported { scheduleReanchorAfterRouteChange() }
+    }
+
+    /// Re-anchors the clock to the audio shortly after a change of output (`routeChangeSettleTime`), as a pause and play do,
+    /// if playback is still running undisturbed by then.
+    private func scheduleReanchorAfterRouteChange() {
+        routeChangeReanchorTask?.cancel()
+        routeChangeReanchorTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.routeChangeSettleTime)
+            guard !Task.isCancelled, let self else { return }
+            self.routeChangeReanchorTask = nil
+            guard self.isPlaying, !self.isBuffering, !self.isSeeking, self.chase == nil, !self.isPrerolling,
+                self.playbackClock.rate > 0
+            else {
+                AppLog.info(
+                    .audio, "No re-anchor after the change of output: playback was stopped or restarted meanwhile")
+                return
+            }
+            self.audioRouteReanchors += 1
+            AppLog.info(
+                .audio,
+                "Re-anchoring the clock at \(String(format: "%.3f", self.playbackClock.currentTime().seconds))s "
+                    + "after a change of output")
+            self.reanchorClockForAudio()
         }
     }
 

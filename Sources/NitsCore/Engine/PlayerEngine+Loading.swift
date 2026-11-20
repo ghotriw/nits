@@ -65,6 +65,8 @@ extension PlayerEngine {
         audioJoin.cancel()
         audioJoin.isRendererStale = false
         audioInterruption.reset()
+        routeChangeReanchorTask?.cancel()
+        routeChangeReanchorTask = nil
         backgroundSnapshot = nil
         seekGeneration.advance()
         isSeeking = false

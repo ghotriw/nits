@@ -121,6 +121,8 @@ struct AudioSessionEventsTests {
 private final class CountingRoute: AudioOutputRoute {
     var activations = 0
     var deactivations = 0
+    /// What the route says of itself: a route without the report (iOS) leaves the re-anchor after a change of output to the engine.
+    var reportsOutputRestarts = false
 
     required init() {}
 
@@ -251,6 +253,7 @@ extension AudioSessionEventsTests {
 @MainActor
 private final class SlowRoute: AudioOutputRoute {
     var pending: [@MainActor () -> Void] = []
+    var reportsOutputRestarts = false
 
     required init() {}
 
@@ -288,5 +291,62 @@ extension AudioSessionEventsTests {
         // Started by the completion, not by the preroll's own timeout a second after the start.
         #expect(await engine.waitUntil(timeout: .milliseconds(500)) { engine.playbackClock.rate > 0 })
         #expect(await engine.waitForPlayback(advancingBy: 0.3, timeout: .seconds(4)))
+    }
+}
+
+extension AudioSessionEventsTests {
+    @Test(
+        "A change of output on a route that does not report restarts is followed by a re-anchor: sound on, clock running"
+    )
+    func routeChangeReanchorsWithoutRestartReport() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .flashClick) else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        let route = CountingRoute()
+        route.reportsOutputRestarts = false
+        engine.audioOutputRoute = route
+        defer { engine.stop() }
+        engine.load(path: path)
+        try #require(await engine.waitForPlayback(advancingBy: 0.5))
+        let clock = engine.playbackClock
+        let before = clock.currentTime().seconds
+        engine.firstFedAudioPTS.withLock { $0 = nil }
+
+        engine.handleAudioOutputRouteChange()
+        #expect(await engine.waitUntil(timeout: .seconds(2)) { engine.audioRouteReanchors == 1 })
+        // The audio is fed again after the flush, ahead of the clock, and the clock runs on.
+        #expect(await engine.waitUntil(timeout: .seconds(2)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
+        #expect(
+            await engine.waitUntil(timeout: .seconds(2)) {
+                guard let end = engine.audioSink.bufferedEnd, end.isNumeric else { return false }
+                return end > clock.currentTime()
+            })
+        #expect(await engine.waitForPlayback(advancingBy: 0.5, timeout: .seconds(3)))
+        #expect(engine.isPlaying)
+        #expect(clock.readRate == 1)
+        #expect(clock.currentTime().seconds > before + 0.5)
+    }
+
+    @Test("A route that reports restarts (macOS) is left to its detector: no re-anchor of the engine's own")
+    func routeChangeWithRestartReportIsUnchanged() async throws {
+        guard let engine = await Self.load() else { return }
+        defer { engine.stop() }
+        engine.handleAudioOutputRouteChange()
+        try await Task.sleep(for: PlayerEngine.routeChangeSettleTime + .milliseconds(500))
+        #expect(engine.audioRouteReanchors == 0)
+        #expect(engine.isPlaying)
+    }
+
+    @Test("A pause before the settle time ends cancels the re-anchor")
+    func pauseCancelsRouteChangeReanchor() async throws {
+        guard let engine = await Self.load() else { return }
+        defer { engine.stop() }
+        let route = CountingRoute()
+        route.reportsOutputRestarts = false
+        engine.audioOutputRoute = route
+        engine.handleAudioOutputRouteChange()
+        engine.pause()
+        try await Task.sleep(for: PlayerEngine.routeChangeSettleTime + .milliseconds(500))
+        #expect(engine.audioRouteReanchors == 0)
+        #expect(!engine.isPlaying)
     }
 }
