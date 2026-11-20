@@ -139,9 +139,35 @@ struct YouTubeLiveHistoryTests {
         #expect(text.contains("https://live.nits.invalid/140?sq=$Number$"))
         #expect(window.signedURLs == ["134": Self.streams[0].url, "140": Self.streams[1].url])
         let runs = try #require(window.manifest.runs)
-        #expect(runs.last == .init(duration: 5, count: YouTubeLiveHistory.futureSegments))
+        // The day to come is listed at the length the stream's segments were measured to have (4.998 s on average here),
+        // not at the nominal 5 s: a stream of 1 s segments listed at 5 s runs its window's end away from the picture.
+        #expect(runs.last == .init(duration: window.segmentDuration, count: YouTubeLiveHistory.futureSegments))
+        #expect(abs(window.segmentDuration - 5) < 0.01)
         // The segments up to the head and the day to come: 3001 and 17280.
         #expect(runs.reduce(0) { $0 + $1.count } == window.lastNumber - window.firstNumber + 1 + 17280)
+    }
+
+    @Test("Segments past the head last as long as the anchors measure, not the nominal 5 s")
+    func segmentDurationFromAnchors() {
+        // A stream of 1 s segments (the head moves by one a second): times at 720 segments' distance.
+        let oneSecond: [SegmentTimeSearch.Point] = [
+            .init(number: 1000, time: 1000.3), .init(number: 1720, time: 1720.3), .init(number: 2000, time: 2000.3),
+        ]
+        #expect(abs(YouTubeLiveHistory.segmentDuration(through: oneSecond) - 1) < 0.001)
+        let five: [SegmentTimeSearch.Point] = [.init(number: 0, time: 0), .init(number: 720, time: 3600)]
+        #expect(abs(YouTubeLiveHistory.segmentDuration(through: five) - 5) < 0.001)
+        // A gap in the stream's time (an encoder that came back after an hour) skews one stretch,
+        // not the length near the head.
+        let gap: [SegmentTimeSearch.Point] = [
+            .init(number: 0, time: 0), .init(number: 720, time: 720), .init(number: 1440, time: 1440 + 3600),
+            .init(number: 2160, time: 2160 + 3600), .init(number: 2880, time: 2880 + 3600),
+        ]
+        #expect(abs(YouTubeLiveHistory.segmentDuration(through: gap) - 1) < 0.001)
+        // Nothing to measure from: the nominal length.
+        #expect(YouTubeLiveHistory.segmentDuration(through: []) == YouTubeLiveHistory.nominalSegmentDuration)
+        #expect(
+            YouTubeLiveHistory.segmentDuration(through: [.init(number: 5, time: 9)])
+                == YouTubeLiveHistory.nominalSegmentDuration)
     }
 
     @Test("A stream with next to no history starts inside its few segments")

@@ -74,8 +74,9 @@ public struct LiveHistory: Sendable, Equatable {
     /// `nil`: the manifest ends at the head.
     public var source: (any LiveSegmentSource)?
 
-    /// How long a segment of a live stream given as segments lasts, about (YouTube's): the end of a segment whose start is
-    /// known and whose length is not, and the length of those to come.
+    /// How long a segment of a live stream given as segments lasts, about (YouTube's): a fallback for the end of a
+    /// segment whose start is known and whose length is not, and for those to come, used only when the anchors do not
+    /// tell the stream's own length (`YouTubeLiveHistory.segmentDuration(through:)`).
     public static let nominalSegmentDuration = 5.0
 
     // The address format of a history's segments is the client's (`StreamHistory`); the resolvers that build a manifest

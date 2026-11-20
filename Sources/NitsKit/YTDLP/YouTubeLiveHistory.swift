@@ -50,6 +50,9 @@ enum YouTubeLiveHistory {
         /// Seconds from the start of the stream (the manifest's timeline) to the first and the last segment.
         var startTime: Double
         var lastStartTime: Double
+        /// How long this stream's segments last, the median of the stretches between anchors (`segmentDuration(through:)`):
+        /// the length of the last segment and of those past the head, which no anchor measures.
+        var segmentDuration = YouTubeLiveHistory.nominalSegmentDuration
         /// The signed address of each stream by its key (the format's id): the manifest names them by their keys.
         var signedURLs: [String: String] = [:]
         /// What the manifest's segments are asked for through, once the resolver made it (`YouTubeLiveSource`).
@@ -88,8 +91,25 @@ enum YouTubeLiveHistory {
         }
     }
 
-    /// A segment lasts about this long (YouTube's, 5 s); the last of the window is taken to.
+    /// A segment lasts about this long (YouTube's usual, 5 s) when the anchors cannot tell. Not for every stream: a
+    /// low-latency one has segments of 1 s, which the head moves by five a poll; listed past the head at 5 s each, the
+    /// window's end ran away from the picture by 20 s a poll (the time behind the edge growing in jumps).
     static let nominalSegmentDuration = LiveHistory.nominalSegmentDuration
+
+    /// The length of the stream's segments, as the stretches between anchors tell: their median, so that one stretch a
+    /// gap in the stream's time skews (an encoder that came back after an hour) does not move what the segments past the
+    /// last anchor, which no time was read for, are taken to last. `nominalSegmentDuration` with fewer than two anchors.
+    static func segmentDuration(through anchors: [SegmentTimeSearch.Point]) -> Double {
+        let sorted = anchors.sorted { $0.number < $1.number }
+        let lengths = zip(sorted, sorted.dropFirst())
+            .filter { $1.number > $0.number }
+            .map { ($1.time - $0.time) / Double($1.number - $0.number) }
+            .filter { $0 > 0.05 }
+            .sorted()
+        guard !lengths.isEmpty else { return nominalSegmentDuration }
+        let middle = lengths.count / 2
+        return lengths.count.isMultiple(of: 2) ? (lengths[middle - 1] + lengths[middle]) / 2 : lengths[middle]
+    }
     /// Segments between two segments whose times are read: an hour. A stretch of shorter segments (4.933 s instead
     /// of 5) is not seen but by an anchor, so the timeline is off by that much between two: seconds.
     static let anchorSpacing = 720
@@ -212,9 +232,10 @@ enum YouTubeLiveHistory {
         }
 
         closeLap(&timings.anchors, &timings.requests.anchors)
+        let segmentDuration = segmentDuration(through: anchors)
         guard
             let window = SegmentedDASHManifest.window(
-                through: anchors, lastNumber: newest, lastDuration: nominalSegmentDuration)
+                through: anchors, lastNumber: newest, lastDuration: segmentDuration)
         else { throw Failure.noHead }
         // The manifest names a stream by its key, not by its signed address, which expires (`DASHPlaylists.address(of:)`).
         let keyed = streams.map { stream -> SegmentedDASHManifest.Stream in
@@ -223,14 +244,15 @@ enum YouTubeLiveHistory {
             return stream
         }
         var manifest = SegmentedDASHManifest(
-            streams: keyed, segmentDuration: nominalSegmentDuration,
+            streams: keyed, segmentDuration: segmentDuration,
             segmentCount: newest - first + 1 + futureSegments)
         manifest.firstNumber = window.firstNumber
         manifest.startTime = window.startTime
-        manifest.runs = window.runs + [.init(duration: nominalSegmentDuration, count: futureSegments)]
+        manifest.runs = window.runs + [.init(duration: segmentDuration, count: futureSegments)]
         return Window(
             manifest: manifest, firstNumber: first, lastNumber: newest, startTime: window.startTime,
-            lastStartTime: newestStart, signedURLs: Dictionary(streams.map { ($0.id, $0.url) }) { first, _ in first },
+            lastStartTime: newestStart, segmentDuration: segmentDuration,
+            signedURLs: Dictionary(streams.map { ($0.id, $0.url) }) { first, _ in first },
             timings: timings)
     }
 }

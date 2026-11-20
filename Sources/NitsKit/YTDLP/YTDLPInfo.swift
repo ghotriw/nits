@@ -206,7 +206,7 @@ struct YTDLPInfo: Decodable, Sendable {
                 actionButtons: buttons,
                 liveHistory: LiveHistory(
                     origin: liveHistory.startTime,
-                    end: liveHistory.lastStartTime + YouTubeLiveHistory.nominalSegmentDuration,
+                    end: liveHistory.lastStartTime + liveHistory.segmentDuration,
                     headNumber: liveHistory.lastNumber, source: liveHistory.source))
         }
         // HLS opens from its master playlist, which a URL without `.m3u8` needed yt-dlp to tell: its variants and
