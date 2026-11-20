@@ -1,0 +1,57 @@
+# The iOS app: only the @main, Info.plist, assets and signing. Everything else is the package's `NitsTouch`.
+# `scripts/build_ios.sh` generates Nits.xcodeproj from this file with XcodeGen (`brew install xcodegen`); the project is
+# not committed (`*.xcodeproj` is ignored). Open Apps/iOS/Nits.xcodeproj in Xcode after `./scripts/build_ios.sh generate`.
+name: Nits
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "18.4"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "18.4"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # The tag decides these (scripts/build_ios.sh); these are what a build in Xcode gets.
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  Nits:
+    path: ../..
+targets:
+  NitsiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: NitsApp.swift
+      - path: Assets.xcassets
+      # License texts and the source offer for the LGPL libraries, shipped in the app (a folder reference: kept as is).
+      - path: ThirdPartyLicenses
+        type: folder
+    dependencies:
+      - package: Nits
+        product: NitsTouch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghotriw.nits
+        # The target and scheme are NitsiOS: the package's own `Nits` executable (the macOS app) owns the name `Nits`.
+        PRODUCT_NAME: Nits
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        # The team comes from the environment of the build (DEVELOPMENT_TEAM=...) or Xcode's signing pane.
+schemes:
+  NitsiOS:
+    build:
+      targets:
+        NitsiOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      testPlans:
+        - path: NitsTouch.xctestplan
+          defaultPlan: true
+    archive:
+      config: Release

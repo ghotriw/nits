@@ -1,13 +1,13 @@
 # Nits — Agent Guide
 
-Nits is an HDR / Dolby Vision video player for macOS: custom Metal tone-mapping on SDR displays,
-native `AVSampleBufferDisplayLayer` presentation on XDR displays. Design background and the
+Nits is an HDR / Dolby Vision video player for macOS (and, in v1, a bare-controls player for iPhone and iPad): custom Metal tone-mapping on SDR displays,
+native `AVSampleBufferDisplayLayer` presentation on XDR displays (on iOS always the latter). Design background and the
 reasoning behind the invariants below: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the HLS client and adaptive
 bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`](docs/HLS.md).
 
 ## Environment
 
-- Build host / SDK: macOS 27, Apple Silicon. Deployment target: macOS 15.4.
+- Build host / SDK: macOS 27, Apple Silicon. Deployment targets: macOS 15.4, iOS 18.4 (iPhone and iPad; the iOS frameworks are arm64).
 - macOS 27 is the real, current OS — treat its SDK deprecation warnings as actionable. Fix them
   with replacement APIs that work on 15.4+ rather than suppressing them.
 - Swift 6, strict concurrency (`-strict-concurrency=complete`), `ExistentialAny`.
@@ -30,6 +30,14 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
 
 - Build: `swift build`
 - Strict type-check incl. tests: `./scripts/format.sh typecheck`
+- iOS type-check: `./scripts/format.sh typecheck-ios` (NitsCore and NitsTouch for the simulator, `ARCHS=arm64`; `check` runs it). The iOS
+  app (`Apps/iOS`, an XcodeGen project: `brew install xcodegen`; the project itself is generated and ignored):
+  `./scripts/build_ios.sh [generate|simulator|device|test]` (`device` is signed with `DEVELOPMENT_TEAM`, else unsigned; `test`
+  runs `Apps/iOS/NitsTouch.xctestplan`: `NitsStreamingTests` + `NitsTouchTests` only, never the `Nits-Package` scheme). The scheme
+  is `NitsiOS` (the name `Nits` is the package's macOS executable). The iOS FFmpeg / dav1d are xcframeworks that SwiftPM
+  downloads (`binaryTarget(url:checksum:)`, the pre-release `deps-ios-v*`): they are built and published only by the
+  "Build and Release iOS Dependencies" workflow, whose report gives the checksums for `Package.swift` (`DEPS_IOS_VERSION` in
+  `scripts/deps_config.sh`); `make_xcframeworks.sh --zip` locally is for checks only.
 - Format / lint: `./scripts/format.sh` / `./scripts/format.sh lint` (pre-push runs `check`)
 - Tests: `swift test`; after touching seek, decoding, audio or track switching also run
   `swift test --filter PlaybackStressTests`.
@@ -101,6 +109,11 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `SegmentedDASHManifest`, `LiveHistory`'s address helpers forward to `StreamHistory`): `NitsKit` uses those.
 - `NitsKit` owns windows, menus and NowPlaying. `NitsUI` is declarative views plus
   `PlayerUIState` for transient UI state.
+- `NitsTouch` is the iOS player screen (`PlayerScreen`) and `TouchPlayerSession`, which owns the engine and follows the scene's
+  phase (`.background` and back only; `.inactive` changes nothing). Every file is in `#if os(iOS)`; it imports `NitsCore`
+  only (never `NitsStreaming`, which `format.sh lint` enforces) and observes `PlayerEngine` directly. The test seams of the
+  session are internal, not API. The engine's hooks for it are `hostDidEnterBackground()` / `hostWillEnterForeground()`;
+  an iOS-only event gets an engine handler whose policy is the engine's, never `#if os` in it. `NitsUI` and `NitsKit` stay macOS-only.
 - UI changes must not require changes to decoding, shaders or A/V sync.
 - What does not depend on the window (the engine's callbacks, Now Playing, PiP, actions, opening media) is
   `PlayerSession`'s; `PlayerWindowController` only adds the window and is one `PlayerPresentation`. The engine's
@@ -118,10 +131,10 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   change, and `videoStartTimeLock`), and what the request brings (`mediaTitle`, artwork; the container's artwork
   only stands in for the request's). Per-media state that stays on `PlayerEngine` is cleared in
   `resetMediaState`, the one reset `stop()` and every load share.
-- `NitsCore` stays portable to iOS / tvOS: AppKit / UIKit, IOKit, the CoreAudio HAL and anything else one
+- `NitsCore` builds for macOS and iOS and stays portable to tvOS: AppKit / UIKit, IOKit, the CoreAudio HAL and anything else one
   platform only has go in `Sources/NitsCore/Platform/<os>/`, implementing a protocol in `Platform/` (`VideoHost`,
   `AudioOutputRoute`, `DisplaySleepAssertion`) or repeating an interface every platform has (`PlatformScreen`); the
-  engine keeps the policy (e.g. the HDR-screen threshold, from the host's EDR headroom). `./scripts/format.sh lint`
+  engine keeps the policy (e.g. the HDR-screen threshold, from the host's EDR headroom; what an interruption, a lost route, a flush by the system or the app's going to the background owes the user). `./scripts/format.sh lint`
   enforces it, and the same for `NitsStreaming` (it builds for the same platforms). See "Platform layer" in `docs/ARCHITECTURE.md`.
 - Hot loops that must run optimized in Debug too (SIMD pixel conversion, DSP) go in `NitsKernels`, the only
   target built with `-O` in Debug; keep its functions non-`@inlinable`.
@@ -182,6 +195,13 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
 - **Backpressure** is cooperative: video feeding pauses at a queue high-water mark using
   `Task.sleep`; audio relies on `await audioSink.enqueue(...)` (`Receiver` on macOS 27+, readiness
   polling with `Task.sleep` on 15–26). Never block threads.
+- **The frame queue's high water is `FrameQueueBudget.highWater`** (40 / 25 without `PlayerConfiguration.frameQueueByteBudget`;
+  under one, the budget over the decoded frames' size, at least half a second, at most 40), read by the feeder each
+  check. `BufferingPolicy`'s video thresholds are shares of the same numbers (`videoLowFrames` / `resumeFrames`), never
+  constants: a queue that cannot grow to 40 would never be "ready". While buffering holds the clock the feeder fills to
+  its high water instead of waiting to drain to the resume point (nothing drains a held clock).
+- **The audio session is taken when playback starts and given back by `stop()` and at the end of the media** (`AudioOutputRoute`'s
+  `activate()` / `deactivate()`), never when the engine is made or the route's monitoring starts.
 - **Code that stops or re-anchors the synchronizer clock goes through `cancelPreroll()`** (directly or via
   `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`): it also ends a pending preroll and
   buffering and an audio join, whose tasks would otherwise restart the clock at a stale position.
@@ -292,6 +312,9 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `Preset` for new codec/container/channel/HDR coverage.
 - The client's own tests (parsers, the timeline, adaptive bitrate; no server, no media) are `NitsStreamingTests`, which depends on
   `NitsStreaming` alone. Tests that serve media or play it, and the ones that join the client to `NitsCore`, stay in `NitsCoreTests`.
+- `NitsTouchTests` (and the client's own `NitsStreamingTests`) run on the iOS simulator through the test plan of `Apps/iOS`:
+  `./scripts/build_ios.sh test`. Engine tests that play media stay on macOS (`SyntheticTestMediaFactory` runs the `ffmpeg` CLI).
+  What the platform alone does (the audio session, the scene's phase, a ProMotion link, memory) is checked on a device.
 - Mark suites that play media in real time `.realtimePlayback`, and ones that depend on the host otherwise
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
   skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only

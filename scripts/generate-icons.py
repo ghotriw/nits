@@ -22,6 +22,7 @@ THEMES_PATH = LOGO_DIR / "themes.json"
 DIST_DIR = ROOT_DIR / "build" / "logo"
 APP_RESOURCES_DIR = ROOT_DIR / "Sources" / "NitsApp" / "Resources"
 DEFAULT_ICNS_PATH = APP_RESOURCES_DIR / "AppIcon.icns"
+DEFAULT_IOS_ICON_PATH = ROOT_DIR / "Apps" / "iOS" / "Assets.xcassets" / "AppIcon.appiconset" / "icon-1024.png"
 
 ICONSET_SPECS = [
     ("icon_16x16.png", 16),
@@ -219,6 +220,60 @@ for (filename, size) in specs {{
             shutil.rmtree(temp_iconset)
 
 
+def generate_ios_icon(svg_path, output_png_path):
+    """A full-bleed 1024 px opaque icon for the iOS asset catalog: the system rounds it, so no tile or shadow."""
+    swift = shutil.which("swift")
+    if not swift:
+        print("Error: 'swift' not found. Available on macOS.", file=sys.stderr)
+        return False
+
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
+    escaped_svg_path = json.dumps(str(svg_path.resolve()))
+    escaped_out_path = json.dumps(str(output_png_path.resolve()))
+    swift_script = f"""
+import AppKit
+
+import ImageIO
+guard let image = NSImage(contentsOf: URL(fileURLWithPath: {escaped_svg_path})) else {{ exit(1) }}
+let size = 1024
+let rep = NSBitmapImageRep(
+    bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4,
+    hasAlpha: true, isPlanar: false, colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+let s = CGFloat(size)
+let full = NSRect(x: 0, y: 0, width: s, height: s)
+NSGradient(
+    starting: NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.11, alpha: 1.0),
+    ending: NSColor(calibratedRed: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
+)?.draw(in: full, angle: 90)
+// The logo at the size it has in the macOS tile (0.86 of the icon, 0.74 of that).
+let usable = s * 0.86 * 0.74
+let aspect = image.size.width / image.size.height
+var dw = usable
+var dh = usable / aspect
+if dh > usable {{ dh = usable; dw = usable * aspect }}
+image.draw(in: NSRect(x: (s - dw) / 2 + dw * 0.04, y: (s - dh) / 2, width: dw, height: dh))
+NSGraphicsContext.restoreGraphicsState()
+// The App Store refuses an icon with an alpha channel: flatten into a context that skips it.
+guard let drawn = rep.cgImage, let space = CGColorSpace(name: CGColorSpace.sRGB),
+    let flat = CGContext(
+        data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+else {{ exit(1) }}
+flat.draw(drawn, in: CGRect(x: 0, y: 0, width: size, height: size))
+guard let opaque = flat.makeImage(),
+    let destination = CGImageDestinationCreateWithURL(
+        URL(fileURLWithPath: {escaped_out_path}) as CFURL, "public.png" as CFString, 1, nil)
+else {{ exit(1) }}
+CGImageDestinationAddImage(destination, opaque, nil)
+if !CGImageDestinationFinalize(destination) {{ exit(1) }}
+"""
+    subprocess.run([swift, "-e", swift_script], check=True)
+    print(f"✓ Created iOS icon: {output_png_path.relative_to(ROOT_DIR)}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Logo & AppIcon build pipeline.")
     parser.add_argument(
@@ -242,6 +297,16 @@ def main():
         default=str(DEFAULT_ICNS_PATH),
         help="Custom output path for .icns",
     )
+    parser.add_argument(
+        "--ios-icon",
+        action="store_true",
+        help="Also generate the iOS app icon (Apps/iOS/Assets.xcassets/AppIcon.appiconset/icon-1024.png)",
+    )
+    parser.add_argument(
+        "--output-ios-icon",
+        default=str(DEFAULT_IOS_ICON_PATH),
+        help="Custom output path for the iOS icon",
+    )
 
     args = parser.parse_args()
 
@@ -261,6 +326,8 @@ def main():
             generated_svgs[icns_theme] = out_path
 
         generate_icns(generated_svgs[icns_theme], Path(args.output_icns))
+        if args.ios_icon:
+            generate_ios_icon(generated_svgs[icns_theme], Path(args.output_ios_icon))
 
 
 if __name__ == "__main__":

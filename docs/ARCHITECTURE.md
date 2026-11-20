@@ -28,7 +28,7 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
 - **NitsCore** — demuxing, decoding, master clock, Metal rendering, frame queues, EDR/screen
   handover, playback history. No SwiftUI. `PlayerEngine` is `@Observable` directly, so there is no
   intermediate view-model; views re-evaluate only on the properties they read. Exports the
-  `NativeVideoHostView` canvas. Builds only for macOS today but is kept portable to iOS / tvOS
+  `NativeVideoHostView` canvas on macOS and `UIKitVideoHostView` on iOS. Builds for macOS and iOS and is kept portable to tvOS
   (see "Platform layer").
 - **NitsKit** — `@MainActor` session (`PlayerSession`) and its presentations (`PlayerWindowController` and `PlayerWindow`, `HostWindowPresentation` for a host's window), menu
   commands (`PlayerCommands`), system media integration (`NowPlayingController`), the app's command
@@ -36,6 +36,10 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
   `SettingsView`, `PerformanceHUDView`, `SubtitleOverlayView`). Transient UI state (fullscreen
   transitions, auto-hide, OSD, HUD visibility) lives in `PlayerUIState`.
+- **NitsTouch** — the iOS player screen (`PlayerScreen`, v1: the video and a control bar) and `TouchPlayerSession`, which
+  owns the engine and what follows the app's life (the file's security-scoped access, the scene's phase). SwiftUI over
+  `NitsCore` only; every file is in `#if os(iOS)`, so macOS builds the target empty. `NitsUI` and `NitsKit` stay macOS-only.
+  The app itself is `Apps/iOS` (an XcodeGen project: `@main`, Info.plist, assets, licenses).
 
 Settings come in three parts, so that the engine sees only its own:
 
@@ -59,19 +63,22 @@ network URL (Open URL…, a network Recent Media item) opens through `openStream
 
 Almost all of NitsCore uses frameworks that exist on every Apple platform (AVFoundation, CoreMedia,
 VideoToolbox, Metal, QuartzCore). What doesn't sits in `Sources/NitsCore/Platform/`: an interface per
-concern there, and each platform's implementation in `Platform/<os>/` (only `macOS/` so far),
-picked at compile time through a `Platform…` typealias or type of the same name on every platform.
+concern there, and each platform's implementation in `Platform/<os>/` (`macOS/` and `iOS/`), picked at compile time
+through a `Platform…` typealias or type of the same name on every platform (a file name is unique in a target: the
+iOS `PlatformScreen` is `PlatformScreen+iOS.swift`).
 
-| Concern | Interface | macOS |
-|---|---|---|
-| The view showing the video: display link, screen, layout, visibility | `VideoHost` protocol | `NativeVideoHostView` (`NSView`) |
-| The main screen, before a view is attached | `PlatformScreen` enum, repeated per platform | `NSScreen.main` |
-| Audio output changes and latency | `AudioOutputRoute` protocol | `CoreAudioOutputRoute` (CoreAudio HAL, renderer device UID) |
-| Keeping the display awake | `DisplaySleepAssertion` protocol | `IOKitDisplaySleepAssertion` (IOPM assertion) |
+| Concern | Interface | macOS | iOS |
+|---|---|---|---|
+| The view showing the video: display link, screen, layout, visibility | `VideoHost` protocol | `NativeVideoHostView` (`NSView`) | `UIKitVideoHostView` (`UIView`; link from the window scene's screen, trait and mode changes) |
+| The main screen, before a view is attached | `PlatformScreen` enum, repeated per platform | `NSScreen.main` | the first foreground-active `UIWindowScene`'s screen |
+| Audio output: changes, latency, and (iOS) the session | `AudioOutputRoute` protocol | `CoreAudioOutputRoute` (CoreAudio HAL, renderer device UID) | `AudioSessionOutputRoute` (`AVAudioSession`: `.playback` / `.moviePlayback` / `.longFormVideo`; route changes, route loss, interruptions) |
+| Keeping the display awake | `DisplaySleepAssertion` protocol | `IOKitDisplaySleepAssertion` (IOPM assertion) | `IdleTimerDisplaySleepAssertion` (`isIdleTimerDisabled` by a count) |
 
 The engine holds a `VideoHost` as an existential (an embedding host may bring its own view). It reaches
-`AudioOutputRoute` and `DisplaySleepAssertion` only through their `Platform…` typealiases: those
-protocols are the contract a port's type is checked against at compile time, not dispatch points.
+`AudioOutputRoute` and `DisplaySleepAssertion` through their `Platform…` typealiases: those protocols are the contract a
+port's type is checked against at compile time, not dispatch points. The one exception is the engine's
+`audioOutputRoute` property, typed `any AudioOutputRoute` only so that a test can substitute a counting route; nothing
+else picks a route at run time.
 
 The layer tree and its layout (`VideoLayers`: clip layer, crop and zoom, PiP geometry, the Metal
 drawable) are platform-neutral; a host view owns one and supplies its scale, its y-axis direction and
@@ -81,12 +88,51 @@ reports its screen's EDR headroom and calls `videoHostScreenDidChange()`, and th
 whether the screen is HDR (`minimumHDRDisplayHeadroom`) and the display-link rate, and replaces a link
 made for another screen (`screenIdentity`): a view's link does not leave a screen that is unplugged.
 `./scripts/format.sh lint` fails on AppKit / UIKit / IOKit / CoreAudio HAL code, and on the
-one-platform members of shared frameworks NitsCore has used, outside `Platform/<os>/`, since nothing
-compiles NitsCore for another platform yet.
+one-platform members of shared frameworks NitsCore has used, outside `Platform/<os>/`;
+`./scripts/format.sh typecheck-ios` builds NitsCore and NitsTouch for the iOS Simulator (`check` runs it when `xcodebuild`
+is there).
 
-What a port needs beyond that: FFmpeg, dav1d and libass built as xcframeworks (the `systemLibrary`
-targets are pkg-config only), `AVAudioSession` for the session and route, and on tvOS display
-criteria for the TV's HDR mode and refresh rate.
+What an iOS build needs beyond the platform types: FFmpeg and dav1d as dynamic xcframeworks, one per library
+(`build_dependencies.sh --platform=ios|ios-simulator`, `make_xcframeworks.sh --zip`, published by the "Build and Release
+iOS Dependencies" workflow as the pre-release `deps-ios-v*`). `CFFmpeg` is a C shim module over what each platform has:
+the system library on macOS (`CFFmpegSystem`: the bundled prefix or Homebrew), the xcframeworks on iOS
+(`binaryTarget(url:checksum:)` in `Package.swift`; a local path would break package resolution on a checkout without the
+frameworks, and a package dependency cannot be conditional by platform). libass is not built for iOS yet: NitsCore
+depends on `CLibass` on macOS only and ASS tracks show their text cues there (`#if canImport(CLibass)`, until the
+subtitles task). tvOS would also need display criteria for the TV's HDR mode and refresh rate.
+
+#### iOS: what the platform changes in the engine
+
+The engine's policy is the same; the platform brings events macOS doesn't, and limits.
+
+- **Render mode.** `TouchPlayerSession` sets `PlayerConfiguration.defaultRenderMode = .system`: every picture goes through
+  `AVSampleBufferDisplayLayer` (HDR and Dolby Vision on an OLED phone, the system's own tone mapping on others). Metal stays
+  only in `MetalDeinterlacer`: no flipping between native and Metal as an iPhone's headroom follows its brightness, less
+  GPU and battery.
+- **The audio session** is taken when playback starts (`isPlaying` turns true) and given back by `stop()` and at the end
+  of the media (`AudioOutputRoute.activate()` / `deactivate()`), never at creation: an app that has loaded nothing must not
+  silence anyone's music. Interruptions (a call, Siri) pause what was playing and the end resumes it only on
+  `shouldResume` and if nothing else was decided meanwhile (`AudioInterruptionPolicy`; a second interruption inside the
+  first keeps the wish to resume); losing the route (AirPods out) pauses and does not resume. The system may also flush the
+  audio renderer by itself (`AVSampleBufferAudioRendererWasFlushedAutomatically`, on both platforms): the audio the sink
+  retained is enqueued again from the clock, the way a change of the audio delay does it, and the clock is not touched.
+  That flush sometimes comes together with the device restarting its IO (`AudioOutputInterruptionDetector`): the two
+  recoveries overlap harmlessly.
+- **Background and back** (`hostDidEnterBackground()`, `hostWillEnterForeground()`; `TouchPlayerSession` maps the scene's
+  phase, where `.inactive` changes nothing). Going back pauses, drops the display links and the VideoToolbox session
+  (the system invalidates it, and a hardware decoder's failed session would leave the picture standing while the sound plays
+  on); coming back makes the link again, drops the session again (the feeder keeps decoding after the pause and made a new
+  one before the app was suspended) and seeks exactly to where the picture stood (a live stream at its edge: to the edge),
+  which also reads the network again. It stays paused. A load under way or started in the background ends paused on its
+  first frame (`isHostInBackground`).
+- **Memory.** `PlayerConfiguration.frameQueueByteBudget` and `readAheadLimits`. The feeder's high water is
+  `FrameQueueBudget.highWater`: the budget over the size of the frames being decoded (`FrameQueue.latestFrameBytes`, an
+  IOSurface), at least half a second of frames, at most 40; resume at 5/8 of it. Buffering's thresholds are shares of the
+  same numbers (`BufferingPolicy.videoLowFrames` / `resumeFrames`), or a queue that cannot grow to 40 would never be
+  ready; and while buffering holds the clock the feeder fills to its high water instead of waiting to drain to the resume
+  point, which nothing would drain. Without a budget the counts are the old 40 / 25 and the thresholds 20 / 30.
+- **No Picture in Picture, Now Playing, background audio or subtitles in v1**; the ProMotion rate policy is unchanged
+  (`CADisableMinimumFrameDurationOnPhone` lets the engine run 24 fps at 120 Hz, which costs battery only).
 
 ### Embedding (WKWebView / headless hosts)
 

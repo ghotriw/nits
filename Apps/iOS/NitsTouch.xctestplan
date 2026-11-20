@@ -1,0 +1,31 @@
+{
+  "configurations" : [
+    {
+      "id" : "5B3D2F5A-2B0C-4C5E-9B7B-7E6F2D7B8A11",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:..\/..",
+        "identifier" : "NitsStreamingTests",
+        "name" : "NitsStreamingTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:..\/..",
+        "identifier" : "NitsTouchTests",
+        "name" : "NitsTouchTests"
+      }
+    }
+  ],
+  "version" : 1
+}

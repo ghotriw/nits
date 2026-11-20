@@ -21,6 +21,13 @@ FFmpeg is built without `--enable-gpl`, `--enable-version3` or `--enable-nonfree
 linked, the libraries can be replaced with your own builds of the same major versions (re-sign the
 app afterwards with `codesign --force --deep -s - Nits.app`).
 
+The iOS app ships FFmpeg and dav1d (the same versions, built for iOS and the iOS Simulator) as dynamic frameworks in
+`Nits.app/Frameworks`, one xcframework per library, from the pre-release `deps-ios-v*` of the same
+[GitHub releases](https://github.com/ghotriw/nits/releases), built by the "Build and Release iOS Dependencies" workflow
+(`scripts/build_dependencies.sh --platform=ios`, `scripts/make_xcframeworks.sh`). The license texts and the source offer
+ship in the app (`ThirdPartyLicenses`, from [`Apps/iOS/ThirdPartyLicenses`](https://github.com/ghotriw/nits/tree/main/Apps/iOS/ThirdPartyLicenses)).
+libass and its libraries are not part of the iOS app yet.
+
 ## Code derived from third-party sources
 
 | File | Derived from | License |

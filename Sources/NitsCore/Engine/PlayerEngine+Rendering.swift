@@ -26,6 +26,16 @@ extension PlayerEngine {
         self.videoHost = host
         updateHDRDisplay()
         recreateDisplayLink()
+        // What the screen and the engine's choice come to, for judging pacing and HDR on a device (the rate is the
+        // engine's: matched to the content, see `preferredDisplayLinkRate`).
+        let rate = displayLink.map { "\(Int($0.preferredFrameRateRange.preferred ?? 0)) Hz" } ?? "no link"
+        AppLog.info(
+            .video,
+            "Video attached to a \(host.maximumFramesPerSecond) Hz screen: display link rate \(rate) "
+                + "for \(String(format: "%.3f", 1.0 / nominalFrameDuration)) fps content")
+        AppLog.info(
+            .video,
+            "Screen EDR headroom (potential): \(String(format: "%.2f", Double(host.screenEDRHeadroom)))")
     }
 
     /// The host's screen changed, or that screen's parameters did (display mode, refresh rate, HDR, scale):

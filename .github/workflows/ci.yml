@@ -133,3 +133,52 @@ jobs:
           else
             swift test --disable-sandbox --skip "$SLOW_TESTS"
           fi
+
+  # The iOS app (Apps/iOS): NitsCore and NitsTouch for the simulator, the app for the simulator and for a device
+  # (unsigned: it compiles and links), and the test plan (NitsStreamingTests + NitsTouchTests) on a simulator. The engine's
+  # media tests stay in `verify`: they need the ffmpeg CLI and macOS.
+  ios:
+    name: iOS build and tests
+    runs-on: xcode-27
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # build_ios.sh counts commits for the build number and reads the tags for the version.
+          fetch-depth: 0
+
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.app
+
+      - name: Ensure Metal Toolchain and the iOS platform are installed
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          sudo xcodebuild -downloadComponent metalToolchain
+          xcodebuild -downloadPlatform iOS || true
+          echo 'kernel void probe() {}' > "$RUNNER_TEMP/probe.metal"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun metal -c "$RUNNER_TEMP/probe.metal" -o "$RUNNER_TEMP/probe.air"; then
+              exit 0
+            fi
+            echo "Metal compiler not usable yet (attempt $attempt), retrying..."
+            sleep 10
+          done
+          exit 1
+
+      - name: Install tools
+        run: brew install xcodegen swift-format
+
+      # The iOS frameworks are SwiftPM binary targets (deps-ios-v*, Package.swift): resolved by the build itself.
+      - name: Type-check NitsCore and NitsTouch for the iOS Simulator
+        run: ./scripts/format.sh typecheck-ios
+
+      - name: Build the app for the simulator
+        run: ./scripts/build_ios.sh simulator
+
+      - name: Build the app for a device (unsigned)
+        run: ./scripts/build_ios.sh device
+
+      - name: Run the iOS test plan
+        run: ./scripts/build_ios.sh test

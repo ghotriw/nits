@@ -1,0 +1,15 @@
+Nits bundles FFmpeg and dav1d as dynamic frameworks in Frameworks/ (libavformat, libavcodec, libavutil, libswresample,
+libswscale, libdav1d). Neither is modified. You may replace them with your own builds of the same major versions.
+
+FFmpeg 9.0.2 — GNU Lesser General Public License v2.1 or later (built without --enable-gpl, --enable-version3 and
+--enable-nonfree; its HLS and DASH demuxers are not built: Nits reads those itself)
+  Source: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+  Licenses: ffmpeg/LICENSE.md, ffmpeg/COPYING.LGPLv2.1
+
+dav1d 1.5.0 — BSD 2-Clause License
+  Source: https://code.videolan.org/videolan/dav1d/-/archive/1.5.0/dav1d-1.5.0.tar.bz2
+  License: dav1d/COPYING
+
+Build: scripts/build_dependencies.sh --platform=ios (and make_xcframeworks.sh) in https://github.com/ghotriw/nits
+The source archives, byte-identical to the ones built, are attached to the release:
+  https://github.com/ghotriw/nits/releases/tag/deps-ios-v1.0.0

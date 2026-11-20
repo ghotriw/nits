@@ -17,7 +17,7 @@ DEPS_PKGCONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.build/dependen
 if [[ -d "$DEPS_PKGCONFIG" ]]; then
     export PKG_CONFIG_PATH="$DEPS_PKGCONFIG:${PKG_CONFIG_PATH:-}"
 fi
-TARGETS=("Sources" "Tests")
+TARGETS=("Sources" "Tests" "Apps")
 
 # Filter existing directories
 VALID_TARGETS=()
