@@ -90,11 +90,13 @@ struct AudioSessionEventsTests {
         let before = clock.currentTime().seconds
 
         engine.firstFedAudioPTS.withLock { $0 = nil }
+        // The Mac's own output may flush the renderer too while the test runs: counted from here, at least ours.
+        let flushes = engine.automaticAudioFlushCount
         renderer.flush()
         NotificationCenter.default.post(
             name: .AVSampleBufferAudioRendererWasFlushedAutomatically, object: renderer,
             userInfo: [AVSampleBufferAudioRendererFlushTimeKey: NSValue(time: clock.currentTime())])
-        #expect(await engine.waitUntil(timeout: .seconds(1)) { engine.automaticAudioFlushCount == 1 })
+        #expect(await engine.waitUntil(timeout: .seconds(1)) { engine.automaticAudioFlushCount >= flushes + 1 })
 
         // Audio again within a second, from where the clock is (not from where the feeder had got to).
         // The run restarts (its first buffer sets `firstFedAudioPTS`), and it starts with audio the clock has not played.
@@ -182,11 +184,13 @@ extension AudioSessionEventsTests {
         // AirPods connecting: the system flushes the renderer, then the device stops its IO after running a while and
         // starts it again (`AudioOutputInterruptionDetector`).
         engine.firstFedAudioPTS.withLock { $0 = nil }
+        // The Mac's own output may flush the renderer too while the test runs: counted from here, at least ours.
+        let flushes = engine.automaticAudioFlushCount
         renderer.flush()
         NotificationCenter.default.post(
             name: .AVSampleBufferAudioRendererWasFlushedAutomatically, object: renderer,
             userInfo: [AVSampleBufferAudioRendererFlushTimeKey: NSValue(time: clock.currentTime())])
-        #expect(await engine.waitUntil(timeout: .seconds(1)) { engine.automaticAudioFlushCount == 1 })
+        #expect(await engine.waitUntil(timeout: .seconds(1)) { engine.automaticAudioFlushCount >= flushes + 1 })
         // The feeding run's start flushes the renderer through the sink (`rendererFlushed`): the device's events come after it.
         #expect(await engine.waitUntil(timeout: .seconds(1)) { engine.firstFedAudioPTS.withLock { $0 } != nil })
         engine.audioOutputRunningChanged(true)
@@ -194,10 +198,10 @@ extension AudioSessionEventsTests {
         engine.audioOutputRunningChanged(false)
         engine.audioOutputRunningChanged(true)
 
-        // The second path ran too, once.
+        // The second path ran too (a real device event of the Mac may add its own).
         #expect(
             await engine.waitUntil(timeout: .seconds(2)) {
-                engine.audioOutputInterruptionLock.withLock { $0.recoveries } == recoveriesBefore + 1
+                engine.audioOutputInterruptionLock.withLock { $0.recoveries } >= recoveriesBefore + 1
             })
         // And the sound is on: fed again, ahead of the clock, not stopped, and no piece of it twice (the end of what is
         // fed only moves on).
@@ -214,7 +218,7 @@ extension AudioSessionEventsTests {
         #expect(engine.isPlaying)
         #expect(clock.readRate == 1)
         #expect(clock.currentTime().seconds > before + 1)
-        #expect(engine.automaticAudioFlushCount == 1)
+        #expect(engine.automaticAudioFlushCount >= flushes + 1)
     }
 }
 

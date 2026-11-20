@@ -205,3 +205,17 @@ struct BufferingBudgetPolicyTests {
         #expect(BufferingPolicy.isStarved(dry, rate: 1))
     }
 }
+
+extension BufferingBudgetPolicyTests {
+    @Test("A high water of a frame or two never lowers the thresholds to zero")
+    func thresholdsStayAboveZero() {
+        let tiny = Levels(queuedFrames: 0, framePauseAt: 1, frameResumeAt: 1, hasAudio: true, hasVideo: true)
+        #expect(BufferingPolicy.videoLowFrames(tiny) == 1)
+        #expect(BufferingPolicy.resumeFrames(tiny) == 1)
+        // Nothing queued is not ready, and, audio dry, is starved.
+        var dry = tiny
+        dry.audioAhead = 0
+        #expect(BufferingPolicy.isStarved(dry, rate: 1))
+        #expect(!BufferingPolicy.isReadyToResume(tiny, rate: 1, audioSettled: true))
+    }
+}

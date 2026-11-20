@@ -58,6 +58,7 @@ extension PlayerEngine {
 
         let feedingLock = self.isFeeding
         let drainPausedLock = self.isVideoDrainPaused
+        let bufferingLock = self.isBufferingForFeeder
         let decoder = stallGuardedDecoder(for: "the video feeder")
         let queue = self.frameQueue
         let byteBudget = configuration.frameQueueByteBudget
@@ -70,6 +71,7 @@ extension PlayerEngine {
                 queue: queue,
                 feedingLock: feedingLock,
                 drainPausedLock: drainPausedLock,
+                bufferingLock: bufferingLock,
                 byteBudget: byteBudget,
                 frameDurationLock: frameDurationLock
             )
@@ -174,6 +176,7 @@ extension PlayerEngine {
         queue: FrameQueue,
         feedingLock: OSAllocatedUnfairLock<Bool>,
         drainPausedLock: OSAllocatedUnfairLock<Bool>,
+        bufferingLock: OSAllocatedUnfairLock<Bool>,
         byteBudget: Int?,
         frameDurationLock: OSAllocatedUnfairLock<Double>
     ) async {
@@ -189,7 +192,12 @@ extension PlayerEngine {
                 frameRate: frameDuration > 0 ? 1 / frameDuration : 0)
             if queue.count >= highWater.pause {
                 drainPausedLock.withLock { $0 = true }
-                while !Task.isCancelled && queue.count > highWater.resume && feedingLock.withLock({ $0 }) {
+                // Not while the clock is held for buffering and the queue is below its high water: nothing drains it then,
+                // and playback waits for more than the resume point (`BufferingPolicy.resumeFrames`), so the feeder
+                // waiting to drain to it would wait for ever, between the two.
+                while !Task.isCancelled && queue.count > highWater.resume && feedingLock.withLock({ $0 })
+                    && !(bufferingLock.withLock { $0 } && queue.count < highWater.pause)
+                {
                     try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
                 }
                 drainPausedLock.withLock { $0 = false }

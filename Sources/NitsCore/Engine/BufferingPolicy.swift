@@ -14,15 +14,15 @@ enum BufferingPolicy {
     /// run straight into another hold.
     static let resumeAudio: Double = 0.5
     /// Queued frames below which video counts as running low: 4/5 of the count the feeder refills from while frames
-    /// arrive (20 of its 25, measured minimum 25 at 1x–4x).
+    /// arrive (20 of its 25, measured minimum 25 at 1x–4x); at least 1, so a tiny queue is still noticed running dry.
     static func videoLowFrames(_ levels: Levels) -> Int {
-        levels.frameResumeAt * 4 / 5
+        max(levels.frameResumeAt * 4 / 5, 1)
     }
 
     /// Queued frames before playback resumes: 3/4 of the count the feeder fills to before pausing (30 of 40); above
     /// `videoLowFrames`, and reachable with the clock held, as the feeder fills to its high water before pausing.
     static func resumeFrames(_ levels: Levels) -> Int {
-        levels.framePauseAt * 3 / 4
+        max(levels.framePauseAt * 3 / 4, 1)
     }
 
     /// What is queued at the clock, for media that has not been read to its end.

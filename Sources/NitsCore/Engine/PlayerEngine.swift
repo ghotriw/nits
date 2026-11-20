@@ -417,6 +417,8 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// `PlayerEngine+Buffering`.
     public internal(set) var isBuffering = false {
         didSet {
+            let buffering = isBuffering
+            isBufferingForFeeder.withLock { $0 = buffering }
             if oldValue != isBuffering {
                 onBufferingChanged?(isBuffering)
             }
@@ -554,6 +556,9 @@ public final class PlayerEngine: PlayerEngineProtocol {
     let isMetalLayerVisibleLock = OSAllocatedUnfairLock(initialState: false)
     @ObservationIgnored
     let isVideoDrainPaused = OSAllocatedUnfairLock(initialState: false)
+    /// `isBuffering`, for the video feeder, which reads it off the main actor: a held clock needs the queue filled to its
+    /// high water, past the resume point the feeder otherwise waits to drain to (`runVideoFeeding`).
+    let isBufferingForFeeder = OSAllocatedUnfairLock(initialState: false)
     /// Presentation time of the first buffer the current audio feeding run handed to the renderer; `nil` until it
     /// has. Compared with the clock, it shows where audio resumed after a seek, track switch or pause.
     @ObservationIgnored
