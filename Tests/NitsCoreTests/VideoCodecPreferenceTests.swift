@@ -274,3 +274,14 @@ struct AudioCodecPreferenceTests {
         #expect(aacFirst.address()?.contains("nits-acodecs=aac") == true)
     }
 }
+
+@Suite("Ladder menu label")
+struct LadderMenuLabelTests {
+    @Test("The codec's name, HDR named, Dolby Vision keeps its own")
+    func labels() {
+        #expect(VideoCodecPreference.menuLabel(ofFamily: "vp9", isHDR: false) == "VP9")
+        #expect(VideoCodecPreference.menuLabel(ofFamily: "vp9", isHDR: true) == "VP9 HDR")
+        #expect(VideoCodecPreference.menuLabel(ofFamily: "dvhevc", isHDR: true) == "Dolby Vision")
+        #expect(VideoCodecPreference.menuLabel(ofFamily: "", isHDR: false) == "")
+    }
+}

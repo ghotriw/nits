@@ -61,10 +61,9 @@ package enum HLSLadderMenu {
         let formats = tops.map { id, top in
             let family = top.selection.codec ?? ""
             let isHDR = top.selection.isHDR ?? false
-            let name = CodecFamily.displayName(ofVideo: family)
             return VideoFormat(
                 id: id, url: top.selection.address(of: master), width: top.rung.width, height: top.rung.height,
-                frameRate: top.rung.frameRate, codec: isHDR && name != "Dolby Vision" ? "\(name) HDR" : name,
+                frameRate: top.rung.frameRate, codec: VideoCodecPreference.menuLabel(ofFamily: family, isHDR: isHDR),
                 bitrate: top.rung.bandwidth)
         }
         return formats.sorted { Self.isPreferred($0, over: $1, codecs: VideoCodecPreference()) }

@@ -94,4 +94,11 @@ public struct VideoCodecPreference: Sendable, Equatable {
     public static func displayName(of family: String) -> String {
         CodecFamily.displayName(ofVideo: family)
     }
+
+    /// A ladder's codec as a menu shows it: the display name, with " HDR" for an HDR ladder (Dolby Vision says it in its
+    /// name). One label for the HLS and DASH menus; an unknown family ("") stays empty, with the suffix when HDR.
+    package static func menuLabel(ofFamily family: String, isHDR: Bool) -> String {
+        let name = displayName(of: family)
+        return isHDR && !CodecFamily.isDolbyVision(family) ? "\(name) HDR" : name
+    }
 }

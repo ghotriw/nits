@@ -74,7 +74,7 @@ package struct DASHManifestResolver: MediaResolver {
                     id: video.id, url: url, width: video.width,
                     height: video.height,
                     frameRate: video.frameRate,
-                    codec: video.isHDR && video.codec != "Dolby Vision" ? "\(video.codec) HDR" : video.codec,
+                    codec: VideoCodecPreference.menuLabel(ofFamily: video.family, isHDR: video.isHDR),
                     bitrate: video.bandwidth)
             }
         }
