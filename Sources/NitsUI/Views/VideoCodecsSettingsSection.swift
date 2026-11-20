@@ -63,7 +63,7 @@ struct VideoCodecsSettingsSection: View {
             Text("Preferred Video Codecs")
         } footer: {
             Text(
-                "Among pictures of the same size and range in a DASH manifest, the first codec on this list plays; the others stay in the Format menu. A codec switched off plays only when nothing else is offered."
+                "Among pictures of the same size and range in a DASH manifest, and among the codecs of an HLS playlist, the first codec on this list plays; the others stay in the Format menu. A codec switched off plays only when nothing else is offered."
             )
         }
     }

@@ -652,7 +652,8 @@ public final class MediaDemuxer: @unchecked Sendable {
         interruptContext: InterruptContext?,
         audioOnly: Bool = false,
         liveHistory: LiveHistory? = nil,
-        files: MediaFiles? = nil
+        files: MediaFiles? = nil,
+        videoCodecs: VideoCodecPreference? = nil
     ) {
         StreamingLogBridge.install()
         let interrupt = interruptContext ?? InterruptContext()
@@ -660,7 +661,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         // HLS: Nits' own client (FFmpeg's HLS demuxer is not built). A playlist is known by its name; one under another
         // name is what FFmpeg fails to open (below).
         if liveHistory == nil, StreamingInput.applies(to: url) {
-            guard let input = StreamingInput(url: url, headers: headers, interrupt: interrupt) else {
+            guard
+                let input = StreamingInput(
+                    url: url, headers: headers, interrupt: interrupt, codecRank: videoCodecs?.ladderRank)
+            else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
             }
@@ -709,7 +713,10 @@ public final class MediaDemuxer: @unchecked Sendable {
         if sniffed == .hls {
             // It is a playlist: a failure to open it as one is the answer, not a "video" of its text.
             opened?.close()
-            guard let input = StreamingInput(url: url, headers: headers, interrupt: interrupt) else {
+            guard
+                let input = StreamingInput(
+                    url: url, headers: headers, interrupt: interrupt, codecRank: videoCodecs?.ladderRank)
+            else {
                 if interruptContext == nil { interrupt.cancel() }
                 return nil
             }

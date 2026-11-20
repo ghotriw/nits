@@ -20,6 +20,8 @@ public final class YTDLPResolver: MediaResolver {
     /// allowing) in place of its HLS playlist (an hour at most). The app's setting (`AppSettings.liveHistory`, on);
     /// off here by default, for the callers that read no live window (tests).
     let liveHistory: Bool
+    /// Which way a video both offered as files and as an HLS playlist plays (`AppSettings.youTubeStreams`).
+    let streams: StreamProtocolPreference
     /// How the history's server is asked; the system's network but in tests.
     let liveHistoryFetch: YouTubeLiveHistory.Fetch
     /// How long a segment past the head is waited for before the head is asked again (`LiveSegmentSource`), and how that
@@ -33,15 +35,20 @@ public final class YTDLPResolver: MediaResolver {
     ///   - customPath: The yt-dlp to run in place of the one found on the system (empty: search for it).
     ///   - sponsorBlock: Whether YouTube videos get SponsorBlock's skip buttons and chapters.
     ///   - liveHistory: Whether a YouTube live stream plays from its history, not just its last hour.
-    public convenience init(customPath: String = "", sponsorBlock: Bool = true, liveHistory: Bool = false) {
+    ///   - streams: Whether a YouTube video plays from its files or its HLS playlist.
+    public convenience init(
+        customPath: String = "", sponsorBlock: Bool = true, liveHistory: Bool = false,
+        streams: StreamProtocolPreference = .files
+    ) {
         self.init(
             locator: YTDLPLocator(customPath: customPath), sponsorBlock: sponsorBlock ? SponsorBlockClient() : nil,
-            liveHistory: liveHistory)
+            liveHistory: liveHistory, streams: streams)
     }
 
     init(
         locator: YTDLPLocator, timeout: Duration = .seconds(60), sponsorBlock: SponsorBlockClient? = nil,
-        liveHistory: Bool = false, liveHistoryFetch: @escaping YouTubeLiveHistory.Fetch = YouTubeLiveHistory.urlSession,
+        liveHistory: Bool = false, streams: StreamProtocolPreference = .files,
+        liveHistoryFetch: @escaping YouTubeLiveHistory.Fetch = YouTubeLiveHistory.urlSession,
         liveSegmentWaitLimit: Duration = .seconds(60),
         liveHeadRequest: @escaping YouTubeLiveSource.HeadRequest = YouTubeLiveSource.urlSessionHead,
         liveRefreshMargin: Double = 1800
@@ -50,6 +57,7 @@ public final class YTDLPResolver: MediaResolver {
         self.timeout = timeout
         self.sponsorBlock = sponsorBlock
         self.liveHistory = liveHistory
+        self.streams = streams
         self.liveHistoryFetch = liveHistoryFetch
         self.liveSegmentWaitLimit = liveSegmentWaitLimit
         self.liveHeadRequest = liveHeadRequest
@@ -226,6 +234,14 @@ public final class YTDLPResolver: MediaResolver {
             segments = await Self.segments(from: sponsorBlock, for: id)
         }
         var chosen = info
+        // An ordinary YouTube video plays from its HLS playlist when that is what the app prefers, in place of the
+        // manifest of its files (`fileManifest()` makes none of an HLS choice); the files `-f` chose stay as what
+        // plays if the playlist does not open.
+        var choseHLS = false
+        if streams == .hls, info.extractorKey == "Youtube", info.isLive != true, let hls = info.choosingHLS() {
+            chosen = hls
+            choseHLS = true
+        }
         var history: YouTubeLiveHistory.Window?
         // Incomplete formats that are not a history (not on the air by the page's word, not a broadcast's segments) are
         // no stream either: the server ends them. The HLS playlist, if the page has one.
@@ -270,6 +286,10 @@ public final class YTDLPResolver: MediaResolver {
             }
         }
         var resolved = try chosen.resolvedMedia(for: url, sponsorBlock: segments, liveHistory: history)
+        if choseHLS, var media = resolved, let plain = try? info.resolvedMedia(for: url, sponsorBlock: segments) {
+            media.fallback = ResolvedFallback(plain)
+            resolved = media
+        }
         // A video of YouTube plays from a manifest of all its files (a ladder of each codec, the sound of each language) in
         // place of the one picture and sound `-f` chose; those stay as what plays if the manifest does not open.
         if let plain = resolved, history == nil, let manifest = chosen.fileManifest() {

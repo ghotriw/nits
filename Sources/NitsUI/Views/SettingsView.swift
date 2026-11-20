@@ -26,6 +26,9 @@ public struct SettingsView: View {
     @AppStorage(AppSettings.keyRecentMediaLimit)
     private var recentMediaLimit: Int = 20
 
+    @AppStorage(AppSettings.keyYouTubeStreams)
+    private var youTubeStreams: StreamProtocolPreference = .files
+
     @AppStorage(PlayerConfiguration.keyHistoryExcludedFolders)
     private var rawHistoryExcludedFolders: String = "[]"
 
@@ -618,6 +621,25 @@ public struct SettingsView: View {
                 .foregroundStyle(.secondary)
             } header: {
                 Text("Picture")
+            }
+
+            Section {
+                Picker("YouTube videos play from", selection: $youTubeStreams) {
+                    ForEach(StreamProtocolPreference.allCases) { streams in
+                        Text(streams.title).tag(streams)
+                    }
+                }
+                .onChange(of: youTubeStreams) { _, _ in
+                    notifyChange()
+                }
+
+                Text(
+                    "Files: a manifest of the video's files, every codec and language, with the codec chosen below. HLS Playlist: the playlist YouTube serves its apps, one codec at a time, chosen below; it can start sooner when the files must wait for an ad. Applies to the next video opened."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Streaming")
             }
 
             VideoCodecsSettingsSection(onChange: notifyChange)

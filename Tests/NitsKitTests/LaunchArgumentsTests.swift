@@ -140,6 +140,10 @@ struct LaunchArgumentsTests {
         #expect(settings(["Nits", "--sponsorblock"], base: AppSettings(sponsorBlock: false)).sponsorBlock)
         #expect(settings(["Nits", "--no-live-history"]).liveHistory == false)
         #expect(settings(["Nits", "--live-history"], base: AppSettings(liveHistory: false)).liveHistory)
+        #expect(settings(["Nits"]).youTubeStreams == .files)
+        #expect(settings(["Nits", "--youtube-hls"]).youTubeStreams == .hls)
+        #expect(
+            settings(["Nits", "--youtube-files"], base: AppSettings(youTubeStreams: .hls)).youTubeStreams == .files)
     }
 
     @Test("A later flag for the same setting wins")

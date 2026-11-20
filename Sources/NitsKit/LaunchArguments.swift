@@ -156,6 +156,10 @@ public struct LaunchArguments {
                 set(\.liveHistory, false)
             } else if arg == "--live-history" {
                 set(\.liveHistory, true)
+            } else if arg == "--youtube-hls" {
+                set(\.youTubeStreams, .hls)
+            } else if arg == "--youtube-files" {
+                set(\.youTubeStreams, .files)
             } else if arg == "--no-network-thumbnails" {
                 set(\.networkThumbnailPolicy, .never)
             } else if arg == "--always-network-thumbnails" {

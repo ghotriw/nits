@@ -22,6 +22,7 @@ struct AppSettingsTests {
         #expect(settings.ytdlpPath.isEmpty)
         #expect(settings.sponsorBlock == true)
         #expect(settings.liveHistory == true)
+        #expect(settings.youTubeStreams == .files)
         #expect(settings.pictureInPictureWindowBehavior == .hide)
         #expect(settings.pausesOnPictureInPicture == false)
         #expect(settings.entersPictureInPictureOnMinimize == false)
@@ -34,7 +35,7 @@ struct AppSettingsTests {
             enableOSD: false, osdDuration: 3.0, enableDebugOSD: true, debugOSDMinimumLevel: .debug,
             debugOSDDuration: 10.0, actionButtonDisplayDuration: 15, actionButtonAutoPress: true,
             rememberRecentMedia: false, recentMediaLimit: 50, resolvesWithYTDLP: false, ytdlpPath: "/opt/yt-dlp",
-            sponsorBlock: false, liveHistory: false,
+            sponsorBlock: false, liveHistory: false, youTubeStreams: .hls,
             pictureInPictureWindowBehavior: .doNothing, pausesOnPictureInPicture: true,
             entersPictureInPictureOnMinimize: true)
         settings.saveToUserDefaults(userDefaults: defaults)

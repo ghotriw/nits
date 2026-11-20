@@ -407,6 +407,7 @@ extension PlayerEngine {
             let (sourcePath, sourceHeaders, requestSize) = (source.path, source.headers, source.httpRequestSize)
             let history = liveHistory
             let files = files
+            let videoCodecs = configuration.videoCodecs
             // A saved manifest of network media is read to tell: off the main thread, as a stalled volume would hang it.
             var isNetwork = MediaURL.isNetworkURL(sourcePath) || MediaURL.isInlineDASHManifest(sourcePath)
             if !isNetwork {
@@ -422,7 +423,8 @@ extension PlayerEngine {
                     guard !Task.isCancelled, !interruptContext.isCancelled else { return nil }
                     return MediaDemuxer(
                         url: sourcePath, headers: sourceHeaders, httpRequestSize: requestSize,
-                        interruptContext: interruptContext, liveHistory: history, files: files)
+                        interruptContext: interruptContext, liveHistory: history, files: files,
+                        videoCodecs: videoCodecs)
                 }.value
                 if let opened {
                     if isNetwork {
@@ -648,7 +650,7 @@ extension PlayerEngine {
         guard
             let demuxer = MediaDemuxer(
                 url: path, headers: request.headers, httpRequestSize: request.httpRequestSize,
-                interruptContext: interruptContext)
+                interruptContext: interruptContext, videoCodecs: configuration.videoCodecs)
         else {
             let errorDetail: String
             if let err = interruptContext.lastError {
@@ -1069,9 +1071,10 @@ extension PlayerEngine {
             if let resolvedTitle { playlist.updateCurrentItemTitle(resolvedTitle) }
         }
         if demuxer.hasVideo {
-            // A manifest the resolver made has no thumbnails of its own (its files are named by keys the generator cannot
-            // resolve): the picture's file of the streams it made it from has.
-            let thumbnails = thumbnailMedia.flatMap { MediaURL.isInlineDASHManifest(sourcePath) ? $0 : nil }
+            // What the resolver made gets no thumbnails of its own. A manifest names its files by keys the generator
+            // cannot resolve, and an HLS playlist would give a ladder by bitrate, not by the host's codecs. The picture's
+            // file of the streams it was made from serves instead, unless that file is what plays.
+            let thumbnails = thumbnailMedia.flatMap { $0.path == sourcePath ? nil : $0 }
             thumbnailManager.prepareThumbnails(
                 for: thumbnails?.path ?? sourcePath,
                 duration: demuxer.durationSeconds,

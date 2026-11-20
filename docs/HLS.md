@@ -30,7 +30,9 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
   sample as any segment's; the others are held to a 256 KB buffer, asked for in pieces of it (`.held`), as they are
   read only as far as FFmpeg's analysis goes. FFmpeg's own HLS demuxer probed every variant one request after
   another, and Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one.
-  Here only the variants that switch with the best one (`StreamingInput.ladder(of:)`: its video codec, `SUPPLEMENTAL-CODECS`,
+  Here only the variants that switch with the best one (`StreamingInput.ladder(of:)`, the best by bandwidth, or, when the host
+  gives a codec order (`codecRank`, `VideoCodecPreference`: YouTube's playlist lists H.264, VP9 and HDR rungs of one size), by
+  size, then HDR, then the codec, as for a DASH manifest: its video codec, `SUPPLEMENTAL-CODECS`,
   `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded at all, and of such a ladder only the
   top rung is probed, with the audio renditions beside it (hls.js and ExoPlayer read the start variant alone):
   - *Clones.* The other rungs are described as the top (`StreamingInput.cloneCandidates`): its table streams copied, the

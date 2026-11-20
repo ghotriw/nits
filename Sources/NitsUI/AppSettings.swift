@@ -51,6 +51,9 @@ public struct AppSettings: Sendable, Equatable {
     /// Whether a YouTube live stream plays from its history (a day back, on the stream's own time, its position kept
     /// between runs) in place of its HLS playlist, which holds an hour at most (default true).
     public var liveHistory: Bool
+    /// Whether a YouTube video plays from its files (a manifest of every codec and language) or from its HLS playlist
+    /// (default: files). The codec of either is chosen by `PlayerConfiguration.videoCodecs`.
+    public var youTubeStreams: StreamProtocolPreference
     /// What happens to the player window while its video plays in Picture in Picture.
     public var pictureInPictureWindowBehavior: PictureInPictureWindowBehavior
     /// Pause playback when Picture in Picture starts.
@@ -72,6 +75,7 @@ public struct AppSettings: Sendable, Equatable {
         ytdlpPath: String = "",
         sponsorBlock: Bool = true,
         liveHistory: Bool = true,
+        youTubeStreams: StreamProtocolPreference = .files,
         pictureInPictureWindowBehavior: PictureInPictureWindowBehavior = .hide,
         pausesOnPictureInPicture: Bool = false,
         entersPictureInPictureOnMinimize: Bool = false
@@ -89,6 +93,7 @@ public struct AppSettings: Sendable, Equatable {
         self.ytdlpPath = ytdlpPath
         self.sponsorBlock = sponsorBlock
         self.liveHistory = liveHistory
+        self.youTubeStreams = youTubeStreams
         self.pictureInPictureWindowBehavior = pictureInPictureWindowBehavior
         self.pausesOnPictureInPicture = pausesOnPictureInPicture
         self.entersPictureInPictureOnMinimize = entersPictureInPictureOnMinimize
@@ -107,6 +112,7 @@ public struct AppSettings: Sendable, Equatable {
     public static let keyYTDLPPath = "Nits.ytdlpPath"
     public static let keySponsorBlock = "Nits.sponsorBlock"
     public static let keyLiveHistory = "Nits.liveHistory"
+    public static let keyYouTubeStreams = "Nits.youTubeStreams"
     public static let keyPictureInPictureWindowBehavior = "Nits.pictureInPictureWindowBehavior"
     public static let keyPausesOnPictureInPicture = "Nits.pausesOnPictureInPicture"
     public static let keyEntersPictureInPictureOnMinimize = "Nits.entersPictureInPictureOnMinimize"
@@ -153,6 +159,11 @@ public struct AppSettings: Sendable, Equatable {
         if userDefaults.object(forKey: keyLiveHistory) != nil {
             settings.liveHistory = userDefaults.bool(forKey: keyLiveHistory)
         }
+        if let streams = userDefaults.string(forKey: keyYouTubeStreams).flatMap(
+            StreamProtocolPreference.init(rawValue:))
+        {
+            settings.youTubeStreams = streams
+        }
         if let behavior = userDefaults.string(forKey: keyPictureInPictureWindowBehavior).flatMap(
             PictureInPictureWindowBehavior.init(rawValue:))
         {
@@ -182,6 +193,7 @@ public struct AppSettings: Sendable, Equatable {
         userDefaults.set(ytdlpPath, forKey: Self.keyYTDLPPath)
         userDefaults.set(sponsorBlock, forKey: Self.keySponsorBlock)
         userDefaults.set(liveHistory, forKey: Self.keyLiveHistory)
+        userDefaults.set(youTubeStreams.rawValue, forKey: Self.keyYouTubeStreams)
         userDefaults.set(pictureInPictureWindowBehavior.rawValue, forKey: Self.keyPictureInPictureWindowBehavior)
         userDefaults.set(pausesOnPictureInPicture, forKey: Self.keyPausesOnPictureInPicture)
         userDefaults.set(entersPictureInPictureOnMinimize, forKey: Self.keyEntersPictureInPictureOnMinimize)

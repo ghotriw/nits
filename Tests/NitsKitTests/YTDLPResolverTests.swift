@@ -465,6 +465,50 @@ struct YTDLPResolverTests {
         }
     }
 
+    @Test("A YouTube video plays from the manifest of its files, or from its HLS playlist when the app prefers it")
+    func choosesFilesOrHLS() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let answer = """
+            {"_type": "video", "id": "aqz-KE-bpKQ", "title": "T", "extractor_key": "Youtube", "duration": 60,
+             "requested_formats": [
+               {"url": "https://media.example/video", "protocol": "https", "vcodec": "avc1.640028", "acodec": "none"},
+               {"url": "https://media.example/audio", "protocol": "https", "vcodec": "none", "acodec": "opus"}],
+             "formats": [
+               {"format_id": "137", "ext": "mp4", "url": "https://media.example/video", "protocol": "https",
+                "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "width": 1920, "fps": 25, "tbr": 3000},
+               {"format_id": "251", "ext": "webm", "url": "https://media.example/audio", "protocol": "https",
+                "vcodec": "none", "acodec": "opus", "language": "en", "tbr": 128},
+               {"format_id": "270", "ext": "mp4", "url": "https://media.example/hls/270.m3u8",
+                "manifest_url": "https://media.example/master.m3u8", "protocol": "m3u8_native",
+                "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "width": 1920, "tbr": 5000}]}
+            """
+        let json = directory.appendingPathComponent("answer.json")
+        try answer.write(to: json, atomically: true, encoding: .utf8)
+        let script = try makeScript("cat '\(json.path)'", in: directory)
+
+        let files = try #require(
+            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path)).resolve(Self.page, headers: [:]))
+        #expect(MediaURL.isInlineDASHManifest(files.path), "The manifest of the files, the default")
+        #expect(files.files != nil)
+
+        let hls = try #require(
+            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path), streams: .hls)
+                .resolve(Self.page, headers: [:]))
+        #expect(hls.path == "https://media.example/master.m3u8")
+        #expect(hls.files == nil)
+        #expect(hls.fallback != nil, "The files play when the playlist does not open")
+        #expect(hls.historyKey == "youtube:aqz-KE-bpKQ")
+
+        // Without a playlist the files play, whatever is preferred.
+        let onlyFiles = answer.replacingOccurrences(of: #""protocol": "m3u8_native""#, with: #""protocol": "mhtml""#)
+        try onlyFiles.write(to: json, atomically: true, encoding: .utf8)
+        let fallback = try #require(
+            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path), streams: .hls)
+                .resolve(Self.page, headers: [:]))
+        #expect(MediaURL.isInlineDASHManifest(fallback.path))
+    }
+
     @Test("A yt-dlp that doesn't answer is stopped by a cancelled load and by the timeout")
     func stopsHungExecutable() async throws {
         let directory = try makeDirectory()

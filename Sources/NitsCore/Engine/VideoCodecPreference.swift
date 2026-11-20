@@ -84,6 +84,12 @@ public struct VideoCodecPreference: Sendable, Equatable {
         return disabled.contains(base) ? 100 + index : index
     }
 
+    /// `rank(ofFamily:)` as the streaming client takes it, to choose the ladder of an HLS multivariant playlist by
+    /// (`StreamingInput.ladder(of:codecRank:)`).
+    var ladderRank: @Sendable (String) -> Int {
+        { family in self.rank(ofFamily: family) }
+    }
+
     /// As shown ("H.264", "HEVC", "AV1", "VP9", "VP8").
     public static func displayName(of family: String) -> String {
         CodecFamily.displayName(ofVideo: family)

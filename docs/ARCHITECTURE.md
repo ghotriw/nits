@@ -230,7 +230,11 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   gives the real address at each request (`PlaylistSource.address(of:)`) and asks yt-dlp again when one is refused
   (`renewAddresses`). A fresh signature is refused (403) for its first seconds on YouTube's CDN (2 to over 3 s): a refusal
   while the addresses are younger than 5 s waits that out and asks the same ones again, as renewing would restart it;
-  renewed addresses are waited for the same way before they are asked. The choice
+  renewed addresses are waited for the same way before they are asked. A video that YouTube offers both as files and as an
+  HLS playlist plays from either by `AppSettings.youTubeStreams` (`StreamProtocolPreference`, `--youtube-hls` / `--youtube-files`;
+  default files): the playlist, which `yt-dlp` marks available at once where the files wait for an ad's pause (`available_at`:
+  measured 5 to 6 s later than the playlist on two of three clips), has no manifest of files, `YouTubeFormatSource` or codec menu,
+  and its ladder's codec is chosen by `VideoCodecPreference` (`StreamingInput.ladder(of:codecRank:)`). The choice
   among the codecs is `MediaResolverChain.offeringChoices` (the rules of `DASHManifestResolver`, `VideoCodecPreference`:
   the preferred first, the others in the format menu), each the manifest's `data:` location with `#nits-video=<id>`
   (`DASHSelection`, read from an inline manifest's fragment as from a network address's). When the manifest cannot be built

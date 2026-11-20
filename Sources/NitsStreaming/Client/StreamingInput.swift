@@ -165,9 +165,10 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
 
     /// Opens the stream at `url`, a multivariant or a media playlist. Nil when it can't (recorded on `interrupt`).
     /// `answerLimit`: how long the top rung's probe waits for an answer before the next rung down is probed beside it.
+    /// `codecRank`: the order of video codecs a multivariant's ladder is chosen by (`ladder(of:codecRank:)`).
     package convenience init?(
         url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
-        answerLimit: Duration = StreamingInput.answerLimit
+        answerLimit: Duration = StreamingInput.answerLimit, codecRank: (@Sendable (String) -> Int)? = nil
     ) {
         let url = StreamingURL.normalizeMediaPath(address)
         let isLocal = !HTTPSessionTransport.serves(url)
@@ -175,7 +176,7 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         self.init(
             multivariant: multivariantURL, playlists: HLSServedPlaylists(), source: url, allowsFiles: isLocal,
             headers: headers,
-            interrupt: interrupt, answerLimit: answerLimit)
+            interrupt: interrupt, answerLimit: answerLimit, codecRank: codecRank)
     }
 
     /// Opens the stream whose multivariant (or only media) playlist `playlists` answers at `multivariantURL`: an HLS server's, or
@@ -185,7 +186,7 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
     package init?(
         multivariant multivariantURL: URL, playlists: any PlaylistSource, source url: String, allowsFiles: Bool,
         headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = StreamingInput.answerLimit,
-        streamingName: String = "HLS"
+        streamingName: String = "HLS", codecRank: (@Sendable (String) -> Int)? = nil
     ) {
         // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`SegmentLoader.allowsFiles`).
         let isLocal = allowsFiles && !HTTPSessionTransport.serves(url)
@@ -233,7 +234,7 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
             wanted = [Wanted(url: multivariantURL, kind: .primary, rendition: nil)]
         case .multivariant(let multivariant):
             variables = multivariant.variables
-            listed = Self.ladder(of: multivariant)
+            listed = Self.ladder(of: multivariant, codecRank: codecRank)
             guard !listed.isEmpty else {
                 fail("the multivariant playlist lists no variant")
                 return nil
@@ -723,14 +724,34 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
     /// the others, and the renditions only they refer to, are never loaded or probed: Apple's AV1 example, 13 tiers × 5
     /// audio groups, probes 13 pictures and 2 sounds instead of 13 and 10; a ladder of two codecs, one.
     /// `MediaDemuxer.canSwitch` decides more finely once probed. All are kept when a variant doesn't tell its codecs.
-    static func ladder(of multivariant: MultivariantPlaylist) -> [PlaylistVariant] {
+    ///
+    /// The best is the highest bandwidth, unless `codecRank` is given (a host's order of video codec families, lower
+    /// is preferred: `CodecFamily.video` names, Dolby Vision as itself): the bitrate of different codecs says nothing of
+    /// their quality, so then the size (height, then width) comes first, then HDR, then the codec, and the bandwidth only decides among
+    /// the rest. The same order as a DASH manifest's pictures (`DASHManifest`).
+    static func ladder(
+        of multivariant: MultivariantPlaylist, codecRank: (@Sendable (String) -> Int)? = nil
+    ) -> [PlaylistVariant] {
         let withPicture = multivariant.variants.filter {
             $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil
         }
         let candidates = withPicture.isEmpty ? multivariant.variants : withPicture
-        guard let best = candidates.max(by: { $0.bandwidth < $1.bandwidth }),
-            candidates.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil })
+        guard !candidates.isEmpty, candidates.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil })
         else { return candidates }
+        let best: PlaylistVariant
+        if let codecRank {
+            func key(_ variant: PlaylistVariant) -> (Int, Int, Int, Int, Int) {
+                let family = variant.codecs.flatMap(CodecFamily.video) ?? ""
+                return (
+                    variant.resolution?.height ?? 0, variant.resolution?.width ?? 0,
+                    variant.videoRange.map { $0 == .sdr ? 0 : 1 } ?? 0,
+                    -codecRank(family), variant.bandwidth
+                )
+            }
+            best = candidates.max(by: { key($0) < key($1) })!
+        } else {
+            best = candidates.max(by: { $0.bandwidth < $1.bandwidth })!
+        }
         return candidates.filter { LadderKey($0) == LadderKey(best) }
     }
 

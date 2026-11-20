@@ -140,7 +140,8 @@ public final class PlayerSession {
         engine.mediaResolver =
             settings.resolvesWithYTDLP
             ? YTDLPResolver(
-                customPath: settings.ytdlpPath, sponsorBlock: settings.sponsorBlock, liveHistory: settings.liveHistory)
+                customPath: settings.ytdlpPath, sponsorBlock: settings.sponsorBlock, liveHistory: settings.liveHistory,
+                streams: settings.youTubeStreams)
             : nil
     }
 
