@@ -11,18 +11,18 @@ package enum HLSLadderMenu {
     package struct Rung: Sendable, Equatable {
         /// The codec as the extractor writes it ("vp09.00.40.08", "avc1.640028").
         package var codec: String
-        /// The dynamic range as the extractor writes it ("SDR", "HDR10", "HLG", "DV"); none is SDR.
-        package var dynamicRange: String?
+        /// Whether the picture is HDR (the extractor's words for the range are the host's to read).
+        package var isHDR: Bool
         package var width: Int
         package var height: Int
         package var frameRate: Double?
         package var bandwidth: Int
 
         package init(
-            codec: String, dynamicRange: String?, width: Int, height: Int, frameRate: Double?, bandwidth: Int
+            codec: String, isHDR: Bool, width: Int, height: Int, frameRate: Double?, bandwidth: Int
         ) {
             self.codec = codec
-            self.dynamicRange = dynamicRange
+            self.isHDR = isHDR
             self.width = width
             self.height = height
             self.frameRate = frameRate
@@ -34,8 +34,7 @@ package enum HLSLadderMenu {
     /// a playlist's `HLG`), nil for a codec no family names.
     private static func selection(of rung: Rung) -> HLSSelection? {
         guard let family = CodecFamily.video(in: rung.codec) else { return nil }
-        let range = rung.dynamicRange?.uppercased()
-        return HLSSelection(codec: family, isHDR: range != nil && range != "SDR")
+        return HLSSelection(codec: family, isHDR: rung.isHDR)
     }
 
     /// One choice for each ladder `rungs` make, its top rung shown (the biggest picture, then the higher bandwidth), the

@@ -228,6 +228,13 @@ public final class YTDLPResolver: MediaResolver {
             throw MediaResolutionError(
                 "yt-dlp answered what Nits can't read: \(error.localizedDescription)", isAboutPage: false)
         }
+        let unknownRanges = YTDLPDynamicRange.unknownValues(in: info.formats ?? [])
+        if !unknownRanges.isEmpty {
+            AppLog.warning(
+                .ytdlp,
+                "\(url.absoluteString): dynamic_range not known to Nits (read as HDR): "
+                    + unknownRanges.sorted().joined(separator: ", "))
+        }
         var segments = await pageSegments
         // A YouTube page whose URL doesn't name the video (a channel's live page) is asked once yt-dlp tells its id.
         if info.extractorKey == "Youtube", let id = info.id, id != pageVideoID {

@@ -29,7 +29,7 @@ struct YTDLPInfo: Decodable, Sendable {
         /// listing of a just ended live stream, each `url` the format's with `&sq=N`. Only the count is read.
         var targetDuration: Double?
         var fragments: [Fragment]?
-        /// "SDR", "HDR10", "HLG", "DV" of a picture; yt-dlp's ranking of a sound's language (the original is the highest).
+        /// "SDR", "HDR10", "HDR10+", "HDR12", "HLG", "DV" of a picture (`YTDLPDynamicRange`); yt-dlp's ranking of a sound's language (the original is the highest).
         var dynamicRange: String?
         var languagePreference: Int?
         var hasDRM: Bool?
@@ -330,7 +330,8 @@ struct YTDLPInfo: Decodable, Sendable {
                 let codec = format.vcodec
             else { return nil }
             return HLSLadderMenu.Rung(
-                codec: codec, dynamicRange: format.dynamicRange, width: format.width ?? 0, height: format.height ?? 0,
+                codec: codec, isHDR: YTDLPDynamicRange(format.dynamicRange).isHDR, width: format.width ?? 0,
+                height: format.height ?? 0,
                 frameRate: format.fps, bandwidth: Int((format.tbr ?? 0) * 1000))
         }
     }

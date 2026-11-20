@@ -9,10 +9,10 @@ struct HLSLadderMenuTests {
     private static let master = "https://media.example/master.m3u8?sig=abc"
 
     private static func rung(
-        _ codec: String, _ height: Int, range: String? = "SDR", bandwidth: Int = 1_000_000
+        _ codec: String, _ height: Int, isHDR: Bool = false, bandwidth: Int = 1_000_000
     ) -> HLSLadderMenu.Rung {
         .init(
-            codec: codec, dynamicRange: range, width: height * 16 / 9, height: height, frameRate: 24,
+            codec: codec, isHDR: isHDR, width: height * 16 / 9, height: height, frameRate: 24,
             bandwidth: bandwidth)
     }
 
@@ -21,8 +21,8 @@ struct HLSLadderMenuTests {
         rung("avc1.4d401f", 360, bandwidth: 800_000), rung("avc1.640028", 1080, bandwidth: 5_000_000),
         rung("vp09.00.40.08", 360, bandwidth: 600_000), rung("vp09.00.40.08", 1080, bandwidth: 3_400_000),
         rung("vp09.00.10.08", 144, bandwidth: 84_000), rung("vp09.00.10.08", 144, bandwidth: 136_000),
-        rung("vp09.02.40.10", 1080, range: "HDR10", bandwidth: 4_000_000),
-        rung("vp09.02.40.10", 360, range: "HDR10", bandwidth: 650_000),
+        rung("vp09.02.40.10", 1080, isHDR: true, bandwidth: 4_000_000),
+        rung("vp09.02.40.10", 360, isHDR: true, bandwidth: 650_000),
     ]
 
     @Test("One choice for each codec and range, its top rung shown, HDR named, the best first")
@@ -39,17 +39,17 @@ struct HLSLadderMenuTests {
         #expect(
             HLSLadderMenu.formats(master: Self.master, rungs: [Self.rung("xyz", 720), Self.rung("avc1", 720)]).isEmpty)
         let hlg = HLSLadderMenu.formats(
-            master: Self.master, rungs: [Self.rung("avc1.640028", 1080), Self.rung("hvc1.2.4", 1080, range: "HLG")])
+            master: Self.master, rungs: [Self.rung("avc1.640028", 1080), Self.rung("hvc1.2.4", 1080, isHDR: true)])
         #expect(hlg.map(\.id) == ["hevc-hdr", "avc-sdr"])
         // As yt-dlp lists YouTube's HLG ladder: its "HDR10", a codec string with the transfer in it.
         let real = HLSLadderMenu.formats(
             master: Self.master,
             rungs: [
-                Self.rung("vp09.00.50.08", 2160), Self.rung("vp09.02.51.10.01.09.18.09.00", 2160, range: "HDR10"),
+                Self.rung("vp09.00.50.08", 2160), Self.rung("vp09.02.51.10.01.09.18.09.00", 2160, isHDR: true),
             ])
         #expect(real.map(\.id) == ["vp9-hdr", "vp9-sdr"] && real.map(\.codec) == ["VP9 HDR", "VP9"])
         let dolby = HLSLadderMenu.formats(
-            master: Self.master, rungs: [Self.rung("avc1.640028", 1080), Self.rung("dvh1.08.07", 1080, range: "DV")])
+            master: Self.master, rungs: [Self.rung("avc1.640028", 1080), Self.rung("dvh1.08.07", 1080, isHDR: true)])
         #expect(dolby.map(\.codec) == ["Dolby Vision", "H.264"], "No \"HDR\" after its name")
     }
 
@@ -67,7 +67,7 @@ struct HLSLadderMenuTests {
         #expect(byDefault.path == byDefault.videoFormats[0].url)
 
         // Without HDR, the codec decides among ladders of one size.
-        let sdr = Self.rungs.filter { $0.dynamicRange == "SDR" }
+        let sdr = Self.rungs.filter { !$0.isHDR }
         let avc = HLSLadderMenu.offering(Self.media(sdr), codecs: VideoCodecPreference(order: ["avc", "vp9"]))
         #expect(avc.selectedVideoFormatID == "avc-sdr")
         #expect(avc.path == Self.master + "#nits-ladder=avc&nits-range=sdr")

@@ -28,7 +28,7 @@ enum YouTubeFormatGrouping {
         var order: [String] = []
         for picture in formats where hasPicture(picture) {
             let family = (picture.vcodec ?? "").split(separator: ".").first.map(String.init) ?? ""
-            let key = "\(family)|\(picture.dynamicRange ?? "SDR")|\(picture.ext?.lowercased() ?? "")"
+            let key = "\(family)|\(YTDLPDynamicRange(picture.dynamicRange))|\(picture.ext?.lowercased() ?? "")"
             if groups[key] == nil { order.append(key) }
             groups[key, default: []].append(picture)
         }
@@ -77,10 +77,6 @@ enum YouTubeFormatGrouping {
 
     /// The transfer of H.273 an HDR picture is marked with (`DASHElements.hdrTransfer`): 16 PQ, 18 HLG.
     static func transfer(of range: String?) -> Int? {
-        switch range {
-        case "HDR10", "HDR10+", "DV": 16
-        case "HLG": 18
-        default: nil
-        }
+        YTDLPDynamicRange(range).transfer
     }
 }

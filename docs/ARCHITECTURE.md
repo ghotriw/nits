@@ -218,8 +218,10 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   (`package` access, not for hosts to open), so the thumbnails (`ThumbnailSource.openDASH`, the client as well), the
   history and the logs treat it apart (`MediaURL.loggable`). A YouTube video (not a live stream) plays from a manifest of
   all the files its page lists (`YouTubeFormatManifest`, inline likewise): the video-only and audio-only `https` formats
-  without DRM, `-drc` copies, storyboards and the muxed 360p; the pictures of one codec, range (`dynamic_range`: HDR10 and
-  HLG carry their transfer) and container are one set, which the client plays as a ladder with adaptive bitrate; the
+  without DRM, `-drc` copies, storyboards and the muxed 360p; the pictures of one codec, range (`dynamic_range`, read once
+  by `YTDLPDynamicRange`: HDR10, HDR10+, HDR12 and DV are PQ, HLG its own, so HDR10 and HDR10+ of one codec and container
+  are one set; a word it does not know is PQ and logged once per resolve) and container are one set, which the client
+  plays as a ladder with adaptive bitrate; the
   sound of each language is a set of its own (the original `main`, yt-dlp's `language_preference` / "original" note, the
   dubs `dub`), so the original plays first and the others are audio tracks. yt-dlp gives neither `initRange` nor
   `indexRange`, so a `SegmentBase` without them is read from the file's start (`SingleFileLayout`: the walk of an MP4's
