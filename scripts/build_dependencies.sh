@@ -10,18 +10,35 @@ SRC_DIR="$DIR/.build/src"
 VENV_DIR="$DIR/.build/venv"
 DIST_DIR="$DIR/.build/dist"
 
-USAGE="Usage: $0 [--package] [--package-only] [--prefix=/path/to/prefix]"
+USAGE="Usage: $0 [--platform=macos|ios|ios-simulator] [--package] [--package-only] [--prefix=/path/to/prefix]"
+PLATFORM=macos
+PREFIX_GIVEN=false
 BUILD=true
 PACKAGE=false
 for arg in "$@"; do
     case "$arg" in
         --package) PACKAGE=true ;;
         --package-only) PACKAGE=true; BUILD=false ;;
-        --prefix=*) PREFIX="${arg#*=}" ;;
+        --prefix=*) PREFIX="${arg#*=}"; PREFIX_GIVEN=true ;;
+        --platform=*) PLATFORM="${arg#*=}" ;;
         -h|--help) echo "$USAGE"; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; echo "$USAGE" >&2; exit 1 ;;
     esac
 done
+
+# Per-platform target: macOS builds the whole set; ios / ios-simulator only FFmpeg and dav1d (packaged by
+# make_xcframeworks.sh, which is why --package is for macOS alone).
+case "$PLATFORM" in
+    macos) ;;
+    ios | ios-simulator)
+        if [ "$PACKAGE" = true ]; then
+            echo "Error: --package is for macOS; iOS prefixes go through make_xcframeworks.sh" >&2
+            exit 1
+        fi
+        [ "$PREFIX_GIVEN" = true ] || PREFIX="$DIR/.build/dependencies-$PLATFORM"
+        ;;
+    *) echo "Error: unknown platform '$PLATFORM'" >&2; echo "$USAGE" >&2; exit 1 ;;
+esac
 
 package_prefix() {
     deps_verify "$PREFIX"
@@ -53,12 +70,57 @@ fi
 
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
-COMMON_CFLAGS="-arch $DEPS_ARCH -mmacosx-version-min=$DEPS_MIN_MACOS -O3"
-# Header padding lets setup_dependencies.sh / bundle_app.sh rewrite install names to longer paths.
-COMMON_LDFLAGS="-arch $DEPS_ARCH -mmacosx-version-min=$DEPS_MIN_MACOS -Wl,-headerpad_max_install_names"
+MESON_CROSS_ARGS=()
+case "$PLATFORM" in
+    macos)
+        COMMON_CFLAGS="-arch $DEPS_ARCH -mmacosx-version-min=$DEPS_MIN_MACOS -O3"
+        # Header padding lets setup_dependencies.sh / bundle_app.sh rewrite install names to longer paths.
+        COMMON_LDFLAGS="-arch $DEPS_ARCH -mmacosx-version-min=$DEPS_MIN_MACOS -Wl,-headerpad_max_install_names"
+        TARGET_LABEL="macOS $DEPS_MIN_MACOS"
+        ;;
+    ios | ios-simulator)
+        if [ "$PLATFORM" = ios ]; then
+            IOS_SDK=iphoneos
+            IOS_TRIPLE="$DEPS_ARCH-apple-ios$DEPS_MIN_IOS"
+            MESON_SUBSYSTEM=ios
+        else
+            IOS_SDK=iphonesimulator
+            IOS_TRIPLE="$DEPS_ARCH-apple-ios$DEPS_MIN_IOS-simulator"
+            MESON_SUBSYSTEM=ios-simulator
+        fi
+        IOS_SYSROOT="$(xcrun --sdk "$IOS_SDK" --show-sdk-path)"
+        COMMON_CFLAGS="-target $IOS_TRIPLE -isysroot $IOS_SYSROOT -O3"
+        # The install name is rewritten to @rpath/<lib>.framework/<lib> by make_xcframeworks.sh, which needs the room.
+        COMMON_LDFLAGS="-target $IOS_TRIPLE -isysroot $IOS_SYSROOT -Wl,-headerpad_max_install_names"
+        TARGET_LABEL="$PLATFORM $DEPS_MIN_IOS"
+        CROSS_FILE="$SRC_DIR/meson-$PLATFORM.ini"
+        cat > "$CROSS_FILE" <<CROSS
+[binaries]
+c = ['clang']
+ar = ['ar']
+strip = ['strip']
+
+[built-in options]
+c_args = ['-target', '$IOS_TRIPLE', '-isysroot', '$IOS_SYSROOT', '-O3']
+c_link_args = ['-target', '$IOS_TRIPLE', '-isysroot', '$IOS_SYSROOT', '-Wl,-headerpad_max_install_names']
+
+[host_machine]
+system = 'darwin'
+subsystem = '$MESON_SUBSYSTEM'
+kernel = 'xnu'
+cpu_family = 'aarch64'
+cpu = '$DEPS_ARCH'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true
+CROSS
+        MESON_CROSS_ARGS=(--cross-file "$CROSS_FILE")
+        ;;
+esac
 
 # 1. dav1d (BSD-2-Clause)
-echo "==> 1/7 Building dav1d $DAV1D_VERSION (macOS $DEPS_MIN_MACOS, $DEPS_ARCH)..."
+echo "==> 1/7 Building dav1d $DAV1D_VERSION ($TARGET_LABEL, $DEPS_ARCH)..."
 cd "$SRC_DIR"
 if [ ! -f "dav1d-$DAV1D_VERSION.tar.bz2" ]; then
     curl -fsSL -o "dav1d-$DAV1D_VERSION.tar.bz2" \
@@ -69,6 +131,7 @@ tar -xjf "dav1d-$DAV1D_VERSION.tar.bz2"
 cd "dav1d-$DAV1D_VERSION"
 
 meson setup build \
+    ${MESON_CROSS_ARGS[@]+"${MESON_CROSS_ARGS[@]}"} \
     --prefix="$PREFIX" \
     --libdir=lib \
     --default-library=shared \
@@ -81,7 +144,7 @@ meson setup build \
 ninja -C build install
 
 # 2. FFmpeg (LGPL-2.1-or-later: no --enable-gpl, no --enable-version3)
-echo "==> 2/7 Building FFmpeg $FFMPEG_VERSION (LGPL, macOS $DEPS_MIN_MACOS, $DEPS_ARCH)..."
+echo "==> 2/7 Building FFmpeg $FFMPEG_VERSION (LGPL, $TARGET_LABEL, $DEPS_ARCH)..."
 cd "$SRC_DIR"
 if [ ! -f "ffmpeg-$FFMPEG_VERSION.tar.xz" ]; then
     curl -fsSL -o "ffmpeg-$FFMPEG_VERSION.tar.xz" \
@@ -120,11 +183,32 @@ FFMPEG_CONFIGURE_FLAGS=(
     --extra-cflags="$COMMON_CFLAGS -I$PREFIX/include"
     --extra-ldflags="$COMMON_LDFLAGS -L$PREFIX/lib"
 )
+if [ "$PLATFORM" != macos ]; then
+    # The target comes in the flags below; the cross build keeps configure from running what it compiles.
+    FFMPEG_CONFIGURE_FLAGS+=(--enable-cross-compile --sysroot="$IOS_SYSROOT")
+fi
 ./configure "${FFMPEG_CONFIGURE_FLAGS[@]}"
 
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 make -j"$NCPU"
 make install
+
+# iOS: FFmpeg and dav1d are all; libass & co. come with the subtitles task. Licenses, stamp, verification.
+if [ "$PLATFORM" != macos ]; then
+    LICENSES_DIR="$PREFIX/share/licenses"
+    mkdir -p "$LICENSES_DIR/ffmpeg" "$LICENSES_DIR/dav1d"
+    cp "$SRC_DIR/ffmpeg-$FFMPEG_VERSION/LICENSE.md" "$SRC_DIR/ffmpeg-$FFMPEG_VERSION/COPYING.LGPLv2.1" \
+        "$LICENSES_DIR/ffmpeg/"
+    cp "$SRC_DIR/dav1d-$DAV1D_VERSION/COPYING" "$LICENSES_DIR/dav1d/"
+    echo "$DEPS_IOS_STAMP" > "$PREFIX/$DEPS_STAMP_FILE"
+    deps_ios_verify "$PREFIX" "$PLATFORM"
+    echo "==> Dependencies built into $PREFIX:"
+    for dylib in "$PREFIX/lib/"*.dylib; do
+        [ -f "$dylib" ] && [ ! -L "$dylib" ] || continue
+        echo "    $(basename "$dylib") ($(vtool -show-build "$dylib" | awk '/platform/ {p=$2} /minos/ {print p " minos " $2; exit}'))"
+    done
+    exit 0
+fi
 
 # 3-7. libass and what it needs for text layout: FreeType, HarfBuzz, FriBidi, libunibreak. Built after FFmpeg, which
 # doesn't link them. Text is shaped and rasterized by libass (ISC); fonts come from Core Text, so no Fontconfig.

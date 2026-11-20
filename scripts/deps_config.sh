@@ -127,3 +127,46 @@ deps_verify() {
         fi
     done
 }
+
+# iOS: FFmpeg and dav1d only (libass and its libraries come with the subtitles task), as dynamic xcframeworks.
+# Versioned apart from the macOS archive: its own pre-release `deps-ios-v<DEPS_IOS_VERSION>` (a draft is not downloadable
+# without authorization), one zip per library (SwiftPM's `binaryTarget(url:checksum:)` takes one xcframework per zip). The
+# URLs and checksums sit in Package.swift, which cannot read this file: change both together.
+DEPS_IOS_VERSION="1.0.0"
+DEPS_MIN_IOS="18.4"
+DEPS_IOS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-ios-v${DEPS_IOS_VERSION}"
+DEPS_IOS_STAMP="deps-ios=${DEPS_IOS_VERSION} ffmpeg=${FFMPEG_VERSION} dav1d=${DAV1D_VERSION} arch=${DEPS_ARCH} minos=${DEPS_MIN_IOS}"
+DEPS_IOS_REQUIRED_LIBS=(
+    "libavformat.63.dylib"
+    "libavcodec.63.dylib"
+    "libavutil.61.dylib"
+    "libswresample.7.dylib"
+    "libswscale.10.dylib"
+    "libdav1d.7.dylib"
+)
+
+# Checks an iOS / simulator prefix: stamp, libraries, and each one's platform and minos (vtool).
+deps_ios_verify() {
+    local prefix="$1" platform="$2" lib lib_path minos want
+    case "$platform" in ios) want="IOS" ;; ios-simulator) want="IOSSIMULATOR" ;; *) return 1 ;; esac
+    if [ ! -f "$prefix/$DEPS_STAMP_FILE" ] || [ "$(cat "$prefix/$DEPS_STAMP_FILE")" != "$DEPS_IOS_STAMP" ]; then
+        echo "Error: $prefix/$DEPS_STAMP_FILE doesn't match '$DEPS_IOS_STAMP'" >&2
+        return 1
+    fi
+    for lib in "${DEPS_IOS_REQUIRED_LIBS[@]}"; do
+        lib_path="$prefix/lib/$lib"
+        if [ ! -f "$lib_path" ]; then
+            echo "Error: required library $lib_path is missing" >&2
+            return 1
+        fi
+        if ! vtool -show-build "$lib_path" | grep -q "platform $want"; then
+            echo "Error: $lib is not built for $want" >&2
+            return 1
+        fi
+        minos="$(vtool -show-build "$lib_path" | awk '/minos/ {print $2; exit}')"
+        if [ "$minos" != "$DEPS_MIN_IOS" ]; then
+            echo "Error: $lib has minos '$minos' (expected $DEPS_MIN_IOS)" >&2
+            return 1
+        fi
+    done
+}
