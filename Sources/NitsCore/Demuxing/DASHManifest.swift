@@ -157,17 +157,16 @@ package struct DASHManifest {
         }
         self.hasProtectedStreams = hasProtected
 
-        // The best first: a codec told over one that is not; then the larger picture, the HDR one, the codec the user
-        // prefers (a bitrate says nothing of the quality across codecs), the higher bitrate.
+        // The best first: a codec told over one that is not, then `LadderChoice`'s order (the client's rule for the best
+        // ladder: the larger picture, the HDR one, the codec the user prefers, the higher bitrate).
+        func key(_ video: Video) -> (Int, Int, Int, Int, Int) {
+            LadderChoice.key(
+                height: video.height, width: video.width, isHDR: video.isHDR, family: video.family,
+                bandwidth: video.bandwidth, codecRank: codecs.rank(ofFamily:))
+        }
         pictures.sort { lhs, rhs in
-            let (a, b) = (lhs.video, rhs.video)
             if lhs.isKnownCodec != rhs.isKnownCodec { return lhs.isKnownCodec }
-            if a.height != b.height { return a.height > b.height }
-            if a.width != b.width { return a.width > b.width }
-            if a.isHDR != b.isHDR { return a.isHDR }
-            let (ra, rb) = (codecs.rank(ofFamily: a.family), codecs.rank(ofFamily: b.family))
-            if ra != rb { return ra < rb }
-            return a.bandwidth > b.bandwidth
+            return key(lhs.video) > key(rhs.video)
         }
         // Files the client reads no index of (one without an index range: not `isSegmented`) play as files when the
         // manifest has no other picture (`playsAsFiles`). Beside pictures the client reads they are left out, before the
