@@ -750,7 +750,12 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         }
         // The ladder a host chose, when the playlist has it (it may not, once the host's list is old).
         if !selection.isEmpty {
-            let chosen = candidates.filter(selection.matches)
+            var chosen = candidates.filter(selection.matches)
+            // A range the playlist tells otherwise than the host's list does: the codec's ladder plays, whichever range.
+            if chosen.isEmpty, selection.codec != nil, selection.isHDR != nil {
+                chosen = candidates.filter(HLSSelection(codec: selection.codec).matches)
+                if !chosen.isEmpty { warning("the playlist has no ladder of the chosen range: the codec's plays") }
+            }
             if chosen.isEmpty {
                 warning("the playlist has no ladder of the chosen codec and range")
             } else {

@@ -237,8 +237,10 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   ladders, one for each codec and range the page lists (`HLSLadderMenu`: the best rung of each, `ResolvedMedia.videoFormats`
   of a video, not a live stream), are in the format menu, each the playlist's address with the choice in its fragment
   (`#nits-ladder=vp9&nits-range=hdr`, `HLSSelection`: the client cuts it off and plays the variants that have that codec and
-  are HDR or not: YouTube's "HDR10" is `VIDEO-RANGE=HLG` in its playlist, so the choice is HDR or SDR, not which); `MediaResolverChain` puts the one `VideoCodecPreference` prefers first and plays it, by the rule the client chooses
-  the best ladder of a bare `.m3u8` by (`LadderChoice`). A choice the playlist no longer has (an old list) plays the best
+  are HDR or not: YouTube's "HDR10" is `VIDEO-RANGE=HLG` in its playlist, so the choice is HDR or SDR, not which);
+  `MediaResolverChain` puts the one `VideoCodecPreference` prefers first and plays it, by the rule the client chooses
+  the best ladder of a bare `.m3u8` by (`LadderChoice`). A choice whose range the playlist tells otherwise plays the
+  codec's ladder; one it no longer has (an old list) plays the best
   ladder, warned of in the log, and the menu may then mark another. The choice
   among the codecs is `MediaResolverChain.offeringChoices` (the rules of `DASHManifestResolver`, `VideoCodecPreference`:
   the preferred first, the others in the format menu), each the manifest's `data:` location with `#nits-video=<id>`

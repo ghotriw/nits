@@ -91,6 +91,13 @@ struct HLSLadderTests {
             try Self.ladder(Self.sdr, rank: Self.avcFirst, selection: .init(codec: "av1"), warnings: warnings)
                 == [500, 5000])
         #expect(warnings.messages.count == 1)
+        // A range the playlist has none of for that codec (the host's list and the playlist tell it differently): the
+        // codec's own ladder plays, warned of; a codec it lacks stays the case above.
+        let range = Warnings()
+        #expect(
+            try Self.ladder(Self.sdr, selection: .init(codec: "vp9", isHDR: true), warnings: range) == [300, 1500])
+        #expect(range.messages.count == 1)
+        #expect(try Self.ladder(Self.sdr, selection: .init(codec: "avc", isHDR: true)) == [500, 5000])
         // A variant that tells no codec: the ladders can't be told apart, and the choice is warned of.
         let untold = Warnings()
         let noCodec = Self.sdr + "#EXT-X-STREAM-INF:BANDWIDTH=9000,RESOLUTION=1920x1080\nv9000.m3u8\n"
