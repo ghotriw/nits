@@ -1,0 +1,65 @@
+name: Build and Release iOS Dependencies
+
+# FFmpeg and dav1d as xcframeworks for iOS and the iOS Simulator, one zip per library (SwiftPM binaryTarget(url:)).
+# Versions and flags live in scripts/deps_config.sh / scripts/build_dependencies.sh. Releases are made here only.
+# After a run, paste the printed binaryTarget checksums into Package.swift.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS 18.4 Dependencies (FFmpeg, dav1d)
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read dependency versions
+        id: deps
+        run: |
+          source scripts/deps_config.sh
+          {
+            echo "version=$DEPS_IOS_VERSION"
+            echo "ffmpeg=$FFMPEG_VERSION"
+            echo "dav1d=$DAV1D_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: brew install pkg-config meson ninja
+
+      - name: Compile for iOS and the iOS Simulator (arm64)
+        run: |
+          ./scripts/build_dependencies.sh --platform=ios
+          ./scripts/build_dependencies.sh --platform=ios-simulator
+          ./scripts/make_xcframeworks.sh --zip
+
+      - name: Report checksums
+        run: |
+          {
+            echo "### deps-ios-v${{ steps.deps.outputs.version }}"
+            echo
+            echo "Set in \`Package.swift\`:"
+            echo
+            echo "\`\`\`"
+            cat .build/dist/ios/Package-snippet.txt
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release iOS Dependencies Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: deps-ios-v${{ steps.deps.outputs.version }}
+          name: Prebuilt iOS Dependencies v${{ steps.deps.outputs.version }}
+          prerelease: true
+          body: |
+            Prebuilt LGPL dependencies for Nits on iOS 18.4+ and the iOS Simulator (arm64), one xcframework per library:
+            - dav1d ${{ steps.deps.outputs.dav1d }}
+            - FFmpeg ${{ steps.deps.outputs.ffmpeg }} (libavcodec, libavformat, libavutil, libswresample, libswscale)
+            Source archives the libraries were built from are attached (LGPL source offer).
+          files: |
+            .build/dist/ios/*.zip
+            .build/dist/ios/ffmpeg-${{ steps.deps.outputs.ffmpeg }}.tar.xz
+            .build/dist/ios/dav1d-${{ steps.deps.outputs.dav1d }}.tar.bz2
