@@ -295,13 +295,7 @@ package struct DASHPlaylists: PlaylistSource {
         guard let chosen = videos.first(where: { $0.id == id }) else {
             throw .unsupported("the picture '\(id)' the address names is not in the manifest")
         }
-        let family = { (video: DASHPresentation.Representation) in
-            [video.codecs.flatMap(CodecFamily.video(in:)), video.supplementalCodecs.flatMap(CodecFamily.video(in:))]
-        }
-        let rungs = videos.filter {
-            family($0) == family(chosen) && $0.videoRange == chosen.videoRange && $0.isWebM == chosen.isWebM
-                && $0.bandwidth > 0
-        }
+        let rungs = videos.filter { DASHPictureGroup($0) == DASHPictureGroup(chosen) && $0.bandwidth > 0 }
         return chosen.bandwidth > 0 && rungs.count > 1 ? rungs : [chosen]
     }
 
@@ -699,8 +693,8 @@ package struct DASHPlaylists: PlaylistSource {
             + ordered.filter { $0.sound.roleRank != 2 }.map(\.sound)
     }
 
-    /// The pictures that are played, each with the numbers of its segments: in each group that switches together (codec,
-    /// Dolby Vision's supplemental codec, range) those of the best picture (the highest bitrate), for the pictures whose
+    /// The pictures that are played, each with the numbers of its segments: in each group that switches together
+    /// (`DASHPictureGroup`) those of the best picture (the highest bitrate), for the pictures whose
     /// segments start where its own do. The others of the group are `.offGrid`: played, numbered as their manifest says,
     /// and taken over from only where their boundaries meet (`StreamingInput.joinSegment`). `.own`: the best picture, or one alone in its group, numbered as its
     /// manifest says. `.on`: a picture or its reference is one file, whose segments are told
@@ -708,11 +702,6 @@ package struct DASHPlaylists: PlaylistSource {
     static func numberedPictures(
         _ videos: [DASHPresentation.Representation], isLive: Bool = false
     ) -> [(representation: DASHPresentation.Representation, numbering: PictureNumbering)] {
-        struct Group: Hashable {
-            var codec: String?
-            var supplemental: String?
-            var range: VideoRange?
-        }
         // `StreamingInput.ladder(of:)` keeps every variant as one ladder when one of those with a picture (a size or a picture's
         // codec told; all, when none is) tells no codec it knows: then all the pictures are numbered as one group, or a
         // ladder would join variants numbered apart.
@@ -721,13 +710,10 @@ package struct DASHPlaylists: PlaylistSource {
         }
         let withPicture = videos.filter { ($0.width != nil && $0.height != nil) || knowsCodec($0) }
         let isOneLadder = (withPicture.isEmpty ? videos : withPicture).contains { !knowsCodec($0) }
-        func group(of video: DASHPresentation.Representation) -> Group {
-            guard !isOneLadder else { return Group() }
-            return Group(
-                codec: video.codecs.flatMap(CodecFamily.video(in:)),
-                supplemental: video.supplementalCodecs.flatMap(CodecFamily.video(in:)), range: video.videoRange)
+        func group(of video: DASHPresentation.Representation) -> DASHPictureGroup {
+            isOneLadder ? .all : DASHPictureGroup(video)
         }
-        var references: [Group: DASHPresentation.Representation] = [:]
+        var references: [DASHPictureGroup: DASHPresentation.Representation] = [:]
         for (key, members) in Dictionary(grouping: videos, by: group(of:)) where members.count > 1 {
             references[key] = members.max { $0.bandwidth < $1.bandwidth }
         }

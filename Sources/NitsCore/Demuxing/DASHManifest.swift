@@ -25,9 +25,9 @@ package struct DASHManifest {
         package var isHDR: Bool
         /// The codec's family (`CodecFamily.video(in:)`); empty when the manifest tells none.
         package var family = ""
-        /// What switches with what, as the client groups them (`DASHPlaylists.pictures`): the codec, the supplemental codec
-        /// (Dolby Vision's on an HDR10 base) and the transfer (PQ, HLG, or neither).
-        package var group = ""
+        /// What switches with what, as the client groups them (`DASHPictureGroup`). Internal: NitsStreaming is imported
+        /// internally, so a `package` declaration cannot name its types.
+        var group: DASHPictureGroup
         /// Its media is segments, so that the demuxer can seek in it and switch to it at a position: a template, a list,
         /// or one file with its index (`SegmentBase`: an MP4's `sidx`, a WebM's `Cues`), whose segments the client's
         /// source reads from the index. One file without an index range is read from its start to either.
@@ -141,7 +141,9 @@ package struct DASHManifest {
                 let range = DASHElements.hdrTransfer(of: representation) ?? DASHElements.hdrTransfer(of: set)
                 // A WebM and an MP4 of one codec do not switch with each other (`DASHPlaylists.pictures`).
                 let isWebM = value("mimeType")?.lowercased().hasSuffix("/webm") == true
-                let group = "\(family ?? "")|\(supplemental ?? "")|\(range?.rawValue ?? "")" + (isWebM ? "|webm" : "")
+                let group = DASHPictureGroup(
+                    codecs: value("codecs"), supplementalCodecs: value("scte214:supplementalCodecs"), range: range,
+                    isWebM: isWebM)
                 pictures.append(
                     (
                         Video(
@@ -174,13 +176,20 @@ package struct DASHManifest {
         // would share the page's added sound (`ResolvedMedia.audioFiles`) with a manifest that carries its own.
         if pictures.contains(where: \.video.isSegmented) { pictures.removeAll { !$0.video.isSegmented } }
         // Each is offered; one that a second adaptation set lists again (the same size, codec and bitrate) once.
-        var seenKeys: Set<String> = []
+        struct PictureKey: Hashable {
+            var width, height, frameRate: Int
+            var group: DASHPictureGroup
+            var isHDR: Bool
+            var bandwidth: Int
+        }
+        var seenKeys: Set<PictureKey> = []
         var videos: [Video] = []
         var places: [String: Place] = [:]
         for picture in pictures {
-            let key =
-                "\(picture.video.width)x\(picture.video.height)@\(Int((picture.video.frameRate ?? 0).rounded()))"
-                + " \(picture.video.group) \(picture.video.isHDR) \(picture.video.bandwidth)"
+            let video = picture.video
+            let key = PictureKey(
+                width: video.width, height: video.height, frameRate: Int((video.frameRate ?? 0).rounded()),
+                group: video.group, isHDR: video.isHDR, bandwidth: video.bandwidth)
             guard seenKeys.insert(key).inserted else { continue }
             videos.append(picture.video)
             places[picture.video.id] = picture.place
@@ -287,7 +296,7 @@ package struct DASHManifest {
     /// The best picture of each codec and range, the best first: what a viewer chooses between when the manifest has
     /// more than one (a ladder plays as one, its other codecs are these).
     package var codecGroups: [Video] {
-        var seen = Set<String>()
+        var seen = Set<DASHPictureGroup>()
         return videos.filter { seen.insert($0.group).inserted }
     }
 
