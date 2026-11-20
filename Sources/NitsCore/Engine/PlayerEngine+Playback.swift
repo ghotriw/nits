@@ -122,6 +122,7 @@ extension PlayerEngine {
         videoHostScreenDidChange()
         // Before the seek, on the same serial queue: its flush finds the session gone, not a dead one.
         resetDecoderSession(because: "coming back")
+        recoverDisplayLayerOnReturn()
         guard isLoaded, !isLoading else { return }
         // Loaded in the background: the position it ended its load at, which is where it stands now.
         let snapshot =
@@ -133,6 +134,31 @@ extension PlayerEngine {
             seek(to: snapshot.position, exact: true)
         }
         AppLog.info(.engine, "Host back in the foreground; seeking to \(String(format: "%.3f", snapshot.position))s")
+    }
+
+    /// Whether the display layer has to be flushed before it takes frames again: it was told to stop using decoder resources
+    /// (`requiresFlushToResumeDecoding`, with the status `.failed`), as the system does to an app that has been in the
+    /// background for a while (not after 5 s, after 20 s).
+    nonisolated static func displayLayerNeedsFlush(
+        status: AVQueuedSampleBufferRenderingStatus, requiresFlush: Bool
+    ) -> Bool {
+        requiresFlush || status == .failed
+    }
+
+    /// On coming back: the layer's state is logged, and a layer that stopped taking frames is flushed, keeping its image, so
+    /// that the seek that follows shows the picture again (enqueued to a layer that requires a flush, frames are dropped
+    /// silently and the picture stays blank until a flush).
+    private func recoverDisplayLayerOnReturn() {
+        let renderer = sampleBufferRenderer
+        let status = renderer.status
+        let requiresFlush = renderer.requiresFlushToResumeDecoding
+        let error = renderer.error.map { "\($0)" } ?? "none"
+        let needsFlush = Self.displayLayerNeedsFlush(status: status, requiresFlush: requiresFlush)
+        AppLog.info(
+            .video,
+            "Display layer on coming back: status \(status.rawValue), error \(error), requires flush \(requiresFlush)"
+                + (needsFlush ? "; flushing it" : ""))
+        if needsFlush { flushDisplayLayer(removingDisplayedImage: false) }
     }
 
     /// Drops the decoder's session on `seekQueue`, behind a seek or load start in flight and ahead of what follows,

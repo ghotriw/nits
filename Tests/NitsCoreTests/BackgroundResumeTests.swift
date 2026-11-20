@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -139,4 +140,31 @@ extension BackgroundResumeTests {
         engine.play()
         #expect(await engine.waitForPlayback(advancingBy: 1.0, timeout: .seconds(4)))
     }
+}
+
+extension BackgroundResumeTests {
+    @Test("A display layer that requires a flush, or has failed, is flushed on coming back; a healthy one is not")
+    func displayLayerNeedsFlushOnReturn() {
+        #expect(PlayerEngine.displayLayerNeedsFlush(status: .failed, requiresFlush: true))
+        #expect(PlayerEngine.displayLayerNeedsFlush(status: .failed, requiresFlush: false))
+        #expect(PlayerEngine.displayLayerNeedsFlush(status: .rendering, requiresFlush: true))
+        #expect(!PlayerEngine.displayLayerNeedsFlush(status: .rendering, requiresFlush: false))
+        #expect(!PlayerEngine.displayLayerNeedsFlush(status: .unknown, requiresFlush: false))
+    }
+
+    @Test("Coming back logs the layer's state and leaves a healthy layer alone")
+    func returnWithAHealthyLayer() async throws {
+        guard let engine = await Self.load() else { return }
+        defer { engine.stop() }
+        _ = await engine.waitForPlayback(advancingBy: 0.5)
+        engine.hostDidEnterBackground()
+        engine.hostWillEnterForeground()
+        #expect(await engine.waitUntil(timeout: .seconds(3)) { !engine.isSeeking && engine.pendingSeekTime == nil })
+        #expect(!isDisplayLayerFailed(engine))
+    }
+}
+
+@MainActor
+private func isDisplayLayerFailed(_ engine: PlayerEngine) -> Bool {
+    engine.sampleBufferRenderer.status == .failed
 }
