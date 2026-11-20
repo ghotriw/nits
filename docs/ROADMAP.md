@@ -892,11 +892,23 @@ flowchart TD
 - [x] **8.4. v1 player:** `PlayerScreen` (close and title; back 10 s, play / pause, forward 10 s; a scrub bar, remaining
   time or a LIVE badge; tap, double tap on the sides, pinch for fit / fill), files from Files and network addresses,
   always the `.system` render mode. Checked on an iPhone 14 Pro and an iPad mini 6.
+- [x] **8.4a. Host API on iOS:** `TouchPlayerSession` repeats `PlayerSession`'s API over the shared `PlayerSessionCore`:
+  `openStream` (headers, title, artwork, start time, tracks), `load(_:)`, `onTimeUpdate` / `onPlaybackStateChanged` /
+  `onPlaybackEnded` / `onClose`, action buttons (one capsule with a dismiss button), the host's Next / Previous (in the
+  control bar), `close()` / `end()`, a public `init(configuration:historyStore:)`; the history is written on the way to
+  the background. Not in: overlay buttons, the "Up Next" card, Now Playing, PiP, `ControlsConfiguration`, yt-dlp.
 - [ ] **8.5. Subtitles:** libass, FreeType, HarfBuzz, FriBidi and libunibreak for iOS (the `#if canImport(CLibass)` in
   NitsCore goes away) and the subtitle overlay (`SubtitleOverlayView`, its shader) moved into a target both players use.
-- [ ] **8.6. Track pickers, speed, settings, playlists** on iOS.
+- [ ] **8.6. Track pickers, speed, settings, playlists** on iOS. With them the iOS UI state outgrows the screen's own
+  `@State`: a `PlayerUIState` of `NitsTouch`'s (what `NitsUI`'s is to macOS) takes it, and `ActionButtonPresenter` moves
+  there from `TouchPlayerSession`.
 - [ ] **8.7. Background audio and Now Playing** (`MPNowPlayingInfoCenter`, remote commands) and **Picture in Picture**
-  (`AVPictureInPictureController(contentSource:)` over the display layer).
+  (`AVPictureInPictureController(contentSource:)` over the display layer). Now Playing is a `PlayerSessionSink` of
+  `TouchPlayerSession`, as on macOS. With this the session's platform part grows to `NitsKit`'s size: split `NitsTouch`
+  into the session (the Kit's role) and the views (the UI's role), today one target as both are small.
+- [ ] **8.x. A host's own UI on iOS:** when a host wants its own controls over `TouchPlayerSession` rather than
+  `PlayerScreen`, make `VideoSurface` public (macOS has `VideoSurfaceView`) and, if not done by 8.7, split the views
+  off `NitsTouch` then.
 - [ ] **8.8. Timeline thumbnails on iOS:** the engine makes them already (`ThumbnailManager`); whether and how the iOS
   player shows them, judged by what other iOS players do.
 - [ ] **8.9. Display-link rate for ProMotion:** pick from the rates the screen can run at rather than divisors of its

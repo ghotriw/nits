@@ -266,6 +266,47 @@ controls); `adoptsTitleBar: false` leaves it the host's. Closing the window ends
 
 Details: "Session and presentation" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### iPhone and iPad (`NitsTouch`)
+
+`TouchPlayerSession` is the iOS session and `PlayerScreen(session:)` its screen. The session repeats the names of
+`PlayerSession`: a host opens media and subscribes through it, never on `engine`.
+
+```swift
+import NitsTouch
+
+let session = TouchPlayerSession(
+    configuration: TouchPlayerSession.defaultConfiguration,  // system render mode, the phone's byte budgets
+    historyStore: PlaybackHistoryStore(fileURL: nil))        // optional: keep the history out of the app's file
+session.onTimeUpdate = { [weak session] _, _ in
+    if let progress = session?.engine.playbackProgress { /* save progress.position, progress.duration */ }
+}
+session.onPlaybackEnded = { /* play the next episode */ }
+session.onClose = { finalTime, duration in /* the user closed the player: dismiss the screen */ }
+
+session.openStream(
+    url: streamURL, title: "Movie Title", headers: ["Authorization": "Bearer secret_token"],
+    startTime: 120, audioTrack: "jpn", subtitleTrack: "off")
+
+// In the host's view hierarchy (the player takes the whole screen):
+PlayerScreen(session: session)
+```
+
+- `openStream(url:)` takes a file too (a file from Files stays accessible while it plays, until the next open, `close()`
+  or `end()`). `load(_:)` takes a whole `MediaLoadRequest` (`audioFiles`, `subtitleFiles`, `httpRequestSize`) but no file
+  access: the host keeps accessible the files such a request names.
+- `close()` is what the control bar's X and the error alert's Close call. It reports `onClose` when something was opened
+  since the last one and stops, and the session opens the next media (one opened from inside `onClose` keeps playing).
+  `end()` is the last call: `onClose`, stop, and later opens do nothing. After a `close()` that reported, `end()`
+  does not report `onClose` a second time.
+- Action buttons (`setActionButtons`, `onActionButton`, `actionButtonAutoPress`, `actionButtonDisplayDuration`) and the
+  host's queue (`onTrackNavigation`, `setTrackNavigation`, `openStream(trackNavigation:)`) work as on macOS. An action
+  button shows as one capsule with a dismiss button above the timeline; Next and Previous show in the control bar when
+  the queue has them. With `onTrackNavigation` set the end of the media is the host's: `onPlaybackEnded` is the
+  signal to open the next episode.
+- Going to the background pauses and writes the history, so a position survives the system ending the app.
+- Not on iOS yet: overlay buttons, the "Up Next" card (a button with a subtitle or artwork shows as the plain button),
+  Now Playing and remote commands, Picture in Picture, track pickers, `ControlsConfiguration`, yt-dlp.
+
 ### Logging
 
 Player logs go through `AppLog`, which writes to `os.Logger` and to `~/Library/Logs/<bundle id>/player.log` (a host's own folder in a host app). A host app can use it too:

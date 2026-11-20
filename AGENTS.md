@@ -114,10 +114,17 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   only (never `NitsStreaming`, which `format.sh lint` enforces) and observes `PlayerEngine` directly. The test seams of the
   session are internal, not API. The engine's hooks for it are `hostDidEnterBackground()` / `hostWillEnterForeground()`;
   an iOS-only event gets an engine handler whose policy is the engine's, never `#if os` in it. `NitsUI` and `NitsKit` stay macOS-only.
+  The host API of `TouchPlayerSession` (`openStream`, `load(_:)`, the callbacks, action buttons, the host's queue, `close()` /
+  `end()`) repeats `PlayerSession`'s names over the same `PlayerSessionCore`; going to the background writes the history
+  after the engine hears of it.
 - UI changes must not require changes to decoding, shaders or A/V sync.
 - What does not depend on the window (the engine's callbacks, Now Playing, PiP, actions, opening media) is
-  `PlayerSession`'s; `PlayerWindowController` only adds the window and is one `PlayerPresentation`. The engine's
-  callbacks are single closures that the session owns: hosts subscribe through the session, never on `engine`. The
+  `PlayerSession`'s; `PlayerWindowController` only adds the window and is one `PlayerPresentation`. What does not depend
+  on the platform (the engine's callbacks, `openStream`, `close()` / `end()`) is `PlayerSessionCore`'s (`NitsCore`,
+  `package`), which `PlayerSession` and `TouchPlayerSession` hold (`ActionButtonPresenter`, in `NitsCore` for both players, is
+  the one piece of when-is-it-shown policy there: no SwiftUI, no views, shared on purpose, not a precedent); a platform's parts (Now Playing, recent media, the OSD) are
+  its `PlayerSessionSink`s. The engine's
+  callbacks are single closures that the core owns: hosts subscribe through the session, never on `engine`. The
   unmodified keys live in `PlayerKeyRouter` (`PlayerWindow` and `PlayerKeyMonitor` both call it); NitsUI never zooms or
   moves the key window itself (`titleBarDoubleClicked` is the window's). See "Session and presentation" in `docs/ARCHITECTURE.md`.
 - Keep the engine embeddable: `NativeVideoHostView` stays a bare canvas with no built-in controls;

@@ -274,6 +274,18 @@ either:
 - calls `session.end()` when done: `onClose` (the saved progress), PiP, Now Playing, `engine.stop()`. For a window
   `windowWillClose` does it.
 
+What does not depend on the platform either is `PlayerSessionCore` (NitsCore, `package`): the owner of the engine's
+single callbacks, the host's callbacks made of them (`onTimeUpdate`, `onPlaybackStateChanged`, `onPlaybackEnded`,
+`onClose`), `openStream` / `load(_:)` (the URL → path rule is `MediaLoadRequest.path(for:)`), `close()`, `end()` and
+`saveProgress()`. `PlayerSession` and `TouchPlayerSession` (iOS) each hold one and repeat its API under the same names,
+so a host's code reads the same on both. What a platform adds (Now Playing, recent media and the OSD's seek message on
+macOS) is a `PlayerSessionSink` the session registers: the host's callback hears an event first, then the sinks.
+`close()` differs from `end()`: it reports `onClose` only when something was opened since the last close (a flag of the
+core, not the engine's state: a failed load leaves the engine neither loaded nor loading) and leaves the session usable,
+which the iOS app's empty screen needs; `end()` is terminal on both. On iOS going to the background lets the engine
+hear of it first (its `pause()` saves the position) and then writes the history: the app is suspended before the
+history's own delayed write, and a position that never reached the disk is lost if the system ends the app.
+
 The engine's callbacks (`onTimeUpdate`, `onPlaybackStateChanged`, `onTrackNavigationChanged`, …) are single closures
 and belong to the session. A host subscribes through the session's own (`onTimeUpdate`, `onPlaybackStateChanged`,
 `onPlaybackEnded`, `onClose`), never on `engine`: it would silently stop Now Playing and the saved progress. A host
