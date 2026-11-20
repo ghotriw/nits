@@ -37,32 +37,32 @@ let package = Package(
         .binaryTarget(
             name: "libavformat",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libavformat.xcframework.zip",
-            checksum: "871d193c28ddd5943144e213ae94ba801f86bf8341cfd1a9f04e6c95f372ca9e"
+            checksum: "59ef6855973cdf0f863b7c79fa0baeda598a0f35c400deb6a9b9dfc38751c865"
         ),
         .binaryTarget(
             name: "libavcodec",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libavcodec.xcframework.zip",
-            checksum: "ca8423dc9069035e07175b0c834e412f3174b2c74d8766e78345deacb12a8f36"
+            checksum: "a8c62da8659e181eacaaeee34b9bc2ef610b446a92ecc5e3acaaa2264a785f45"
         ),
         .binaryTarget(
             name: "libavutil",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libavutil.xcframework.zip",
-            checksum: "13b62c43f56dbcf434b7c84c9eceadbb918fd6ee8a5bf9958847e6c68c011d1b"
+            checksum: "52b1e9191926ef12377c060d5d5e8baac4963ca307cfee8011022b22e84c0c4e"
         ),
         .binaryTarget(
             name: "libswresample",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libswresample.xcframework.zip",
-            checksum: "924f097266b6cd080271d1d3ca0cf4c2a57822161954221cdb6708b7fe6e9a1c"
+            checksum: "28409a355e818299ba4634da63936d07c0909e8942d5c6e84101578b21b9920d"
         ),
         .binaryTarget(
             name: "libswscale",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libswscale.xcframework.zip",
-            checksum: "4eb1e6a76e0bd8849bf2687018aa0dad27f78b14fe97223b8cc3bd468bd366fc"
+            checksum: "af034ba26c91b7c271925c5567f19fac7a639c12930d558c411f06b4b3314082"
         ),
         .binaryTarget(
             name: "libdav1d",
             url: "https://github.com/ghotriw/nits/releases/download/deps-ios-v1.0.0/libdav1d.xcframework.zip",
-            checksum: "a99ba6b573c041e05ea23901ebbe08eecb90e3948ddaedee12f4450309436ac7"
+            checksum: "049e46cfa1501034bf7e1edf8997b97f768ade4ecde4f5514c7906160ddb8bd9"
         ),
         .target(
             name: "CFFmpeg",
