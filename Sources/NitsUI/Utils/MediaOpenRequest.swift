@@ -25,8 +25,7 @@ public struct MediaOpenRequest: Sendable, Equatable {
 
     /// The path `url` loads by: the URL of a stream, the standardized path of a file.
     public static func loadPath(for url: URL) -> String {
-        MediaURL.isNetworkURL(url.absoluteString)
-            ? url.absoluteString : url.standardizedFileURL.path(percentEncoded: false)
+        MediaLoadRequest.path(for: url)
     }
 
     /// Loads the first of `media` with `load`, the rest becoming the playlist, and attaches the subtitle files to it

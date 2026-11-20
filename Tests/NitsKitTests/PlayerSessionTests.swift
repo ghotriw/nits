@@ -127,6 +127,24 @@ struct PlayerSessionEndedTests {
         #expect(!session.engine.isLoaded)
     }
 
+    @Test("load(_:) hands a whole request to the engine and asks the host to show itself; after end() it does neither")
+    func testLoadRequest() {
+        let session = PlayerSession(engine: .makeForTesting())
+        var presented: [Bool] = []
+        session.onOpenStream = { presented.append($0) }
+        let request = MediaLoadRequest(
+            path: "/nonexistent/x.mkv", title: "Titled",
+            audioFiles: [MediaLoadRequest.AudioFile(url: URL(fileURLWithPath: "/nonexistent/x.m4a"))])
+
+        session.load(request, presents: true)
+        #expect(presented == [true])
+        #expect(session.engine.mediaTitle == "Titled")
+
+        session.end()
+        session.load(request, presents: true)
+        #expect(presented == [true])
+    }
+
     @Test("The player's view is not a text input, so its keys are the player's")
     func testHostingViewIsNotATextInput() {
         let session = PlayerSession(engine: .makeForTesting())

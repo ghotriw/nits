@@ -31,20 +31,33 @@ public final class PlayerSession {
     /// Called by `end()` before the session stops the engine: (finalTime, duration), the engine's. A host that saves
     /// progress reads `engine.playbackProgress` here instead, which is what the history saves (a live stream's history
     /// in the stream's own time, against the end of its window; its duration here is 0).
-    public var onClose: ((_ finalTime: Double, _ duration: Double) -> Void)?
+    public var onClose: ((_ finalTime: Double, _ duration: Double) -> Void)? {
+        get { core.onClose }
+        set { core.onClose = newValue }
+    }
     /// Periodic time observer callback: (currentTime, duration)
-    public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)?
+    public var onTimeUpdate: ((_ currentTime: Double, _ duration: Double) -> Void)? {
+        get { core.onTimeUpdate }
+        set { core.onTimeUpdate = newValue }
+    }
     /// Playback state change callback
-    public var onPlaybackStateChanged: ((PlaybackState) -> Void)?
+    public var onPlaybackStateChanged: ((PlaybackState) -> Void)? {
+        get { core.onPlaybackStateChanged }
+        set { core.onPlaybackStateChanged = newValue }
+    }
     /// Dedicated callback when video finishes playing to the end
-    public var onPlaybackEnded: (() -> Void)?
+    public var onPlaybackEnded: (() -> Void)? {
+        get { core.onPlaybackEnded }
+        set { core.onPlaybackEnded = newValue }
+    }
     /// The control bar shows or hides itself; a window moves its traffic lights with it.
     public var onControlsVisibilityChanged: ((Bool) -> Void)?
     /// A stream was handed to the engine; `presentsHost` asks the host to bring the player forward (a window shows and
     /// activates itself). Not called once the session has ended.
     public var onOpenStream: ((_ presentsHost: Bool) -> Void)?
 
-    private var lastLoggedTimeSeconds: Double = -1.0
+    /// The engine's callbacks and `openStream` / `end`, which `TouchPlayerSession` shares.
+    private let core: PlayerSessionCore
     /// `menuState`, published only when it changes. Started by `init`, not when the menu first asks: its first read
     /// would run inside the menu's own tracking, which takes in everything a nested one reads.
     private let menuStateMirror = PlayerMenuStateMirror()
@@ -61,12 +74,12 @@ public final class PlayerSession {
         }
     }
     /// Set by `end()`; opens still resolving that follow must not start playing again.
-    public private(set) var isEnded = false
+    public var isEnded: Bool { core.isEnded }
 
     /// Called with the button's `id` when an action button is pressed, by the user or by auto-press.
     public var onActionButton: ((_ id: String) -> Void)? {
-        get { engine.actionButtons.onPress }
-        set { engine.actionButtons.onPress = newValue }
+        get { core.onActionButton }
+        set { core.onActionButton = newValue }
     }
 
     /// Called with the button's `id` when one of the host's overlay buttons (`setOverlayButtons(_:)`) is pressed.
@@ -85,20 +98,20 @@ public final class PlayerSession {
     /// bar, menu, keyboard and media keys call it instead of moving through the playlist, and the end of the media no
     /// longer plays the playlist's next item. The host answers by opening the item it moves to.
     public var onTrackNavigation: ((_ direction: TrackNavigationDirection) -> Void)? {
-        get { engine.onTrackNavigation }
-        set { engine.onTrackNavigation = newValue }
+        get { core.onTrackNavigation }
+        set { core.onTrackNavigation = newValue }
     }
 
     /// Replaces the action buttons of the media playing now, preserving any resolved buttons (e.g. SponsorBlock);
     /// the next load replaces them again (see `openStream(actionButtons:)`).
     public func setActionButtons(_ buttons: [PlaybackActionButton]) {
-        engine.actionButtons.setHostButtons(buttons)
+        core.setActionButtons(buttons)
     }
 
     /// Replaces what the host's queue has around the media playing now, e.g. once the host learns the next episode;
     /// the next load replaces it again (see `openStream(trackNavigation:)`).
     public func setTrackNavigation(_ navigation: TrackNavigation) {
-        engine.trackNavigation = navigation
+        core.setTrackNavigation(navigation)
     }
 
     /// Applies the engine's settings (`PlayerEngine.applyConfiguration(_:)`).
@@ -155,6 +168,7 @@ public final class PlayerSession {
     ) {
         let engine = engine ?? PlayerEngine(configuration: configuration)
         self.engine = engine
+        self.core = PlayerSessionCore(engine: engine)
         self.recentMediaStore = recentMediaStore
         self.nowPlayingController = NowPlayingControllerFactory.makeController(engine: engine)
         let uiState = PlayerUIState()
@@ -172,109 +186,75 @@ public final class PlayerSession {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let engine = self?.engine else { return }
-                engine.saveCurrentPlaybackProgress()
-                engine.historyStore.flush()
+                self?.core.saveProgress()
             }
         }
 
-        engine.onMediaLoaded = { [weak self] request, historyKey, title, duration in
-            guard let self, self.rememberRecentMedia, let recentMediaStore = self.recentMediaStore else {
-                return
-            }
+        core.addSink(PlatformSink(session: self))
+    }
+
+    /// What the macOS session adds to the core's events: Now Playing, recent media and the OSD's seek message.
+    @MainActor
+    private final class PlatformSink: PlayerSessionSink {
+        private unowned let session: PlayerSession
+        init(session: PlayerSession) { self.session = session }
+
+        func mediaLoaded(request: MediaLoadRequest, historyKey: String, title: String, duration: Double) {
+            guard session.rememberRecentMedia, let recentMediaStore = session.recentMediaStore else { return }
             let isNetwork = MediaURL.isNetworkURL(request.path)
             guard let url = isNetwork ? URL(string: request.path) : URL(fileURLWithPath: request.path) else { return }
             recentMediaStore.record(
                 url: url,
                 title: title,
                 historyKey: historyKey,
-                sourcePath: self.engine.currentSourcePath,
+                sourcePath: session.engine.currentSourcePath,
                 duration: duration,
                 headers: request.headers
             )
         }
-        engine.onTimeUpdate = { [weak self] current, dur in
-            guard let self else { return }
 
-            if abs(current - self.lastLoggedTimeSeconds) >= 5.0 {
-                self.lastLoggedTimeSeconds = current
-                AppLog.debug(
-                    .engine,
-                    "Playback progress: \(String(format: "%.1f", current))s / \(String(format: "%.1f", dur))s"
-                )
-            }
-
-            self.onTimeUpdate?(current, dur)
-            self.nowPlayingController.update(
-                title: self.engine.mediaTitle,
-                currentTime: current,
-                duration: dur,
-                isPlaying: self.engine.isPlaying,
-                artworkData: self.engine.artworkData,
-                artworkURL: self.engine.artworkURL
-            )
+        func timeUpdated(current: Double, duration: Double) {
+            session.updateNowPlaying(currentTime: current, duration: duration, isPlaying: session.engine.isPlaying)
         }
-        engine.onPlaybackStateChanged = { [weak self] state in
-            guard let self else { return }
 
-            switch state {
-            case .idle:
-                AppLog.info(.engine, "Playback state: idle")
-            case .loading:
-                AppLog.info(.engine, "Playback state: loading '\(self.engine.mediaTitle)'")
-            case .playing:
-                AppLog.info(
-                    .engine,
-                    "Playback state: playing at \(String(format: "%.2f", self.engine.currentTime))s"
-                )
-            case .paused:
-                AppLog.info(
-                    .engine,
-                    "Playback state: paused at \(String(format: "%.2f", self.engine.currentTime))s"
-                )
-            case .completed:
-                AppLog.info(.engine, "Playback state: completed (EOF reached)")
-            case .failed(let error):
-                AppLog.error(.engine, "Playback state: failed with error: '\(error)'")
-            }
-
-            self.onPlaybackStateChanged?(state)
+        func stateChanged(_ state: PlaybackState) {
             switch state {
             case .playing:
-                self.nowPlayingController.update(
-                    title: self.engine.mediaTitle,
-                    currentTime: self.engine.currentTime,
-                    duration: self.engine.media.duration,
-                    isPlaying: true,
-                    artworkData: self.engine.artworkData,
-                    artworkURL: self.engine.artworkURL
-                )
+                session.updateNowPlaying(
+                    currentTime: session.engine.currentTime, duration: session.engine.media.duration, isPlaying: true)
             case .paused:
-                self.nowPlayingController.update(
-                    title: self.engine.mediaTitle,
-                    currentTime: self.engine.currentTime,
-                    duration: self.engine.media.duration,
-                    isPlaying: false,
-                    artworkData: self.engine.artworkData,
-                    artworkURL: self.engine.artworkURL
-                )
+                session.updateNowPlaying(
+                    currentTime: session.engine.currentTime, duration: session.engine.media.duration, isPlaying: false)
             case .idle, .failed, .completed:
-                self.nowPlayingController.clear()
-                if state == .completed {
-                    AppLog.info(.engine, "Playback ended naturally")
-                    self.onPlaybackEnded?()
-                }
+                session.nowPlayingController.clear()
             case .loading:
                 break
             }
         }
-        engine.onTrackNavigationChanged = { [weak self] in
-            self?.nowPlayingController.updateTrackCommands()
+
+        func trackNavigationChanged() {
+            session.nowPlayingController.updateTrackCommands()
         }
-        engine.onRelativeSeekResolved = { [weak self] actualOffset, completedTime in
-            guard let self, self.uiState.osd.isVisible else { return }
-            self.uiState.osd.show(.seek(offsetSeconds: actualOffset, at: completedTime, of: self.engine))
+
+        func relativeSeekResolved(offset: Double, at time: Double) {
+            guard session.uiState.osd.isVisible else { return }
+            session.uiState.osd.show(.seek(offsetSeconds: offset, at: time, of: session.engine))
         }
+
+        func sessionClosing() {
+            session.nowPlayingController.clear()
+        }
+    }
+
+    private func updateNowPlaying(currentTime: Double, duration: Double, isPlaying: Bool) {
+        nowPlayingController.update(
+            title: engine.mediaTitle,
+            currentTime: currentTime,
+            duration: duration,
+            isPlaying: isPlaying,
+            artworkData: engine.artworkData,
+            artworkURL: engine.artworkURL
+        )
     }
 
     /// The player's view: the picture with the control bar, OSD and panels. Put it in any container; the container
@@ -305,19 +285,11 @@ public final class PlayerSession {
 
     /// `end()` as the presentation's window closes: Picture in Picture leaves the closing window where it is.
     func end(windowClosing: Bool) {
-        guard !isEnded else { return }
-        let finalTime = engine.currentTime
-        let finalDuration = engine.media.duration
-        AppLog.info(
-            .ui,
-            "Player session ending for: '\(engine.mediaTitle)' at \(String(format: "%.2f", finalTime))s / \(String(format: "%.2f", finalDuration))s"
-        )
-        onClose?(finalTime, finalDuration)
-        isEnded = true
-        menuStateMirror.stop()
-        pictureInPicture.sessionEnded(windowClosing: windowClosing)
-        nowPlayingController.clear()
-        engine.stop()
+        // After `onClose`, before the engine stops: Picture in Picture and Now Playing (the sink) go first.
+        core.end { [self] in
+            menuStateMirror.stop()
+            pictureInPicture.sessionEnded(windowClosing: windowClosing)
+        }
     }
 
     /// Loads `url`. With `presents`, `onOpenStream` asks the host to bring the player forward.
@@ -334,21 +306,17 @@ public final class PlayerSession {
         trackNavigation: TrackNavigation = TrackNavigation(),
         presents: Bool = false
     ) {
-        guard !isEnded else { return }
-        engine.load(
-            MediaLoadRequest(
-                path: MediaOpenRequest.loadPath(for: url),
-                title: title,
-                artworkData: artworkData,
-                artworkURL: artworkURL,
-                headers: headers,
-                startTime: startTime,
-                audioTrack: audioTrack,
-                subtitleTrack: subtitleTrack,
-                actionButtons: actionButtons,
-                trackNavigation: trackNavigation
-            ))
-        onOpenStream?(presents)
+        let loaded = core.openStream(
+            url: url, title: title, artworkData: artworkData, artworkURL: artworkURL, headers: headers,
+            startTime: startTime, audioTrack: audioTrack, subtitleTrack: subtitleTrack,
+            actionButtons: actionButtons, trackNavigation: trackNavigation)
+        if loaded { onOpenStream?(presents) }
+    }
+
+    /// Loads a whole request: what `openStream` leaves out (`audioFiles`, `subtitleFiles`, `httpRequestSize`).
+    /// Does nothing once the session has ended. With `presents`, `onOpenStream` asks the host to bring the player forward.
+    public func load(_ request: MediaLoadRequest, presents: Bool = false) {
+        if core.load(request) { onOpenStream?(presents) }
     }
 
     /// Opens the URLs dropped on the player or picked in its Open panel, in place.
