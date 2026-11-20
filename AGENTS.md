@@ -325,8 +325,8 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   What the platform alone does (the audio session, the scene's phase, a ProMotion link, memory) is checked on a device.
 - Mark suites that play media in real time `.realtimePlayback`, and ones that depend on the host otherwise
   (hardware decoders, the audio renderer, Metal, timing of async work) `.hostDependent`. CI's gating step
-  skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow, only
-  to report, so run them locally before pushing.
+  skips both (`NITS_SKIP_HOST_DEPENDENT_TESTS`); they run only on a manual dispatch of the CI workflow with
+  `run_host_dependent_tests` checked (off by default; 30 min at most), only to report, so run them locally before pushing.
 - Keep `.realtimePlayback` tests short (a few seconds each): they run one at a time through a queue shared across
   suites, and every second adds to a full run. Their 60 s limit is the trait's (`playTimeLimit`), counted from their
   turn; their suites take `.backstopTimeLimit`, never `.timeLimit(.minutes(1))`, which counts the wait in the queue too

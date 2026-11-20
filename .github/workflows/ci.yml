@@ -9,6 +9,11 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      run_host_dependent_tests:
+        description: 'Run the host-dependent and real-time suites (informational; slow, and they can hang on a runner)'
+        required: false
+        type: boolean
+        default: false
       run_stress_tests:
         description: 'Include the slow stress & audio matrix suites in the host-dependent run'
         required: false
@@ -125,8 +130,9 @@ jobs:
 
       # Reruns the deterministic tests too; they take seconds.
       - name: Run host-dependent tests (informational)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.run_host_dependent_tests
         continue-on-error: true
+        timeout-minutes: 30
         run: |
           if [ "${{ inputs.run_stress_tests }}" = true ]; then
             swift test --disable-sandbox
