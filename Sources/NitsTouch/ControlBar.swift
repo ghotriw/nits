@@ -53,7 +53,16 @@
         }
 
         private var center: some View {
-            HStack(spacing: 36) {
+            // Narrower with the track buttons: 44 + 56 + 72 + 56 + 44 pt and four gaps is 296 pt, inside an iPhone SE's 304 pt (320 less the 8 pt margins) in portrait.
+            HStack(spacing: engine.canPlayPrevious || engine.canPlayNext ? 6 : 36) {
+                if engine.canPlayPrevious {
+                    Button {
+                        engine.playPrevious()
+                    } label: {
+                        Image(systemName: "backward.end.fill").font(.title2).frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Previous")
+                }
                 Button {
                     engine.seekRelative(by: -Self.skipSeconds)
                 } label: {
@@ -73,6 +82,14 @@
                     Image(systemName: "goforward.10").font(.title).frame(width: 56, height: 56)
                 }
                 .accessibilityLabel("Forward 10 seconds")
+                if engine.canPlayNext {
+                    Button {
+                        engine.playNext()
+                    } label: {
+                        Image(systemName: "forward.end.fill").font(.title2).frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Next")
+                }
             }
         }
 

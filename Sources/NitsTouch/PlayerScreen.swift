@@ -52,6 +52,7 @@
                             .animation(.easeInOut(duration: 0.2), value: isVisible)
                             .simultaneousGesture(TapGesture().onEnded { visibility.touch() })
                             .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in visibility.touch() })
+                        ActionButtonView(session: session, areControlsVisible: isVisible) { visibility.touch() }
                     } else {
                         EmptyStateView(session: session).foregroundStyle(.white)
                     }

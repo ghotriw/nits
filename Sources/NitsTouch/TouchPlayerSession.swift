@@ -54,6 +54,20 @@
         /// Why the last thing asked of the session could not be done (a string that is no network address).
         public var errorMessage: String?
 
+        /// Decides when the action button is on screen and when it presses itself; `ActionButtonView` feeds it.
+        @ObservationIgnored let actionButton = ActionButtonPresenter()
+
+        /// Seconds of playback an action button stays up on its own, then it shows only with the controls.
+        public var actionButtonDisplayDuration: Double {
+            get { actionButton.displayDuration }
+            set { actionButton.displayDuration = newValue }
+        }
+        /// Whether an action button that allows it presses itself when its display time runs out.
+        public var actionButtonAutoPress: Bool {
+            get { actionButton.autoPress }
+            set { actionButton.autoPress = newValue }
+        }
+
         @ObservationIgnored private let core: PlayerSessionCore
         @ObservationIgnored private let access: any ScopedURLAccessing
         @ObservationIgnored private let hooks: any HostLifecycleHooks
