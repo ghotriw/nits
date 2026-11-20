@@ -286,7 +286,10 @@ public final class YTDLPResolver: MediaResolver {
             }
         }
         var resolved = try chosen.resolvedMedia(for: url, sponsorBlock: segments, liveHistory: history)
-        if choseHLS, var media = resolved, let plain = try? info.resolvedMedia(for: url, sponsorBlock: segments) {
+        // (Not where what `-f` chose is a live stream's incomplete formats, or a history is played: they are no fallback.)
+        if choseHLS, history == nil, !info.choseIncompleteFormats, var media = resolved,
+            let plain = try? info.resolvedMedia(for: url, sponsorBlock: segments)
+        {
             media.fallback = ResolvedFallback(plain)
             // The playlist's ladders, one for each codec and range, to choose from (the preferred plays: the chain).
             media.videoFormats = HLSLadderMenu.formats(master: media.path, rungs: info.hlsRungs(of: media.path))

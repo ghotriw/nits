@@ -265,7 +265,9 @@ struct YouTubeLiveHistoryTests {
     // MARK: The resolver
 
     private func scriptResolver(
-        liveHistory: Bool, answer: String = YouTubeLiveHistoryTests.liveJSON, fetch: @escaping YouTubeLiveHistory.Fetch
+        liveHistory: Bool, streams: StreamProtocolPreference = .files,
+        answer: String = YouTubeLiveHistoryTests.liveJSON,
+        fetch: @escaping YouTubeLiveHistory.Fetch
     ) throws -> (YTDLPResolver, URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NitsYTDLP-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -276,7 +278,8 @@ struct YouTubeLiveHistoryTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         return (
             YTDLPResolver(
-                locator: YTDLPLocator(customPath: script.path), liveHistory: liveHistory, liveHistoryFetch: fetch),
+                locator: YTDLPLocator(customPath: script.path), liveHistory: liveHistory, streams: streams,
+                liveHistoryFetch: fetch),
             directory
         )
     }
@@ -300,6 +303,15 @@ struct YouTubeLiveHistoryTests {
         let resolved = try #require(try await resolver.resolve(YTDLPResolverTests.page, headers: [:]))
         #expect(resolved.path == "https://manifest.example/hls/master.m3u8")
         #expect(resolved.liveHistory == nil)
+        // With HLS preferred, what was chosen is no fallback either: the playlist that fails to open would fall to formats the
+        // server ends.
+        let (hlsFirst, hlsDirectory) = try scriptResolver(liveHistory: true, streams: .hls, answer: stale) { _ in
+            .init(status: 404, headers: [:], data: Data())
+        }
+        defer { try? FileManager.default.removeItem(at: hlsDirectory) }
+        let viaHLS = try #require(try await hlsFirst.resolve(YTDLPResolverTests.page, headers: [:]))
+        #expect(viaHLS.path == "https://manifest.example/hls/master.m3u8")
+        #expect(viaHLS.fallback == nil)
         // Without a playlist there is nothing that plays: an error, not formats the server ends after seconds.
         let noPlaylist = stale.replacingOccurrences(
             of: #""protocol": "m3u8_native""#, with: #""protocol": "http_dash_segments""#)
