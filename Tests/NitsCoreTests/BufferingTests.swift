@@ -10,10 +10,10 @@ import Testing
 @MainActor
 struct BufferingTests {
     private func startPlayback(
-        _ preset: SyntheticTestMediaFactory.Preset = .multiTrackH264, rate: Double = 1
+        _ preset: SyntheticTestMediaFactory.Preset = .multiTrackH264, rate: Double = 1, byteBudget: Int? = nil
     ) async -> PlayerEngine? {
         guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return nil }
-        let engine = PlayerEngine.makeForTesting()
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(frameQueueByteBudget: byteBudget))
         engine.load(path: path)
         #expect(await engine.waitForPlayback(advancingBy: 0.5))
         engine.setPlaybackRate(rate)
@@ -136,5 +136,34 @@ struct BufferingTests {
         #expect(await engine.waitUntil { changes == [true, false] }, "Changes: \(changes)")
         #expect(states.isEmpty, "States: \(states)")
         engine.stop()
+    }
+}
+
+extension BufferingTests {
+    /// A byte budget of eight frames of the preset: a queue that never reaches the 30 frames the thresholds were made for.
+    private func eightFrameBudget(_ preset: SyntheticTestMediaFactory.Preset) async -> Int? {
+        guard let engine = await startPlayback(preset) else { return nil }
+        defer { engine.stop() }
+        let bytes = engine.frameQueue.latestFrameBytes
+        return bytes > 0 ? 8 * bytes : nil
+    }
+
+    @Test("Under a byte budget the queue never reaches 30 frames, and buffering still ends once data returns")
+    func holdsAndResumesUnderByteBudget() async {
+        guard let budget = await eightFrameBudget(.multiTrackH264),
+            let engine = await startPlayback(byteBudget: budget)
+        else { return }
+        let highWater = engine.currentFrameHighWater()
+        #expect(highWater.pause < 30, "The budget leaves room for \(highWater.pause) frames")
+        await expectHoldAndResume(engine, rate: 1)
+    }
+
+    @Test("Without audio, a queue under a byte budget leaves buffering too")
+    func videoOnlyUnderByteBudget() async {
+        guard let budget = await eightFrameBudget(.videoOnlyH264),
+            let engine = await startPlayback(.videoOnlyH264, byteBudget: budget)
+        else { return }
+        #expect(engine.currentFrameHighWater().pause < 30)
+        await expectHoldAndResume(engine, rate: 1)
     }
 }

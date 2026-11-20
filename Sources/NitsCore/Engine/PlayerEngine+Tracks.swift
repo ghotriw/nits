@@ -255,7 +255,7 @@ extension PlayerEngine {
         setAudioDelay(0)
     }
 
-    private func applyAudioDelay() {
+    func applyAudioDelay() {
         let delay = CMTime(seconds: audioDelay, preferredTimescale: 1_000_000)
         guard demuxer != nil, let decoder = audioDecoder else {
             audioSink.setDelay(delay)

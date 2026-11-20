@@ -167,3 +167,41 @@ struct BufferingPolicyTests {
         #expect(!BufferingPolicy.isReadyToResume(low, rate: 1, audioSettled: false))
     }
 }
+
+/// The thresholds follow where the feeder pauses and resumes: a queue held under a byte budget cannot grow to the 40
+/// frames of the default, and would never be "ready" or never stop being "low" against fixed counts.
+@Suite("Buffering thresholds under a frame budget")
+struct BufferingBudgetPolicyTests {
+    private typealias Levels = BufferingPolicy.Levels
+
+    /// The feeder pauses at 12 frames and resumes at 7 (a 4K 10-bit frame at 24 fps under 300 MB).
+    private static let small = Levels(
+        audioAhead: 1, queuedFrames: 12, framePauseAt: 12, frameResumeAt: 7, hasAudio: true, hasVideo: true)
+
+    @Test("The default high water of 40 / 25 keeps the old thresholds of 20 and 30")
+    func defaultsAreUnchanged() {
+        let levels = Levels()
+        #expect(BufferingPolicy.videoLowFrames(levels) == 20)
+        #expect(BufferingPolicy.resumeFrames(levels) == 30)
+    }
+
+    @Test("With a high water of 12 / 7 playback resumes on 12 queued frames, and 9 are enough")
+    func resumesAtTheHighWater() {
+        #expect(BufferingPolicy.resumeFrames(Self.small) == 9)
+        #expect(BufferingPolicy.isReadyToResume(Self.small, rate: 1, audioSettled: true))
+        var nine = Self.small
+        nine.queuedFrames = 9
+        #expect(BufferingPolicy.isReadyToResume(nine, rate: 1, audioSettled: true))
+        nine.queuedFrames = 8
+        #expect(!BufferingPolicy.isReadyToResume(nine, rate: 1, audioSettled: true))
+    }
+
+    @Test("A queue that holds 12 frames is not starved by a brief gap in the audio")
+    func notStarvedAtTheHighWater() {
+        var dry = Self.small
+        dry.audioAhead = 0.1
+        #expect(!BufferingPolicy.isStarved(dry, rate: 1))
+        dry.queuedFrames = 4
+        #expect(BufferingPolicy.isStarved(dry, rate: 1))
+    }
+}

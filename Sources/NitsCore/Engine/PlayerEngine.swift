@@ -58,6 +58,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var isPlaying: Bool = false {
         didSet {
             displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
+            if isPlaying, !oldValue { audioOutputRoute.activate() }
         }
     }
     public var isLoaded: Bool = false {
@@ -532,7 +533,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Ends `relativeSeekBurst` once its seeks have stopped coming.
     @ObservationIgnored
     var relativeSeekBurstResetTask: Task<Void, Never>? = nil
-    let audioOutputRoute = PlatformAudioOutputRoute()
+    var audioOutputRoute: any AudioOutputRoute = PlatformAudioOutputRoute()
     var timeObserver: Any?
     var lastSavedProgressSeconds: Double = 0.0
     var configuration: PlayerConfiguration
@@ -578,6 +579,21 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// Joins the audio to the picture's clock after a seek that resumes.
     @ObservationIgnored
     let audioJoin = AudioJoin()
+    /// What an audio interruption owes the user at its end (iOS; macOS has none).
+    @ObservationIgnored
+    var audioInterruption = AudioInterruptionPolicy()
+    /// Set while the host is in the background (`hostDidEnterBackground`); cleared on the way back and by every load.
+    @ObservationIgnored
+    var backgroundSnapshot: BackgroundSnapshot?
+    /// The host is in the background (`hostDidEnterBackground`), whatever is loaded: a load that starts or ends there ends
+    /// paused. Not reset by loads.
+    @ObservationIgnored
+    var isHostInBackground = false
+    /// Renderer flushes the system made on its own (`handleAudioRendererFlushedAutomatically`), for diagnostics and tests.
+    @ObservationIgnored
+    var automaticAudioFlushCount = 0
+    @ObservationIgnored
+    var audioFlushObserver: (any NSObjectProtocol)?
     /// Refreshes `currentMetrics` twice a second, with the process's CPU and memory, for a view showing them (the
     /// performance HUD); off, they change only when media loads, and no timer runs.
     public var isCollectingMetrics: Bool = false {
@@ -771,11 +787,14 @@ public final class PlayerEngine: PlayerEngineProtocol {
     func handlePlaybackCompleted() {
         if onTrackNavigation != nil {
             AppLog.info(.engine, "Playback completed; the host's queue decides what plays next")
+            audioOutputRoute.deactivate()
         } else if playlist.autoPlayNext, let nextItem = playlist.playNext() {
             AppLog.info(.engine, "Auto-advancing to next playlist item: '\(nextItem.title)'")
             load(item: nextItem)
         } else {
             AppLog.info(.engine, "Playback completed naturally (end of playlist)")
+            // Nothing plays on: the output goes back to other apps (their music goes on), and the next play takes it again.
+            audioOutputRoute.deactivate()
         }
     }
 
@@ -784,7 +803,52 @@ public final class PlayerEngine: PlayerEngineProtocol {
         audioOutputRoute.startMonitoring(
             binding: audioRenderer,
             onChange: { [weak self] in self?.handleAudioOutputRouteChange() },
-            onRunningChange: { [weak self] isRunning in self?.audioOutputRunningChanged(isRunning) })
+            onRunningChange: { [weak self] isRunning in self?.audioOutputRunningChanged(isRunning) },
+            onInterruption: { [weak self] began, shouldResume in
+                self?.handleAudioInterruption(began: began, shouldResume: shouldResume)
+            },
+            onRouteLost: { [weak self] in self?.handleAudioRouteLost() })
+        // The system may flush the renderer by itself (a route or session change under it); it says so only here.
+        audioFlushObserver = NotificationCenter.default.addObserver(
+            forName: .AVSampleBufferAudioRendererWasFlushedAutomatically, object: audioRenderer,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleAudioRendererFlushedAutomatically() }
+        }
+    }
+
+    /// The system took the audio away (`began`) or handed it back. What was playing is paused, as the output is silent
+    /// anyway and the picture would run on without the sound; the end resumes it when the system says the user would
+    /// want that (`AudioInterruptionPolicy`).
+    func handleAudioInterruption(began: Bool, shouldResume: Bool) {
+        if began {
+            let wasPlaying = isPlaying
+            if wasPlaying { pause() }
+            audioInterruption.began(isPlaying: wasPlaying)
+            AppLog.info(.audio, "Audio interrupted\(wasPlaying ? "; paused" : "")")
+        } else if audioInterruption.ended(shouldResume: shouldResume) {
+            AppLog.info(.audio, "Audio interruption ended; resuming")
+            play()
+        } else {
+            AppLog.info(.audio, "Audio interruption ended; not resuming (shouldResume: \(shouldResume))")
+        }
+    }
+
+    /// The output in use is gone (headphones unplugged, AirPods out): pauses, and does not resume by itself when
+    /// another output appears, which is the user's to start.
+    func handleAudioRouteLost() {
+        guard isPlaying else { return }
+        AppLog.info(.audio, "Audio route lost; pausing")
+        pause()
+    }
+
+    /// The system flushed the audio renderer without being asked: what it held is gone and the clock goes on, so the
+    /// sound would stay silent until the feeder got past it. The audio the sink retained is enqueued again from the
+    /// clock, the way a change of the audio delay does it, and the clock is not touched.
+    func handleAudioRendererFlushedAutomatically() {
+        automaticAudioFlushCount += 1
+        AppLog.warning(.audio, "The system flushed the audio renderer; feeding the audio again from the clock")
+        applyAudioDelay()
     }
 
     /// The renderer has just moved to a new output (see `AudioOutputRoute`).
@@ -833,6 +897,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             synchronizer.removeTimeObserver(observer)
         }
         audioOutputRoute.stopMonitoring()
+        if let audioFlushObserver { NotificationCenter.default.removeObserver(audioFlushObserver) }
         displayLink?.invalidate()
         displayLink = nil
         metricsTimer?.cancel()

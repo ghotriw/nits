@@ -169,6 +169,13 @@ public struct PlayerConfiguration: Sendable, Equatable {
         }
     }
 
+    /// The memory the decoded-frame queue may hold, which sets how many frames the video feeder lets it fill (`FrameQueueBudget`);
+    /// `nil` keeps today's 40 frames. A host on a device with little memory sets it; not saved to the user defaults.
+    public var frameQueueByteBudget: Int?
+    /// How far ahead network sources are read (seconds, bytes) and how much history is kept for backward seeks; a host
+    /// on a device with little memory lowers the bytes. Not saved to the user defaults.
+    public var readAheadLimits: MediaDemuxer.ReadAheadLimits
+
     /// Cached exclusion policy derived from `historyExcludedFolders` and `historyExcludedDomains`.
     public private(set) var historyExclusionPolicy: HistoryExclusionPolicy
 
@@ -212,7 +219,9 @@ public struct PlayerConfiguration: Sendable, Equatable {
         audioCodecs: AudioCodecPreference = AudioCodecPreference(),
         subtitleEncoding: String.Encoding? = nil,
         historyExcludedFolders: [ExcludedFolder] = [],
-        historyExcludedDomains: [String] = []
+        historyExcludedDomains: [String] = [],
+        frameQueueByteBudget: Int? = nil,
+        readAheadLimits: MediaDemuxer.ReadAheadLimits = MediaDemuxer.ReadAheadLimits()
     ) {
         self.enableToneMapping = enableToneMapping
         self.defaultRenderMode = defaultRenderMode
@@ -257,6 +266,8 @@ public struct PlayerConfiguration: Sendable, Equatable {
         self.subtitleEncoding = subtitleEncoding
         self.historyExcludedFolders = historyExcludedFolders
         self.historyExcludedDomains = historyExcludedDomains
+        self.frameQueueByteBudget = frameQueueByteBudget
+        self.readAheadLimits = readAheadLimits
         self.historyExclusionPolicy = HistoryExclusionPolicy(
             excludedFolders: historyExcludedFolders, excludedDomains: historyExcludedDomains)
     }

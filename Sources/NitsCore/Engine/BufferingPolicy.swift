@@ -4,26 +4,36 @@ import Foundation
 /// No engine and no clock: the engine reads the amounts (`Levels`) and holds or restarts the clock itself.
 ///
 /// Audio amounts are in seconds of playback (media seconds divided by the rate): the renderer queues about a second
-/// of playback at any rate (measured 0.9–1.4 s of media at 1x, 2.8–3.9 s at 4x). Video amounts are in frames: the
-/// feeder keeps 25–40 whatever the frame rate, which at 60 or 120 fps is well under half a second.
+/// of playback at any rate (measured 0.9–1.4 s of media at 1x, 2.8–3.9 s at 4x). Video amounts are in frames, as many as
+/// the feeder keeps (`Levels.framePauseAt`: 25–40, fewer under a byte budget), which at 60 or 120 fps is well under half
+/// a second; the thresholds are shares of it, so a queue that cannot grow to 40 still fills them.
 enum BufferingPolicy {
     /// Seconds of playback of queued audio below which the renderer counts as running dry.
     static let audioLowWatermark: Double = 0.15
     /// Seconds of playback of queued audio before playback resumes; above the low watermark, so a resume does not
     /// run straight into another hold.
     static let resumeAudio: Double = 0.5
-    /// Queued frames below which video counts as running low: under the 25 the feeder refills from while frames
-    /// arrive (measured minimum 25 at 1x–4x).
-    static let videoLowFrames = 20
-    /// Queued frames before playback resumes; above `videoLowFrames`, and reachable with the clock held, as the
-    /// feeder fills to 40 before pausing.
-    static let resumeFrames = 30
+    /// Queued frames below which video counts as running low: 4/5 of the count the feeder refills from while frames
+    /// arrive (20 of its 25, measured minimum 25 at 1x–4x).
+    static func videoLowFrames(_ levels: Levels) -> Int {
+        levels.frameResumeAt * 4 / 5
+    }
+
+    /// Queued frames before playback resumes: 3/4 of the count the feeder fills to before pausing (30 of 40); above
+    /// `videoLowFrames`, and reachable with the clock held, as the feeder fills to its high water before pausing.
+    static func resumeFrames(_ levels: Levels) -> Int {
+        levels.framePauseAt * 3 / 4
+    }
 
     /// What is queued at the clock, for media that has not been read to its end.
     struct Levels: Equatable, Sendable {
         /// Media seconds of audio the renderer holds past the clock (0 when it holds none).
         var audioAhead: Double = 0
         var queuedFrames = 0
+        /// Where the video feeder pauses and resumes (`FrameQueueBudget`); 40 and 25 without a byte budget.
+        var framePauseAt = FrameQueueBudget.maximumFrames
+        var frameResumeAt =
+            FrameQueueBudget.maximumFrames * FrameQueueBudget.resumeNumerator / FrameQueueBudget.resumeDenominator
         /// A decoder and a source for audio.
         var hasAudio = false
         var hasVideo = false
@@ -59,7 +69,8 @@ enum BufferingPolicy {
             // A full renderer, if of old audio, is no shortage: holding the clock would keep it full.
             let isAudioDry =
                 levels.audioAhead < audioLowWatermark * rate && !levels.isAudioEOF && !levels.isAudioRendererFull
-            let isVideoDry = levels.hasVideo && levels.queuedFrames < videoLowFrames && levels.isVideoReadAheadDry
+            let isVideoDry =
+                levels.hasVideo && levels.queuedFrames < videoLowFrames(levels) && levels.isVideoReadAheadDry
             return isAudioDry || isVideoDry
         }
         if levels.hasAudio {
@@ -68,9 +79,9 @@ enum BufferingPolicy {
             // does, as with audio of its own: its input has run out too. (Not the frame queue alone: with audio ahead
             // it is a decoder behind, and the renderer is full through most of playback.)
             if levels.isAudioRendererFull {
-                return levels.hasVideo && levels.queuedFrames < videoLowFrames && levels.isVideoReadAheadDry
+                return levels.hasVideo && levels.queuedFrames < videoLowFrames(levels) && levels.isVideoReadAheadDry
             }
-            return !levels.hasVideo || levels.queuedFrames < videoLowFrames
+            return !levels.hasVideo || levels.queuedFrames < videoLowFrames(levels)
         }
         if levels.hasVideo {
             // A frame or two behind with nothing queued: a decoder that keeps up hovers at an empty queue at times.
@@ -88,7 +99,7 @@ enum BufferingPolicy {
     ///   stays held.
     static func isReadyToResume(_ levels: Levels, rate: Double, audioSettled: Bool) -> Bool {
         let ahead = levels.audioAhead
-        let isVideoReady = !levels.hasVideo || levels.queuedFrames >= resumeFrames
+        let isVideoReady = !levels.hasVideo || levels.queuedFrames >= resumeFrames(levels)
         let isAudioReady: Bool
         if !levels.hasAudio {
             isAudioReady = true

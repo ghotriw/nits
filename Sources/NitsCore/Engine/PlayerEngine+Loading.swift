@@ -45,6 +45,8 @@ extension PlayerEngine {
         let interruptContext = MediaDemuxer.InterruptContext()
         self.currentInterruptContext = interruptContext
         playbackState = .loading
+        // In the background nothing starts: the load ends paused on its first frame, and coming back seeks to it afresh.
+        if isHostInBackground { playbackState = .paused }
 
         return (loadID, interruptContext)
     }
@@ -62,6 +64,8 @@ extension PlayerEngine {
         isScrubbing = false
         audioJoin.cancel()
         audioJoin.isRendererStale = false
+        audioInterruption.reset()
+        backgroundSnapshot = nil
         seekGeneration.advance()
         isSeeking = false
         isLoadStartPending = false
@@ -563,7 +567,9 @@ extension PlayerEngine {
             )
             return
         }
-        let inputs = Self.makeInputs(main: demuxer, requested: lookup.requested, opened: externalAudio)
+        let inputs = Self.makeInputs(
+            main: demuxer, requested: lookup.requested, opened: externalAudio,
+            readAheadLimits: configuration.readAheadLimits)
         // The track to start with may be in a file only declared: opened before the media starts, as it is the one heard.
         if let url = inputs.unopenedFileToStartWith(
             requested: request.audioTrack, saved: saved, languages: configuration.trackLanguages.audioLanguages)
@@ -664,7 +670,8 @@ extension PlayerEngine {
             demuxer,
             inputs: Self.makeInputs(
                 main: demuxer, requested: lookup.requested,
-                opened: Self.openExternalAudio(lookup, interrupt: interruptContext)),
+                opened: Self.openExternalAudio(lookup, interrupt: interruptContext),
+                readAheadLimits: configuration.readAheadLimits),
             path: path,
             sourcePath: path,
             historyKey: path,
@@ -694,6 +701,8 @@ extension PlayerEngine {
         trackNavigation = TrackNavigation()
         isLoading = false
         playbackState = .idle
+        // The output goes back to whoever had it (music resumes); a media loaded next activates it again.
+        audioOutputRoute.deactivate()
     }
 
     /// Where the playback of the loaded media stands, as its history tells it (`PlaybackProgress`): what a host that
@@ -958,9 +967,10 @@ extension PlayerEngine {
     /// The inputs of a media just opened: the audio files in the order asked for (those declared listed, the rest
     /// opened), then those found next to it.
     static func makeInputs(
-        main demuxer: MediaDemuxer, requested: [MediaLoadRequest.AudioFile], opened: [OpenedAudioFile]
+        main demuxer: MediaDemuxer, requested: [MediaLoadRequest.AudioFile], opened: [OpenedAudioFile],
+        readAheadLimits: MediaDemuxer.ReadAheadLimits = MediaDemuxer.ReadAheadLimits()
     ) -> PlaybackInputs {
-        let inputs = PlaybackInputs(main: demuxer)
+        let inputs = PlaybackInputs(main: demuxer, readAheadLimits: readAheadLimits)
         var rest = opened
         let attach = { (file: OpenedAudioFile) in
             let added = inputs.attachExternalAudio(
@@ -1250,7 +1260,7 @@ extension PlayerEngine {
         // there, not to read from the start of the input first.
         let holdsReadAhead = readsAhead && effectiveStartTime > 0
         if readsAhead {
-            demuxer.startReadAhead(held: holdsReadAhead)
+            demuxer.startReadAhead(limits: configuration.readAheadLimits, held: holdsReadAhead)
         }
         // The start position and this flush, on the seek queue as any seek: ordered before a seek issued right after
         // load (whose preview decode the flush would otherwise flush from under it), and off the main thread, as

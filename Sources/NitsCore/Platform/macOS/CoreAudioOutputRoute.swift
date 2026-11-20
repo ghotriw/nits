@@ -19,9 +19,15 @@
 
         init() {}
 
+        func activate() {}
+
+        func deactivate() {}
+
         func startMonitoring(
             binding renderer: AVSampleBufferAudioRenderer, onChange: @escaping @MainActor () -> Void,
-            onRunningChange: @escaping @Sendable (_ isRunning: Bool) -> Void
+            onRunningChange: @escaping @Sendable (_ isRunning: Bool) -> Void,
+            onInterruption: @escaping @MainActor (_ began: Bool, _ shouldResume: Bool) -> Void,
+            onRouteLost: @escaping @MainActor () -> Void
         ) {
             stopMonitoring()
             self.onRunningChange = onRunningChange

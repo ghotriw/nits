@@ -14,7 +14,7 @@ import os
 /// network; seeks and the other users of the input take `lock` through `lockIO()`, and the thread steps aside between
 /// packets. A seek clears the queues (or seeks within the packet cache) and the thread reads on from where it left the input.
 extension MediaDemuxer {
-    public struct ReadAheadLimits: Sendable {
+    public struct ReadAheadLimits: Sendable, Equatable {
         /// Seconds of media read ahead of the packets taken.
         public var seconds: Double
         /// Payload bytes queued at most: a 4K stream at 80 Mbit/s fills 192 MB in about 20 seconds.

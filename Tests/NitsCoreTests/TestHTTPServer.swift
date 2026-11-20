@@ -166,6 +166,17 @@ final class TestHTTPServer: Sendable {
         state.withLock { $0.cutOff }
     }
 
+    /// Cancels every connection open now, as the system does to an app's sockets while it is suspended.
+    func dropConnections() {
+        let open = state.withLock { state in
+            defer { state.connections.removeAll() }
+            return Array(state.connections.values)
+        }
+        for connection in open {
+            connection.cancel()
+        }
+    }
+
     func stop() {
         listener.cancel()
         let connections = state.withLock { state in

@@ -60,6 +60,8 @@ extension PlayerEngine {
         let drainPausedLock = self.isVideoDrainPaused
         let decoder = stallGuardedDecoder(for: "the video feeder")
         let queue = self.frameQueue
+        let byteBudget = configuration.frameQueueByteBudget
+        let frameDurationLock = self.nominalFrameDurationLock
 
         videoFeedingTask = Task.detached(priority: .userInitiated) {
             await Self.runVideoFeeding(
@@ -67,7 +69,9 @@ extension PlayerEngine {
                 decoder: decoder,
                 queue: queue,
                 feedingLock: feedingLock,
-                drainPausedLock: drainPausedLock
+                drainPausedLock: drainPausedLock,
+                byteBudget: byteBudget,
+                frameDurationLock: frameDurationLock
             )
         }
     }
@@ -169,16 +173,23 @@ extension PlayerEngine {
         decoder: StallGuardedVideoDecoder,
         queue: FrameQueue,
         feedingLock: OSAllocatedUnfairLock<Bool>,
-        drainPausedLock: OSAllocatedUnfairLock<Bool>
+        drainPausedLock: OSAllocatedUnfairLock<Bool>,
+        byteBudget: Int?,
+        frameDurationLock: OSAllocatedUnfairLock<Double>
     ) async {
         let sampleCountLock = OSAllocatedUnfairLock(initialState: 0)
         while !Task.isCancelled && feedingLock.withLock({ $0 }) {
-            // Cooperative backpressure: pause decoding when queue has >= 40 frames, go on by itself at 25. Nothing else
+            // Cooperative backpressure: pause decoding when the queue has reached its high water (40 frames, fewer
+            // under a byte budget: `FrameQueueBudget`), go on by itself at the resume point (25 of 40). Nothing else
             // may restart the feeder for it: a new feeder beside this one, which goes on anyway, decoded at the same
             // time as it, and a VideoToolbox session hung in `VTDecompressionSessionDecodeFrame` that way.
-            if queue.count >= 40 {
+            let frameDuration = frameDurationLock.withLock { $0 }
+            let highWater = FrameQueueBudget.highWater(
+                budgetBytes: byteBudget, frameBytes: queue.latestFrameBytes,
+                frameRate: frameDuration > 0 ? 1 / frameDuration : 0)
+            if queue.count >= highWater.pause {
                 drainPausedLock.withLock { $0 = true }
-                while !Task.isCancelled && queue.count > 25 && feedingLock.withLock({ $0 }) {
+                while !Task.isCancelled && queue.count > highWater.resume && feedingLock.withLock({ $0 }) {
                     try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
                 }
                 drainPausedLock.withLock { $0 = false }

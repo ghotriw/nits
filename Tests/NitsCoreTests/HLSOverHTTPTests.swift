@@ -391,6 +391,57 @@ struct HLSOverHTTPPlaybackTests {
         #expect(!fetched.isEmpty, "No segment of the new variant fetched")
     }
 
+    @Test("An HLS load still under way when the app goes to the background ends paused, and coming back plays on")
+    func hlsLoadEndsPausedInTheBackground() async throws {
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
+        defer { server.stop() }
+        server.setDefaultBehavior(.init(delay: .milliseconds(600)))
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+
+        engine.load(path: server.url("master.m3u8"))
+        try #require(
+            await engine.waitUntil(timeout: .seconds(2)) { engine.playbackState == .loading }, "The load starts")
+        engine.hostDidEnterBackground()
+        #expect(await engine.waitUntil(timeout: .seconds(10)) { engine.isLoaded })
+        try await Task.sleep(for: .seconds(1))
+        #expect(!engine.isPlaying, "A load must not start playing in the background")
+
+        engine.hostWillEnterForeground()
+        #expect(await engine.waitUntil(timeout: .seconds(6)) { !engine.isSeeking && engine.pendingSeekTime == nil })
+        #expect(!engine.isPlaying)
+        engine.play()
+        #expect(await engine.waitForPlayback(advancingBy: 1.0, timeout: .seconds(8)))
+        #expect(engine.loadError == nil)
+    }
+
+    @Test("Back from the background after the connections died, an HLS stream plays on from where it stood")
+    func hlsResumesAfterDroppedConnections() async throws {
+        guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
+        let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
+        defer { server.stop() }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        defer { engine.stop() }
+
+        engine.load(path: server.url("master.m3u8"))
+        try #require(await engine.waitForPlayback(advancingBy: 1.0))
+        let stood = engine.currentFramePTS
+
+        engine.hostDidEnterBackground()
+        server.dropConnections()
+        try await Task.sleep(for: .seconds(1))
+        engine.hostWillEnterForeground()
+        #expect(
+            await engine.waitUntil(timeout: .seconds(6)) { !engine.isSeeking && engine.pendingSeekTime == nil })
+        #expect(abs(engine.frameQueue.getLastRenderedPTS() - stood) <= 0.5)
+
+        engine.play()
+        #expect(await engine.waitForPlayback(advancingBy: 3.0, timeout: .seconds(10)))
+        #expect(engine.loadError == nil)
+        #expect(engine.playbackState != .completed, "The stream did not end")
+    }
+
     @Test("During a seek, a variant read further ahead waits for playback; the one read at the target shows at once")
     func variantChangesDuringSeek() async throws {
         guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }

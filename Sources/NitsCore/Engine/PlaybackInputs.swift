@@ -35,7 +35,11 @@ final class PlaybackInputs {
     static let firstExternalTrackId = 2000
     static let externalTrackIdBase = 100
 
-    init(main: MediaDemuxer) {
+    /// How far an added audio file is read ahead, as the media itself is.
+    let readAheadLimits: MediaDemuxer.ReadAheadLimits
+
+    init(main: MediaDemuxer, readAheadLimits: MediaDemuxer.ReadAheadLimits = MediaDemuxer.ReadAheadLimits()) {
+        self.readAheadLimits = readAheadLimits
         self.main = main
         selectedAudioTrackId = main.selectedAudioTrackIndex
     }
@@ -243,7 +247,7 @@ final class PlaybackInputs {
             }
             demuxer.selectAudioTrack(trackId: trackId)
             // Read ahead as the media is (a network file), from its first selection on: unselected, it reads nothing.
-            if main.readsAhead || demuxer.isNetworkSource { demuxer.startReadAhead() }
+            if main.readsAhead || demuxer.isNetworkSource { demuxer.startReadAhead(limits: readAheadLimits) }
             selectedExternal = demuxer
         } else {
             guard main.readingDescription({ $0.audioTracks.contains { $0.id == id } }) else { return false }

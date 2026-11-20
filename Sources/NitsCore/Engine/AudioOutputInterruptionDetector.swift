@@ -36,6 +36,8 @@ struct AudioOutputInterruptionDetector: Sendable {
     /// The device stopped its IO under the started clock, and has not run again since.
     private(set) var isInterrupted = false
     private var lastRecovery: ContinuousClock.Instant?
+    /// Re-anchors confirmed so far, for diagnostics and tests.
+    private(set) var recoveries = 0
 
     /// The clock was set to run at `now`. A clock already running (a rate change) keeps its start and interruption.
     mutating func clockStarted(at now: ContinuousClock.Instant) {
@@ -99,6 +101,7 @@ struct AudioOutputInterruptionDetector: Sendable {
         guard generation == clockGeneration, clockStartedAt != nil else { return false }
         if let lastRecovery, now - lastRecovery < Self.cooldown { return false }
         lastRecovery = now
+        recoveries += 1
         return true
     }
 }

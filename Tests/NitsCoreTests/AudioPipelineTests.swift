@@ -152,7 +152,7 @@ struct AudioPipelineTests {
         monitor.startMonitoring(
             binding: AVSampleBufferAudioRenderer(),
             onChange: { routeUpdateCount.withLock { $0 += 1 } },
-            onRunningChange: { _ in })
+            onRunningChange: { _ in }, onInterruption: { _, _ in }, onRouteLost: {})
         #expect(routeUpdateCount.withLock { $0 } == 0)
 
         monitor.stopMonitoring()

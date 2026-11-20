@@ -1,6 +1,7 @@
 import CoreMedia
 import CoreVideo
 import Foundation
+import IOSurface
 import os
 
 /// A high-performance, PTS-sorted ring buffer for decoded video frames.
@@ -21,6 +22,7 @@ public final class FrameQueue: @unchecked Sendable {
     private var buffer: [DecodedFrame?]
     private var head: Int = 0
     private var countInternal: Int = 0
+    private var latestFrameBytesInternal = 0
     private var lastRenderedBuffer: CVPixelBuffer?
     private var lastRenderedPTS: Double = -1.0
     /// RPU of `lastRenderedBuffer`, so a frame drawn again (paused, after a render mode switch) is tone-mapped as it was.
@@ -69,6 +71,21 @@ public final class FrameQueue: @unchecked Sendable {
         return countInternal
     }
 
+    /// What the latest frame pushed holds in memory (its IOSurface, else its buffer's data size); 0 before the first.
+    /// The feeder sizes the queue's high water by it (`FrameQueueBudget`), so it follows a variant's resolution.
+    public var latestFrameBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestFrameBytesInternal
+    }
+
+    private static func bytes(of buffer: CVPixelBuffer) -> Int {
+        if let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() {
+            return IOSurfaceGetAllocSize(surface)
+        }
+        return CVPixelBufferGetDataSize(buffer)
+    }
+
     /// Presentation timestamp of the next frame `popFrame` would consider, or `nil` when the queue is empty.
     public var headFramePTS: CMTime? {
         lock.lock()
@@ -93,6 +110,8 @@ public final class FrameQueue: @unchecked Sendable {
         if displayFloorPts.isValid && frame.pts.isValid && frame.pts < displayFloorPts {
             return
         }
+
+        latestFrameBytesInternal = Self.bytes(of: frame.pixelBuffer)
 
         if countInternal == 0 {
             buffer[head] = frame

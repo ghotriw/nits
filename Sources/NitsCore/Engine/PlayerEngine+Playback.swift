@@ -4,6 +4,7 @@ import Foundation
 
 extension PlayerEngine {
     public func play() {
+        audioInterruption.userChangedPlayback()
         resetRelativeSeekBurst()
         guard isLoaded else { return }
 
@@ -68,6 +69,7 @@ extension PlayerEngine {
     }
 
     public func pause() {
+        audioInterruption.userChangedPlayback()
         resetRelativeSeekBurst()
         if isSeeking || chase != nil {
             resumePlaybackAfterChase = false
@@ -75,6 +77,70 @@ extension PlayerEngine {
         stopPlaybackPipeline()
         playbackState = .paused
         saveCurrentPlaybackProgress()
+    }
+
+    /// The host went to the background (iOS: the scene did): pauses, which it stays after coming back, drops the display
+    /// links, which only tick for a screen on show, and the decoder's VideoToolbox session, which the system invalidates
+    /// behind the app's back (the session of a hardware decoder then fails every frame, and the picture would stand
+    /// while the sound plays on). The position is kept for `hostWillEnterForeground`. Calling it again changes nothing.
+    ///
+    /// A load under way goes on and ends paused on its first frame (a load that ended playing in the background would
+    /// come back to a session the system has killed); coming back sees to it like to any other.
+    public func hostDidEnterBackground() {
+        guard !isHostInBackground else { return }
+        isHostInBackground = true
+        displayLink?.invalidate()
+        displayLink = nil
+        displayLinkScreen = nil
+        if isLoading || !isLoaded {
+            // The load's end looks at the state: paused, it stops on its first frame instead of starting.
+            if isLoading { playbackState = .paused }
+            AppLog.info(.engine, "Host in the background while loading; the load will end paused")
+            return
+        }
+        let position = rereadPosition
+        backgroundSnapshot = BackgroundSnapshot(
+            position: position, atLiveEdge: live.isLive && live.isAtEdge(position))
+        pause()
+        resetDecoderSession(because: "entering the background")
+        AppLog.info(.engine, "Host in the background at \(String(format: "%.3f", position))s; paused")
+    }
+
+    /// The host is back in the foreground: the display link is made again, the VideoToolbox session is dropped again
+    /// (the engine may have decoded in the background, before the app was suspended, and the system killed that session
+    /// too), and the picture comes back with an exact seek to where it stood, which also reads the network again (its
+    /// connections died while suspended). Stays paused. A live stream at its edge returns to its edge, one behind it
+    /// to where it was, as far as its window still goes (the seek's own clamp).
+    public func hostWillEnterForeground() {
+        guard isHostInBackground else { return }
+        isHostInBackground = false
+        if let videoHost {
+            attachDisplayLink(to: videoHost)
+        } else {
+            setupDisplayLink()
+        }
+        videoHostScreenDidChange()
+        // Before the seek, on the same serial queue: its flush finds the session gone, not a dead one.
+        resetDecoderSession(because: "coming back")
+        guard isLoaded, !isLoading else { return }
+        // Loaded in the background: the position it ended its load at, which is where it stands now.
+        let snapshot =
+            backgroundSnapshot ?? BackgroundSnapshot(position: rereadPosition, atLiveEdge: false)
+        backgroundSnapshot = nil
+        if snapshot.atLiveEdge, live.isLive {
+            seekToLiveEdge()
+        } else {
+            seek(to: snapshot.position, exact: true)
+        }
+        AppLog.info(.engine, "Host back in the foreground; seeking to \(String(format: "%.3f", snapshot.position))s")
+    }
+
+    /// Drops the decoder's session on `seekQueue`, behind a seek or load start in flight and ahead of what follows,
+    /// through the guard: a VideoToolbox call can block forever. The session waits for its frames and invalidates; the
+    /// next decode makes a fresh one.
+    private func resetDecoderSession(because reason: String) {
+        let guarded = stallGuardedDecoder(for: "the session reset on \(reason)")
+        seekQueue.async { guarded.resetSession() }
     }
 
     /// Halts clock synchronization and feeders without altering user-facing isPlaying or playbackState.

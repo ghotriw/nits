@@ -42,11 +42,22 @@ extension PlayerEngine {
         return (end - clock).seconds
     }
 
+    /// Where the video feeder pauses and resumes now (`FrameQueueBudget`): what buffering's thresholds are shares of, so a
+    /// queue held under a byte budget can still reach them.
+    func currentFrameHighWater() -> (pause: Int, resume: Int) {
+        let frameDuration = nominalFrameDurationLock.withLock { $0 }
+        return FrameQueueBudget.highWater(
+            budgetBytes: configuration.frameQueueByteBudget, frameBytes: frameQueue.latestFrameBytes,
+            frameRate: frameDuration > 0 ? 1 / frameDuration : 0)
+    }
+
     /// What is queued at `clock`, for `BufferingPolicy`.
     private func bufferingLevels(at clock: CMTime, inputs: PlaybackInputs) -> BufferingPolicy.Levels {
         BufferingPolicy.Levels(
             audioAhead: audioAhead(of: clock),
             queuedFrames: frameQueue.count,
+            framePauseAt: currentFrameHighWater().pause,
+            frameResumeAt: currentFrameHighWater().resume,
             hasAudio: hasAudioStream,
             hasVideo: media.hasVideo,
             isAudioSeparate: inputs.isAudioSeparate,
