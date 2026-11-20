@@ -1,4 +1,5 @@
 import Foundation
+import NitsCore
 
 /// How the formats a YouTube page lists are grouped into what can switch with each other: the pictures of a codec, a
 /// range and a container make a ladder (adaptive bitrate), the sound of a language a set of its own, the original first.
@@ -27,7 +28,10 @@ enum YouTubeFormatGrouping {
         var groups: [String: [YTDLPInfo.Format]] = [:]
         var order: [String] = []
         for picture in formats where hasPicture(picture) {
-            let family = (picture.vcodec ?? "").split(separator: ".").first.map(String.init) ?? ""
+            let vcodec = picture.vcodec ?? ""
+            let family =
+                VideoCodecPreference.family(ofCodecs: vcodec) ?? vcodec.split(separator: ".").first.map(String.init)
+                ?? ""
             let key = "\(family)|\(YTDLPDynamicRange(picture.dynamicRange))|\(picture.ext?.lowercased() ?? "")"
             if groups[key] == nil { order.append(key) }
             groups[key, default: []].append(picture)

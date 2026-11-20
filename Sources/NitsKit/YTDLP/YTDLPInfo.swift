@@ -572,15 +572,14 @@ struct YTDLPInfo: Decodable, Sendable {
 
     /// A video codec string ("av01.0.13M.08") as shown.
     static func pictureCodec(of codec: String?) -> String {
-        let family = codec.flatMap { $0.split(separator: ".").first.map { String($0).lowercased() } } ?? ""
-        switch family {
-        case "av01": return "AV1"
-        case "vp9", "vp09": return "VP9"
-        case "avc1", "avc3", "h264": return "H.264"
-        case "hev1", "hvc1", "hevc": return "HEVC"
-        case "vp8": return "VP8"
-        default: return family.uppercased()
+        guard let codec else { return "" }
+        if let family = VideoCodecPreference.family(ofCodecs: codec) {
+            return VideoCodecPreference.displayName(of: family)
         }
+        // What other extractors write in place of a four-character code; anything else as its prefix is.
+        let prefix = codec.split(separator: ".").first.map { String($0).lowercased() } ?? ""
+        let names = ["h264": "avc", "h265": "hevc", "hevc": "hevc", "av1": "av1"]
+        return names[prefix].map(VideoCodecPreference.displayName(of:)) ?? prefix.uppercased()
     }
 
     /// The page's audio in the languages `chosen` (what `-f` picked) lacks: for each, the highest bitrate over

@@ -35,13 +35,15 @@ struct YTDLPLadderRulesTests {
         #expect(YTDLPDynamicRange.unknownValues(in: formats) == ["Bogus"])
     }
 
-    @Test("HDR10 and HDR10+ of one codec and container are one set")
+    @Test("HDR10 and HDR10+ of one codec and container are one set; avc1 and avc3 too")
     func joinsRanges() throws {
         let hdr = try [
             Self.picture("vp9.2", 1080, range: "HDR10"), Self.picture("vp9.2", 1080, range: "HDR10+"),
             Self.picture("vp9.2", 1080, range: "HDR12"), Self.picture("vp9.2", 1080, range: "HLG"),
         ]
         #expect(YouTubeFormatGrouping.pictureSets(of: hdr).map(\.count) == [3, 1])
+        let avc = try [Self.picture("avc1.640028", 1080), Self.picture("avc3.640028", 720)]
+        #expect(YouTubeFormatGrouping.pictureSets(of: avc).map(\.count) == [2])
     }
 
     @Test("The 60 fps rule runs over a joined set")
@@ -52,5 +54,14 @@ struct YTDLPLadderRulesTests {
         let sets = YouTubeFormatGrouping.pictureSets(of: formats)
         #expect(sets.count == 1)
         #expect(sets[0].map(\.fps) == [60])
+    }
+
+    @Test("A codec as shown: four-character codes, other extractors' names, Dolby Vision, an unknown one")
+    func namesCodecs() {
+        let names = [
+            "avc1.640028", "h264", "h265", "hevc", "av1", "vp09.00.40.08", "av01.0.13M.08", "dvh1.08.06", "xyz.1",
+        ].map { YTDLPInfo.pictureCodec(of: $0) }
+        #expect(names == ["H.264", "H.264", "HEVC", "HEVC", "AV1", "VP9", "AV1", "Dolby Vision", "XYZ"])
+        #expect(YTDLPInfo.pictureCodec(of: nil) == "")
     }
 }
