@@ -14,6 +14,8 @@ let package = Package(
         .library(name: "NitsCore", targets: ["NitsCore"]),
         .library(name: "NitsUI", targets: ["NitsUI"]),
         .library(name: "NitsKit", targets: ["NitsKit"]),
+        // The iOS player screen and its lifecycle owner (v1: bare controls); empty on macOS, as SwiftPM builds every target there.
+        .library(name: "NitsTouch", targets: ["NitsTouch"]),
         // Xcode previews only, not for hosts (it holds NitsCore again, next to NitsKit's copy). The preview host loads a
         // dynamic framework with its FFmpeg and libass; with the static products or an app linking them it finds none.
         .library(name: "NitsUIPreviews", type: .dynamic, targets: ["NitsUI"]),
@@ -128,6 +130,13 @@ let package = Package(
             dependencies: ["NitsCore", "NitsUI"],
             swiftSettings: defaultSwiftSettings
         ),
+        // The iOS player screen: SwiftUI over `NitsCore`'s engine, every file in `#if os(iOS)` (SwiftPM has no per-platform
+        // targets, so macOS builds it empty). Imports NitsCore only.
+        .target(
+            name: "NitsTouch",
+            dependencies: ["NitsCore"],
+            swiftSettings: defaultSwiftSettings
+        ),
         .executableTarget(
             name: "NitsApp",
             dependencies: ["NitsCore", "NitsUI", "NitsKit"],
@@ -153,6 +162,12 @@ let package = Package(
         .testTarget(
             name: "NitsCoreTests",
             dependencies: ["NitsCore", "NitsStreaming", "NitsKernels", "NitsTestSupport"],
+            swiftSettings: defaultSwiftSettings
+        ),
+        // Run on the iOS Simulator (macOS builds it empty); engine tests that play media stay in NitsCoreTests.
+        .testTarget(
+            name: "NitsTouchTests",
+            dependencies: ["NitsTouch", "NitsCore"],
             swiftSettings: defaultSwiftSettings
         ),
         .testTarget(
