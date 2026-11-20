@@ -1,4 +1,5 @@
 import Foundation
+import NitsCore
 import Observation
 
 @Observable

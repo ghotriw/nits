@@ -1,7 +1,6 @@
-import NitsCore
 import Testing
 
-@testable import NitsUI
+@testable import NitsCore
 
 @Suite("Action button presenter")
 @MainActor

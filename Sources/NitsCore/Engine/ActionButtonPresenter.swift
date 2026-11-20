@@ -1,4 +1,3 @@
-import NitsCore
 import Observation
 
 /// When the action button ("Skip Intro") is on screen and when it presses itself, driven by the playback position.
