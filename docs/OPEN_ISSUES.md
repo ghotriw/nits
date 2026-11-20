@@ -106,6 +106,24 @@ note it when this recurs.
 **If it recurs:** the `Frame held …` line (see `docs/LOGGING.md`) tells a link that stopped calling, a tick blocked
 on our side (`max tick`, `max clock read`) and an empty frame queue apart.
 
+## A seek FFmpeg falls back to the file's start passes for one that succeeded
+
+**Observed by hand (2026-11-20, iPhone 14 Pro; not iOS-specific)**: a Jellyfin / Emby address without `static=true`
+(`…/Videos/<id>/stream.mkv?`, which the server remuxes on the fly: an MKV without Cues) resumed from history at 989.5 s.
+`av_seek_frame` returned 0, but the Matroska demuxer logged `Seek to desired resync point failed. Seeking to earliest point
+available instead.` and the pictures came `from 6.667s`. The clock waited at 989.5 s while the feeder decoded from the
+start and dropped every frame as late (`sample #5400, pts 231.5 s` after `Still buffering after 93 s`): the spinner would
+have stayed for about six more minutes. With `static=true` (the original file, indexed) the same resume started at once.
+
+**What is wrong:** the engine takes `av_seek_frame`'s success as the seek's, and nothing compares where the demuxer
+landed with the target, so a silent fallback to the start looks like a slow seek.
+
+**Directions:** after a seek, a first video packet (or keyframe) far before the target (more than a GOP with a margin, say
+tens of seconds) counts as a failed seek. A resume from history then starts from where the demuxer is (the start) and
+logs why; a user's seek shows that the source can't seek there instead of buffering; the input may be marked unseekable so
+the timeline doesn't offer it again. Check FFmpeg's behaviour for other containers without an index over HTTP (MP4 without
+`moov` up front, TS) before choosing the threshold.
+
 ## Known limitations
 
 Accepted for now, noted for later.
@@ -220,6 +238,28 @@ Accepted for now, noted for later.
   max(R, G, B) in the stream's primaries, while the shader maps it in BT.2020: for PQ / HLG with BT.709 primaries the
   measured peak is at or above the shader's (converting into BT.2020 does not raise max(RGB)), so the curve is at
   most a little more cautious, never clipped.
+- **iOS: a display layer the system fails while the app is in the foreground stays blank.** The system takes the video
+  decoder's resources from an app suspended for a while (20 s did it, 5 s did not): the layer turns `.failed`
+  (-11847 "Operation Interrupted") with `requiresFlushToResumeDecoding`, and frames enqueued to it are dropped silently.
+  The engine checks and flushes it only on coming back from the background (`hostWillEnterForeground`), which covers that
+  case (checked on an iPad mini 6). A failure without a background (a reset of the media services, say) is not caught: the
+  picture stays blank, with the sound playing, until a seek or a new load flushes the layer. The notification of the flag's
+  change is deprecated from iOS 27 in favour of the receiver API, which the engine does not use (the selector-based
+  enqueue and flush, AGENTS.md); a check of the status from the display-link tick would catch it.
+- **iOS: a change of audio output mutes the sound for 0.4–0.9 s.** The flush on a change of output drops what the renderer
+  held, and the re-anchor 300 ms later feeds from the demuxer's position (iPhone 14 Pro, speaker ↔ AirPods). Feeding the
+  audio the sink retained again from the clock, as the automatic flush does (`applyAudioDelay`), could shorten it; not
+  tried, as a Bluetooth switch takes a comparable time anyway.
+- **iOS: 25 fps on a ProMotion screen runs at 120 Hz with an uneven cadence** (5, 5, 5, 5, 4 refreshes a frame; iPhone 14
+  Pro, `Display link rate: 120 Hz for 25.000 fps content`). The rate policy takes whole divisors of the screen's maximum,
+  which suits a Mac's fixed modes; ProMotion takes `preferredFrameRateRange` on its own terms. Whether it offers 50 or
+  100 Hz is not checked. 24 fps is even there (5 refreshes a frame, none missed).
+- **iOS: an LCD iPad reports EDR headroom.** An iPad mini 6 gives `potentialEDRHeadroom` 2.0. iOS always uses `.system`,
+  so nothing reads it now; should `.auto` ever run on iOS, such an iPad would count as an HDR screen
+  (`minimumHDRDisplayHeadroom` is 1.01) and get no tone mapping of ours.
+- **iOS: a `CAMetalLayer` is made in the `.system` render mode too.** `[CAMetalLayer nextDrawable] returning nil because
+  allocation failed` was logged once on an iPhone 14 Pro, harmless; the Metal renderer is not needed on iOS but for the
+  deinterlacer, which does not draw. Not looked into.
 
 ## Revisit only if
 
@@ -275,6 +315,12 @@ Accepted for now, noted for later.
   `HLSOverHTTPTests.swift:312` and `AdaptiveBitrateTests.swift:146` (twice); then one of the new engine tests, which
   asserted that a stream was not yet ended right after its load, that took 45 s there (fixed: a load in a one-thread pool
   can outlast any wait a test sets).
+- **`PlaybackStressTests`: 1 issue in one run (2026-11-20)**, the run right after the change that made the engine re-anchor
+  the clock after a change of output on a route that does not report restarts (`routeChangeReanchorsWithoutRestartReport`,
+  `AudioOutputRoute.reportsOutputRestarts`), and after builds with temporary mutations of the engine that had been restored.
+  Which of the 22 tests and what it asserted were not kept: the output of that run was overwritten. Seven reruns were clean
+  (three alone, four after `SyncPatternTests`; 22 of 22 each). Nothing is known of the cause: if it recurs, keep the log
+  (`2>&1 | tee`), note the test and the line, and look first at whether a stale mutation or a re-anchor was in play.
 
 ## Live streams: a window of a few segments, and an outage that stands the picture
 

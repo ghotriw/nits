@@ -8,7 +8,7 @@ The goal is to evolve the Apple Silicon dual-engine video rendering core into a 
 
 ## 1. Architectural Baseline & System Invariants
 
-- **Target Platform:** macOS 15.4+ (Sequoia) / Apple Silicon (ARM64).
+- **Target Platform:** macOS 15.4+ (Sequoia) / Apple Silicon (ARM64); iOS / iPadOS 18.4+ (arm64) for the iOS player (Stage 8).
 - **Language Standard:** Swift 6 with complete concurrency checking enabled (`-strict-concurrency=complete`, `ExistentialAny`).
 - **Framework Stack:** Metal, QuartzCore (`CADisplayLink`), AVFoundation (`AVSampleBufferAudioRenderer`, `AVSampleBufferRenderSynchronizer`, `AVSampleBufferDisplayLayer`), VideoToolbox, CoreAudio, FFmpeg (`libavformat`, `libavcodec`, `libswresample`, `libdav1d`), Swift Observation (`@Observable`).
 - **Modular SPM Decomposition:**
@@ -31,6 +31,7 @@ flowchart TD
     M4 --> M5["Stage 5: Playlists, OSD, Seeking Architecture & UX ✓"]
     M5 --> M6["Stage 6: Host Integration (Embeddable View & Engine API) ✓"]
     M6 --> M7["Stage 7: Standalone Distribution & Release Bundling ✓"]
+    M7 --> M8["Stage 8: iOS / iPadOS Player ⏳"]
     
     M25 -.-> M1X["Stage 1.8: Extended Video Formats & Metal Deinterlacing ✓"]
     M2 -.-> M2X["Stage 2.8: Audio Synchronization Offset & Dynamic Range ⏳"]
@@ -875,6 +876,34 @@ flowchart TD
     archive (`deps_config.sh`), which CI and releases restore.
   - A `vX.Y.Z` tag builds, verifies and publishes a ZIP release (`release.yml`); the version comes from the tag.
     Installed through the Homebrew cask `ghotriw/tap/nits`.
+
+### Stage 8: iOS / iPadOS Player — [IN PROGRESS] ⏳
+
+> The same engine on iPhone and iPad: `NitsCore`'s platform layer for iOS, and a player of its own (`NitsTouch`,
+> `Apps/iOS`). v1 is the video and one control bar.
+
+- [x] **8.1. Dependencies and build:** FFmpeg and dav1d as iOS xcframeworks (SwiftPM binary targets from the `deps-ios-v*`
+  pre-release, built by `build-deps-ios.yml`) behind the one `CFFmpeg` module; NitsCore and NitsTouch for iOS 18.4
+  (`typecheck-ios`); the app as an XcodeGen project (`scripts/build_ios.sh`); a CI job.
+- [x] **8.2. Platform layer:** `UIKitVideoHostView`, `AudioSessionOutputRoute` (the session from playback to stop, off the
+  main thread; interruptions, a lost route, a change of output), `IdleTimerDisplaySleepAssertion`, `PlatformScreen`.
+- [x] **8.3. Engine for the platform:** the host's background and return (the VideoToolbox session and a failed display
+  layer recovered), a byte budget for the frame queue and smaller read-ahead, re-anchoring after a change of output.
+- [x] **8.4. v1 player:** `PlayerScreen` (close and title; back 10 s, play / pause, forward 10 s; a scrub bar, remaining
+  time or a LIVE badge; tap, double tap on the sides, pinch for fit / fill), files from Files and network addresses,
+  always the `.system` render mode. Checked on an iPhone 14 Pro and an iPad mini 6.
+- [ ] **8.5. Subtitles:** libass, FreeType, HarfBuzz, FriBidi and libunibreak for iOS (the `#if canImport(CLibass)` in
+  NitsCore goes away) and the subtitle overlay (`SubtitleOverlayView`, its shader) moved into a target both players use.
+- [ ] **8.6. Track pickers, speed, settings, playlists** on iOS.
+- [ ] **8.7. Background audio and Now Playing** (`MPNowPlayingInfoCenter`, remote commands) and **Picture in Picture**
+  (`AVPictureInPictureController(contentSource:)` over the display layer).
+- [ ] **8.8. Timeline thumbnails on iOS:** the engine makes them already (`ThumbnailManager`); whether and how the iOS
+  player shows them, judged by what other iOS players do.
+- [ ] **8.9. Display-link rate for ProMotion:** pick from the rates the screen can run at rather than divisors of its
+  maximum (25 fps runs unevenly at 120 Hz, `docs/OPEN_ISSUES.md`), after measuring the rates and the battery on a device.
+- [ ] **8.10. Smaller things:** a `nits://` URL scheme for `onOpenURL` (opening a stream from `simctl` and other apps); one
+  task for the controls' hide timer instead of a `TimelineView` re-evaluating the screen four times a second.
+- [ ] **8.11. tvOS:** display criteria for the TV's HDR mode and refresh rate.
 
 ---
 

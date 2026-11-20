@@ -201,7 +201,15 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   constants: a queue that cannot grow to 40 would never be "ready". While buffering holds the clock the feeder fills to
   its high water instead of waiting to drain to the resume point (nothing drains a held clock).
 - **The audio session is taken when playback starts and given back by `stop()` and at the end of the media** (`AudioOutputRoute`'s
-  `activate()` / `deactivate()`), never when the engine is made or the route's monitoring starts.
+  `activate(_:)` / `deactivate()`), never when the engine is made or the route's monitoring starts. `setActive` never runs
+  on the main thread (the iOS route's own queue), and the clock never starts before `activate`'s completion
+  (`isAudioOutputReady`); the completion starts only a clock held for the output alone (`isClockWaitingForOutput`), so a
+  platform whose output is ready at once (macOS) keeps its clock starts where they were.
+- **A route that does not report its device restarting the IO** (`AudioOutputRoute.reportsOutputRestarts`: iOS) has the
+  engine re-anchor the clock itself after a change of output (`routeChangeSettleTime`); on macOS the report does it, and
+  the engine must not add a second re-anchor there.
+- **Coming back from the background checks the display layer before the seek**: a layer the system failed while the
+  app was suspended (`.failed`, `requiresFlushToResumeDecoding`) drops frames silently until it is flushed.
 - **Code that stops or re-anchors the synchronizer clock goes through `cancelPreroll()`** (directly or via
   `haltPlaybackPipeline()` / `startSynchronizerClockAfterPreroll`): it also ends a pending preroll and
   buffering and an audio join, whose tasks would otherwise restart the clock at a stale position.

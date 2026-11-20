@@ -110,10 +110,24 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   only in `MetalDeinterlacer`: no flipping between native and Metal as an iPhone's headroom follows its brightness, less
   GPU and battery.
 - **The audio session** is taken when playback starts (`isPlaying` turns true) and given back by `stop()` and at the end
-  of the media (`AudioOutputRoute.activate()` / `deactivate()`), never at creation: an app that has loaded nothing must not
-  silence anyone's music. Interruptions (a call, Siri) pause what was playing and the end resumes it only on
+  of the media (`AudioOutputRoute.activate(_:)` / `deactivate()`), never at creation: an app that has loaded nothing must
+  not silence anyone's music. `setActive` blocks while the system switches audio, so the iOS route changes the session on a
+  serial queue of its own (the session's asynchronous calls exist only from iOS 27) and calls `activate`'s completion on
+  the main actor once it is active, or could not be. The clock does not start before that (`isAudioOutputReady`, checked
+  where a pending start is made and on the display-link tick; `AudioJoin` waits for it up to 2 s), and the completion
+  starts only a clock held for the output alone (`isClockWaitingForOutput`). macOS's output is ready at once, so its clock
+  starts where it always did. An interruption deactivates the session behind the app's back: the route forgets that it
+  was active, so the play after it activates it again.
+- **Interruptions and outputs.** Interruptions (a call, a timer) pause what was playing and the end resumes it only on
   `shouldResume` and if nothing else was decided meanwhile (`AudioInterruptionPolicy`; a second interruption inside the
-  first keeps the wish to resume); losing the route (AirPods out) pauses and does not resume. The system may also flush the
+  first keeps the wish to resume); Siri only ducks the sound, which the system does by itself. Losing the route (AirPods
+  out) pauses and does not resume. A change of output (AirPods in, the speaker chosen in Control Center) flushes the
+  renderer and the audio decoder under the running clock, as on macOS; there the device's report of its IO restarting
+  re-anchors the clock right after (`AudioOutputInterruptionDetector`), and iOS has no such report
+  (`AudioOutputRoute.reportsOutputRestarts`). Without it the engine re-anchors the clock itself
+  `routeChangeSettleTime` (300 ms) after the change, once the new output's latency can be read (18 ms on an iPhone's
+  speaker, 163 ms on AirPods), as a pause and play do; a pause, seek, buffering or load in between cancels it, and a
+  change while paused flushes nothing. The sound comes back in 0.4–0.9 s. The system may also flush the
   audio renderer by itself (`AVSampleBufferAudioRendererWasFlushedAutomatically`, on both platforms): the audio the sink
   retained is enqueued again from the clock, the way a change of the audio delay does it, and the clock is not touched.
   That flush sometimes comes together with the device restarting its IO (`AudioOutputInterruptionDetector`): the two
@@ -123,7 +137,11 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   (the system invalidates it, and a hardware decoder's failed session would leave the picture standing while the sound plays
   on); coming back makes the link again, drops the session again (the feeder keeps decoding after the pause and made a new
   one before the app was suspended) and seeks exactly to where the picture stood (a live stream at its edge: to the edge),
-  which also reads the network again. It stays paused. A load under way or started in the background ends paused on its
+  which also reads the network again. It stays paused. Before that seek the display layer is checked: an app suspended
+  for a while (20 s did it, 5 s did not) has its video decoder's resources taken, and the layer turns `.failed` (-11847
+  "Operation Interrupted") with `requiresFlushToResumeDecoding`, dropping what is enqueued to it silently. Such a layer
+  is flushed, keeping its image, through `displayLayerLock` and the cached selector (`recoverDisplayLayerOnReturn`). A
+  layer that fails without a background is not caught (see `docs/OPEN_ISSUES.md`). A load under way or started in the background ends paused on its
   first frame (`isHostInBackground`).
 - **Memory.** `PlayerConfiguration.frameQueueByteBudget` and `readAheadLimits`. The feeder's high water is
   `FrameQueueBudget.highWater`: the budget over the size of the frames being decoded (`FrameQueue.latestFrameBytes`, an
@@ -132,7 +150,9 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   ready; and while buffering holds the clock the feeder fills to its high water instead of waiting to drain to the resume
   point, which nothing would drain. Without a budget the counts are the old 40 / 25 and the thresholds 20 / 30.
 - **No Picture in Picture, Now Playing, background audio or subtitles in v1**; the ProMotion rate policy is unchanged
-  (`CADisableMinimumFrameDurationOnPhone` lets the engine run 24 fps at 120 Hz, which costs battery only).
+  (`CADisableMinimumFrameDurationOnPhone` lets the engine run 24 fps at 120 Hz, which costs battery only; 25 fps, which
+  120 Hz does not divide, runs there too, see `docs/OPEN_ISSUES.md`). The v1 limits were measured on an iPad mini 6
+  (4 GB): 4K 10-bit over the LAN held 455 MB, 520 MB at most.
 
 ### Embedding (WKWebView / headless hosts)
 
