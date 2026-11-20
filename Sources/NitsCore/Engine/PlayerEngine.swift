@@ -58,7 +58,6 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var isPlaying: Bool = false {
         didSet {
             displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
-            if isPlaying, !oldValue { activateAudioOutput() }
         }
     }
     public var isLoaded: Bool = false {

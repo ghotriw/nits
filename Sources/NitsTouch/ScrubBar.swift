@@ -10,6 +10,10 @@
         /// The fraction being dragged to, while a drag is under way.
         @Binding var dragFraction: Double?
 
+        /// True while the finger is down: the gesture's state, which SwiftUI resets when the system cancels the gesture
+        /// (Control Center, the home gesture, a call), a case `onEnded` is never told of.
+        @GestureState private var isFingerDown = false
+
         private static let barHeight: CGFloat = 4
 
         var body: some View {
@@ -31,6 +35,7 @@
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
+                        .updating($isFingerDown) { _, state, _ in state = true }
                         .onChanged { value in
                             guard !timeline.isEmpty else { return }
                             let fraction = min(max(value.location.x / width, 0), 1)
@@ -48,9 +53,25 @@
                 )
             }
             .frame(height: 44)
+            .onChange(of: isFingerDown) { wasDown, isDown in
+                // The finger is up and a drag is still on: the system took the gesture, with no `onEnded`.
+                guard ScrubDragCancellation.isCancelled(wasDown: wasDown, isDown: isDown, dragFraction: dragFraction)
+                else { return }
+                engine.endScrubbing()
+                dragFraction = nil
+            }
             .accessibilityElement()
             .accessibilityLabel("Timeline")
             .accessibilityValue(ScrubTimeline.clock(engine.currentTime))
+        }
+    }
+
+    /// When a drag of the bar ended without `onEnded`.
+    enum ScrubDragCancellation {
+        /// The finger went up (`wasDown`, no longer `isDown`) while the bar still shows a drag (`dragFraction`): a finished
+        /// drag has cleared it in `onEnded`, which runs before the gesture's state resets.
+        static func isCancelled(wasDown: Bool, isDown: Bool, dragFraction: Double?) -> Bool {
+            wasDown && !isDown && dragFraction != nil
         }
     }
 #endif

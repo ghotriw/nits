@@ -4,7 +4,8 @@
 /// Without a budget (macOS) that is 40 and 25. A 4K 10-bit frame is ~25 MB of IOSurface, so 40 of them are a gigabyte,
 /// which a phone's foreground limit does not leave: a host sets `PlayerConfiguration.frameQueueByteBudget`, and the
 /// count follows the size of the frames being decoded (it changes with a variant switch). A queue too short to hide a
-/// decode's jitter stutters, so a floor in time (half a second at the queue's frame rate) wins over the budget.
+/// decode's jitter stutters, so a floor in time (half a second at the queue's frame rate) wins over the budget, by no
+/// more than twice the budget: at 60 or 120 fps the floor alone held a gigabyte of 4K frames.
 struct FrameQueueBudget: Sendable {
     /// The most frames the feeder ever lets the queue hold: the budget never raises it.
     static let maximumFrames = 40
@@ -23,7 +24,8 @@ struct FrameQueueBudget: Sendable {
             return (maximumFrames, maximumFrames * resumeNumerator / resumeDenominator)
         }
         let floorFrames = frameRate.isFinite && frameRate > 0 ? Int((frameRate * minimumSeconds).rounded(.up)) : 0
-        let pause = min(max(budgetBytes / frameBytes, floorFrames, 1), maximumFrames)
+        let budgetFrames = budgetBytes / frameBytes
+        let pause = max(min(max(budgetFrames, floorFrames, 1), 2 * budgetFrames, maximumFrames), 1)
         return (pause, max(pause * resumeNumerator / resumeDenominator, 1))
     }
 }

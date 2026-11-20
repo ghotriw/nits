@@ -196,7 +196,7 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `Task.sleep`; audio relies on `await audioSink.enqueue(...)` (`Receiver` on macOS 27+, readiness
   polling with `Task.sleep` on 15–26). Never block threads.
 - **The frame queue's high water is `FrameQueueBudget.highWater`** (40 / 25 without `PlayerConfiguration.frameQueueByteBudget`;
-  under one, the budget over the decoded frames' size, at least half a second, at most 40), read by the feeder each
+  under one, the budget over the decoded frames' size, at least half a second but at most twice the budget, at most 40), read by the feeder each
   check. `BufferingPolicy`'s video thresholds are shares of the same numbers (`videoLowFrames` / `resumeFrames`), never
   constants: a queue that cannot grow to 40 would never be "ready". While buffering holds the clock the feeder fills to
   its high water instead of waiting to drain to the resume point (nothing drains a held clock).

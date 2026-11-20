@@ -1327,6 +1327,7 @@ extension PlayerEngine {
                 // Not started by a `play()` meanwhile, which only reported playing (`isLoadStartPending`).
                 let alreadyStarted = self.isFeeding.withLock { $0 }
                 if !alreadyStarted {
+                    self.beginAudioOutputActivation()
                     self.frameQueue.clear(resetDroppedFrames: true)
                     self.startFeeding()
                     if self.seekGeneration.isCurrent(seekId) && self.chase == nil {

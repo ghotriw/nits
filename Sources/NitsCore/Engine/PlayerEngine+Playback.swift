@@ -37,6 +37,7 @@ extension PlayerEngine {
         // The load's start still runs on `seekQueue` (`isLoadStartPending`): the feeders would read from before its
         // start position. Playing from now on, as after a start right away; the start, once in, starts the pipeline.
         if isLoadStartPending {
+            beginAudioOutputActivation()
             isPlaying = true
             playbackState = .playing
             return
@@ -44,6 +45,8 @@ extension PlayerEngine {
 
         // A seek moved the position and no join has brought the audio since (a seek on pause, or one the user paused
         // during): playing on is a join of the audio to the picture's clock, as after a seek that resumes.
+        // Before any decision about the clock: its start waits for the output, which this asks for.
+        beginAudioOutputActivation()
         let joinsAudio = audioJoin.isRendererStale && hasAudioStream
         let feedingActive = isFeeding.withLock { $0 }
         if !feedingActive {
@@ -317,6 +320,11 @@ extension PlayerEngine {
             try? await Task.sleep(for: Self.prerollTimeout)
             guard !Task.isCancelled, let self else { return }
             self.prerollTimeoutTask = nil
+            // The output is not ready either (the session is being activated): its completion starts the clock.
+            guard self.isAudioOutputReady.withLock({ $0 }) else {
+                self.isClockWaitingForOutput.withLock { $0 = true }
+                return
+            }
             guard
                 let pending = self.pendingClockStartLock.withLock({ state in
                     defer { state = nil }
@@ -343,6 +351,14 @@ extension PlayerEngine {
 
     /// Asks the route for the output as playback starts; the clock waits for it (`isAudioOutputReady`). The route does not
     /// block this thread and calls back once the session is active, where a clock start that only waited for that goes on.
+    /// Starts the output's activation as playback starts, before anything decides about the clock: `isAudioOutputReady` is
+    /// then false until the route answers, whatever it was at the end of the last run. Not while already playing (the
+    /// output was asked for as that began); every path that sets `isPlaying` to true calls it first.
+    func beginAudioOutputActivation() {
+        guard !isPlaying else { return }
+        activateAudioOutput()
+    }
+
     func activateAudioOutput() {
         isAudioOutputReady.withLock { $0 = false }
         audioOutputRoute.activate { [weak self] in self?.audioOutputBecameReady() }
@@ -413,9 +429,10 @@ extension PlayerEngine {
         let videoStart = videoStartTimeLock.withLock { $0 }
         let headIsFirstPicture = abs(head.seconds - videoStart) < frameDuration / 2
         enum Action {
-            case none, move
+            case none, move, waitForOutput
             case start(PendingClockStart)
         }
+        let isOutputReady = isAudioOutputReady.withLock { $0 }
         let action = pendingClockStartLock.withLock { pending -> Action in
             guard let current = pending, current.targetTime.isNumeric, head > current.targetTime else { return .none }
             if head - current.targetTime <= maxGap {
@@ -423,12 +440,16 @@ extension PlayerEngine {
                 return .move
             }
             guard headIsFirstPicture else { return .none }
+            // The output is not ready: the start stays pending, and the completion of its activation starts it.
+            guard isOutputReady else { return .waitForOutput }
             pending = nil
             return .start(current)
         }
         switch action {
         case .none:
             break
+        case .waitForOutput:
+            isClockWaitingForOutput.withLock { $0 = true }
         case .move:
             playbackClock.setRate(0, time: head)
         case .start(let pending):

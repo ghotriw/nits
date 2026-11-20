@@ -56,7 +56,7 @@ make_framework() {
     done < <(otool -L "$fw/$lib" | tail -n +3 | awk '{print $1}')
     deps_install_name_tool "${args[@]}" "$fw/$lib"
     # Headers sit flat: `<lib/header.h>` is framework-style, `Headers/header.h`. FFmpeg's own includes are `libX/…`.
-    local include_dir="$prefix/include/${lib/#lib/}"
+    local include_dir
     case "$lib" in
         libdav1d) include_dir="$prefix/include/dav1d" ;;
         *) include_dir="$prefix/include/$lib" ;;

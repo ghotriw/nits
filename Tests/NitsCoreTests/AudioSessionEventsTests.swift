@@ -350,3 +350,36 @@ extension AudioSessionEventsTests {
         #expect(!engine.isPlaying)
     }
 }
+
+extension AudioSessionEventsTests {
+    @Test(
+        "Playing again after the media ended waits for the session, with and without a picture",
+        arguments: [SyntheticTestMediaFactory.Preset.flashClick, .audioOnlyFLAC]
+    )
+    func clockWaitsForTheSessionAfterTheEnd(preset: SyntheticTestMediaFactory.Preset) async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: preset) else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        let route = SlowRoute()
+        engine.audioOutputRoute = route
+        defer { engine.stop() }
+
+        engine.load(path: path)
+        try #require(await engine.waitUntil(timeout: .seconds(5)) { !route.pending.isEmpty })
+        for completion in route.pending { completion() }
+        route.pending.removeAll()
+        try #require(await engine.waitForPlayback(advancingBy: 0.3, timeout: .seconds(4)))
+
+        engine.seek(to: engine.media.duration - 1.0)
+        try #require(await engine.waitUntil(timeout: .seconds(8)) { engine.playbackState == .completed })
+        route.pending.removeAll()
+
+        // The flag still says "ready" from the last run; the new start must ask the route first.
+        engine.play()
+        try #require(await engine.waitUntil(timeout: .seconds(5)) { !route.pending.isEmpty })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(engine.playbackClock.rate == 0, "The clock ran before the session was active")
+
+        for completion in route.pending { completion() }
+        #expect(await engine.waitUntil(timeout: .milliseconds(500)) { engine.playbackClock.rate > 0 })
+    }
+}

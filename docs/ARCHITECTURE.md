@@ -145,7 +145,8 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   first frame (`isHostInBackground`).
 - **Memory.** `PlayerConfiguration.frameQueueByteBudget` and `readAheadLimits`. The feeder's high water is
   `FrameQueueBudget.highWater`: the budget over the size of the frames being decoded (`FrameQueue.latestFrameBytes`, an
-  IOSurface), at least half a second of frames, at most 40; resume at 5/8 of it. Buffering's thresholds are shares of the
+  IOSurface), at least half a second of frames but no more than twice the budget (at 60 or 120 fps the floor alone held
+  930–1020 MB of 4K frames against 300 MB), at most 40; resume at 5/8 of it. Buffering's thresholds are shares of the
   same numbers (`BufferingPolicy.videoLowFrames` / `resumeFrames`), or a queue that cannot grow to 40 would never be
   ready; and while buffering holds the clock the feeder fills to its high water instead of waiting to drain to the resume
   point, which nothing would drain. Without a budget the counts are the old 40 / 25 and the thresholds 20 / 30.

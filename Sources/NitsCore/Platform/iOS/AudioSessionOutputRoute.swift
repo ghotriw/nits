@@ -102,12 +102,40 @@
         /// `setActive` blocks for as long as the system takes to switch audio (the interface hangs, and the system says
         /// so in the log), so it never runs on the main thread. One queue, so a deactivation after an activation
         /// follows it. The asynchronous calls of the session are from iOS 27 only.
-        private let sessionQueue = DispatchQueue(label: "com.nits.audio-session", qos: .userInitiated)
+        ///
+        /// The session is the process's, shared by every route (two engines can play at once, as in a second window or
+        /// a scene): the queue, the count of routes that hold it and its epoch are the type's, so that one route's end
+        /// does not take the sound from the others (`setActive(false)` only from the last holder), and a route whose
+        /// own state says "active" is not trusted once the session has been given back or taken since.
+        private static let sessionQueue = DispatchQueue(label: "com.nits.audio-session", qos: .userInitiated)
+        private static var holders = 0
+        /// Changes whenever the session stops being active for all (the last holder let go, the system took it).
+        private static var epoch = 0
+        private var holdsSession = false
+        private var activeEpoch = 0
+
+        private func acquireSession() {
+            guard !holdsSession else { return }
+            holdsSession = true
+            Self.holders += 1
+        }
+
+        /// Lets go of the session; true when this was the last holder, which is the one that gives it back.
+        private func releaseSession() -> Bool {
+            guard holdsSession else { return false }
+            holdsSession = false
+            Self.holders -= 1
+            guard Self.holders == 0 else { return false }
+            Self.epoch += 1
+            return true
+        }
 
         /// A long-form video session, active from the first playback until `deactivate`: activating takes the output
         /// from other apps' audio, which an app with nothing loaded must not do. Not on the main thread: `completion`
         /// runs on it once the session is active (or could not be).
         func activate(_ completion: @escaping @MainActor () -> Void) {
+            // Active only while the session still is the one this route made active.
+            if phase == .active, activeEpoch != Self.epoch { phase = .inactive }
             switch phase {
             case .active:
                 completion()
@@ -122,7 +150,8 @@
             generation += 1
             let mine = generation
             waiters = [completion]
-            sessionQueue.async { [weak self] in
+            acquireSession()
+            Self.sessionQueue.async { [weak self] in
                 let session = AVAudioSession.sharedInstance()
                 var failure: (any Error)?
                 do {
@@ -143,6 +172,8 @@
                 AppLog.error(.audio, "Could not activate the audio session: \(failure)")
             }
             phase = failure == nil ? .active : .inactive
+            activeEpoch = Self.epoch
+            if failure != nil, releaseSession() { Self.sessionQueue.async { Self.deactivateSession() } }
             let ready = waiters
             waiters = []
             for waiter in ready { waiter() }
@@ -153,6 +184,12 @@
         private func sessionWasTakenBySystem() {
             phase = .inactive
             generation += 1
+            // Gone for every route: the first of them to be told starts a new epoch, the others find it already changed.
+            if holdsSession {
+                holdsSession = false
+                Self.holders -= 1
+            }
+            if Self.holders == 0 { Self.epoch += 1 }
             let ready = waiters
             waiters = []
             for waiter in ready { waiter() }
@@ -167,9 +204,12 @@
             let ready = waiters
             waiters = []
             for waiter in ready { waiter() }
-            sessionQueue.async {
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            }
+            // Only the last holder hands the output back: another route may still be playing.
+            if releaseSession() { Self.sessionQueue.async { Self.deactivateSession() } }
+        }
+
+        nonisolated private static func deactivateSession() {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
 
         /// The ports an output is made of, as `name (type)`, for comparing routes and for the log.

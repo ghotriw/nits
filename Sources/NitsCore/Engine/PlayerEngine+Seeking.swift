@@ -410,6 +410,7 @@ extension PlayerEngine {
             return
         }
         chase = nil
+        beginAudioOutputActivation()
         startFeeding(audio: false)
         let joinsAudio = hasAudioStream
         if media.hasVideo {

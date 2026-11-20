@@ -53,11 +53,12 @@ extension PlayerEngine {
 
     /// What is queued at `clock`, for `BufferingPolicy`.
     private func bufferingLevels(at clock: CMTime, inputs: PlaybackInputs) -> BufferingPolicy.Levels {
-        BufferingPolicy.Levels(
+        let frameHighWater = currentFrameHighWater()
+        return BufferingPolicy.Levels(
             audioAhead: audioAhead(of: clock),
             queuedFrames: frameQueue.count,
-            framePauseAt: currentFrameHighWater().pause,
-            frameResumeAt: currentFrameHighWater().resume,
+            framePauseAt: frameHighWater.pause,
+            frameResumeAt: frameHighWater.resume,
             hasAudio: hasAudioStream,
             hasVideo: media.hasVideo,
             isAudioSeparate: inputs.isAudioSeparate,

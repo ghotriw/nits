@@ -1,9 +1,10 @@
-// Authored (ASS) subtitles need libass, which is built for macOS only for now (D5 of the iOS plan): without it the
-// library is absent and ASS tracks show their text cues. A library check, not a platform fork.
+// Authored (ASS) subtitles need libass, which is built for macOS only for now (docs/ROADMAP.md, Stage 8.5): without
+// it the library is absent and ASS tracks show their text cues. A library check, not a platform fork.
 #if canImport(CLibass)
     import CLibass
     import Foundation
     import os
+    /// Draws an ASS / SSA track with libass: styles, positions, animations, karaoke, vector drawings and the fonts the
     /// media attaches. Output is one finished picture per frame, sized for the area it is drawn on.
     ///
     /// Every libass call, of every renderer, runs on one queue (`queue`): the initializer and every method are called
