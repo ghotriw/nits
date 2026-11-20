@@ -79,6 +79,14 @@ final class AudioJoin {
             if Task.isCancelled { return false }
         }
 
+        // The audio session is activated off the main thread (`activateAudioOutput`): audio fed before it is would play
+        // into an output that is not there. Bounded: a session that cannot be activated does not hold playback.
+        let outputDeadline = ContinuousClock.now + .seconds(2)
+        while !engine.isAudioOutputReady.withLock({ $0 }) && ContinuousClock.now < outputDeadline {
+            try? await Task.sleep(for: pollInterval)
+            if Task.isCancelled { return false }
+        }
+
         // Asked of the HAL off the main actor, and after the device has stopped: while it stops the query waits for it.
         let maxLatency = PlayerEngine.maxOutputLatencyAlignment
         let latency = await Task.detached {

@@ -19,7 +19,7 @@
 
         init() {}
 
-        func activate() {}
+        func activate(_ completion: @escaping @MainActor () -> Void) { completion() }
 
         func deactivate() {}
 

@@ -26,13 +26,8 @@ extension PlayerEngine {
         self.videoHost = host
         updateHDRDisplay()
         recreateDisplayLink()
-        // What the screen and the engine's choice come to, for judging pacing and HDR on a device (the rate is the
-        // engine's: matched to the content, see `preferredDisplayLinkRate`).
-        let rate = displayLink.map { "\(Int($0.preferredFrameRateRange.preferred ?? 0)) Hz" } ?? "no link"
-        AppLog.info(
-            .video,
-            "Video attached to a \(host.maximumFramesPerSecond) Hz screen: display link rate \(rate) "
-                + "for \(String(format: "%.3f", 1.0 / nominalFrameDuration)) fps content")
+        // Only what the screen offers, for judging HDR on a device. The link's rate is not logged here: it depends on
+        // the content, which is not loaded yet; `updateDisplayLinkFrameRate` logs it for each file.
         AppLog.info(
             .video,
             "Screen EDR headroom (potential): \(String(format: "%.2f", Double(host.screenEDRHeadroom)))")
@@ -112,9 +107,14 @@ extension PlayerEngine {
         // content (60 Hz for 24p → 3:2 judder, 30 Hz for 60 fps → every other frame). System caps such as Low Power
         // Mode still override it.
         let range = CAFrameRateRange(minimum: Float(rate), maximum: Float(rate), preferred: Float(rate))
-        guard displayLink.preferredFrameRateRange != range else { return }
-        displayLink.preferredFrameRateRange = range
-        AppLog.debug(
+        let isRangeChange = displayLink.preferredFrameRateRange != range
+        if isRangeChange { displayLink.preferredFrameRateRange = range }
+        // Logged when the rate changes, and when the content does (a load of 24 fps after the default 24 keeps the rate):
+        // this is the line that says which rate the engine chose for this file. Not on every call, which a screen's
+        // parameters make many times a second.
+        guard isRangeChange || loggedLinkContentFrameDuration != nominalFrameDuration else { return }
+        loggedLinkContentFrameDuration = nominalFrameDuration
+        AppLog.info(
             .video,
             "Display link rate: \(rate) Hz for \(String(format: "%.3f", 1.0 / nominalFrameDuration)) fps content on a \(screenMaxRate) Hz screen"
         )

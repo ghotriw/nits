@@ -132,6 +132,8 @@ deps_verify() {
 # Versioned apart from the macOS archive: its own pre-release `deps-ios-v<DEPS_IOS_VERSION>` (a draft is not downloadable
 # without authorization), one zip per library (SwiftPM's `binaryTarget(url:checksum:)` takes one xcframework per zip). The
 # URLs and checksums sit in Package.swift, which cannot read this file: change both together.
+# When FFmpeg or dav1d is updated, update Apps/iOS/ThirdPartyLicenses too (the license texts and NOTICE.txt with the
+# versions and source links): the app ships them.
 DEPS_IOS_VERSION="1.0.0"
 DEPS_MIN_IOS="18.4"
 DEPS_IOS_RELEASE_URL="https://github.com/ghotriw/nits/releases/download/deps-ios-v${DEPS_IOS_VERSION}"

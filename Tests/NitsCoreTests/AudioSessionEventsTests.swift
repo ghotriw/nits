@@ -132,7 +132,10 @@ private final class CountingRoute: AudioOutputRoute {
     ) {}
 
     func stopMonitoring() {}
-    func activate() { activations += 1 }
+    func activate(_ completion: @escaping @MainActor () -> Void) {
+        activations += 1
+        completion()
+    }
     func deactivate() { deactivations += 1 }
     nonisolated static func currentOutputLatency() -> TimeInterval? { nil }
 }
@@ -241,5 +244,49 @@ extension AudioSessionEventsTests {
         engine.play()
         #expect(await engine.waitForPlayback(advancingBy: 0.3, timeout: .seconds(4)))
         #expect(route.activations == 2)
+    }
+}
+
+/// A route whose session takes its time: `activate` calls back only when the test says so.
+@MainActor
+private final class SlowRoute: AudioOutputRoute {
+    var pending: [@MainActor () -> Void] = []
+
+    required init() {}
+
+    func startMonitoring(
+        binding renderer: AVSampleBufferAudioRenderer, onChange: @escaping @MainActor () -> Void,
+        onRunningChange: @escaping @Sendable (_ isRunning: Bool) -> Void,
+        onInterruption: @escaping @MainActor (_ began: Bool, _ shouldResume: Bool) -> Void,
+        onRouteLost: @escaping @MainActor () -> Void
+    ) {}
+
+    func stopMonitoring() {}
+    func activate(_ completion: @escaping @MainActor () -> Void) { pending.append(completion) }
+    func deactivate() {}
+    nonisolated static func currentOutputLatency() -> TimeInterval? { nil }
+}
+
+extension AudioSessionEventsTests {
+    @Test("The clock does not start before the audio session is active, and starts when it is")
+    func clockWaitsForTheSession() async throws {
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .flashClick) else { return }
+        let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
+        let route = SlowRoute()
+        engine.audioOutputRoute = route
+        defer { engine.stop() }
+
+        engine.load(path: path)
+        #expect(await engine.waitUntil(timeout: .seconds(5)) { !route.pending.isEmpty })
+        // Played, as far as the engine is concerned, but the clock stands: the output is not ready. (Shorter than the
+        // preroll's own timeout, which starts it anyway.)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(engine.isPlaying)
+        #expect(engine.playbackClock.rate == 0, "The clock ran before the session was active")
+
+        for completion in route.pending { completion() }
+        // Started by the completion, not by the preroll's own timeout a second after the start.
+        #expect(await engine.waitUntil(timeout: .milliseconds(500)) { engine.playbackClock.rate > 0 })
+        #expect(await engine.waitForPlayback(advancingBy: 0.3, timeout: .seconds(4)))
     }
 }

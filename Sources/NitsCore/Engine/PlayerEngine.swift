@@ -58,7 +58,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
     public var isPlaying: Bool = false {
         didSet {
             displaySleepManager.update(isPlaying: isPlaying, hasVideo: media.hasVideo)
-            if isPlaying, !oldValue { audioOutputRoute.activate() }
+            if isPlaying, !oldValue { activateAudioOutput() }
         }
     }
     public var isLoaded: Bool = false {
@@ -559,6 +559,12 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// `isBuffering`, for the video feeder, which reads it off the main actor: a held clock needs the queue filled to its
     /// high water, past the resume point the feeder otherwise waits to drain to (`runVideoFeeding`).
     let isBufferingForFeeder = OSAllocatedUnfairLock(initialState: false)
+    /// The audio output is ready for the clock to start: the session is active, or was never to be (macOS). Read by the
+    /// display-link tick, which starts a pending clock; set by `activateAudioOutput()` and its completion.
+    let isAudioOutputReady = OSAllocatedUnfairLock(initialState: true)
+    /// A clock start was refused only because the output was not ready (`startSynchronizerClockAfterPreroll`, the
+    /// display-link tick): the output's completion starts it. Never set where the output is ready at once (macOS).
+    let isClockWaitingForOutput = OSAllocatedUnfairLock(initialState: false)
     /// Presentation time of the first buffer the current audio feeding run handed to the renderer; `nil` until it
     /// has. Compared with the clock, it shows where audio resumed after a seek, track switch or pause.
     @ObservationIgnored
@@ -640,6 +646,10 @@ public final class PlayerEngine: PlayerEngineProtocol {
     var displayLink: CADisplayLink?
     /// `VideoHost.screenIdentity` when `displayLink` was made: a link for a screen the host has left is replaced.
     var displayLinkScreen: AnyHashable?
+    /// The content frame duration the display-link rate was last logged for: a load that changes the content (not the rate)
+    /// is still logged once, for judging a 24 fps file on a ProMotion screen.
+    @ObservationIgnored
+    var loggedLinkContentFrameDuration = 0.0
     var displayLinkTarget: DisplayLinkTarget?
     /// View showing the video: the display link follows it, geometry changes lay it out.
     @ObservationIgnored weak var videoHost: (any VideoHost)?

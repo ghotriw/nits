@@ -257,10 +257,13 @@ extension PlayerEngine {
         at targetTime: CMTime, alignWithBufferedAudio: Bool = false, isProvisional: Bool = false
     ) {
         cancelPreroll()
-        // Nothing presents video without a display link, so there is no anchor frame to protect.
-        let isReady =
-            !media.hasVideo || displayLink == nil || (inputs?.isVideoEOF ?? true)
-            || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
+        // Nothing presents video without a display link, so there is no anchor frame to protect. And the clock does not
+        // start before the audio output is ready (the session is active): audio queued for a clock that runs ahead of
+        // the output is dropped as late.
+        let isOutputReady = isAudioOutputReady.withLock { $0 }
+        let isReady = isOutputReady && isPrerollSatisfied
+        // Refused only for the output: its completion starts the clock (`audioOutputBecameReady`).
+        if !isOutputReady && isPrerollSatisfied { isClockWaitingForOutput.withLock { $0 = true } }
         let startDelay =
             alignWithBufferedAudio
             ? min(PlatformAudioOutputRoute.currentOutputLatency() ?? 0, Self.maxOutputLatencyAlignment) : 0
@@ -305,12 +308,49 @@ extension PlayerEngine {
         }
     }
 
+    /// The preroll has what it waits for: no picture to anchor (audio only, no display link, the picture's input at its
+    /// end), or the anchor frame shown with frames queued behind it.
+    var isPrerollSatisfied: Bool {
+        !media.hasVideo || displayLink == nil || (inputs?.isVideoEOF ?? true)
+            || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
+    }
+
+    /// Asks the route for the output as playback starts; the clock waits for it (`isAudioOutputReady`). The route does not
+    /// block this thread and calls back once the session is active, where a clock start that only waited for that goes on.
+    func activateAudioOutput() {
+        isAudioOutputReady.withLock { $0 = false }
+        audioOutputRoute.activate { [weak self] in self?.audioOutputBecameReady() }
+    }
+
+    func audioOutputBecameReady() {
+        isAudioOutputReady.withLock { $0 = true }
+        // Only a clock start that was refused for the output goes on from here; where the output is ready at once (macOS)
+        // nothing was refused, and the start stays with the preroll and the display-link tick, as before.
+        let wasWaiting = isClockWaitingForOutput.withLock { waiting -> Bool in
+            defer { waiting = false }
+            return waiting
+        }
+        if wasWaiting { claimAndStartPendingClock() }
+    }
+
     /// Called from the display-link tick after presentation: starts a pending clock exactly once when the
     /// anchor frame is on screen and the next frames are decoded.
     nonisolated func startPendingClockIfPrerolled() {
         guard pendingClockStartLock.withLock({ $0 != nil }),
             frameQueue.getLastRenderedPTS() >= 0,
-            frameQueue.count >= Self.prerollMinimumQueuedFrames,
+            frameQueue.count >= Self.prerollMinimumQueuedFrames
+        else { return }
+        // Prerolled, but the output is not ready (the session is being activated): its completion starts the clock.
+        guard isAudioOutputReady.withLock({ $0 }) else {
+            isClockWaitingForOutput.withLock { $0 = true }
+            return
+        }
+        claimAndStartPendingClock()
+    }
+
+    /// Starts the pending clock, if one is still pending, exactly once.
+    nonisolated func claimAndStartPendingClock() {
+        guard
             let pending = pendingClockStartLock.withLock({ state -> PendingClockStart? in
                 guard let claimed = state else { return nil }
                 state = nil
@@ -399,6 +439,7 @@ extension PlayerEngine {
     /// Buffering ends itself through here (its resume restarts the clock), so its start, which holds the clock,
     /// calls `clockDidStop()` alone.
     func cancelPreroll() {
+        isClockWaitingForOutput.withLock { $0 = false }
         pendingClockStartLock.withLock { $0 = nil }
         prerollTimeoutTask?.cancel()
         prerollTimeoutTask = nil

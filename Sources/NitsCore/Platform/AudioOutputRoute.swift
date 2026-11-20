@@ -30,7 +30,11 @@ protocol AudioOutputRoute: AnyObject {
     /// Takes the output for playback (iOS: activates the audio session, which stops other apps' audio) and gives it back.
     /// The engine asks when playback starts and when the media is stopped, never at creation: an app that has loaded
     /// nothing must not silence anyone. Both are idempotent; macOS has no session, so they do nothing there.
-    func activate()
+    ///
+    /// Neither blocks the calling thread (activating takes a while, and the system warns of an interface that hangs on
+    /// it): `activate` calls `completion` on the main actor once the session is active, at once when it already is, or
+    /// could not be activated (playback goes on without it, not stuck). The engine starts the clock from there.
+    func activate(_ completion: @escaping @MainActor () -> Void)
     func deactivate()
 
     /// Seconds from handing a sample to the current output until it is audible; `nil` when it cannot be queried.
