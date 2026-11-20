@@ -32,7 +32,10 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
   another, and Apple's AV1 example (36 playlists, 23 probes) opened in 54.5 s on a cold CDN cache and 12 s on a warm one.
   Here only the variants that switch with the best one (`StreamingInput.ladder(of:)`, the best by bandwidth, or, when the host
   gives a codec order (`codecRank`, `VideoCodecPreference`: YouTube's playlist lists H.264, VP9 and HDR rungs of one size), by
-  size, then HDR, then the codec, as for a DASH manifest: its video codec, `SUPPLEMENTAL-CODECS`,
+  size (height, then width), then HDR, then the codec, as for a DASH manifest (`LadderChoice`; a variant that tells no
+  `VIDEO-RANGE` is SDR, so it joins the ladder of the ones that say so: two before); or the ladder a host chose in
+  the address's fragment (`HLSSelection`, `#nits-ladder=<codec family>&nits-range=<sdr|hdr>`, cut off the address at the
+  opening: a resolver that knows the ladders offers them to choose from, `HLSLadderMenu`): its video codec, `SUPPLEMENTAL-CODECS`,
   `VIDEO-RANGE`, rendition groups) and the renditions they refer to are loaded at all, and of such a ladder only the
   top rung is probed, with the audio renditions beside it (hls.js and ExoPlayer read the start variant alone):
   - *Clones.* The other rungs are described as the top (`StreamingInput.cloneCandidates`): its table streams copied, the

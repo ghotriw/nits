@@ -481,7 +481,11 @@ struct YTDLPResolverTests {
                 "vcodec": "none", "acodec": "opus", "language": "en", "tbr": 128},
                {"format_id": "270", "ext": "mp4", "url": "https://media.example/hls/270.m3u8",
                 "manifest_url": "https://media.example/master.m3u8", "protocol": "m3u8_native",
-                "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "width": 1920, "tbr": 5000}]}
+                "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "width": 1920, "tbr": 5000},
+               {"format_id": "614", "ext": "mp4", "url": "https://media.example/hls/614.m3u8",
+                "manifest_url": "https://media.example/master.m3u8", "protocol": "m3u8_native",
+                "vcodec": "vp09.00.40.08", "acodec": "none", "height": 1080, "width": 1920, "tbr": 3400,
+                "dynamic_range": "SDR"}]}
             """
         let json = directory.appendingPathComponent("answer.json")
         try answer.write(to: json, atomically: true, encoding: .utf8)
@@ -498,6 +502,10 @@ struct YTDLPResolverTests {
         #expect(hls.path == "https://media.example/master.m3u8")
         #expect(hls.files == nil)
         #expect(hls.fallback != nil, "The files play when the playlist does not open")
+        // Its ladders, one for each codec, to choose from; the engine's chain says which plays.
+        #expect(Set(hls.videoFormats.map(\.id)) == ["avc-sdr", "vp9-sdr"])
+        #expect(hls.videoFormats.allSatisfy { $0.url.hasPrefix("https://media.example/master.m3u8#nits-ladder=") })
+        #expect(hls.selectedVideoFormatID == nil)
         #expect(hls.historyKey == "youtube:aqz-KE-bpKQ")
 
         // Without a playlist the files play, whatever is preferred.

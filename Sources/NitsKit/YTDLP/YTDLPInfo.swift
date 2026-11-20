@@ -321,6 +321,20 @@ struct YTDLPInfo: Decodable, Sendable {
         return copy
     }
 
+    /// The pictures of the HLS playlist at `master` as the page lists them (a variant each), to tell its ladders by.
+    /// yt-dlp fills `dynamic_range` of these ("SDR", and "HDR10" for YouTube's `VIDEO-RANGE=HLG` ones; checked on a real
+    /// answer, 2026.10.26).
+    func hlsRungs(of master: String) -> [HLSLadderMenu.Rung] {
+        (formats ?? []).compactMap { format in
+            guard format.protocol?.hasPrefix("m3u8") == true, format.manifestURL == master, format.hasVideo,
+                let codec = format.vcodec
+            else { return nil }
+            return HLSLadderMenu.Rung(
+                codec: codec, dynamicRange: format.dynamicRange, width: format.width ?? 0, height: format.height ?? 0,
+                frameRate: format.fps, bandwidth: Int((format.tbr ?? 0) * 1000))
+        }
+    }
+
     /// The segments of `formats` as a manifest has them: a picture first (a format with both is the picture alone:
     /// its sound is in its segments).
     func segmentStreams(of formats: [Format]) -> [SegmentedDASHManifest.Stream] {

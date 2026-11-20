@@ -288,6 +288,8 @@ public final class YTDLPResolver: MediaResolver {
         var resolved = try chosen.resolvedMedia(for: url, sponsorBlock: segments, liveHistory: history)
         if choseHLS, var media = resolved, let plain = try? info.resolvedMedia(for: url, sponsorBlock: segments) {
             media.fallback = ResolvedFallback(plain)
+            // The playlist's ladders, one for each codec and range, to choose from (the preferred plays: the chain).
+            media.videoFormats = HLSLadderMenu.formats(master: media.path, rungs: info.hlsRungs(of: media.path))
             resolved = media
         }
         // A video of YouTube plays from a manifest of all its files (a ladder of each codec, the sound of each language) in

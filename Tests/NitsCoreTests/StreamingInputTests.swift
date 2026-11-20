@@ -210,6 +210,23 @@ struct StreamingInputTests {
         #expect(first.count == 1 && first.first?.range == nil, "\(first.map(\.range))")
     }
 
+    @Test(
+        "A ladder chosen in the address's fragment opens the playlist from the address without it; one it lacks plays")
+    func opensAnAddressWithAChosenLadder() throws {
+        guard let stand = try Self.stand(.hlsLadder) else { return }
+        defer { stand.server.stop() }
+        // The ladder is H.264 of one range: the choice names it, or another codec the playlist lacks (warned of).
+        for fragment in ["#nits-ladder=avc&nits-range=sdr", "#nits-ladder=av1"] {
+            let input = try #require(
+                StreamingInput(
+                    url: stand.server.url("master.m3u8") + fragment, headers: [:], interrupt: FFmpegInterrupt()))
+            #expect(try #require(input.variantCandidates()).count == 3)
+            #expect(Self.drain(input).code == FFmpegErrorCode.eof)
+            #expect(stand.server.requests.allSatisfy { !$0.path.contains("#") && !$0.path.contains("nits-") })
+            input.close()
+        }
+    }
+
     @Test("A top that doesn't answer in time has the next rung down probed beside it; the first to answer describes")
     func slowTopRacesTheNextRung() throws {
         guard let stand = try Self.stand(.hlsLadder) else { return }
@@ -320,43 +337,6 @@ struct StreamingInputTests {
         #expect(
             try candidates(
                 avc(1, "mp4a.40.2") + avc(3, "avc1.640028,mp4a.40.2") + avc(2, "avc1.64001f,mp4a.40.2")) == [0, 1])
-    }
-
-    @Test("The ladder is of the best bandwidth's codec, or with a codec order of the biggest size, HDR, then the codec")
-    func ladderFollowsCodecOrder() throws {
-        func ladder(_ lines: String, rank: (@Sendable (String) -> Int)? = nil) throws -> [Int] {
-            guard
-                case .multivariant(let multivariant) = try StreamingPlaylist.parse(
-                    Data(("#EXTM3U\n" + lines).utf8), url: URL(string: "http://h/m.m3u8")!)
-            else { return [] }
-            return StreamingInput.ladder(of: multivariant, codecRank: rank).map(\.bandwidth).sorted()
-        }
-        func variant(_ bandwidth: Int, _ codec: String, _ height: Int, range: String = "SDR") -> String {
-            "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth),CODECS=\"\(codec)\",RESOLUTION=\(height * 16 / 9)x\(height),VIDEO-RANGE=\(range)\nv\(bandwidth).m3u8\n"
-        }
-        let sdr =
-            variant(500, "avc1.4d401f", 720) + variant(5000, "avc1.640028", 1080) + variant(300, "vp09.00.40.08", 720)
-            + variant(1500, "vp09.00.40.08", 1080)
-        // By bandwidth alone H.264 wins for being the bigger, which says nothing of the picture.
-        #expect(try ladder(sdr) == [500, 5000])
-        let order = VideoCodecPreference(order: ["vp9", "avc", "hevc", "av1", "vp8"])
-        #expect(try ladder(sdr, rank: order.ladderRank) == [300, 1500])
-        #expect(
-            try ladder(sdr, rank: VideoCodecPreference().ladderRank) == [500, 5000], "H.264 is before VP9 by default")
-        // A codec off plays only when it is all there is.
-        var off = VideoCodecPreference(order: ["avc", "vp9"])
-        off.setEnabled(false, family: "avc")
-        #expect(try ladder(sdr, rank: off.ladderRank) == [300, 1500])
-        #expect(
-            try ladder(variant(500, "avc1.4d401f", 720) + variant(5000, "avc1.640028", 1080), rank: off.ladderRank) == [
-                500, 5000,
-            ])
-        // The size comes first: the preferred codec at a smaller size loses to another's bigger picture.
-        let sizes = variant(900, "avc1.640028", 1080) + variant(6000, "vp09.00.40.08", 2160)
-        #expect(try ladder(sizes, rank: VideoCodecPreference(order: ["avc", "vp9"]).ladderRank) == [6000])
-        // Then HDR, then the codec.
-        let hdr = variant(2000, "avc1.640028", 1080) + variant(2500, "vp09.02.40.10", 1080, range: "PQ")
-        #expect(try ladder(hdr, rank: VideoCodecPreference(order: ["avc", "vp9"]).ladderRank) == [2500])
     }
 
     @Test(

@@ -233,8 +233,13 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   renewed addresses are waited for the same way before they are asked. A video that YouTube offers both as files and as an
   HLS playlist plays from either by `AppSettings.youTubeStreams` (`StreamProtocolPreference`, `--youtube-hls` / `--youtube-files`;
   default files): the playlist, which `yt-dlp` marks available at once where the files wait for an ad's pause (`available_at`:
-  measured 5 to 6 s later than the playlist on two of three clips), has no manifest of files, `YouTubeFormatSource` or codec menu,
-  and its ladder's codec is chosen by `VideoCodecPreference` (`StreamingInput.ladder(of:codecRank:)`). The choice
+  measured 5 to 6 s later than the playlist on two of three clips), has no manifest of files or `YouTubeFormatSource`. Its
+  ladders, one for each codec and range the page lists (`HLSLadderMenu`: the best rung of each, `ResolvedMedia.videoFormats`
+  of a video, not a live stream), are in the format menu, each the playlist's address with the choice in its fragment
+  (`#nits-ladder=vp9&nits-range=hdr`, `HLSSelection`: the client cuts it off and plays the variants that have that codec and
+  are HDR or not: YouTube's "HDR10" is `VIDEO-RANGE=HLG` in its playlist, so the choice is HDR or SDR, not which); `MediaResolverChain` puts the one `VideoCodecPreference` prefers first and plays it, by the rule the client chooses
+  the best ladder of a bare `.m3u8` by (`LadderChoice`). A choice the playlist no longer has (an old list) plays the best
+  ladder, warned of in the log, and the menu may then mark another. The choice
   among the codecs is `MediaResolverChain.offeringChoices` (the rules of `DASHManifestResolver`, `VideoCodecPreference`:
   the preferred first, the others in the format menu), each the manifest's `data:` location with `#nits-video=<id>`
   (`DASHSelection`, read from an inline manifest's fragment as from a network address's). When the manifest cannot be built

@@ -170,13 +170,16 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         url address: String, headers: [String: String], interrupt: FFmpegInterrupt,
         answerLimit: Duration = StreamingInput.answerLimit, codecRank: (@Sendable (String) -> Int)? = nil
     ) {
-        let url = StreamingURL.normalizeMediaPath(address)
+        // The ladder a host chose is in the address's fragment, which the playlist's address (the base of its relative
+        // ones, and what the log names) is without.
+        let (named, selection) = HLSSelection.split(address)
+        let url = StreamingURL.normalizeMediaPath(named)
         let isLocal = !HTTPSessionTransport.serves(url)
         guard let multivariantURL = isLocal ? URL(fileURLWithPath: url) : URL(string: url) else { return nil }
         self.init(
             multivariant: multivariantURL, playlists: HLSServedPlaylists(), source: url, allowsFiles: isLocal,
             headers: headers,
-            interrupt: interrupt, answerLimit: answerLimit, codecRank: codecRank)
+            interrupt: interrupt, answerLimit: answerLimit, codecRank: codecRank, selection: selection)
     }
 
     /// Opens the stream whose multivariant (or only media) playlist `playlists` answers at `multivariantURL`: an HLS server's, or
@@ -186,7 +189,8 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
     package init?(
         multivariant multivariantURL: URL, playlists: any PlaylistSource, source url: String, allowsFiles: Bool,
         headers: [String: String], interrupt: FFmpegInterrupt, answerLimit: Duration = StreamingInput.answerLimit,
-        streamingName: String = "HLS", codecRank: (@Sendable (String) -> Int)? = nil
+        streamingName: String = "HLS", codecRank: (@Sendable (String) -> Int)? = nil,
+        selection: HLSSelection = HLSSelection()
     ) {
         // A stream served over HTTP(S) never reads a local file, whatever its playlists list (`SegmentLoader.allowsFiles`).
         let isLocal = allowsFiles && !HTTPSessionTransport.serves(url)
@@ -234,7 +238,9 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
             wanted = [Wanted(url: multivariantURL, kind: .primary, rendition: nil)]
         case .multivariant(let multivariant):
             variables = multivariant.variables
-            listed = Self.ladder(of: multivariant, codecRank: codecRank)
+            listed = Self.ladder(of: multivariant, codecRank: codecRank, selection: selection) { message in
+                StreamingLog.warning("\(streamingName): \(message) for '\(StreamingURL.loggable(url))'")
+            }
             guard !listed.isEmpty else {
                 fail("the multivariant playlist lists no variant")
                 return nil
@@ -730,23 +736,35 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
     /// their quality, so then the size (height, then width) comes first, then HDR, then the codec, and the bandwidth only decides among
     /// the rest. The same order as a DASH manifest's pictures (`DASHManifest`).
     static func ladder(
-        of multivariant: MultivariantPlaylist, codecRank: (@Sendable (String) -> Int)? = nil
+        of multivariant: MultivariantPlaylist, codecRank: (@Sendable (String) -> Int)? = nil,
+        selection: HLSSelection = HLSSelection(), warning: (String) -> Void = { _ in }
     ) -> [PlaylistVariant] {
         let withPicture = multivariant.variants.filter {
             $0.resolution != nil || $0.codecs.flatMap(CodecFamily.video) != nil
         }
-        let candidates = withPicture.isEmpty ? multivariant.variants : withPicture
+        var candidates = withPicture.isEmpty ? multivariant.variants : withPicture
         guard !candidates.isEmpty, candidates.allSatisfy({ $0.codecs.flatMap(CodecFamily.video) != nil })
-        else { return candidates }
+        else {
+            if !selection.isEmpty { warning("a variant tells no codec: the chosen ladder can't be told") }
+            return candidates
+        }
+        // The ladder a host chose, when the playlist has it (it may not, once the host's list is old).
+        if !selection.isEmpty {
+            let chosen = candidates.filter(selection.matches)
+            if chosen.isEmpty {
+                warning("the playlist has no ladder of the chosen codec and range")
+            } else {
+                candidates = chosen
+            }
+        }
         let best: PlaylistVariant
         if let codecRank {
             func key(_ variant: PlaylistVariant) -> (Int, Int, Int, Int, Int) {
-                let family = variant.codecs.flatMap(CodecFamily.video) ?? ""
-                return (
-                    variant.resolution?.height ?? 0, variant.resolution?.width ?? 0,
-                    variant.videoRange.map { $0 == .sdr ? 0 : 1 } ?? 0,
-                    -codecRank(family), variant.bandwidth
-                )
+                LadderChoice.key(
+                    height: variant.resolution?.height ?? 0, width: variant.resolution?.width ?? 0,
+                    isHDR: variant.videoRange.map { $0 != .sdr } ?? false,
+                    family: variant.codecs.flatMap(CodecFamily.video) ?? "", bandwidth: variant.bandwidth,
+                    codecRank: codecRank)
             }
             best = candidates.max(by: { key($0) < key($1) })!
         } else {
@@ -765,7 +783,7 @@ package final class StreamingInput: StreamDescriptions, @unchecked Sendable {
         package init(_ variant: PlaylistVariant) {
             codec = variant.codecs.flatMap(CodecFamily.video)
             supplementalCodec = variant.supplementalCodecs.flatMap(CodecFamily.video)
-            range = variant.videoRange
+            range = variant.videoRange ?? .sdr
             groups = [variant.audioGroup, variant.videoGroup, variant.subtitlesGroup]
         }
     }

@@ -143,7 +143,9 @@ struct MediaResolverChain: MediaResolver {
             return try await resolver.resolve(url, headers: headers)
         }
         guard let found = try await host?.resolve(url, headers: headers) else { return nil }
-        return Self.offeringChoices(of: found, codecs: codecs, audioCodecs: audioCodecs)
+        let offered = Self.offeringChoices(of: found, codecs: codecs, audioCodecs: audioCodecs)
+        // A video site's HLS playlist whose ladders the host lists gets the same: the preferred codec's plays.
+        return HLSLadderMenu.offering(offered, codecs: codecs)
     }
 
     /// A host's manifest that names its files by keys (`ResolvedMedia.files`, or a live history's `liveHistory`, inline) gets what an `.mpd` of the network
