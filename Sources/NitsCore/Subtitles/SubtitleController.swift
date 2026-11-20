@@ -287,7 +287,9 @@ public final class SubtitleController {
 
     // MARK: libass
 
-    @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
+    #if canImport(CLibass)
+        @ObservationIgnored var authoredRenderer: AssSubtitleRenderer?
+    #endif
     @ObservationIgnored var authoredRendererTrackId: Int?
     @ObservationIgnored var authoredScript: AssScript?
     /// Counts renderer starts and drops, so a renderer made in the background for a track since left is thrown away.

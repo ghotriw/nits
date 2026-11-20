@@ -187,7 +187,10 @@ public enum VideoCodec: Sendable, Hashable, CustomStringConvertible {
     /// `VTIsHardwareDecodeSupported` reports `false` and sessions can't use them (VP9 on M1/M2 reads
     /// `false` before and `true` after). Registering is a no-op when the hardware lacks the decoder.
     private static func isHardwareDecodeSupported(_ codecType: CMVideoCodecType) -> Bool {
-        VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+        // macOS 11+; on iOS the call exists from 26.2, and before it there is no supplemental decoder to register.
+        if #available(iOS 26.2, *) {
+            VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+        }
         return VTIsHardwareDecodeSupported(codecType)
     }
 

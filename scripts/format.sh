@@ -79,6 +79,13 @@ case "$MODE" in
         swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
         echo "Type-check passed."
         ;;
+    typecheck-ios|--typecheck-ios)
+        # The iOS frameworks are arm64-only (an x86_64 simulator slice cannot link), so one architecture.
+        echo "Building NitsCore for the iOS Simulator (strict concurrency)..."
+        xcodebuild -scheme NitsCore -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
+            OTHER_SWIFT_FLAGS='-strict-concurrency=complete' build -quiet
+        echo "iOS type-check passed."
+        ;;
     check|--check|-c)
         echo "1. Checking Swift code style..."
         "$SWIFT_FORMAT_BIN" lint --recursive --strict "${VALID_TARGETS[@]}"
@@ -86,12 +93,16 @@ case "$MODE" in
         check_streaming_boundary
         echo "2. Type-checking targets with strict concurrency..."
         swift build --build-tests -Xswiftc -strict-concurrency=complete --disable-sandbox
+        if command -v xcodebuild >/dev/null 2>&1; then
+            echo "2b. Type-checking NitsCore for iOS..."
+            "$0" typecheck-ios
+        fi
         echo "3. Running test suite..."
         swift test --disable-sandbox
         echo "All checks passed! CI ready."
         ;;
     *)
-        echo "Usage: $0 [format|lint|typecheck|check]"
+        echo "Usage: $0 [format|lint|typecheck|typecheck-ios|check]"
         exit 1
         ;;
 esac
