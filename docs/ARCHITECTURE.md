@@ -150,7 +150,7 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   same numbers (`BufferingPolicy.videoLowFrames` / `resumeFrames`), or a queue that cannot grow to 40 would never be
   ready; and while buffering holds the clock the feeder fills to its high water instead of waiting to drain to the resume
   point, which nothing would drain. Without a budget the counts are the old 40 / 25 and the thresholds 20 / 30.
-- **No Picture in Picture, Now Playing, background audio or subtitles in v1**; the ProMotion rate policy is unchanged
+- **No Picture in Picture, background audio or subtitles in v1** (Now Playing and the remote commands, AirPods included, work while the app is in the foreground: `TouchNowPlaying`; the engine pauses in the background, so `UIBackgroundModes` stays unset until the engine plays audio alone there); the ProMotion rate policy is unchanged
   (`CADisableMinimumFrameDurationOnPhone` lets the engine run 24 fps at 120 Hz, which costs battery only; 25 fps, which
   120 Hz does not divide, runs there too, see `docs/OPEN_ISSUES.md`). The v1 limits were measured on an iPad mini 6
   (4 GB): 4K 10-bit over the LAN held 455 MB, 520 MB at most.

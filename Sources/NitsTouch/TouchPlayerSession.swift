@@ -96,6 +96,8 @@
             self.access = access
             self.hooks = hooks ?? engine
             self.saveProgress = saveProgress ?? { [core] in core.saveProgress() }
+            // Now Playing and the remote commands (AirPods, the lock screen): a sink of the core, as on macOS.
+            core.addSink(TouchNowPlaying(engine: engine))
         }
 
         /// A session with an engine of the iOS configuration.

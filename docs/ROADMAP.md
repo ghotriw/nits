@@ -896,7 +896,7 @@ flowchart TD
   `openStream` (headers, title, artwork, start time, tracks), `load(_:)`, `onTimeUpdate` / `onPlaybackStateChanged` /
   `onPlaybackEnded` / `onClose`, action buttons (one capsule with a dismiss button), the host's Next / Previous (in the
   control bar), `close()` / `end()`, a public `init(configuration:historyStore:)`; the history is written on the way to
-  the background. Not in: overlay buttons, the "Up Next" card, Now Playing, PiP, `ControlsConfiguration`. yt-dlp: `NitsYTDLP`
+  the background. Not in: overlay buttons, the "Up Next" card, PiP, `ControlsConfiguration`. yt-dlp: `NitsYTDLP`
   builds for iOS and takes a host's `YTDLPRunner` (`YTDLPResolver(runner:)`); Nits' own iOS app has none (a host with
   an embedded interpreter brings it).
 - [ ] **8.5. Subtitles:** libass, FreeType, HarfBuzz, FriBidi and libunibreak for iOS (the `#if canImport(CLibass)` in
@@ -908,6 +908,10 @@ flowchart TD
   (`AVPictureInPictureController(contentSource:)` over the display layer). Now Playing is a `PlayerSessionSink` of
   `TouchPlayerSession`, as on macOS. With this the session's platform part grows to `NitsKit`'s size: split `NitsTouch`
   into the session (the Kit's role) and the views (the UI's role), today one target as both are small.
+  Done so far: Now Playing in the foreground (`TouchNowPlaying`, remote commands from AirPods and Control Center). Still open:
+  background audio (needs an engine policy: no video decoding in the background, audio only, an exact seek on return;
+  until then `hostDidEnterBackground()` pauses and `UIBackgroundModes` stays unset), PiP, the split, and the `NowPlaying`
+  framework (`MediaSession`, iOS 27+) as on macOS instead of `MPRemoteCommandCenter` alone.
 - [ ] **8.x. A host's own UI on iOS:** when a host wants its own controls over `TouchPlayerSession` rather than
   `PlayerScreen`, make `VideoSurface` public (macOS has `VideoSurfaceView`) and, if not done by 8.7, split the views
   off `NitsTouch` then.
