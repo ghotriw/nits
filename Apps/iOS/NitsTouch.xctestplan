@@ -22,8 +22,15 @@
     {
       "target" : {
         "containerPath" : "container:..\/..",
-        "identifier" : "NitsTouchTests",
-        "name" : "NitsTouchTests"
+        "identifier" : "NitsTouchKitTests",
+        "name" : "NitsTouchKitTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:..\/..",
+        "identifier" : "NitsTouchUITests",
+        "name" : "NitsTouchUITests"
       }
     }
   ],

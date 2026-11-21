@@ -1,5 +1,6 @@
 #if os(iOS)
     import NitsCore
+    import NitsTouchKit
     import SwiftUI
 
     /// The player: the video full screen, the controls over it, a spinner while it loads or buffers, an alert for an
@@ -61,7 +62,7 @@
                 .persistentSystemOverlays(.hidden)
                 .preferredColorScheme(.dark)
             }
-            .onChange(of: scenePhase) { _, phase in session.scenePhaseChanged(phase) }
+            .onChange(of: scenePhase) { _, phase in session.scenePhaseChanged(HostScenePhase(phase)) }
             .onChange(of: engine.isLoaded) { _, _ in visibility.touch() }
             .onChange(of: engine.isPlaying) { _, _ in visibility.touch() }
             .alert(
@@ -105,5 +106,16 @@
 
     #Preview("Nothing loaded") {
         PlayerScreen(session: TouchPlayerSession())
+    }
+
+    extension HostScenePhase {
+        init(_ phase: ScenePhase) {
+            switch phase {
+            case .active: self = .active
+            case .inactive: self = .inactive
+            case .background: self = .background
+            @unknown default: self = .inactive
+            }
+        }
     }
 #endif

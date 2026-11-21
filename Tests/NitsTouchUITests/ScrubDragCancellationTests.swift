@@ -1,7 +1,7 @@
 #if os(iOS)
     import Testing
 
-    @testable import NitsTouch
+    @testable import NitsTouchUI
 
     @Suite("Scrub bar drag cancellation")
     struct ScrubDragCancellationTests {

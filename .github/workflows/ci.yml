@@ -140,8 +140,8 @@ jobs:
             swift test --disable-sandbox --skip "$SLOW_TESTS"
           fi
 
-  # The iOS app (Apps/iOS): NitsCore and NitsTouch for the simulator, the app for the simulator and for a device
-  # (unsigned: it compiles and links), and the test plan (NitsStreamingTests + NitsTouchTests) on a simulator. The engine's
+  # The iOS app (Apps/iOS): NitsCore, NitsTouchKit and NitsTouchUI for the simulator, the app for the simulator and for a device
+  # (unsigned: it compiles and links), and the test plan (NitsStreamingTests + NitsTouchKitTests + NitsTouchUITests) on a simulator. The engine's
   # media tests stay in `verify`: they need the ffmpeg CLI and macOS.
   ios:
     name: iOS build and tests
@@ -177,7 +177,7 @@ jobs:
         run: brew install xcodegen swift-format
 
       # The iOS frameworks are SwiftPM binary targets (deps-ios-v*, Package.swift): resolved by the build itself.
-      - name: Type-check NitsCore and NitsTouch for the iOS Simulator
+      - name: Type-check NitsCore, NitsTouchKit and NitsTouchUI for the iOS Simulator
         run: ./scripts/format.sh typecheck-ios
 
       - name: Build the app for the simulator

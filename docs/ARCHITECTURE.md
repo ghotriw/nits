@@ -36,9 +36,10 @@ Reference-grade playback of HDR and Dolby Vision (Profile 8.1 / HDR10) video on 
 - **NitsUI** — declarative views (`ContentView`, `ControlsOverlay`, `TimelineSlider`,
   `SettingsView`, `PerformanceHUDView`, `SubtitleOverlayView`). Transient UI state (fullscreen
   transitions, auto-hide, OSD, HUD visibility) lives in `PlayerUIState`.
-- **NitsTouch** — the iOS player screen (`PlayerScreen`, v1: the video and a control bar) and `TouchPlayerSession`, which
-  owns the engine and what follows the app's life (the file's security-scoped access, the scene's phase). SwiftUI over
-  `NitsCore` only; every file is in `#if os(iOS)`, so macOS builds the target empty. `NitsUI` and `NitsKit` stay macOS-only.
+- **NitsTouchKit** — the iOS session (the Kit's role): `TouchPlayerSession`, which owns the engine and what follows the app's life
+  (the file's security-scoped access, the scene's phase), and Now Playing with the remote commands (`TouchNowPlaying`).
+  **NitsTouchUI** — the iOS player screen (the UI's role: `PlayerScreen`, the control bar), SwiftUI over the session. Both import
+  `NitsCore` only (the UI also the Kit); every file is in `#if os(iOS)`, so macOS builds the targets empty. `NitsUI` and `NitsKit` stay macOS-only.
   The app itself is `Apps/iOS` (an XcodeGen project: `@main`, Info.plist, assets, licenses).
 
 Settings come in three parts, so that the engine sees only its own:
@@ -89,7 +90,7 @@ whether the screen is HDR (`minimumHDRDisplayHeadroom`) and the display-link rat
 made for another screen (`screenIdentity`): a view's link does not leave a screen that is unplugged.
 `./scripts/format.sh lint` fails on AppKit / UIKit / IOKit / CoreAudio HAL code, and on the
 one-platform members of shared frameworks NitsCore has used, outside `Platform/<os>/`;
-`./scripts/format.sh typecheck-ios` builds NitsCore and NitsTouch for the iOS Simulator (`check` runs it when `xcodebuild`
+`./scripts/format.sh typecheck-ios` builds NitsCore, NitsTouchKit and NitsTouchUI for the iOS Simulator (`check` runs it when `xcodebuild`
 is there).
 
 What an iOS build needs beyond the platform types: FFmpeg and dav1d as dynamic xcframeworks, one per library

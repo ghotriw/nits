@@ -1,4 +1,4 @@
-# The iOS app: only the @main, Info.plist, assets and signing. Everything else is the package's `NitsTouch`.
+# The iOS app: only the @main, Info.plist, assets and signing. Everything else is the package's `NitsTouchKit` and `NitsTouchUI`.
 # `scripts/build_ios.sh` generates Nits.xcodeproj from this file with XcodeGen (`brew install xcodegen`); the project is
 # not committed (`*.xcodeproj` is ignored). Open Apps/iOS/Nits.xcodeproj in Xcode after `./scripts/build_ios.sh generate`.
 name: Nits
@@ -30,7 +30,9 @@ targets:
         type: folder
     dependencies:
       - package: Nits
-        product: NitsTouch
+        product: NitsTouchKit
+      - package: Nits
+        product: NitsTouchUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghotriw.nits

@@ -1,7 +1,7 @@
 #if os(iOS)
+    import Foundation
     import NitsCore
     import Observation
-    import SwiftUI
 
     /// What the session tells the engine about the app's life; the engine's own methods, a recording fake in tests.
     @MainActor
@@ -24,6 +24,12 @@
     struct SystemScopedURLAccess: ScopedURLAccessing {
         func start(_ url: URL) -> Bool { url.startAccessingSecurityScopedResource() }
         func stop(_ url: URL) { url.stopAccessingSecurityScopedResource() }
+    }
+
+    /// The phase of the host's scene, as the session needs it (SwiftUI's `ScenePhase` without SwiftUI: the Kit has no views, and a
+    /// UIKit host maps its own scene states). `NitsTouchUI` converts `ScenePhase`.
+    public enum HostScenePhase: Sendable {
+        case active, inactive, background
     }
 
     /// The session of the iOS player: owns the engine and what has to follow the app's life (the file being played,
@@ -55,7 +61,7 @@
         public var errorMessage: String?
 
         /// Decides when the action button is on screen and when it presses itself; `ActionButtonView` feeds it.
-        @ObservationIgnored let actionButton = ActionButtonPresenter()
+        @ObservationIgnored package let actionButton = ActionButtonPresenter()
 
         /// Seconds of playback an action button stays up on its own, then it shows only with the controls.
         public var actionButtonDisplayDuration: Double {
@@ -253,7 +259,7 @@
         ///
         /// Going to the background, the engine hears of it first (pausing saves the position), and then the history is
         /// written: the app is suspended before the history's own delayed write.
-        public func scenePhaseChanged(_ phase: ScenePhase) {
+        public func scenePhaseChanged(_ phase: HostScenePhase) {
             switch phase {
             case .background:
                 guard !isInBackground else { return }
@@ -265,8 +271,6 @@
                 isInBackground = false
                 hooks.hostWillEnterForeground()
             case .inactive:
-                break
-            @unknown default:
                 break
             }
         }

@@ -30,10 +30,10 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
 
 - Build: `swift build`
 - Strict type-check incl. tests: `./scripts/format.sh typecheck`
-- iOS type-check: `./scripts/format.sh typecheck-ios` (NitsCore and NitsTouch for the simulator, `ARCHS=arm64`; `check` runs it). The iOS
+- iOS type-check: `./scripts/format.sh typecheck-ios` (NitsCore, NitsTouchKit and NitsTouchUI for the simulator, `ARCHS=arm64`; `check` runs it). The iOS
   app (`Apps/iOS`, an XcodeGen project: `brew install xcodegen`; the project itself is generated and ignored):
   `./scripts/build_ios.sh [generate|simulator|device|test]` (`device` is signed with `DEVELOPMENT_TEAM`, else unsigned; `test`
-  runs `Apps/iOS/NitsTouch.xctestplan`: `NitsStreamingTests` + `NitsTouchTests` only, never the `Nits-Package` scheme). The scheme
+  runs `Apps/iOS/NitsTouch.xctestplan`: `NitsStreamingTests` + `NitsTouchKitTests` + `NitsTouchUITests` only, never the `Nits-Package` scheme). The scheme
   is `NitsiOS` (the name `Nits` is the package's macOS executable). The iOS FFmpeg / dav1d are xcframeworks that SwiftPM
   downloads (`binaryTarget(url:checksum:)`, the pre-release `deps-ios-v*`): they are built and published only by the
   "Build and Release iOS Dependencies" workflow, whose report gives the checksums for `Package.swift` (`DEPS_IOS_VERSION` in
@@ -115,11 +115,13 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   an embedded interpreter. `./scripts/format.sh typecheck-ios` builds it.
 - `NitsKit` owns windows, menus and NowPlaying. `NitsUI` is declarative views plus
   `PlayerUIState` for transient UI state.
-- `NitsTouch` is the iOS player screen (`PlayerScreen`) and `TouchPlayerSession`, which owns the engine and follows the scene's
-  phase (`.background` and back only; `.inactive` changes nothing). Every file is in `#if os(iOS)`; it imports `NitsCore`
-  only (never `NitsStreaming`, which `format.sh lint` enforces) and observes `PlayerEngine` directly. The test seams of the
+- `NitsTouchKit` is the iOS session (the Kit's role): `TouchPlayerSession`, which owns the engine and follows the scene's
+  phase (`HostScenePhase`, not SwiftUI's: the Kit has no views; `.background` and back only, `.inactive` changes nothing). Every file is in `#if os(iOS)`; it imports `NitsCore`
+  only of the project's modules (never `NitsStreaming`, which `format.sh lint` enforces) and observes `PlayerEngine` directly. The test seams of the
   session are internal, not API. The engine's hooks for it are `hostDidEnterBackground()` / `hostWillEnterForeground()`;
-  an iOS-only event gets an engine handler whose policy is the engine's, never `#if os` in it. `NitsUI` and `NitsKit` stay macOS-only.
+  an iOS-only event gets an engine handler whose policy is the engine's, never `#if os` in it. `NitsUI` and `NitsKit` stay macOS-only. Now Playing and the remote commands (`TouchNowPlaying`) are a
+  `PlayerSessionSink` of it, as PiP will be. `NitsTouchUI` (the UI's role) is the screen (`PlayerScreen`, the control bar, SwiftUI) over
+  the session: it imports `NitsTouchKit` and `NitsCore`, and what its views need of the session that is no host API is `package`.
   The host API of `TouchPlayerSession` (`openStream`, `load(_:)`, the callbacks, action buttons, the host's queue, `close()` /
   `end()`) repeats `PlayerSession`'s names over the same `PlayerSessionCore`; going to the background writes the history
   after the engine hears of it.
@@ -333,7 +335,7 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `Preset` for new codec/container/channel/HDR coverage.
 - The client's own tests (parsers, the timeline, adaptive bitrate; no server, no media) are `NitsStreamingTests`, which depends on
   `NitsStreaming` alone. Tests that serve media or play it, and the ones that join the client to `NitsCore`, stay in `NitsCoreTests`.
-- `NitsTouchTests` (and the client's own `NitsStreamingTests`) run on the iOS simulator through the test plan of `Apps/iOS`:
+- `NitsTouchKitTests` and `NitsTouchUITests` (and the client's own `NitsStreamingTests`) run on the iOS simulator through the test plan of `Apps/iOS`:
   `./scripts/build_ios.sh test`. Engine tests that play media stay on macOS (`SyntheticTestMediaFactory` runs the `ffmpeg` CLI).
   What the platform alone does (the audio session, the scene's phase, a ProMotion link, memory) is checked on a device.
 - Mark suites that play media in real time `.realtimePlayback`, and ones that depend on the host otherwise

@@ -266,13 +266,14 @@ controls); `adoptsTitleBar: false` leaves it the host's. Closing the window ends
 
 Details: "Session and presentation" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-### iPhone and iPad (`NitsTouch`)
+### iPhone and iPad (`NitsTouchKit`, `NitsTouchUI`)
 
 `TouchPlayerSession` is the iOS session and `PlayerScreen(session:)` its screen. The session repeats the names of
 `PlayerSession`: a host opens media and subscribes through it, never on `engine`.
 
 ```swift
-import NitsTouch
+import NitsTouchKit
+import NitsTouchUI
 
 let session = TouchPlayerSession(
     configuration: TouchPlayerSession.defaultConfiguration,  // system render mode, the phone's byte budgets

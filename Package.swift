@@ -16,8 +16,11 @@ let package = Package(
         .library(name: "NitsKit", targets: ["NitsKit"]),
         // The resolver of video sites' pages over yt-dlp, which a `YTDLPRunner` runs (NitsKit: a process; an iOS host: its own).
         .library(name: "NitsYTDLP", targets: ["NitsYTDLP"]),
-        // The iOS player screen and its lifecycle owner (v1: bare controls); empty on macOS, as SwiftPM builds every target there.
-        .library(name: "NitsTouch", targets: ["NitsTouch"]),
+        // The iOS player session, the counterpart of `NitsKit`: owns the engine and follows the scene, Now Playing and the remote
+        // commands; empty on macOS, as SwiftPM builds every target there.
+        .library(name: "NitsTouchKit", targets: ["NitsTouchKit"]),
+        // The iOS player screen over `NitsTouchKit`'s session (what `NitsUI` is to `NitsKit`); empty on macOS.
+        .library(name: "NitsTouchUI", targets: ["NitsTouchUI"]),
         // Xcode previews only, not for hosts (it holds NitsCore again, next to NitsKit's copy). The preview host loads a
         // dynamic framework with its FFmpeg and libass; with the static products or an app linking them it finds none.
         .library(name: "NitsUIPreviews", type: .dynamic, targets: ["NitsUI"]),
@@ -139,11 +142,17 @@ let package = Package(
             dependencies: ["NitsCore", "NitsUI", "NitsYTDLP"],
             swiftSettings: defaultSwiftSettings
         ),
-        // The iOS player screen: SwiftUI over `NitsCore`'s engine, every file in `#if os(iOS)` (SwiftPM has no per-platform
-        // targets, so macOS builds it empty). Imports NitsCore only.
+        // The iOS player session (the Kit's role): `TouchPlayerSession`, Now Playing. Every file in `#if os(iOS)` (SwiftPM has no
+        // per-platform targets, so macOS builds it empty). Imports NitsCore only; no SwiftUI views.
         .target(
-            name: "NitsTouch",
+            name: "NitsTouchKit",
             dependencies: ["NitsCore"],
+            swiftSettings: defaultSwiftSettings
+        ),
+        // The iOS player screen (the UI's role): SwiftUI over `NitsTouchKit`'s session. Same `#if os(iOS)`.
+        .target(
+            name: "NitsTouchUI",
+            dependencies: ["NitsCore", "NitsTouchKit"],
             swiftSettings: defaultSwiftSettings
         ),
         .executableTarget(
@@ -175,8 +184,13 @@ let package = Package(
         ),
         // Run on the iOS Simulator (macOS builds it empty); engine tests that play media stay in NitsCoreTests.
         .testTarget(
-            name: "NitsTouchTests",
-            dependencies: ["NitsTouch", "NitsCore"],
+            name: "NitsTouchKitTests",
+            dependencies: ["NitsTouchKit", "NitsCore"],
+            swiftSettings: defaultSwiftSettings
+        ),
+        .testTarget(
+            name: "NitsTouchUITests",
+            dependencies: ["NitsTouchUI", "NitsTouchKit", "NitsCore"],
             swiftSettings: defaultSwiftSettings
         ),
         // The resolver over a runner that is no process, and what it reads of yt-dlp's answers.

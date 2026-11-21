@@ -1,5 +1,6 @@
 #if os(iOS)
     import SwiftUI
+    import NitsTouchKit
     import UniformTypeIdentifiers
 
     /// What the player shows with nothing loaded: open a file from Files, or a network address.

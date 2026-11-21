@@ -1,7 +1,7 @@
 #if os(iOS)
     import Testing
 
-    @testable import NitsTouch
+    @testable import NitsTouchUI
 
     @Suite("Controls visibility")
     struct ControlsVisibilityTests {

@@ -1,5 +1,6 @@
 #if os(iOS)
     import NitsCore
+    import NitsTouchKit
     import SwiftUI
 
     /// The controls over the picture: close and title at the top, skip back / play or pause / skip forward in the

@@ -81,9 +81,9 @@ case "$MODE" in
         ;;
     typecheck-ios|--typecheck-ios)
         # The iOS frameworks are arm64-only (an x86_64 simulator slice cannot link), so one architecture.
-        echo "Building NitsTouch and NitsYTDLP (and NitsCore under them) for the iOS Simulator (strict concurrency)..."
+        echo "Building NitsTouchKit, NitsTouchUI and NitsYTDLP (and NitsCore under them) for the iOS Simulator (strict concurrency)..."
         # NitsYTDLP must build for iOS too (no Process, no AppKit): a host there brings its own YTDLPRunner.
-        for scheme in NitsTouch NitsYTDLP; do
+        for scheme in NitsTouchKit NitsTouchUI NitsYTDLP; do
             xcodebuild -scheme "$scheme" -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
                 OTHER_SWIFT_FLAGS='-strict-concurrency=complete' build -quiet
         done

@@ -1,4 +1,5 @@
-import NitsTouch
+import NitsTouchKit
+import NitsTouchUI
 import SwiftUI
 
 @main

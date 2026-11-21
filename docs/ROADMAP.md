@@ -879,11 +879,11 @@ flowchart TD
 
 ### Stage 8: iOS / iPadOS Player — [IN PROGRESS] ⏳
 
-> The same engine on iPhone and iPad: `NitsCore`'s platform layer for iOS, and a player of its own (`NitsTouch`,
+> The same engine on iPhone and iPad: `NitsCore`'s platform layer for iOS, and a player of its own (`NitsTouchKit`, `NitsTouchUI`,
 > `Apps/iOS`). v1 is the video and one control bar.
 
 - [x] **8.1. Dependencies and build:** FFmpeg and dav1d as iOS xcframeworks (SwiftPM binary targets from the `deps-ios-v*`
-  pre-release, built by `build-deps-ios.yml`) behind the one `CFFmpeg` module; NitsCore and NitsTouch for iOS 18.4
+  pre-release, built by `build-deps-ios.yml`) behind the one `CFFmpeg` module; NitsCore, NitsTouchKit and NitsTouchUI for iOS 18.4
   (`typecheck-ios`); the app as an XcodeGen project (`scripts/build_ios.sh`); a CI job.
 - [x] **8.2. Platform layer:** `UIKitVideoHostView`, `AudioSessionOutputRoute` (the session from playback to stop, off the
   main thread; interruptions, a lost route, a change of output), `IdleTimerDisplaySleepAssertion`, `PlatformScreen`.
@@ -902,19 +902,18 @@ flowchart TD
 - [ ] **8.5. Subtitles:** libass, FreeType, HarfBuzz, FriBidi and libunibreak for iOS (the `#if canImport(CLibass)` in
   NitsCore goes away) and the subtitle overlay (`SubtitleOverlayView`, its shader) moved into a target both players use.
 - [ ] **8.6. Track pickers, speed, settings, playlists** on iOS. With them the iOS UI state outgrows the screen's own
-  `@State`: a `PlayerUIState` of `NitsTouch`'s (what `NitsUI`'s is to macOS) takes it, and `ActionButtonPresenter` moves
+  `@State`: a `PlayerUIState` of `NitsTouchUI`'s (what `NitsUI`'s is to macOS) takes it, and `ActionButtonPresenter` moves
   there from `TouchPlayerSession`.
 - [ ] **8.7. Background audio and Now Playing** (`MPNowPlayingInfoCenter`, remote commands) and **Picture in Picture**
   (`AVPictureInPictureController(contentSource:)` over the display layer). Now Playing is a `PlayerSessionSink` of
-  `TouchPlayerSession`, as on macOS. With this the session's platform part grows to `NitsKit`'s size: split `NitsTouch`
-  into the session (the Kit's role) and the views (the UI's role), today one target as both are small.
+  `TouchPlayerSession`, as on macOS. The session's platform part grows to `NitsKit`'s size, so `NitsTouch` was split first into `NitsTouchKit` (the session) and
+  `NitsTouchUI` (the views), as `NitsKit` and `NitsUI`.
   Done so far: Now Playing in the foreground (`TouchNowPlaying`, remote commands from AirPods and Control Center). Still open:
   background audio (needs an engine policy: no video decoding in the background, audio only, an exact seek on return;
-  until then `hostDidEnterBackground()` pauses and `UIBackgroundModes` stays unset), PiP, the split, and the `NowPlaying`
+  until then `hostDidEnterBackground()` pauses and `UIBackgroundModes` stays unset), PiP, and the `NowPlaying`
   framework (`MediaSession`, iOS 27+) as on macOS instead of `MPRemoteCommandCenter` alone.
 - [ ] **8.x. A host's own UI on iOS:** when a host wants its own controls over `TouchPlayerSession` rather than
-  `PlayerScreen`, make `VideoSurface` public (macOS has `VideoSurfaceView`) and, if not done by 8.7, split the views
-  off `NitsTouch` then.
+  `PlayerScreen`, make `VideoSurface` public (macOS has `VideoSurfaceView`).
 - [ ] **8.8. Timeline thumbnails on iOS:** the engine makes them already (`ThumbnailManager`); whether and how the iOS
   player shows them, judged by what other iOS players do.
 - [ ] **8.9. Display-link rate for ProMotion:** pick from the rates the screen can run at rather than divisors of its

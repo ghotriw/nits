@@ -1,12 +1,12 @@
 #if os(iOS)
+    import Foundation
     import NitsCore
-    import SwiftUI
     import Observation
     import Testing
     import os
 
     @testable import NitsCore
-    @testable import NitsTouch
+    @testable import NitsTouchKit
 
     @MainActor
     private final class Recorder {

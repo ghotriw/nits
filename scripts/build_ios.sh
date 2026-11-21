@@ -5,7 +5,7 @@
 #   build_ios.sh generate                 only (re)generate Apps/iOS/Nits.xcodeproj, to open in Xcode
 #   build_ios.sh [simulator]              build for the iOS Simulator (default)
 #   build_ios.sh device                   build for a device; signed with DEVELOPMENT_TEAM=<team id> from the environment, else unsigned
-#   build_ios.sh test [--destination=…]   run the test plan (NitsStreamingTests + NitsTouchTests) on a simulator
+#   build_ios.sh test [--destination=…]   run the test plan (NitsStreamingTests + NitsTouchKitTests + NitsTouchUITests) on a simulator
 # Options: --version=X.Y.Z[-suffix] (default: the latest vX.Y.Z tag, as bundle_app.sh), --destination='platform=iOS Simulator,name=…'
 set -euo pipefail
 
