@@ -592,6 +592,20 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// What an audio interruption owes the user at its end (iOS; macOS has none).
     @ObservationIgnored
     var audioInterruption = AudioInterruptionPolicy()
+    /// The picture dropped while the host is in the background and the audio plays on (`setPictureDropped`).
+    @ObservationIgnored
+    var backgroundPlayback = BackgroundPlayback()
+    /// Whether a picture is played now: the media has video and it is not dropped. Where the engine decides how to play,
+    /// seek, join the audio or feed it uses this; `media.hasVideo` is what the media is, for the UI.
+    var hasPicture: Bool { media.hasVideo && !backgroundPlayback.isVideoDropped }
+
+    /// Drops the picture (the media plays as audio only) or takes it back. The demuxer's side first: its queues stop
+    /// holding video packets. Whoever drops it has stopped the video feeder and emptied the frame queue (the order
+    /// matters: `hostDidEnterBackground`).
+    func setPictureDropped(_ dropped: Bool) {
+        backgroundPlayback.isVideoDropped = dropped
+        demuxer?.setVideoDropped(dropped)
+    }
     /// Set while the host is in the background (`hostDidEnterBackground`); cleared on the way back and by every load.
     @ObservationIgnored
     var backgroundSnapshot: BackgroundSnapshot?

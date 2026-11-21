@@ -60,7 +60,7 @@ extension PlayerEngine {
             framePauseAt: frameHighWater.pause,
             frameResumeAt: frameHighWater.resume,
             hasAudio: hasAudioStream,
-            hasVideo: media.hasVideo,
+            hasVideo: hasPicture,
             isAudioSeparate: inputs.isAudioSeparate,
             isAudioEOF: inputs.isAudioEOF,
             isAudioRendererFull: audioSink.isRendererFull(),

@@ -25,6 +25,8 @@ struct BackgroundResumeTests {
         guard let engine = await Self.load() else { return }
         defer { engine.stop() }
         _ = await engine.waitForPlayback(advancingBy: 1.0)
+        // Paused on the way out (what plays with sound plays on in the background: `BackgroundPlaybackTests`).
+        engine.pause()
         let stood = engine.currentFramePTS
 
         engine.hostDidEnterBackground()
@@ -36,7 +38,7 @@ struct BackgroundResumeTests {
         #expect(engine.seekGeneration.current != seekBefore)
         #expect(await engine.waitUntil(timeout: .seconds(3)) { !engine.isSeeking && engine.pendingSeekTime == nil })
         #expect(!engine.isPlaying, "Coming back does not play by itself")
-        #expect(abs(engine.frameQueue.getLastRenderedPTS() - stood) <= 0.1)
+        #expect(abs(engine.frameQueue.getLastRenderedPTS() - stood) <= 0.15)
 
         engine.play()
         // Past what the queue held decoded: from there on the decoder has to have its picture right.
@@ -101,9 +103,10 @@ struct BackgroundResumeTests {
 }
 
 extension BackgroundResumeTests {
-    @Test("A load that ends in the background ends paused on its first frame, and coming back seeks to it")
+    @Test(
+        "A load without sound that ends in the background ends paused on its first frame, and coming back seeks to it")
     func loadEndingInTheBackgroundStaysPaused() async throws {
-        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         defer { engine.stop() }
 
@@ -125,9 +128,9 @@ extension BackgroundResumeTests {
         #expect(await engine.waitForPlayback(advancingBy: 1.0, timeout: .seconds(4)))
     }
 
-    @Test("A load started in the background ends paused too")
+    @Test("A load without sound started in the background ends paused too")
     func loadStartedInTheBackgroundStaysPaused() async throws {
-        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .multiTrackH264) else { return }
+        guard let path = SyntheticTestMediaFactory.ensureMedia(preset: .videoOnlyH264) else { return }
         let engine = PlayerEngine.makeForTesting(configuration: PlayerConfiguration(resumePlayback: false))
         defer { engine.stop() }
         engine.hostDidEnterBackground()

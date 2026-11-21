@@ -39,14 +39,14 @@ extension PlayerEngine {
     }
 
     func startFeeding(audio: Bool = true) {
-        guard let demuxer = self.demuxer else { return }
+        guard demuxer != nil else { return }
         // Feeding will consume packets forward from the current position, so the standalone-step
         // contiguity invariant no longer holds once playback resumes; release the step window too.
         frameStep.reset()
         isFeeding.withLock { $0 = true }
         isVideoDrainPaused.withLock { $0 = false }
 
-        if demuxer.hasVideo {
+        if hasPicture {
             startFeedingVideo()
         }
         if audio { startFeedingAudio() }

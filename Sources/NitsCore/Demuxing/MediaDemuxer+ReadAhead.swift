@@ -82,6 +82,12 @@ extension MediaDemuxer {
         readAheadLimits = effectiveLimits
         videoQueue.maxBackBytes = effectiveLimits.backBytes
         audioQueue.maxBackBytes = effectiveLimits.backBytes > 0 ? max(1 << 20, effectiveLimits.backBytes / 4) : 0
+        if isVideoDropped {
+            // Dropped before the read-ahead started (a load in the background): no history until it is taken back.
+            historyLimitsBeforeDrop = (videoQueue.maxBackBytes, audioQueue.maxBackBytes)
+            videoQueue.maxBackBytes = 0
+            audioQueue.maxBackBytes = 0
+        }
         // Only the read-ahead thread uses it, from its start on: no `lock`, which the main thread must not take.
         adaptiveBitrate.logic = AdaptiveBitrateLogic(
             config: adaptiveBitrateConfig ?? .scaled(toReadAhead: limits.seconds))
@@ -94,6 +100,32 @@ extension MediaDemuxer {
         thread.qualityOfService = .userInitiated
         thread.start()
         AppLog.info(.demuxer, "Reading ahead up to \(Int(limits.seconds)) s / \(limits.bytes >> 20) MB")
+    }
+
+    /// Drops the video (or takes it back): the app plays the audio on in the background. Dropped, video packets are no
+    /// longer queued, the queue is emptied, the audio drives the read-ahead limit, and no history is kept (the packets
+    /// handed out are no use: the cache is outdated for good, until a slow seek reads the input again). Taken back, the
+    /// history limits return, the cache stays outdated (its video has a hole), and the next seek reads the input.
+    /// Acquires `queueLock`.
+    func setVideoDropped(_ dropped: Bool) {
+        queueLock.lock()
+        defer { queueLock.unlock() }
+        guard dropped != isVideoDropped else { return }
+        isVideoDropped = dropped
+        selectionOutdatesCache = true
+        if dropped {
+            historyLimitsBeforeDrop = (videoQueue.maxBackBytes, audioQueue.maxBackBytes)
+            videoQueue.maxBackBytes = 0
+            audioQueue.maxBackBytes = 0
+            videoQueue.removeAll()
+            videoQueue.pruneAllHistory()
+            audioQueue.pruneAllHistory()
+        } else if let limits = historyLimitsBeforeDrop {
+            videoQueue.maxBackBytes = limits.video
+            audioQueue.maxBackBytes = limits.audio
+            historyLimitsBeforeDrop = nil
+        }
+        wakePacketWaiters()
     }
 
     /// Lets a read-ahead started held (`startReadAhead(held:)`) read.
@@ -172,7 +204,8 @@ extension MediaDemuxer {
         }
         defer { av_packet_unref(&pkt) }
         if pkt.stream_index == videoStreamIndex {
-            videoQueue.append(videoPacket(from: pkt))
+            // Dropped, the packets are read (it is one input) but not kept: nothing takes them.
+            if !isVideoDropped { videoQueue.append(videoPacket(from: pkt)) }
         } else if pkt.stream_index == audioStreamIndex {
             audioQueue.append(DemuxedAudioPacket(pkt))
         }
@@ -188,7 +221,8 @@ extension MediaDemuxer {
         // the limit (`recordReadAhead` measures the streams read), and the whole input would be read for nothing.
         if videoStreamIndex < 0 && audioStreamIndex < 0 { return true }
         if videoQueue.byteCount + audioQueue.byteCount >= readAheadLimits.bytes { return true }
-        if (hasVideo && videoQueue.isEmpty) || (audioStreamIndex >= 0 && audioQueue.isEmpty) { return false }
+        let hasPicture = hasVideo && !isVideoDropped
+        if (hasPicture && videoQueue.isEmpty) || (audioStreamIndex >= 0 && audioQueue.isEmpty) { return false }
         return readAheadState.withLock { $0 } - consumedSeconds >= readAheadLimits.seconds
     }
 
@@ -243,7 +277,9 @@ extension MediaDemuxer {
                 }
                 if let sample = createVideoSample(from: packet) { return .some(sample) }
             }
-            guard waiting, !readAheadEnded, ContinuousClock.now < deadline, !interruptContext.shouldAbort else {
+            guard waiting, !isVideoDropped, !readAheadEnded, ContinuousClock.now < deadline,
+                !interruptContext.shouldAbort
+            else {
                 return .some(nil)
             }
             packetWaiters += 1

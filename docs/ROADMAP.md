@@ -908,10 +908,14 @@ flowchart TD
   (`AVPictureInPictureController(contentSource:)` over the display layer). Now Playing is a `PlayerSessionSink` of
   `TouchPlayerSession`, as on macOS. The session's platform part grows to `NitsKit`'s size, so `NitsTouch` was split first into `NitsTouchKit` (the session) and
   `NitsTouchUI` (the views), as `NitsKit` and `NitsUI`.
-  Done so far: Now Playing in the foreground (`TouchNowPlaying`, remote commands from AirPods and Control Center). Still open:
-  background audio (needs an engine policy: no video decoding in the background, audio only, an exact seek on return;
-  until then `hostDidEnterBackground()` pauses and `UIBackgroundModes` stays unset), PiP, and the `NowPlaying`
-  framework (`MediaSession`, iOS 27+) as on macOS instead of `MPRemoteCommandCenter` alone.
+  Done so far: Now Playing (`TouchNowPlaying`, remote commands from AirPods and Control Center) and background audio
+  (2026-11-21, `UIBackgroundModes = audio`, always on; "Background playback" in `docs/ARCHITECTURE.md`): what plays with sound plays
+  on as audio only, any start in the background (Play, an interruption's end, repeat-one, a load by the host's queue) is audio only, and
+  the picture comes back with an exact seek (stage 1: the audio renderer is flushed on return, a click is accepted).
+  Still open: the click on return, checked on a device, and if audible a picture-only catch-up (re-enable video, decode up
+  to the clock, the audio joins after what the renderer holds, the clock untouched); a separate audio rendition of an HLS
+  ladder to save the network in the background; PiP; and the `NowPlaying` framework (`MediaSession`, iOS 27+) as on macOS
+  instead of `MPRemoteCommandCenter` alone.
 - [ ] **8.x. A host's own UI on iOS:** when a host wants its own controls over `TouchPlayerSession` rather than
   `PlayerScreen`, make `VideoSurface` public (macOS has `VideoSurfaceView`).
 - [ ] **8.8. Timeline thumbnails on iOS:** the engine makes them already (`ThumbnailManager`); whether and how the iOS

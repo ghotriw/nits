@@ -391,8 +391,10 @@ struct HLSOverHTTPPlaybackTests {
         #expect(!fetched.isEmpty, "No segment of the new variant fetched")
     }
 
-    @Test("An HLS load still under way when the app goes to the background ends paused, and coming back plays on")
-    func hlsLoadEndsPausedInTheBackground() async throws {
+    @Test(
+        "An HLS load still under way when the app goes to the background plays on as audio only, and coming back shows the picture"
+    )
+    func hlsLoadPlaysAudioOnlyInTheBackground() async throws {
         guard let multivariant = SyntheticTestMediaFactory.ensureMedia(preset: .hlsVariants) else { return }
         let server = try TestHTTPServer(root: URL(fileURLWithPath: multivariant).deletingLastPathComponent())
         defer { server.stop() }
@@ -405,13 +407,14 @@ struct HLSOverHTTPPlaybackTests {
             await engine.waitUntil(timeout: .seconds(2)) { engine.playbackState == .loading }, "The load starts")
         engine.hostDidEnterBackground()
         #expect(await engine.waitUntil(timeout: .seconds(10)) { engine.isLoaded })
-        try await Task.sleep(for: .seconds(1))
-        #expect(!engine.isPlaying, "A load must not start playing in the background")
+        #expect(
+            await engine.waitUntil(timeout: .seconds(8)) { engine.isPlaying && !engine.hasPicture },
+            "A load that ends in the background plays on, as audio only")
+        #expect(engine.videoFeedingTask == nil)
 
         engine.hostWillEnterForeground()
         #expect(await engine.waitUntil(timeout: .seconds(6)) { !engine.isSeeking && engine.pendingSeekTime == nil })
-        #expect(!engine.isPlaying)
-        engine.play()
+        #expect(engine.hasPicture)
         #expect(await engine.waitForPlayback(advancingBy: 1.0, timeout: .seconds(8)))
         #expect(engine.loadError == nil)
     }
@@ -426,7 +429,6 @@ struct HLSOverHTTPPlaybackTests {
 
         engine.load(path: server.url("master.m3u8"))
         try #require(await engine.waitForPlayback(advancingBy: 1.0))
-        let stood = engine.currentFramePTS
 
         engine.hostDidEnterBackground()
         server.dropConnections()
@@ -434,7 +436,11 @@ struct HLSOverHTTPPlaybackTests {
         engine.hostWillEnterForeground()
         #expect(
             await engine.waitUntil(timeout: .seconds(6)) { !engine.isSeeking && engine.pendingSeekTime == nil })
-        #expect(abs(engine.frameQueue.getLastRenderedPTS() - stood) <= 0.5)
+        // The sound played on in the background: the picture is where it is, not where it stood on the way out.
+        #expect(
+            await engine.waitUntil(timeout: .seconds(6)) {
+                abs(engine.frameQueue.getLastRenderedPTS() - engine.playbackClock.currentTime().seconds) <= 1.0
+            })
 
         engine.play()
         #expect(await engine.waitForPlayback(advancingBy: 3.0, timeout: .seconds(10)))

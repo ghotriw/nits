@@ -151,7 +151,7 @@ The engine's policy is the same; the platform brings events macOS doesn't, and l
   same numbers (`BufferingPolicy.videoLowFrames` / `resumeFrames`), or a queue that cannot grow to 40 would never be
   ready; and while buffering holds the clock the feeder fills to its high water instead of waiting to drain to the resume
   point, which nothing would drain. Without a budget the counts are the old 40 / 25 and the thresholds 20 / 30.
-- **No Picture in Picture, background audio or subtitles in v1** (Now Playing and the remote commands, AirPods included, work while the app is in the foreground: `TouchNowPlaying`; the engine pauses in the background, so `UIBackgroundModes` stays unset until the engine plays audio alone there); the ProMotion rate policy is unchanged
+- **No Picture in Picture or subtitles in v1** (Now Playing and the remote commands, AirPods included, work in the foreground and with the sound in the background: `TouchNowPlaying`; background audio is in "Background playback" below); the ProMotion rate policy is unchanged
   (`CADisableMinimumFrameDurationOnPhone` lets the engine run 24 fps at 120 Hz, which costs battery only; 25 fps, which
   120 Hz does not divide, runs there too, see `docs/OPEN_ISSUES.md`). The v1 limits were measured on an iPad mini 6
   (4 GB): 4K 10-bit over the LAN held 455 MB, 520 MB at most.
@@ -683,6 +683,35 @@ How the client puts every run of segments on the playlist's timeline (`Timestamp
 shared by all lanes), places the segments from the media (`StreamingTimeline.measure`) and follows a change of the picture's
 size at a break is in "Timeline and discontinuities" in `docs/HLS.md`. The demuxer sees one timeline; its packet
 cache's `searchFloor` is a safety for what the client does not cover.
+
+### Background playback
+
+On iOS (`UIBackgroundModes = audio`, always on) media with sound keeps playing when the app leaves the screen, as audio
+only; the picture comes back with the host. `PlayerEngine.hostDidEnterBackground()` does not pause what plays with sound:
+`dropPictureForBackground()` cancels the video feeder, waits for the decode in flight (`waitForUnwind`, as a seek does),
+empties `FrameQueue`, drops the decoder's session and tells the demuxer to drop video (`setPictureDropped(true)` →
+`MediaDemuxer.setVideoDropped(true)`). From then on `PlayerEngine.hasPicture` (`media.hasVideo` and not dropped) is false,
+and the paths that decide how to play, seek, join the audio, feed and buffer use it, so the media is played as the
+audio-only media the engine already knows; `media.hasVideo` stays what the media is, for the UI.
+
+Why the demuxer needs its own flag, not a deselected stream: the read-ahead measures its limit from the video's position
+(`consumedSeconds`), so with the video feeder stopped it would freeze and the audio would run dry after the limit (30 s;
+the on-demand path of a local file stops at the video queue's 180 packets, ~7.5 s). Dropped, video packets are read but
+not queued, the audio drives `consumedSeconds` and the empty video queue no longer means "read on", the history limits
+are 0, a seek goes by the audio alone (its time base, no keyframe search) and the packet cache refuses (the video has a
+hole; only a slow seek, which reads the input again, clears it). A variant switch or a track change cannot clear the flag
+(`configureVideoStream` sets `videoStreamIndex`, not it).
+
+Any start while in the background is audio only: `play()` (Play from the lock screen, the end of an interruption,
+repeat-one) drops the picture first, and does nothing for media without sound; a load that ends there (the host's queue,
+the playlist's next item) drops it before the read-ahead starts when the media has sound, and ends paused on its first
+frame when not. A seek in flight on the way out, or media without sound, still pauses. On return (`hostWillEnterForeground`)
+the picture comes first: the flag is cleared (the demuxer queues video again, its cache outdated), the decoder session is
+dropped, the display layer recovered, and an exact seek to the position that stands (the clock's when playing, `currentTime`
+when the sound was moved, the snapshot when the picture was never dropped) brings the picture back. Stage 1 accepts the
+click of that seek (the audio renderer is flushed, `AudioJoin.needsFlush`); a picture-only catch-up that keeps the clock
+and the audio is the next step if the click is audible on a device. HLS segments carry video with the sound, so the
+network is not saved in the background (a separate audio rendition would).
 
 ### Live streams
 

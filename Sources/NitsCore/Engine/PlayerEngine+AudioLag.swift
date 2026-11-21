@@ -73,7 +73,7 @@ extension PlayerEngine {
         haltPlaybackPipeline()
         startFeeding()
         startSynchronizerClockAfterPreroll(at: playbackClock.currentTime(), alignWithBufferedAudio: true)
-        displayLink?.isPaused = !media.hasVideo
+        displayLink?.isPaused = !hasPicture
     }
 }
 

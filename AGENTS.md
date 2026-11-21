@@ -270,6 +270,14 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   halves the rate of the one read.
   After touching the demuxer, also run the suites with `NITS_READ_AHEAD_LOCAL=1`. Background: "Network read-ahead"
   in `docs/ARCHITECTURE.md`; the HLS requests and adaptive bitrate: "Adaptive bitrate" in `docs/HLS.md`.
+- **In the background the sound plays on and the picture is dropped** (iOS, `UIBackgroundModes = audio`): the demuxer's
+  `isVideoDropped` (`setVideoDropped`, behind `queueLock`) keeps video packets out of the queue on both paths (read-ahead
+  and on demand), makes the audio drive `consumedSeconds` and the read-ahead limit, takes the history limits to 0, seeks by the
+  audio alone and refuses the packet cache until a slow seek. A stopped video feeder alone would freeze `consumedSeconds`
+  and starve the audio; and the state is that flag, never `videoStreamIndex`, which a variant switch rewrites. The engine
+  decides how to play, seek, join the audio, feed and buffer by `hasPicture` (`media.hasVideo` and not dropped), never
+  by `media.hasVideo`; `media.hasVideo` is for the UI. Any start while in the background is audio only. Background:
+  "Background playback" in `docs/ARCHITECTURE.md`.
 - **A read-ahead demuxer keeps the packets it handed out** (`DemuxerPacketBuffer`, `backBytes`) so a seek inside them
   needs no input (`seekWithinCache`, tried by `seek` first; the engine learns whether it served a seek from
   `seekReportingCache`, not from state). It refuses live streams, a ladder's seek across a variant splice (the packets'

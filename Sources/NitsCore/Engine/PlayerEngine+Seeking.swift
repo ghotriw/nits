@@ -161,7 +161,7 @@ extension PlayerEngine {
         let audioDecoder = self.audioDecoder
         let audioSink = self.audioSink
         let audioDelay = self.audioDelay
-        let hasVideo = self.media.hasVideo
+        let hasVideo = self.hasPicture
         // The audio file played, when the track is one: it is positioned on its own input.
         let externalAudio = inputs?.selectedExternal
         let seekGeneration = self.seekGeneration
@@ -317,7 +317,7 @@ extension PlayerEngine {
 
         // If a preview frame was already rendered directly via renderDirect, do NOT overwrite it
         // by popping from frameQueue.getLatestFrame (which may drop preroll frames tagged doNotDisplay).
-        if media.hasVideo && !didRenderPreview {
+        if hasPicture && !didRenderPreview {
             renderCurrentFrame(at: targetTime)
         }
 
@@ -351,7 +351,7 @@ extension PlayerEngine {
             performanceMonitor.handlePlaybackStateChange(isPlaying: false)
             // Exact seeks leave the decoder warm and positioned just past the displayed frame (preview
             // over-reads a few frames into the queue). This enables incremental forward frame-stepping.
-            frameStep.isContiguous = media.hasVideo && target.exact
+            frameStep.isContiguous = hasPicture && target.exact
             AppLog.debug(.engine, "Chase seek settled at \(completedSeconds)s (paused)")
             return
         }
@@ -413,18 +413,18 @@ extension PlayerEngine {
         beginAudioOutputActivation()
         startFeeding(audio: false)
         let joinsAudio = hasAudioStream
-        if media.hasVideo {
+        if hasPicture {
             startSynchronizerClockAfterPreroll(at: targetTime, isProvisional: joinsAudio)
         } else {
             cancelPreroll()
             playbackClock.setRate(0.0, time: targetTime)
         }
         if joinsAudio {
-            audioJoin.begin(on: self, from: targetTime, hasPicture: media.hasVideo)
-        } else if !media.hasVideo {
+            audioJoin.begin(on: self, from: targetTime, hasPicture: hasPicture)
+        } else if !hasPicture {
             startSynchronizerClock(at: targetTime, rate: playbackRate)
         }
-        displayLink?.isPaused = !media.hasVideo
+        displayLink?.isPaused = !hasPicture
         isPlaying = true
         playbackState = .playing
         performanceMonitor.handlePlaybackStateChange(isPlaying: true)
@@ -475,7 +475,7 @@ extension PlayerEngine {
         // while the demuxer chases the latest target to prevent stale frame freezes.
         let baseTime = chase?.seconds ?? currentTime
         // Exact or not as the press would start the burst: known before it is pressed, for a step held at the edge.
-        let isExact = !media.hasVideo || (exactSeekOnSinglePress && !relativeSeekBurst.isStarted)
+        let isExact = !hasPicture || (exactSeekOnSinglePress && !relativeSeekBurst.isStarted)
         if holdsLiveStepForward(from: baseTime, by: seconds, exact: isExact) {
             return relativeSeekBurst.offset(landingAt: baseTime) ?? 0
         }

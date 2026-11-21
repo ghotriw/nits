@@ -58,6 +58,12 @@
     <true/>
     <key>UIFileSharingEnabled</key>
     <true/>
+
+    <!-- The sound plays on in the background (lock screen, Home): the engine drops the picture there and brings it back on return (`PlayerEngine.hostDidEnterBackground`). -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

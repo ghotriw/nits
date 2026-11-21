@@ -80,11 +80,16 @@ extension MediaDemuxer {
         } else {
             self.targetAudioPts = -1
         }
-        guard timebase.num > 0 else { return exact }
+        // Without the picture (dropped) the seek goes by the audio alone, in its time base, as for media with no video: no
+        // keyframe search, no video packet queued.
+        let isAudioOnlySeek = isVideoDropped && audioStreamIndex >= 0
+        let videoIndex = isAudioOnlySeek ? -1 : videoStreamIndex
+        let seekTimebase = isAudioOnlySeek ? audioTimebase : timebase
+        guard seekTimebase.num > 0 else { return exact }
         // Nothing selected to position: no picture, and the audio heard comes from another input. Seeking stream -1
         // would take the target in `AV_TIME_BASE`, not this time base.
-        guard videoStreamIndex >= 0 || audioStreamIndex >= 0 else { return exact }
-        let target = Int64(seconds * Double(timebase.den) / Double(timebase.num))
+        guard videoIndex >= 0 || audioStreamIndex >= 0 else { return exact }
+        let target = Int64(seconds * Double(seekTimebase.den) / Double(seekTimebase.num))
         // If not exact (keyframe seek), don't set targetPts threshold so that the keyframe sample is displayed immediately
         self.targetPts = exact ? target : -1
         var isExact = exact
@@ -94,9 +99,9 @@ extension MediaDemuxer {
             isExact = true
             self.targetPts = target
         }
-        let streamIdx = videoStreamIndex >= 0 ? videoStreamIndex : audioStreamIndex
+        let streamIdx = videoIndex >= 0 ? videoIndex : audioStreamIndex
         let useForward = forward && !exact
-        let streams = (video: videoStreamIndex, audio: audioStreamIndex)
+        let streams = (video: videoIndex, audio: audioStreamIndex)
         var ret: Int32 = -1
         if useForward {
             ret = withoutQueueLock { input.seek(to: target, flags: 0, streams: streams) }
@@ -106,12 +111,12 @@ extension MediaDemuxer {
             // Backward search (also the fallback when no keyframe exists after target, e.g. near EOF)
             ret = withoutQueueLock { input.seek(to: target, flags: AVSEEK_FLAG_BACKWARD, streams: streams) }
         }
-        if ret >= 0, videoStreamIndex >= 0, input.traits.landsBetweenKeyframes {
+        if ret >= 0, videoIndex >= 0, input.traits.landsBetweenKeyframes {
             // The bisection lands near the target, its keyframe search reads on from there: backing off means it found
             // none to the end.
             let backedOff = !syncToVideoKeyframe(target: target, requireAtOrBeforeTarget: isExact)
             if useForward && backedOff && !isExact { goExactly() }
-        } else if ret >= 0, audioDelay > 0, videoStreamIndex >= 0, audioStreamIndex >= 0 {
+        } else if ret >= 0, audioDelay > 0, videoIndex >= 0, audioStreamIndex >= 0 {
             readAudioAhead(audioStartSeconds: isExact ? seconds - audioDelay : nil, audioDelay: audioDelay)
         }
         AppLog.debug(
@@ -141,7 +146,7 @@ extension MediaDemuxer {
         defer { queueLock.unlock() }
 
         // 1. Check prerequisites
-        guard readsAhead, !isLive, !selectionOutdatesCache else {
+        guard readsAhead, !isLive, !selectionOutdatesCache, !isVideoDropped else {
             return nil
         }
         // A ladder with a variant chosen by hand: the choice is the picture's from the seek on (the engine re-reads at

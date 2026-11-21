@@ -45,8 +45,6 @@ extension PlayerEngine {
         let interruptContext = MediaDemuxer.InterruptContext()
         self.currentInterruptContext = interruptContext
         playbackState = .loading
-        // In the background nothing starts: the load ends paused on its first frame, and coming back seeks to it afresh.
-        if isHostInBackground { playbackState = .paused }
 
         return (loadID, interruptContext)
     }
@@ -68,6 +66,7 @@ extension PlayerEngine {
         routeChangeReanchorTask?.cancel()
         routeChangeReanchorTask = nil
         backgroundSnapshot = nil
+        backgroundPlayback = BackgroundPlayback()
         seekGeneration.advance()
         isSeeking = false
         isLoadStartPending = false
@@ -1249,8 +1248,19 @@ extension PlayerEngine {
         self.startSynchronizerClock(at: targetCMTime, rate: 0.0)
         self.frameQueue.clear(resetDroppedFrames: true)
 
+        // A load that ends in the background (the host's queue moving on, the playlist's next item): media with sound
+        // plays on as audio only, with no first-frame preview and no video fed; media without sound ends paused on its
+        // first frame, and coming back seeks to it afresh. Before the read-ahead starts, so that none is kept.
+        if isHostInBackground {
+            if hasAudioStream {
+                if media.hasVideo { setPictureDropped(true) }
+            } else {
+                playbackState = .paused
+            }
+        }
+
         let decoder = self.stallGuardedDecoder(for: "the post-load flush")
-        let hasVideo = demuxer.hasVideo
+        let hasVideo = demuxer.hasVideo && !backgroundPlayback.isVideoDropped
         let loadID = self.currentLoadID
         let seekId = self.seekGeneration.current
         let interrupt = self.currentInterruptContext

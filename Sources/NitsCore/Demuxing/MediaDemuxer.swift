@@ -576,6 +576,12 @@ public final class MediaDemuxer: @unchecked Sendable {
     /// take it back: only a seek that reads the input again (and clears the queues) does. An audio track needs none:
     /// the audio queue is emptied at its selection, and a seek the audio left does not cover is a slow one.
     var selectionOutdatesCache = false
+    /// The picture is not wanted (the app plays the audio on in the background): the read-ahead keeps video packets out
+    /// of the queue, and the audio drives what the limit is measured from, as in media without video (`hasVideo` stays,
+    /// it describes the media). Behind `queueLock`; `setVideoDropped(_:)` changes it.
+    var isVideoDropped = false
+    /// What the packet history limits were while the video is dropped (they are 0 meanwhile); `nil` when not dropped.
+    var historyLimitsBeforeDrop: (video: Int, audio: Int)?
     /// The read-ahead thread stopped at the end of the input or an error, until a seek.
     var readAheadEnded = false
     /// Whether the read-ahead thread stopped specifically because it reached EOF (not an error).
@@ -952,7 +958,7 @@ public final class MediaDemuxer: @unchecked Sendable {
         if readsAhead {
             defer { queueLock.unlock() }
             let packet = popQueuedAudio()
-            if let packet, !hasVideo, audioTimebase.den > 0 {
+            if let packet, !hasVideo || isVideoDropped, audioTimebase.den > 0 {
                 consumedSeconds = Double(packet.pts) * Double(audioTimebase.num) / Double(audioTimebase.den)
             }
             return packet
@@ -992,8 +998,8 @@ public final class MediaDemuxer: @unchecked Sendable {
                 return audioPacket
             } else if pkt.stream_index == videoStreamIndex {
                 // Symmetric buffering: preserve ALL video packets without dropping GOP frames!
-                let packet = videoPacket(from: pkt)
-                videoQueue.append(packet)
+                // Dropped (the app plays the audio on in the background): nothing takes the picture's packets.
+                if !isVideoDropped { videoQueue.append(videoPacket(from: pkt)) }
                 av_packet_unref(&pkt)
             } else {
                 av_packet_unref(&pkt)

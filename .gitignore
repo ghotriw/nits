@@ -35,3 +35,7 @@ DerivedData/
 *.mp4
 *.ts
 *.mov
+
+# Agent workflow scratch: specs, plans and run ledgers (not part of the project)
+docs/superpowers/
+.superpowers/

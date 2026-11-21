@@ -8,6 +8,13 @@ extension PlayerEngine {
         resetRelativeSeekBurst()
         guard isLoaded else { return }
 
+        // Any start in the background is audio only (Play from the lock screen, the end of an interruption): the picture
+        // is not played there, and media without sound has nothing to play.
+        if isHostInBackground {
+            guard hasAudioStream else { return }
+            dropPictureForBackground()
+        }
+
         // If video reached the end or is in completed state, restart from the beginning
         if playbackState == .completed || isAtEndOfMedia(currentTime) {
             seek(to: 0.0)
@@ -16,7 +23,7 @@ extension PlayerEngine {
         // After frame-stepping the demuxer/decoder sit ahead of the cursor and audio before the seek
         // baseline was purged, so resuming feeding as-is would freeze video and drop/desync audio. Reseek
         // to currentTime first; the chase-settle machinery then resumes playback cleanly at the cursor.
-        if media.hasVideo, !isSeeking, chase == nil, frameStep.didStepSincePause {
+        if hasPicture, !isSeeking, chase == nil, frameStep.didStepSincePause {
             frameStep.didStepSincePause = false
             seek(to: currentTime)
         }
@@ -54,18 +61,18 @@ extension PlayerEngine {
         }
         let targetTime = resolvePlaybackStartTime(syncTime: playbackClock.currentTime())
         if joinsAudio {
-            if media.hasVideo {
+            if hasPicture {
                 startSynchronizerClockAfterPreroll(at: targetTime, isProvisional: true)
             } else {
                 cancelPreroll()
                 playbackClock.setRate(0.0, time: targetTime)
             }
-            audioJoin.begin(on: self, from: targetTime, hasPicture: media.hasVideo)
+            audioJoin.begin(on: self, from: targetTime, hasPicture: hasPicture)
         } else {
             // Resuming from pause: the audio renderer still holds the paused media.
             startSynchronizerClockAfterPreroll(at: targetTime, alignWithBufferedAudio: true)
         }
-        displayLink?.isPaused = !media.hasVideo
+        displayLink?.isPaused = !hasPicture
         isPlaying = true
         playbackState = .playing
         performanceMonitor.handlePlaybackStateChange(isPlaying: true)
@@ -82,13 +89,16 @@ extension PlayerEngine {
         saveCurrentPlaybackProgress()
     }
 
-    /// The host went to the background (iOS: the scene did): pauses, which it stays after coming back, drops the display
-    /// links, which only tick for a screen on show, and the decoder's VideoToolbox session, which the system invalidates
-    /// behind the app's back (the session of a hardware decoder then fails every frame, and the picture would stand
-    /// while the sound plays on). The position is kept for `hostWillEnterForeground`. Calling it again changes nothing.
+    /// The host went to the background (iOS: the scene did). Drops the display links, which only tick for a screen on
+    /// show, and the decoder's VideoToolbox session, which the system invalidates behind the app's back (the session of a
+    /// hardware decoder then fails every frame, and the picture would stand while the sound plays on).
     ///
-    /// A load under way goes on and ends paused on its first frame (a load that ended playing in the background would
-    /// come back to a session the system has killed); coming back sees to it like to any other.
+    /// What plays with sound plays on as audio only (`dropPictureForBackground`): no video is fed, decoded or queued
+    /// until the host is back. Media without sound, and a seek in flight, are paused, which they stay after coming
+    /// back. The position is kept for `hostWillEnterForeground`. Calling it again changes nothing.
+    ///
+    /// A load under way goes on, and its end decides (`PlayerEngine+Loading`): with sound it plays on as audio only,
+    /// without it ends paused on its first frame.
     public func hostDidEnterBackground() {
         guard !isHostInBackground else { return }
         isHostInBackground = true
@@ -96,17 +106,43 @@ extension PlayerEngine {
         displayLink = nil
         displayLinkScreen = nil
         if isLoading || !isLoaded {
-            // The load's end looks at the state: paused, it stops on its first frame instead of starting.
-            if isLoading { playbackState = .paused }
-            AppLog.info(.engine, "Host in the background while loading; the load will end paused")
+            AppLog.info(.engine, "Host in the background while loading; the load will decide how it ends")
             return
         }
         let position = rereadPosition
         backgroundSnapshot = BackgroundSnapshot(
             position: position, atLiveEdge: live.isLive && live.isAtEdge(position))
-        pause()
-        resetDecoderSession(because: "entering the background")
-        AppLog.info(.engine, "Host in the background at \(String(format: "%.3f", position))s; paused")
+        guard hasAudioStream, !isSeeking, chase == nil else {
+            pause()
+            resetDecoderSession(because: "entering the background")
+            AppLog.info(.engine, "Host in the background at \(String(format: "%.3f", position))s; paused")
+            return
+        }
+        dropPictureForBackground()
+        AppLog.info(
+            .engine,
+            "Host in the background at \(String(format: "%.3f", position))s; "
+                + (isPlaying ? "the audio plays on" : "paused"))
+    }
+
+    /// The picture is not played in the background: the video feeder stops, the frame queue is emptied, the decoder's
+    /// session dropped and the demuxer told to keep video packets out of its queue (`setPictureDropped`), so that the
+    /// audio goes on alone (see `MediaDemuxer.setVideoDropped`). The decode the feeder may be in finishes first, as a
+    /// seek waits for it: its frame would otherwise land in a queue already emptied. Does nothing for media without
+    /// a picture, or when it is dropped already.
+    func dropPictureForBackground() {
+        guard media.hasVideo, !backgroundPlayback.isVideoDropped else { return }
+        let unwinding = videoFeedingTask
+        stopFeedingVideo()
+        setPictureDropped(true)
+        frameQueue.clear(resetDroppedFrames: true)
+        let guarded = stallGuardedDecoder(for: "the session reset on entering the background")
+        let frames = frameQueue
+        seekQueue.async {
+            if let unwinding { Self.waitForUnwind(of: unwinding) }
+            frames.clear(resetDroppedFrames: true)
+            guarded.resetSession()
+        }
     }
 
     /// The host is back in the foreground: the display link is made again, the VideoToolbox session is dropped again
@@ -117,6 +153,10 @@ extension PlayerEngine {
     public func hostWillEnterForeground() {
         guard isHostInBackground else { return }
         isHostInBackground = false
+        // The picture first: the demuxer queues video again (its cache is outdated until the seek below reads the input),
+        // and the seek is a picture's.
+        let wasAudioOnly = backgroundPlayback.isVideoDropped
+        if wasAudioOnly { setPictureDropped(false) }
         if let videoHost {
             attachDisplayLink(to: videoHost)
         } else {
@@ -127,16 +167,45 @@ extension PlayerEngine {
         resetDecoderSession(because: "coming back")
         recoverDisplayLayerOnReturn()
         guard isLoaded, !isLoading else { return }
-        // Loaded in the background: the position it ended its load at, which is where it stands now.
-        let snapshot =
-            backgroundSnapshot ?? BackgroundSnapshot(position: rereadPosition, atLiveEdge: false)
+        // Nothing was dropped and it plays on (audio-only media): the clock and the audio never left each other, and a
+        // seek would only flush the renderer.
+        if isPlaying, !wasAudioOnly {
+            backgroundSnapshot = nil
+            AppLog.info(.engine, "Host back in the foreground; playing on, nothing to bring back")
+            return
+        }
+        // From what stands now, not from what stood on the way out: the sound played on (the clock's position), or was
+        // moved (a seek, the end of the media, an item loaded in the background: `currentTime`). A picture that was not
+        // dropped (media without sound, paused on the way out) is where it was.
+        let snapshot = backgroundSnapshot ?? BackgroundSnapshot(position: rereadPosition, atLiveEdge: false)
         backgroundSnapshot = nil
-        if snapshot.atLiveEdge, live.isLive {
+        let (position, toLiveEdge) = Self.returnTarget(
+            isPlaying: isPlaying, clock: playbackClock.currentTime().seconds, wasAudioOnly: wasAudioOnly,
+            seekTarget: chase?.seconds, currentTime: currentTime, snapshot: snapshot, isLive: live.isLive)
+        if toLiveEdge {
             seekToLiveEdge()
         } else {
-            seek(to: snapshot.position, exact: true)
+            // Playing, the seek resumes it (stage 1: the audio renderer is flushed, a click is accepted).
+            seek(to: position, exact: true)
         }
-        AppLog.info(.engine, "Host back in the foreground; seeking to \(String(format: "%.3f", snapshot.position))s")
+        AppLog.info(
+            .engine,
+            "Host back in the foreground; seeking to \(String(format: "%.3f", position))s"
+                + (isPlaying ? " and playing on" : ""))
+    }
+
+    /// Where the picture comes back to, from what stands now (not from what stood on the way out): playing, where the
+    /// sound is (`clock`); paused after the sound's position moved in the background (a seek, the end of the media, an
+    /// item loaded there: `seekTarget` / `currentTime`), there; and a picture that was never dropped (media without
+    /// sound), where it stood. A live stream that was at its edge and has not moved returns to the edge, as it is then.
+    nonisolated static func returnTarget(
+        isPlaying: Bool, clock: Double, wasAudioOnly: Bool, seekTarget: Double?, currentTime: Double,
+        snapshot: BackgroundSnapshot, isLive: Bool
+    ) -> (position: Double, toLiveEdge: Bool) {
+        if isPlaying { return (clock, false) }
+        let position = wasAudioOnly ? (seekTarget ?? currentTime) : snapshot.position
+        let isUnmoved = abs(position - snapshot.position) < 1
+        return (position, isLive && snapshot.atLiveEdge && isUnmoved)
     }
 
     /// Whether the display layer has to be flushed before it takes frames again: it was told to stop using decoder resources
@@ -345,7 +414,7 @@ extension PlayerEngine {
     /// The preroll has what it waits for: no picture to anchor (audio only, no display link, the picture's input at its
     /// end), or the anchor frame shown with frames queued behind it.
     var isPrerollSatisfied: Bool {
-        !media.hasVideo || displayLink == nil || (inputs?.isVideoEOF ?? true)
+        !hasPicture || displayLink == nil || (inputs?.isVideoEOF ?? true)
             || (frameQueue.getLastRenderedPTS() >= 0 && frameQueue.count >= Self.prerollMinimumQueuedFrames)
     }
 
