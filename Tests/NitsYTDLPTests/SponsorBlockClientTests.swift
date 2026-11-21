@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 
-@testable import NitsKit
+@testable import NitsYTDLP
 
 /// What Nits asks SponsorBlock and reads of its answer; no request leaves the machine.
 @Suite("SponsorBlock client")

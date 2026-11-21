@@ -2,16 +2,17 @@ import Foundation
 import NitsCore
 
 extension LogCategory {
-    static let ytdlp: LogCategory = "yt-dlp"
+    package static let ytdlp: LogCategory = "yt-dlp"
 }
 
-/// Plays the pages of video sites through the yt-dlp installed on the system (`YTDLPLocator`), as mpv and IINA do. As
+/// Plays the pages of video sites through a yt-dlp that a `YTDLPRunner` runs (on macOS the one installed on the system,
+/// as mpv and IINA do; on iOS a host's own). As
 /// in mpv, it is asked first for the sites known to have pages (`pageSites`), and for other network URLs only once
 /// they failed to open as media: a media server's stream doesn't wait for it (seconds) or fail on its errors. Those it
 /// finds no page in (`Unsupported URL`, a stream itself) open as they are. Without yt-dlp installed, nothing is
 /// resolved.
 public final class YTDLPResolver: MediaResolver {
-    let locator: YTDLPLocator
+    let runner: any YTDLPRunner
     /// How long yt-dlp may take on a page (a slow site, a network that doesn't answer); the load fails after it.
     let timeout: Duration
     /// Asks SponsorBlock for a YouTube video's segments to skip (sponsors, intros, …) and chapters; `nil`: none.
@@ -32,28 +33,28 @@ public final class YTDLPResolver: MediaResolver {
     let liveRefreshMargin: Double
 
     /// - Parameters:
-    ///   - customPath: The yt-dlp to run in place of the one found on the system (empty: search for it).
+    ///   - runner: What runs yt-dlp; with none available (`YTDLPRunner.isAvailable`) nothing is resolved.
     ///   - sponsorBlock: Whether YouTube videos get SponsorBlock's skip buttons and chapters.
     ///   - liveHistory: Whether a YouTube live stream plays from its history, not just its last hour.
     ///   - streams: Whether a YouTube video plays from its files or its HLS playlist.
     public convenience init(
-        customPath: String = "", sponsorBlock: Bool = true, liveHistory: Bool = false,
+        runner: any YTDLPRunner, sponsorBlock: Bool = true, liveHistory: Bool = false,
         streams: StreamProtocolPreference = .files
     ) {
         self.init(
-            locator: YTDLPLocator(customPath: customPath), sponsorBlock: sponsorBlock ? SponsorBlockClient() : nil,
-            liveHistory: liveHistory, streams: streams)
+            runner: runner, sponsorBlock: sponsorBlock ? SponsorBlockClient() : nil, liveHistory: liveHistory,
+            streams: streams)
     }
 
     init(
-        locator: YTDLPLocator, timeout: Duration = .seconds(60), sponsorBlock: SponsorBlockClient? = nil,
+        runner: any YTDLPRunner, timeout: Duration = .seconds(60), sponsorBlock: SponsorBlockClient? = nil,
         liveHistory: Bool = false, streams: StreamProtocolPreference = .files,
         liveHistoryFetch: @escaping YouTubeLiveHistory.Fetch = YouTubeLiveHistory.urlSession,
         liveSegmentWaitLimit: Duration = .seconds(60),
         liveHeadRequest: @escaping YouTubeLiveSource.HeadRequest = YouTubeLiveSource.urlSessionHead,
         liveRefreshMargin: Double = 1800
     ) {
-        self.locator = locator
+        self.runner = runner
         self.timeout = timeout
         self.sponsorBlock = sponsorBlock
         self.liveHistory = liveHistory
@@ -67,12 +68,55 @@ public final class YTDLPResolver: MediaResolver {
     /// yt-dlp asked for a live stream's page again, as the history was made from it: what the source asks it for after the
     /// load (a renewed signature, whether the stream is over).
     private func liveInfo(of page: URL, headers: [String: String], liveHistory: Bool = true) async throws -> YTDLPInfo {
-        guard let executable = locator.executable() else { throw MediaResolutionError("yt-dlp is gone") }
-        let output = try await YTDLPProcess.run(
-            executable, arguments: Self.arguments(for: page, headers: headers, liveHistory: liveHistory),
-            path: locator.processPath(for: executable), timeout: timeout)
+        guard runner.isAvailable else { throw MediaResolutionError("yt-dlp is gone") }
+        let output = try await run(Self.arguments(for: page, headers: headers, liveHistory: liveHistory))
         guard output.status == 0 else { throw Self.error(in: output.stderr) }
         return try JSONDecoder().decode(YTDLPInfo.self, from: output.stdout)
+    }
+
+    /// What the first of a run and its timeout is.
+    private enum Race: Sendable {
+        case finished(Result<YTDLPOutput, any Error>)
+        case timedOut
+        case sleepCancelled
+    }
+
+    /// Runs yt-dlp through the runner, given up after `timeout`: the runner is only asked to end when cancelled, so the
+    /// limit is the same for every host. The caller's cancellation is always a `CancellationError`, whatever the runner
+    /// threw when it was cancelled, and a timeout that fires while the caller cancels is that cancellation too.
+    private func run(_ arguments: [String]) async throws -> YTDLPOutput {
+        let runner = runner
+        let timeout = timeout
+        let first = await withTaskGroup(of: Race.self) { group in
+            group.addTask {
+                do {
+                    return .finished(.success(try await runner.run(arguments: arguments)))
+                } catch {
+                    return .finished(.failure(error))
+                }
+            }
+            group.addTask {
+                // Not `try?`: a cancelled sleep throws at once, and would be taken for the time being up.
+                do {
+                    try await Task.sleep(for: timeout)
+                    return .timedOut
+                } catch {
+                    return .sleepCancelled
+                }
+            }
+            let first = await group.next() ?? .sleepCancelled
+            group.cancelAll()
+            // Waits for the other to end: a runner that does not honour cancellation holds the load here.
+            while await group.next() != nil {}
+            return first
+        }
+        try Task.checkCancellation()
+        switch first {
+        case .finished(let result): return try result.get()
+        case .timedOut:
+            throw MediaResolutionError("yt-dlp didn't answer in \(timeout.components.seconds) s", isAboutPage: false)
+        case .sleepCancelled: throw CancellationError()
+        }
     }
 
     /// Whether yt-dlp, asked for the page again, says the stream is no longer on the air: what `YouTubeLiveSource` decides
@@ -149,7 +193,7 @@ public final class YTDLPResolver: MediaResolver {
     public func order(for url: URL) -> MediaResolutionOrder? {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
         guard !Self.mediaExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-        guard locator.executable() != nil else { return nil }
+        guard runner.isAvailable else { return nil }
         return Self.isPageSite(url) ? .beforeOpening : .afterOpeningFails
     }
 
@@ -201,16 +245,14 @@ public final class YTDLPResolver: MediaResolver {
     }
 
     public func resolve(_ url: URL, headers: [String: String]) async throws -> ResolvedMedia? {
-        guard let executable = locator.executable() else { return nil }
+        guard runner.isAvailable else { return nil }
         let started = ContinuousClock.now
         // SponsorBlock answers while yt-dlp runs, which takes longer.
         let sponsorBlock = sponsorBlock
         let pageVideoID = sponsorBlock != nil ? Self.youTubeVideoID(from: url) : nil
         async let pageSegments = Self.segments(from: sponsorBlock, for: pageVideoID)
 
-        let output = try await YTDLPProcess.run(
-            executable, arguments: Self.arguments(for: url, headers: headers, liveHistory: liveHistory),
-            path: locator.processPath(for: executable), timeout: timeout)
+        let output = try await run(Self.arguments(for: url, headers: headers, liveHistory: liveHistory))
         let elapsed = ContinuousClock.now - started
         guard output.status == 0 else {
             let error = Self.error(in: output.stderr)

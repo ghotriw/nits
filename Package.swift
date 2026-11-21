@@ -14,6 +14,8 @@ let package = Package(
         .library(name: "NitsCore", targets: ["NitsCore"]),
         .library(name: "NitsUI", targets: ["NitsUI"]),
         .library(name: "NitsKit", targets: ["NitsKit"]),
+        // The resolver of video sites' pages over yt-dlp, which a `YTDLPRunner` runs (NitsKit: a process; an iOS host: its own).
+        .library(name: "NitsYTDLP", targets: ["NitsYTDLP"]),
         // The iOS player screen and its lifecycle owner (v1: bare controls); empty on macOS, as SwiftPM builds every target there.
         .library(name: "NitsTouch", targets: ["NitsTouch"]),
         // Xcode previews only, not for hosts (it holds NitsCore again, next to NitsKit's copy). The preview host loads a
@@ -125,9 +127,16 @@ let package = Package(
             ],
             swiftSettings: defaultSwiftSettings
         ),
+        // Plays the pages of video sites (YouTube, …) from what yt-dlp says of them. Imports NitsCore only, builds for macOS
+        // and iOS: it never runs yt-dlp itself, a `YTDLPRunner` does.
+        .target(
+            name: "NitsYTDLP",
+            dependencies: ["NitsCore"],
+            swiftSettings: defaultSwiftSettings
+        ),
         .target(
             name: "NitsKit",
-            dependencies: ["NitsCore", "NitsUI"],
+            dependencies: ["NitsCore", "NitsUI", "NitsYTDLP"],
             swiftSettings: defaultSwiftSettings
         ),
         // The iOS player screen: SwiftUI over `NitsCore`'s engine, every file in `#if os(iOS)` (SwiftPM has no per-platform
@@ -170,9 +179,15 @@ let package = Package(
             dependencies: ["NitsTouch", "NitsCore"],
             swiftSettings: defaultSwiftSettings
         ),
+        // The resolver over a runner that is no process, and what it reads of yt-dlp's answers.
+        .testTarget(
+            name: "NitsYTDLPTests",
+            dependencies: ["NitsYTDLP", "NitsCore", "NitsTestSupport"],
+            swiftSettings: defaultSwiftSettings
+        ),
         .testTarget(
             name: "NitsKitTests",
-            dependencies: ["NitsKit", "NitsUI", "NitsTestSupport"],
+            dependencies: ["NitsKit", "NitsUI", "NitsYTDLP", "NitsTestSupport"],
             swiftSettings: defaultSwiftSettings
         ),
     ]

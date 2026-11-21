@@ -1,17 +1,10 @@
 import Foundation
 import NitsCore
+import NitsTestSupport
 import Testing
 import os
 
-@testable import NitsKit
-
-/// Runs `work`, which blocks, on a thread of its own, as the demuxer's read thread does: not in the cooperative pool, whose
-/// one thread (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) it would hold while waiting for a task that needs it.
-func onThread<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
-    await withCheckedContinuation { continuation in
-        Thread.detachNewThread { continuation.resume(returning: work()) }
-    }
-}
+@testable import NitsYTDLP
 
 /// The addresses, the head and the signature of a YouTube live stream's segments (`YouTubeLiveSource`).
 @Suite("YouTube live source")

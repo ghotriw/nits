@@ -305,7 +305,17 @@ PlayerScreen(session: session)
   signal to open the next episode.
 - Going to the background pauses and writes the history, so a position survives the system ending the app.
 - Not on iOS yet: overlay buttons, the "Up Next" card (a button with a subtitle or artwork shows as the plain button),
-  Now Playing and remote commands, Picture in Picture, track pickers, `ControlsConfiguration`, yt-dlp.
+  Now Playing and remote commands, Picture in Picture, track pickers, `ControlsConfiguration`.
+- YouTube and other video sites: the app has no yt-dlp, but `NitsYTDLP` builds for iOS and a host that embeds yt-dlp (a
+  Python interpreter in the app) plays pages through it. It gives the engine a `YTDLPRunner`, which runs the arguments
+  of a command line (`--dump-single-json`, …) and answers `YTDLPOutput` (status, the JSON on stdout, yt-dlp's `ERROR:`
+  line on stderr); the runner only has to end when its task is cancelled, the resolver makes the timeout:
+
+  ```swift
+  import NitsYTDLP
+
+  session.engine.mediaResolver = YTDLPResolver(runner: myRunner, liveHistory: true)
+  ```
 
 ### Logging
 

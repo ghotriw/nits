@@ -38,7 +38,7 @@ check_platform_boundary() {
     local members='\bAudioObject[A-Za-z]*\(|\bCVDisplayLink|\bCGDisplay|\bCGMainDisplayID\b|\baudioOutputDeviceUniqueID\b|\bdisplaySyncEnabled\b'
     local leaks
     # grep prints path:line:text, so the path filter stops at the first ':' and the comment filter reads the text.
-    leaks="$(grep -rnE "$imports|$appkit|$uikit|$members" Sources/NitsCore Sources/NitsStreaming --include='*.swift' \
+    leaks="$(grep -rnE "$imports|$appkit|$uikit|$members" Sources/NitsCore Sources/NitsStreaming Sources/NitsYTDLP --include='*.swift' \
         | grep -vE '^Sources/NitsCore/Platform/[^/:]+/' | grep -vE '^[^:]+:[0-9]+:\s*//' || true)"
     if [[ -n "$leaks" ]]; then
         echo "Platform-specific code outside Sources/NitsCore/Platform/<os>/:" >&2
@@ -81,9 +81,12 @@ case "$MODE" in
         ;;
     typecheck-ios|--typecheck-ios)
         # The iOS frameworks are arm64-only (an x86_64 simulator slice cannot link), so one architecture.
-        echo "Building NitsTouch (and NitsCore under it) for the iOS Simulator (strict concurrency)..."
-        xcodebuild -scheme NitsTouch -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
-            OTHER_SWIFT_FLAGS='-strict-concurrency=complete' build -quiet
+        echo "Building NitsTouch and NitsYTDLP (and NitsCore under them) for the iOS Simulator (strict concurrency)..."
+        # NitsYTDLP must build for iOS too (no Process, no AppKit): a host there brings its own YTDLPRunner.
+        for scheme in NitsTouch NitsYTDLP; do
+            xcodebuild -scheme "$scheme" -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
+                OTHER_SWIFT_FLAGS='-strict-concurrency=complete' build -quiet
+        done
         echo "iOS type-check passed."
         ;;
     check|--check|-c)

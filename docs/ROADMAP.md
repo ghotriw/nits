@@ -896,7 +896,9 @@ flowchart TD
   `openStream` (headers, title, artwork, start time, tracks), `load(_:)`, `onTimeUpdate` / `onPlaybackStateChanged` /
   `onPlaybackEnded` / `onClose`, action buttons (one capsule with a dismiss button), the host's Next / Previous (in the
   control bar), `close()` / `end()`, a public `init(configuration:historyStore:)`; the history is written on the way to
-  the background. Not in: overlay buttons, the "Up Next" card, Now Playing, PiP, `ControlsConfiguration`, yt-dlp.
+  the background. Not in: overlay buttons, the "Up Next" card, Now Playing, PiP, `ControlsConfiguration`. yt-dlp: `NitsYTDLP`
+  builds for iOS and takes a host's `YTDLPRunner` (`YTDLPResolver(runner:)`); Nits' own iOS app has none (a host with
+  an embedded interpreter brings it).
 - [ ] **8.5. Subtitles:** libass, FreeType, HarfBuzz, FriBidi and libunibreak for iOS (the `#if canImport(CLibass)` in
   NitsCore goes away) and the subtitle overlay (`SubtitleOverlayView`, its shader) moved into a target both players use.
 - [ ] **8.6. Track pickers, speed, settings, playlists** on iOS. With them the iOS UI state outgrows the screen's own

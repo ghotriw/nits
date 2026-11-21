@@ -1,6 +1,7 @@
 import AppKit
 import NitsCore
 import NitsUI
+import NitsYTDLP
 import ScreenCaptureKit
 import SwiftUI
 

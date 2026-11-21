@@ -1,9 +1,10 @@
 import Foundation
+import NitsTestSupport
 import Testing
 import os
 
 @testable import NitsCore
-@testable import NitsKit
+@testable import NitsYTDLP
 
 /// The files a YouTube page lists as formats, made into one manifest: a ladder for each codec, a sound for each language,
 /// their addresses told by key, and what is offered to choose from.

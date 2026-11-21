@@ -2,7 +2,7 @@ import Foundation
 import Testing
 
 @testable import NitsCore
-@testable import NitsKit
+@testable import NitsYTDLP
 
 /// How the page's formats are read into ladders: yt-dlp's `dynamic_range`, the sets of pictures, the codec's name.
 @Suite("yt-dlp ladder rules")

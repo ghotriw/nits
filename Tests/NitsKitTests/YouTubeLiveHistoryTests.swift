@@ -1,9 +1,11 @@
 import Foundation
 import NitsCore
+import NitsTestSupport
 import Testing
 import os
 
 @testable import NitsKit
+@testable import NitsYTDLP
 
 /// A YouTube live stream's history as a window of numbered segments, from a server that is a model of YouTube's: it
 /// answers a request without a number with the newest segment, keeps segments from some number on, tells the head in
@@ -304,7 +306,8 @@ struct YouTubeLiveHistoryTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         return (
             YTDLPResolver(
-                locator: YTDLPLocator(customPath: script.path), liveHistory: liveHistory, streams: streams,
+                runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)), liveHistory: liveHistory,
+                streams: streams,
                 liveHistoryFetch: fetch),
             directory
         )
@@ -533,7 +536,8 @@ struct YouTubeLiveHistoryLadderTests {
             let script = directory.appendingPathComponent(name)
             try "#!/bin/sh\ncat '\(answer.path)'\n".write(to: script, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-            return YTDLPResolver(locator: YTDLPLocator(customPath: script.path), liveHistory: true)
+            return YTDLPResolver(
+                runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)), liveHistory: true)
         }
         let keys: Set<String> = ["134", "137", "140", "243"]
         // The page lists a format fewer (243): the others are renewed.

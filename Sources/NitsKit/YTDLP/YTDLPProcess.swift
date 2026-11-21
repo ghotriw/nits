@@ -1,24 +1,19 @@
 import Foundation
 import NitsCore
+import NitsYTDLP
 import os
 
 /// Runs yt-dlp once and collects what it writes, without blocking a thread: pipes are read as they fill (a page's JSON
 /// is hundreds of KB, past a pipe's buffer), the exit is awaited through `terminationHandler`. Cancelling the task
 /// terminates the process.
 enum YTDLPProcess {
-    struct Output: Sendable {
-        var status: Int32
-        var stdout: Data
-        var stderr: Data
-    }
-
     /// How long the output may still come after the exit: a process yt-dlp started (Deno) that outlived it would
     /// hold the pipes open.
     static let drainTimeout: DispatchTimeInterval = .seconds(1)
 
     static func run(
-        _ executable: URL, arguments: [String], path: String, timeout: Duration
-    ) async throws -> Output {
+        _ executable: URL, arguments: [String], path: String
+    ) async throws -> YTDLPOutput {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -32,18 +27,12 @@ enum YTDLPProcess {
         process.standardError = stderr
         let run = Run(process: process, stdout: stdout, stderr: stderr)
 
-        let timer = Task {
-            try await Task.sleep(for: timeout)
-            run.terminate(timedOut: true)
-        }
-        defer { timer.cancel() }
-
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                run.start(timeout: timeout, continuation: continuation)
+                run.start(continuation: continuation)
             }
         } onCancel: {
-            run.terminate(timedOut: false)
+            run.terminate()
         }
     }
 
@@ -58,14 +47,12 @@ enum YTDLPProcess {
         private struct State {
             var isLaunched = false
             var isTerminated = false
-            var timedOut = false
             var stdout = Data()
             var stderr = Data()
             var openPipes = 2
             var arePipesClosed = false
             var exitStatus: Int32?
-            var continuation: CheckedContinuation<Output, any Error>?
-            var timeout: Duration = .zero
+            var continuation: CheckedContinuation<YTDLPOutput, any Error>?
         }
 
         private let state = OSAllocatedUnfairLock(initialState: State())
@@ -76,7 +63,7 @@ enum YTDLPProcess {
             self.stderr = stderr
         }
 
-        func start(timeout: Duration, continuation: CheckedContinuation<Output, any Error>) {
+        func start(continuation: CheckedContinuation<YTDLPOutput, any Error>) {
             stdout.fileHandleForReading.readabilityHandler = { [self] handle in
                 received(on: handle, isStdout: true)
             }
@@ -93,7 +80,6 @@ enum YTDLPProcess {
             }
             let failure: (any Error)? = state.withLock { state in
                 state.continuation = continuation
-                state.timeout = timeout
                 // Cancelled before it started.
                 guard !state.isTerminated else { return CancellationError() }
                 do {
@@ -118,11 +104,10 @@ enum YTDLPProcess {
         /// Stops yt-dlp and what it started (Deno; Python under the standalone `yt-dlp_macos`'s PyInstaller loader),
         /// which would otherwise run on, orphaned: `Process` launches it as a process group of its own and
         /// `terminate()` signals the whole group, which its descendants stay in unless they leave it (`setsid`).
-        func terminate(timedOut: Bool) {
+        func terminate() {
             state.withLock { state in
                 guard !state.isTerminated, state.exitStatus == nil else { return }
                 state.isTerminated = true
-                state.timedOut = timedOut
                 if state.isLaunched { process.terminate() }
             }
         }
@@ -152,19 +137,15 @@ enum YTDLPProcess {
         /// Resumes the run's task, once: with the output, or why there is none. The pipes close then: one still held
         /// open (by a process yt-dlp left behind) would otherwise keep its handler, and this run, until that exits.
         private func finish() {
-            let (continuation, result): (CheckedContinuation<Output, any Error>?, Result<Output, any Error>) =
+            let (continuation, result): (CheckedContinuation<YTDLPOutput, any Error>?, Result<YTDLPOutput, any Error>) =
                 state.withLock { state in
                     defer { state.continuation = nil }
-                    let result: Result<Output, any Error>
-                    if state.timedOut {
-                        result = .failure(
-                            MediaResolutionError(
-                                "yt-dlp didn't answer in \(state.timeout.components.seconds) s", isAboutPage: false))
-                    } else if state.isTerminated {
+                    let result: Result<YTDLPOutput, any Error>
+                    if state.isTerminated {
                         result = .failure(CancellationError())
                     } else {
                         result = .success(
-                            Output(status: state.exitStatus ?? -1, stdout: state.stdout, stderr: state.stderr))
+                            YTDLPOutput(status: state.exitStatus ?? -1, stdout: state.stdout, stderr: state.stderr))
                     }
                     return (state.continuation, result)
                 }

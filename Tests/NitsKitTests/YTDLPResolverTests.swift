@@ -3,6 +3,7 @@ import NitsCore
 import Testing
 
 @testable import NitsKit
+@testable import NitsYTDLP
 
 /// yt-dlp's answers read into streams, and yt-dlp found and run; a script stands in for it.
 @Suite("yt-dlp resolver")
@@ -449,7 +450,7 @@ struct YTDLPResolverTests {
               *) echo "ERROR: [youtube] gone: Video unavailable" >&2; exit 1 ;;
             esac
             """, in: directory)
-        let resolver = YTDLPResolver(locator: YTDLPLocator(customPath: script.path))
+        let resolver = YTDLPResolver(runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)))
 
         #expect(resolver.order(for: Self.page) == .beforeOpening)
         #expect(resolver.order(for: URL(string: "https://music.youtube.com/watch?v=1")!) == .beforeOpening)
@@ -492,13 +493,16 @@ struct YTDLPResolverTests {
         let script = try makeScript("cat '\(json.path)'", in: directory)
 
         let files = try #require(
-            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path)).resolve(Self.page, headers: [:]))
+            try await YTDLPResolver(runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path))).resolve(
+                Self.page, headers: [:]))
         #expect(MediaURL.isInlineDASHManifest(files.path), "The manifest of the files, the default")
         #expect(files.files != nil)
 
         let hls = try #require(
-            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path), streams: .hls)
-                .resolve(Self.page, headers: [:]))
+            try await YTDLPResolver(
+                runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)), streams: .hls
+            )
+            .resolve(Self.page, headers: [:]))
         #expect(hls.path == "https://media.example/master.m3u8")
         #expect(hls.files == nil)
         #expect(hls.fallback != nil, "The files play when the playlist does not open")
@@ -512,8 +516,10 @@ struct YTDLPResolverTests {
         let onlyFiles = answer.replacingOccurrences(of: #""protocol": "m3u8_native""#, with: #""protocol": "mhtml""#)
         try onlyFiles.write(to: json, atomically: true, encoding: .utf8)
         let fallback = try #require(
-            try await YTDLPResolver(locator: YTDLPLocator(customPath: script.path), streams: .hls)
-                .resolve(Self.page, headers: [:]))
+            try await YTDLPResolver(
+                runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)), streams: .hls
+            )
+            .resolve(Self.page, headers: [:]))
         #expect(MediaURL.isInlineDASHManifest(fallback.path))
     }
 
@@ -523,7 +529,7 @@ struct YTDLPResolverTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let script = try makeScript("exec sleep 30", in: directory)
 
-        let resolver = YTDLPResolver(locator: YTDLPLocator(customPath: script.path))
+        let resolver = YTDLPResolver(runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)))
         let started = ContinuousClock.now
         let resolving = Task { try await resolver.resolve(Self.page, headers: [:]) }
         try await Task.sleep(for: .milliseconds(200))
@@ -531,7 +537,8 @@ struct YTDLPResolverTests {
         await #expect(throws: CancellationError.self) { try await resolving.value }
         #expect(ContinuousClock.now - started < .seconds(5))
 
-        let impatient = YTDLPResolver(locator: YTDLPLocator(customPath: script.path), timeout: .milliseconds(300))
+        let impatient = YTDLPResolver(
+            runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)), timeout: .milliseconds(300))
         await #expect(throws: MediaResolutionError.self) { try await impatient.resolve(Self.page, headers: [:]) }
         #expect(ContinuousClock.now - started < .seconds(10))
     }
@@ -547,7 +554,7 @@ struct YTDLPResolverTests {
         let script = try makeScript(
             "sh -c 'sleep 30 >/dev/null 2>&1 & echo $! > \"\(pidFile.path)\"; wait' >/dev/null 2>&1 &\nwait",
             in: directory)
-        let resolver = YTDLPResolver(locator: YTDLPLocator(customPath: script.path))
+        let resolver = YTDLPResolver(runner: ProcessYTDLPRunner(locator: YTDLPLocator(customPath: script.path)))
         let resolving = Task { try await resolver.resolve(Self.page, headers: [:]) }
         var child: pid_t?
         // Up to 5 s: two shells and a sleep to start took over a second in a full run.

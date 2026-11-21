@@ -107,6 +107,12 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `AppLog` as its sink: every place of `NitsCore` that makes a client object (not only the engine: thumbnails, the duration
   probe, the subtitle reader) calls `StreamingLogBridge.install()` first. It does not hold what a resolver builds for it (`DASHManifest`,
   `SegmentedDASHManifest`, `LiveHistory`'s address helpers forward to `StreamHistory`): `NitsKit` uses those.
+- `NitsYTDLP` plays the pages of video sites (YouTube, …) from what yt-dlp says of them: `YTDLPResolver`, the manifests of a
+  video's files and of a live stream's history, SponsorBlock. It never runs yt-dlp: a `YTDLPRunner` does (the arguments of
+  a command line in, `YTDLPOutput` out; the resolver owns the timeout, the runner only ends when cancelled). It imports
+  `NitsCore` only and builds for macOS and iOS: no `Process`, no AppKit, no `NitsStreaming` (`NitsCore`'s alone). The
+  macOS runner (`ProcessYTDLPRunner`, `YTDLPProcess`, `YTDLPLocator`) is `NitsKit`'s; an iOS host brings its own over
+  an embedded interpreter. `./scripts/format.sh typecheck-ios` builds it.
 - `NitsKit` owns windows, menus and NowPlaying. `NitsUI` is declarative views plus
   `PlayerUIState` for transient UI state.
 - `NitsTouch` is the iOS player screen (`PlayerScreen`) and `TouchPlayerSession`, which owns the engine and follows the scene's

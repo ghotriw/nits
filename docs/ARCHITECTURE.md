@@ -207,7 +207,12 @@ The engine is designed to be embedded in hosts with web-driven UIs (e.g. an Emby
   A URL it declines (`nil`) opens as it is. After a failed opening it isn't asked when
   the host couldn't be reached (it couldn't either, and would add its timeout), and an error of its that is only about
   reading the URL (`MediaResolutionError.isAboutPage` false: yt-dlp's generic extractor's HTTP errors, a timeout)
-  leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsKit`, as `Process` is macOS-only), runs the yt-dlp
+  leaves the demuxer's reason shown. Nits' own, `YTDLPResolver` (`NitsYTDLP`, which builds for iOS too), runs yt-dlp through a
+  `YTDLPRunner`: the arguments of the command line in, its status, stdout (`--dump-single-json`'s JSON) and stderr (ending
+  in the `ERROR:` line) out. The resolver makes the timeout (60 s: a race against the run, which it cancels; the caller's
+  own cancellation is always a `CancellationError`, whatever the runner threw), so a runner is only asked to end when
+  cancelled and to say whether it can run (`isAvailable`: synchronous and cheap, asked for every load). On macOS the
+  runner (`ProcessYTDLPRunner`, `NitsKit`, as `Process` is macOS-only) runs the yt-dlp
   installed on the system rather than a bundled one, which would age with the sites: `YTDLPLocator` searches `PATH`
   and the package managers' directories an app opened from the Finder lacks, and runs it with them on its `PATH`
   (Deno, for YouTube). Its formats exclude DASH manifests; HLS opens from its multivariant playlist

@@ -4,6 +4,7 @@ import Testing
 
 @testable import NitsCore
 @testable import NitsKit
+@testable import NitsYTDLP
 
 /// A real YouTube video played from the manifest of all its files, measured; needs yt-dlp and the network, so it runs
 /// only with `NITS_YOUTUBE_URL` set (one page per run). Reports what it saw as the test's output.
