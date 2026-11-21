@@ -46,7 +46,7 @@
                             ProgressView().progressViewStyle(.circular).tint(.white).scaleEffect(1.6)
                                 .allowsHitTesting(false)
                         }
-                        ControlBar(session: session)
+                        ControlBar(session: session, onTouch: { visibility.touch() })
                             .opacity(isVisible ? 1 : 0)
                             .allowsHitTesting(isVisible)
                             .animation(.easeInOut(duration: 0.2), value: isVisible)

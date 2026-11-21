@@ -3,9 +3,11 @@
     import SwiftUI
 
     /// The controls over the picture: close and title at the top, skip back / play or pause / skip forward in the
-    /// middle, the timeline at the bottom. Nothing else in v1.
+    /// middle, a row of selectors (the speed) over the timeline at the bottom.
     struct ControlBar: View {
         let session: TouchPlayerSession
+        /// The controls were used in a way their own gestures do not see (a menu): keeps them on screen.
+        var onTouch: () -> Void = {}
         @State private var dragFraction: Double?
 
         private var engine: PlayerEngine { session.engine }
@@ -101,19 +103,31 @@
         private var bottom: some View {
             let timeline = timeline
             let shown = dragFraction.map { timeline.time(at: $0) } ?? engine.currentTime
-            return HStack(spacing: 10) {
-                Text(ScrubTimeline.clock(shown - timeline.start))
-                    .font(.footnote.monospacedDigit())
-                    .frame(minWidth: 44, alignment: .trailing)
-                ScrubBar(engine: engine, timeline: timeline, dragFraction: $dragFraction)
-                if engine.live.isLive {
-                    LiveBadgeButton(engine: engine)
-                } else {
-                    Text("-" + ScrubTimeline.clock(timeline.end - shown))
+            return VStack(spacing: 4) {
+                selectors
+                HStack(spacing: 10) {
+                    Text(ScrubTimeline.clock(shown - timeline.start))
                         .font(.footnote.monospacedDigit())
-                        .frame(minWidth: 44, alignment: .leading)
+                        .frame(minWidth: 44, alignment: .trailing)
+                    ScrubBar(engine: engine, timeline: timeline, dragFraction: $dragFraction)
+                    if engine.live.isLive {
+                        LiveBadgeButton(engine: engine)
+                    } else {
+                        Text("-" + ScrubTimeline.clock(timeline.end - shown))
+                            .font(.footnote.monospacedDigit())
+                            .frame(minWidth: 44, alignment: .leading)
+                    }
                 }
             }
+        }
+
+        /// A row of selector buttons over the timeline: speed now; audio, subtitles and the rest go here later.
+        private var selectors: some View {
+            HStack(spacing: 8) {
+                SpeedMenu(engine: engine, onInteraction: onTouch)
+                Spacer()
+            }
+            .padding(.leading, 4)
         }
     }
 
