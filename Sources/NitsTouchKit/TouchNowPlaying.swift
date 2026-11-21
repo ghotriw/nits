@@ -108,10 +108,16 @@
             info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = rate
             info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
             if let data = artwork.data, let image = UIImage(data: data) {
-                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                info[MPMediaItemPropertyArtwork] = Self.makeArtwork(image)
             }
             center.nowPlayingInfo = info
             center.playbackState = isPlaying ? .playing : .paused
+        }
+
+        /// Made outside the main actor on purpose: MediaPlayer calls the handler on its own queue, and a closure
+        /// written in a `@MainActor` method inherits the isolation and traps there (`dispatch_assert_queue`).
+        private nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
+            MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in image }
         }
 
         private func clear() {

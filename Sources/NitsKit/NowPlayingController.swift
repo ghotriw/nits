@@ -666,6 +666,12 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         )
     }
 
+    /// Made outside the main actor on purpose: MediaPlayer calls the handler on its own queue, and a closure
+    /// written in a `@MainActor` method inherits the isolation and traps there.
+    private nonisolated static func makeArtwork(_ image: NSImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in image }
+    }
+
     private func forceUpdateNowPlayingInfo(
         title: String,
         currentTime: Double,
@@ -691,10 +697,7 @@ public final class LegacyMediaPlayerController: NowPlayingController {
         info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = currentRate
 
         if let rawArtworkData = artwork.data, let image = NSImage(data: rawArtworkData) {
-            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in
-                image
-            }
-            info[MPMediaItemPropertyArtwork] = artwork
+            info[MPMediaItemPropertyArtwork] = Self.makeArtwork(image)
         }
 
         let center = MPNowPlayingInfoCenter.default()
