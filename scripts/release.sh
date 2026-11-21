@@ -6,6 +6,7 @@
 #   ./scripts/release.sh --tag --push    # ... and push it, which starts .github/workflows/release.yml
 #   ./scripts/release.sh --as=1.0.0      # a version of your own instead (e.g. going to 1.0.0, or a 1.2.0-beta.1)
 #   ./scripts/release.sh --since=v0.19.0 # count from another vX.Y.Z tag than the last one before HEAD
+#   ./scripts/release.sh --platforms=ios # publish these apps (macos, ios, or macos,ios) instead of the ones worked out
 #
 # The bump is the strongest commit's since the last vX.Y.Z tag:
 #   before 1.0   a breaking change (`type!:` or a `BREAKING CHANGE:` paragraph) → 0.MINOR; anything else → 0.x.PATCH.
@@ -17,6 +18,10 @@
 # The release notes (the tag's message, which release.yml publishes) list breaking changes (the BREAKING CHANGE
 # paragraph, else the subject: what a host has to change), features and fixes; a breaking feature or fix is in both.
 # refactor, build and revert go under "Other"; test, docs, ci, style and chore are left out, and alone make no release.
+# One version for the whole package, but a release publishes only the apps its commits change (`platform_of`: the files
+# of every commit since the tag, test or chore too, as their code ships in the app built): a change in NitsTouchUI alone
+# makes no macOS app, whose users go from the release before
+# to the next one with it. The tag's last line says which (`Platforms: macos ios`), and release.yml builds those.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -25,14 +30,16 @@ tag=false
 push=false
 override=""
 since=""
+platforms_override=""
 for arg in "$@"; do
     case "$arg" in
         --tag) tag=true ;;
         --push) push=true ;;
         --as=*) override="${arg#--as=}" ;;
         --since=*) since="${arg#--since=}" ;;
+        --platforms=*) platforms_override="${arg#--platforms=}" ;;
         -h | --help)
-            sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -45,6 +52,31 @@ if $push && ! $tag; then
     echo "--push needs --tag" >&2
     exit 2
 fi
+if [[ -n "$platforms_override" ]] && ! [[ "$platforms_override" =~ ^(macos|ios)(,(macos|ios))?$ ]]; then
+    echo "--platforms takes macos, ios or macos,ios: $platforms_override" >&2
+    exit 2
+fi
+
+# Which app a changed file goes into: macos, ios, both, or none (tests, docs, CI and the tools that build neither app).
+# What is not listed is shared: the engine, the streaming client, Package.swift, the dependencies, the notices.
+platform_of() {
+    case "$1" in
+        Apps/iOS/* | Sources/NitsTouchKit/* | Sources/NitsTouchUI/* | Sources/NitsCore/Platform/iOS/* \
+            | scripts/build_ios.sh | scripts/make_xcframeworks.sh)
+            echo ios ;;
+        Sources/NitsApp/* | Sources/NitsKit/* | Sources/NitsUI/* | Sources/NitsCore/Platform/macOS/* \
+            | Sources/CFFmpegSystem/* | Sources/CLibass/* | scripts/bundle_app.sh | scripts/setup_dependencies.sh \
+            | THIRD_PARTY_NOTICES.md)
+            # THIRD_PARTY_NOTICES.md is copied into Nits.app (bundle_app.sh); the iOS app's are Apps/iOS/ThirdPartyLicenses.
+            echo macos ;;
+        Tests/* | docs/* | *.md | .github/* | .githooks/* | .agents/* | .gitignore | .swift-format \
+            | scripts/release.sh | scripts/format.sh | scripts/profile.sh | scripts/run_with_hang_report.sh \
+            | scripts/hls-stand/*)
+            echo none ;;
+        *)
+            echo both ;;
+    esac
+}
 
 release_tags() {
     git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$1\$" || true
@@ -107,6 +139,8 @@ fixes=()
 other=()
 level=0 # 0 nothing, 1 patch, 2 feature, 3 breaking
 commits=0
+has_macos=false
+has_ios=false
 
 # One record per commit: hash, subject, body, separated by US; records by RS.
 while IFS=$'\x1f' read -r -d $'\x1e' hash subject body; do
@@ -150,6 +184,16 @@ while IFS=$'\x1f' read -r -d $'\x1e' hash subject body; do
             # test, docs, ci, style, chore: in a release with others, not in its notes, and no release of their own.
             ;;
     esac
+
+    # Every commit, not only those that count for the version: a chore that bumps a dependency ships in the app too.
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        case "$(platform_of "$file")" in
+            macos) has_macos=true ;;
+            ios) has_ios=true ;;
+            both) has_macos=true has_ios=true ;;
+        esac
+    done < <(git diff-tree --no-commit-id --name-only -r "$hash")
 done < <(git log --reverse --no-merges --format='%H%x1f%s%x1f%b%x1e' "$range")
 
 if ((level == 0)) && [[ -z "$override" ]]; then
@@ -195,6 +239,16 @@ else
     fi
 fi
 
+if [[ -n "$platforms_override" ]]; then
+    platforms="${platforms_override//,/ }"
+else
+    platforms=""
+    $has_macos && platforms="macos"
+    $has_ios && platforms="${platforms:+$platforms }ios"
+    # Counted commits that touch neither app (a refactor of the build's tools, say): both, rather than a release of none.
+    [[ -n "$platforms" ]] || platforms="macos ios"
+fi
+
 notes_section() {
     local title="$1"
     shift
@@ -212,6 +266,7 @@ notes="$(
 )"
 
 echo "${last_tag:-(no tag)} → v$version ($commits commit$( ((commits == 1)) || echo s))${prerelease:+, after $prerelease}"
+echo "Platforms: $platforms"
 echo
 if [[ -n "$notes" ]]; then
     printf '%s\n' "$notes"
@@ -243,7 +298,9 @@ message_file="$(mktemp)"
 trap 'rm -f "$message_file"' EXIT
 {
     printf 'Nits %s\n\n' "$version"
-    [[ -n "$notes" ]] && printf '%s\n' "$notes"
+    [[ -n "$notes" ]] && printf '%s\n\n' "$notes"
+    # The last line, which release.yml reads (and leaves out of the notes).
+    printf 'Platforms: %s\n' "$platforms"
 } >"$message_file"
 # Verbatim: the notes' "###" headings would be taken for comments.
 git tag -a "v$version" --cleanup=verbatim -F "$message_file"

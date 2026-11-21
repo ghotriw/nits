@@ -49,12 +49,15 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
   the legacy (pre-Liquid Glass) look on macOS 26+; `bundle_app.sh` stamps the real SDK via `vtool`.
   Judge UI only from the bundle. SwiftUI previews: open `Package.swift` in Xcode with the `NitsUIPreviews` scheme.
 - Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The app version comes
-  only from tags (`bundle_app.sh`: `git describe` or `--version=`), so never hardcode it in
+  only from tags (`bundle_app.sh` / `build_ios.sh`: `git describe` or `--version=`), so never hardcode it in
   Info.plist or sources. `scripts/release.sh` works the next version out from the commits since the last tag and
-  writes the release notes into the tag's message, which `release.yml` publishes.
+  writes the release notes into the tag's message, which `release.yml` publishes. One version for the package and both
+  apps, but a release builds only the apps its commits change: `release.sh` tells them from the files
+  (`platform_of`; a new platform-only path goes there) and ends the tag's message with `Platforms: macos ios`, which
+  `release.yml` reads (Nits.app zip, unsigned `.ipa` and its dSYM). An app left out skips that version.
 - Commit subjects are Conventional Commits (`type(scope): description`; `.githooks/commit-msg` checks them), as the
-  version is counted from them: mark a change that breaks the public API (`NitsCore`, `NitsKit`, `NitsUI` as hosts
-  use them) with `!` before the colon and a `BREAKING CHANGE: …` paragraph saying what a host has to change.
+  version is counted from them: mark a change that breaks the public API (`NitsCore`, `NitsKit`, `NitsUI`,
+  `NitsTouchKit`, `NitsTouchUI`, `NitsYTDLP` as hosts use them) with `!` before the colon and a `BREAKING CHANGE: …` paragraph saying what a host has to change.
 - Run compilers and CLI tools directly. Don't use inline interpreter scripts (`python3 -c`,
   `node -e`, `ruby -e`, `perl -e`) or wrap tools in `subprocess`; if a helper script is needed,
   write it to a file (e.g. `.agents/scratch/`), run it, then delete it.

@@ -456,6 +456,9 @@ The next version is worked out from them since the last tag. Before 1.0 a breaki
 and anything else the patch, so a host pinned with `.upToNextMinor(from:)` gets every fix and feature and no break;
 from 1.0 it is SemVer's (breaking → major, `feat` → minor, else patch).
 
+The version is the package's and both apps', but a release publishes only the apps its commits change (worked out from
+the files they touch): a change in `NitsTouchUI` alone publishes the iOS app, and the macOS app skips that version.
+
 ```bash
 ./scripts/release.sh                # the next version and its release notes; changes nothing
 ./scripts/release.sh --tag --push   # tag it (the notes are the tag's message) and push: release.yml publishes it

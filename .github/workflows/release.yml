@@ -1,6 +1,8 @@
 name: Release
 
-# Push a `vX.Y.Z` tag (or `vX.Y.Z-beta.1` for a prerelease) to build, zip and publish Nits.app.
+# Push a `vX.Y.Z` tag (or `vX.Y.Z-beta.1` for a prerelease) to build and publish the apps it changes: Nits.app (macOS)
+# and an unsigned Nits.ipa (iPhone and iPad). The tag's `Platforms: macos ios` line, which scripts/release.sh writes
+# from the files its commits change, says which; a tag without one builds both.
 # `deps-v*` tags (build-deps.yml) don't match `v*`.
 on:
   push:
@@ -8,11 +10,53 @@ on:
       - 'v[0-9]*'
 
 jobs:
-  release:
-    name: Build and Publish Nits.app
+  meta:
+    name: Read the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      macos: ${{ steps.meta.outputs.macos }}
+      ios: ${{ steps.meta.outputs.ios }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read the version and the platforms
+        id: meta
+        run: |
+          # actions/checkout may leave the tag lightweight; fetch the annotated one for its message.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          version="${GITHUB_REF_NAME#v}"
+          platforms=""
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ]; then
+            platforms="$(git tag -l "$GITHUB_REF_NAME" --format='%(contents)' | sed -n 's/^Platforms: //p' | tail -n 1)"
+          fi
+          # A hand-made line may say `macOS` or `macos,ios`.
+          platforms=" $(echo "$platforms" | tr '[:upper:],' '[:lower:] ') "
+          macos=false
+          ios=false
+          [[ "$platforms" == *" macos "* ]] && macos=true
+          [[ "$platforms" == *" ios "* ]] && ios=true
+          # No line, or one that names neither: both, never a release without an app.
+          if [ "$macos" = false ] && [ "$ios" = false ]; then
+            macos=true
+            ios=true
+          fi
+          echo "macOS: $macos, iOS: $ios"
+          {
+            echo "version=$version"
+            echo "prerelease=$([[ "$version" == *-* ]] && echo true || echo false)"
+            echo "macos=$macos"
+            echo "ios=$ios"
+          } >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: Build Nits.app
+    needs: meta
+    if: needs.meta.outputs.macos == 'true'
     runs-on: xcode-27
-    permissions:
-      contents: write
 
     steps:
       # Full history: bundle_app.sh uses the commit count as CFBundleVersion.
@@ -22,19 +66,10 @@ jobs:
           fetch-depth: 0
 
       - name: Read versions
-        id: meta
+        id: names
         run: |
           source scripts/deps_config.sh
-          version="${GITHUB_REF_NAME#v}"
-          {
-            echo "version=$version"
-            echo "zip=Nits-$version-macos-$DEPS_ARCH.zip"
-            echo "deps=$DEPS_VERSION"
-            echo "ffmpeg=$FFMPEG_VERSION"
-            echo "dav1d=$DAV1D_VERSION"
-            echo "libass=$LIBASS_VERSION"
-            echo "prerelease=$([[ "$version" == *-* ]] && echo true || echo false)"
-          } >> "$GITHUB_OUTPUT"
+          echo "zip=Nits-${{ needs.meta.outputs.version }}-macos-$DEPS_ARCH.zip" >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode 27
         run: sudo xcode-select -s /Applications/Xcode_27.app
@@ -65,7 +100,7 @@ jobs:
           key: nits-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/deps_config.sh', 'scripts/build_dependencies.sh') }}
 
       - name: Build Nits.app
-        run: ./scripts/bundle_app.sh --release --version="${{ steps.meta.outputs.version }}"
+        run: ./scripts/bundle_app.sh --release --version="${{ needs.meta.outputs.version }}"
 
       - name: Verify bundle
         run: |
@@ -76,22 +111,103 @@ jobs:
       - name: Package
         run: |
           mkdir -p build/dist
-          ditto -c -k --keepParent build/Nits.app "build/dist/${{ steps.meta.outputs.zip }}"
+          ditto -c -k --keepParent build/Nits.app "build/dist/${{ steps.names.outputs.zip }}"
           cd build/dist
-          shasum -a 256 "${{ steps.meta.outputs.zip }}" > "${{ steps.meta.outputs.zip }}.sha256"
+          shasum -a 256 "${{ steps.names.outputs.zip }}" > "${{ steps.names.outputs.zip }}.sha256"
 
-      # The notes are the tag's message, which scripts/release.sh writes from the commits. A tag without them (a
-      # lightweight one, or one made by hand with a subject only) gets GitHub's generated notes instead, which follow
-      # the text below.
+      - name: Keep for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: build/dist/
+          if-no-files-found: error
+
+  ios:
+    name: Build Nits.ipa
+    needs: meta
+    if: needs.meta.outputs.ios == 'true'
+    runs-on: xcode-27
+
+    steps:
+      # Full history: build_ios.sh uses the commit count as CFBundleVersion.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 27
+        run: sudo xcode-select -s /Applications/Xcode_27.app
+
+      - name: Ensure Metal Toolchain and the iOS platform are installed
+        run: |
+          sudo xcodebuild -runFirstLaunch || true
+          sudo xcodebuild -downloadComponent metalToolchain
+          xcodebuild -downloadPlatform iOS || true
+          echo 'kernel void probe() {}' > "$RUNNER_TEMP/probe.metal"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun metal -c "$RUNNER_TEMP/probe.metal" -o "$RUNNER_TEMP/probe.air"; then
+              exit 0
+            fi
+            echo "Metal compiler not usable yet (attempt $attempt), retrying..."
+            sleep 10
+          done
+          exit 1
+
+      - name: Install build tools
+        run: brew install xcodegen
+
+      # Unsigned: a sideloader signs it on install. The iOS frameworks are SwiftPM binary targets (deps-ios-v*).
+      - name: Build Nits.ipa
+        run: ./scripts/build_ios.sh ipa --version="${{ needs.meta.outputs.version }}"
+
+      - name: Package
+        run: |
+          version="${{ needs.meta.outputs.version }}"
+          mkdir -p build/dist
+          mv build/ios/Nits.ipa "build/dist/Nits-$version-ios.ipa"
+          mv build/ios/Nits.app.dSYM.zip "build/dist/Nits-$version-ios.dSYM.zip"
+          cd build/dist
+          shasum -a 256 "Nits-$version-ios.ipa" > "Nits-$version-ios.ipa.sha256"
+
+      - name: Keep for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ios
+          path: build/dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [meta, macos, ios]
+    # A platform the tag leaves out is skipped, which must not skip the release; a failed build stops it.
+    if: ${{ !cancelled() && needs.meta.result == 'success' && needs.macos.result != 'failure' && needs.ios.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect the apps
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: build/dist
+
+      # The notes are the tag's message, which scripts/release.sh writes from the commits (its `Platforms:` line left
+      # out). A tag without them (a lightweight one, or one made by hand with a subject only) gets GitHub's generated
+      # notes instead, which follow the text below.
       - name: Write release notes
         id: notes
         run: |
-          # actions/checkout may leave the tag lightweight; fetch the annotated one for its message.
+          source scripts/deps_config.sh
           git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          notes=build/dist/release-notes.md
+          notes=build/release-notes.md
           : > "$notes"
           if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ]; then
-            git tag -l "$GITHUB_REF_NAME" --format='%(contents:body)' | sed -e '/./,$!d' > "$notes"
+            git tag -l "$GITHUB_REF_NAME" --format='%(contents:body)' | sed -e '/^Platforms: /d' -e '/./,$!d' > "$notes"
           fi
           if grep -q '[^[:space:]]' "$notes"; then
             printf '\n---\n\n' >> "$notes"
@@ -100,25 +216,42 @@ jobs:
             : > "$notes"
             echo "generated=true" >> "$GITHUB_OUTPUT"
           fi
-          cat >> "$notes" <<'EOF'
-          Apple Silicon, macOS 15.4+.
 
-          The app is ad-hoc signed, not notarized. After unzipping, either run
-          `xattr -dr com.apple.quarantine Nits.app`, or open it once and allow it in
+          if [ "${{ needs.meta.outputs.macos }}" = true ]; then
+            cat >> "$notes" <<EOF
+          **macOS** (Apple Silicon, macOS 15.4+): the app is ad-hoc signed, not notarized. After unzipping, either run
+          \`xattr -dr com.apple.quarantine Nits.app\`, or open it once and allow it in
           System Settings → Privacy & Security → Open Anyway.
 
-          Bundled: FFmpeg ${{ steps.meta.outputs.ffmpeg }} (LGPL-2.1+), dav1d ${{ steps.meta.outputs.dav1d }} (BSD-2-Clause), libass ${{ steps.meta.outputs.libass }} (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak.
+          Bundled: FFmpeg $FFMPEG_VERSION (LGPL-2.1+), dav1d $DAV1D_VERSION (BSD-2-Clause), libass $LIBASS_VERSION (ISC) with FreeType, HarfBuzz, FriBidi and libunibreak.
           Their source archives are attached to
-          [deps-v${{ steps.meta.outputs.deps }}](https://github.com/${{ github.repository }}/releases/tag/deps-v${{ steps.meta.outputs.deps }}).
+          [deps-v$DEPS_VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/deps-v$DEPS_VERSION).
+
           EOF
+          else
+            printf '**macOS**: no changes in this release; the app stays at the release before.\n\n' >> "$notes"
+          fi
+
+          if [ "${{ needs.meta.outputs.ios }}" = true ]; then
+            cat >> "$notes" <<EOF
+          **iPhone and iPad** (iOS 18.4+): the .ipa is not signed. Install it with a sideloader that signs it with your
+          Apple ID (SideStore, AltStore); with a free Apple ID the signature lasts 7 days. The .dSYM.zip reads crash reports.
+
+          Bundled: FFmpeg (LGPL-2.1+) and dav1d (BSD-2-Clause), as built for
+          [deps-ios-v$DEPS_IOS_VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/deps-ios-v$DEPS_IOS_VERSION),
+          which names their versions and has their source archives attached.
+          EOF
+          else
+            printf '**iPhone and iPad**: no changes in this release; the app stays at the release before.\n' >> "$notes"
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Nits ${{ steps.meta.outputs.version }}
-          prerelease: ${{ steps.meta.outputs.prerelease }}
+          name: Nits ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          # "Latest" is the macOS zip's (the Homebrew cask and the README follow it): a release without it is not latest.
+          make_latest: ${{ needs.meta.outputs.macos == 'true' && needs.meta.outputs.prerelease != 'true' }}
           generate_release_notes: ${{ steps.notes.outputs.generated == 'true' }}
-          body_path: build/dist/release-notes.md
-          files: |
-            build/dist/${{ steps.meta.outputs.zip }}
-            build/dist/${{ steps.meta.outputs.zip }}.sha256
+          body_path: build/release-notes.md
+          files: build/dist/*
