@@ -4,6 +4,7 @@
 # Usage:
 #   build_ios.sh generate                 only (re)generate Apps/iOS/Nits.xcodeproj, to open in Xcode
 #   build_ios.sh [simulator]              build for the iOS Simulator (default)
+#   build_ios.sh run [--destination=…]    build, install and launch on a simulator (the app's output in the terminal)
 #   build_ios.sh device                   build for a device; signed with DEVELOPMENT_TEAM=<team id> (environment or .env), else unsigned
 #   build_ios.sh ipa                      unsigned build/ios/Nits.ipa for a sideloader (SideStore, AltStore) that signs it on install
 #   build_ios.sh test [--destination=…]   run the test plan (NitsStreamingTests + NitsTouchKitTests + NitsTouchUITests) on a simulator
@@ -25,10 +26,10 @@ APP_VERSION=""
 DESTINATION=""
 for arg in "$@"; do
     case "$arg" in
-        generate | simulator | device | ipa | test) MODE="$arg" ;;
+        generate | simulator | run | device | ipa | test) MODE="$arg" ;;
         --version=*) APP_VERSION="${arg#--version=}" ;;
         --destination=*) DESTINATION="${arg#--destination=}" ;;
-        -h | --help) sed -n '2,10p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,11p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -71,6 +72,46 @@ case "$MODE" in
     simulator)
         echo "==> Building for the iOS Simulator (version $APP_VERSION, build $BUILD_NUMBER)..."
         xcodebuild "${COMMON[@]}" -destination 'generic/platform=iOS Simulator' build
+        ;;
+    run)
+        # The simulator: the id or name of --destination, else a booted iPhone, else the first available one.
+        SIM_ID=""
+        case "$DESTINATION" in
+            *id=*) SIM_ID="$(sed -E 's/.*id=([^,]+).*/\1/' <<<"$DESTINATION")" ;;
+            *name=*)
+                SIM_NAME="$(sed -E 's/.*name=([^,]+).*/\1/' <<<"$DESTINATION")"
+                SIM_ID="$(xcrun simctl list devices available | awk -v name="$SIM_NAME" -F'[()]' \
+                    '{ n = $1; gsub(/^ +| +$/, "", n) } n == name { print $2; exit }')"
+                [ -n "$SIM_ID" ] || { echo "Error: no available simulator named '$SIM_NAME'." >&2; exit 1; }
+                ;;
+            "") ;;
+            *) echo "Error: --destination for run needs id=… or name=…." >&2; exit 1 ;;
+        esac
+        if [ -z "$SIM_ID" ]; then
+            SIM_ID="$(xcrun simctl list devices booted | awk -F'[()]' '/iPhone/ {print $2; exit}')"
+        fi
+        if [ -z "$SIM_ID" ]; then
+            SIM_ID="$(xcrun simctl list devices available | awk -F'[()]' '/iPhone/ {print $2; exit}')"
+        fi
+        [ -n "$SIM_ID" ] || { echo "Error: no iPhone simulator available." >&2; exit 1; }
+
+        # Its own DerivedData, so the app is found at a known path and the next build is incremental.
+        DERIVED="$DIR/build/ios-sim-derived"
+        echo "==> Building for simulator $SIM_ID (version $APP_VERSION, build $BUILD_NUMBER)..."
+        xcodebuild "${COMMON[@]}" -destination "platform=iOS Simulator,id=$SIM_ID" -derivedDataPath "$DERIVED" build
+        APP="$DERIVED/Build/Products/Debug-iphonesimulator/Nits.app"
+        [ -d "$APP" ] || { echo "Error: $APP was not built." >&2; exit 1; }
+        BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+
+        echo "==> Booting $SIM_ID..."
+        # bootstatus -b boots it if it is not, and waits until it is ready.
+        xcrun simctl bootstatus "$SIM_ID" -b >/dev/null
+        # Its window only: the app runs on a booted simulator without it (and some Xcodes ship without Simulator.app).
+        open -a Simulator --args -CurrentDeviceUDID "$SIM_ID" 2>/dev/null \
+            || echo "==> Simulator.app not found: the simulator runs without its window."
+        echo "==> Installing and launching $BUNDLE_ID (Ctrl-C quits the app)..."
+        xcrun simctl install "$SIM_ID" "$APP"
+        xcrun simctl launch --console-pty --terminate-running-process "$SIM_ID" "$BUNDLE_ID"
         ;;
     device)
         echo "==> Building for a device (version $APP_VERSION, build $BUILD_NUMBER)..."

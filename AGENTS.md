@@ -32,7 +32,7 @@ bitrate (design, decisions turned down, measurements, open work): [`docs/HLS.md`
 - Strict type-check incl. tests: `./scripts/format.sh typecheck`
 - iOS type-check: `./scripts/format.sh typecheck-ios` (NitsCore, NitsTouchKit and NitsTouchUI for the simulator, `ARCHS=arm64`; `check` runs it). The iOS
   app (`Apps/iOS`, an XcodeGen project: `brew install xcodegen`; the project itself is generated and ignored):
-  `./scripts/build_ios.sh [generate|simulator|device|ipa|test]` (`device` is signed with `DEVELOPMENT_TEAM`, else unsigned; `ipa` makes an unsigned `build/ios/Nits.ipa` (and its dSYM) for SideStore; `test`
+  `./scripts/build_ios.sh [generate|simulator|run|device|ipa|test]` (`run` builds, installs and launches on a simulator, `--destination=` with `id=` or `name=`, else a booted iPhone, else the first available; `device` is signed with `DEVELOPMENT_TEAM`, else unsigned; `ipa` makes an unsigned `build/ios/Nits.ipa` (and its dSYM) for SideStore; `test`
   runs `Apps/iOS/NitsTouch.xctestplan`: `NitsStreamingTests` + `NitsTouchKitTests` + `NitsTouchUITests` only, never the `Nits-Package` scheme). The scheme
   is `NitsiOS` (the name `Nits` is the package's macOS executable). The iOS FFmpeg / dav1d are xcframeworks that SwiftPM
   downloads (`binaryTarget(url:checksum:)`, the pre-release `deps-ios-v*`): they are built and published only by the
