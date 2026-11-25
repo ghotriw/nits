@@ -10,11 +10,20 @@
         let session: TouchPlayerSession
         /// Whether the controls are on screen: the button sits above them and, after its own time, shows only with them.
         let areControlsVisible: Bool
+        /// The screen is locked: the button stays in the hierarchy (the presenter still follows the position, so an auto-press
+        /// and a reset on new media work) but is not drawn or tappable.
+        var isLocked = false
         /// A tap on the button counts as a touch for the controls' hiding.
         let onTouch: () -> Void
 
         private var engine: PlayerEngine { session.engine }
         private var presenter: ActionButtonPresenter { session.actionButton }
+
+        /// Clear of the controls' bottom: the transport row, the timeline (44 pt), the audio row when it shows (44 pt) and a gap.
+        private var controlsLift: CGFloat {
+            ControlBar.transportHeight + 44 + (AudioTrackLabel.isShown(trackCount: engine.audioTracks.count) ? 44 : 0)
+                + 8
+        }
 
         var body: some View {
             ZStack(alignment: .bottomTrailing) {
@@ -26,7 +35,10 @@
                     }
                     .padding(.trailing, 16)
                     // Clear of the timeline while the controls are up.
-                    .padding(.bottom, areControlsVisible ? 72 : 24)
+                    .padding(.bottom, areControlsVisible ? controlsLift : 24)
+                    .opacity(isLocked ? 0 : 1)
+                    .allowsHitTesting(!isLocked)
+                    .accessibilityHidden(isLocked)
                     .transition(.opacity)
                 }
             }

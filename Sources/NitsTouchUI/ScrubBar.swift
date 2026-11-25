@@ -22,9 +22,15 @@
                 let played = dragFraction ?? timeline.fraction(of: engine.currentTime)
                 let buffered = timeline.fraction(of: engine.bufferedTime)
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.25))
-                    Capsule().fill(.white.opacity(0.35)).frame(width: width * buffered)
-                    Capsule().fill(.white).frame(width: width * played)
+                    // Square-ended fills inside one rounded track: a rounded end of the played part would show beside
+                    // the thumb as a notch.
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(.white.opacity(0.25))
+                        Rectangle().fill(.white.opacity(0.35)).frame(width: width * buffered)
+                        Rectangle().fill(.white).frame(width: width * played)
+                    }
+                    .frame(height: Self.barHeight)
+                    .clipShape(Capsule())
                     Circle()
                         .fill(.white)
                         .frame(width: dragFraction == nil ? 12 : 18, height: dragFraction == nil ? 12 : 18)
@@ -63,6 +69,13 @@
             .accessibilityElement()
             .accessibilityLabel("Timeline")
             .accessibilityValue(ScrubTimeline.clock(engine.currentTime))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: engine.seekRelative(by: 10)
+                case .decrement: engine.seekRelative(by: -10)
+                @unknown default: break
+                }
+            }
         }
     }
 

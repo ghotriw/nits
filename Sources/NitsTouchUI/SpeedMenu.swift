@@ -2,7 +2,7 @@
     import NitsCore
     import SwiftUI
 
-    /// The playback speed as a menu button: the current speed on the label, the choices in a checkmarked list.
+    /// The playback speed as a menu button: a gauge icon, with the speed beside it when it is not 1×, the choices in a checkmarked list.
     struct SpeedMenu: View {
         let engine: PlayerEngine
         /// Told of a tap on the button and of a choice: a menu's touches do not reach the controls' own timer.
@@ -35,12 +35,14 @@
                     }
                 }
             } label: {
-                Text(Self.label(chosenRate))
-                    .font(.footnote.weight(.semibold).monospacedDigit())
-                    .padding(.horizontal, 12)
-                    .frame(minWidth: 44, minHeight: 36)
-                    .background(.white.opacity(0.18), in: Capsule())
-                    .contentShape(Capsule())
+                HStack(spacing: 4) {
+                    if chosenRate != 1 {
+                        Text(Self.label(chosenRate)).font(.footnote.weight(.semibold).monospacedDigit())
+                    }
+                    Image(systemName: "gauge.with.needle").font(.title3)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .simultaneousGesture(TapGesture().onEnded { onInteraction() })
             .accessibilityLabel("Speed")

@@ -3,28 +3,26 @@
     import NitsTouchKit
     import SwiftUI
 
-    /// The controls over the picture: close and title at the top, skip back / play or pause / skip forward in the
-    /// middle, a row of selectors (the speed) over the timeline at the bottom.
+    /// The controls over the picture: a status row and the buttons (close, fit / fill, repeat, speed) at the top; at the
+    /// bottom the audio menu, the timeline and a row with the lock and previous / play or pause / next.
     struct ControlBar: View {
         let session: TouchPlayerSession
+        let network: NetworkKindMonitor?
+        @Binding var isLocked: Bool
         /// The controls were used in a way their own gestures do not see (a menu): keeps them on screen.
         var onTouch: () -> Void = {}
         @State private var dragFraction: Double?
 
+        /// The height of the lock / transport row: the locked screen keeps the lock where it was by using the same one.
+        static let transportHeight: CGFloat = 52
+
         private var engine: PlayerEngine { session.engine }
-        private static let skipSeconds = 10.0
 
         var body: some View {
-            ZStack {
-                VStack {
-                    top
-                    Spacer()
-                }
-                center
-                VStack {
-                    Spacer()
-                    bottom
-                }
+            VStack(spacing: 0) {
+                top
+                Spacer()
+                bottom
             }
             .padding(.horizontal, 8)
             .foregroundStyle(.white)
@@ -37,61 +35,25 @@
                 colors: [.black.opacity(0.6), .clear], startPoint: edge == .top ? .top : .bottom,
                 endPoint: edge == .top ? .bottom : .top
             )
-            .frame(height: 140)
+            .frame(height: 160)
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
 
         private var top: some View {
-            HStack(spacing: 12) {
-                Button {
-                    session.close()
-                } label: {
-                    Image(systemName: "xmark").font(.title3.weight(.semibold)).frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Close")
-                Text(engine.mediaTitle).font(.headline).lineLimit(1)
-                Spacer()
-            }
-        }
-
-        private var center: some View {
-            // Narrower with the track buttons: 44 + 56 + 72 + 56 + 44 pt and four gaps is 296 pt, inside an iPhone SE's 304 pt (320 less the 8 pt margins) in portrait.
-            HStack(spacing: engine.canPlayPrevious || engine.canPlayNext ? 6 : 36) {
-                if engine.canPlayPrevious {
+            VStack(spacing: 4) {
+                StatusRow(title: engine.mediaTitle, network: network).padding(.horizontal, 4)
+                HStack(spacing: 4) {
                     Button {
-                        engine.playPrevious()
+                        session.close()
                     } label: {
-                        Image(systemName: "backward.end.fill").font(.title2).frame(width: 44, height: 44)
+                        Image(systemName: "xmark").font(.title3.weight(.semibold)).frame(width: 44, height: 44)
                     }
-                    .accessibilityLabel("Previous")
-                }
-                Button {
-                    engine.seekRelative(by: -Self.skipSeconds)
-                } label: {
-                    Image(systemName: "gobackward.10").font(.title).frame(width: 56, height: 56)
-                }
-                .accessibilityLabel("Back 10 seconds")
-                Button {
-                    engine.togglePlayPause()
-                } label: {
-                    Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 40))
-                        .frame(width: 72, height: 72)
-                }
-                .accessibilityLabel(engine.isPlaying ? "Pause" : "Play")
-                Button {
-                    engine.seekRelative(by: Self.skipSeconds)
-                } label: {
-                    Image(systemName: "goforward.10").font(.title).frame(width: 56, height: 56)
-                }
-                .accessibilityLabel("Forward 10 seconds")
-                if engine.canPlayNext {
-                    Button {
-                        engine.playNext()
-                    } label: {
-                        Image(systemName: "forward.end.fill").font(.title2).frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Next")
+                    .accessibilityLabel("Close")
+                    ScalingButton(engine: engine, onInteraction: onTouch)
+                    RepeatButton(engine: engine, onInteraction: onTouch)
+                    Spacer()
+                    SpeedMenu(engine: engine, onInteraction: onTouch)
                 }
             }
         }
@@ -104,8 +66,13 @@
         private var bottom: some View {
             let timeline = timeline
             let shown = dragFraction.map { timeline.time(at: $0) } ?? engine.currentTime
-            return VStack(spacing: 4) {
-                selectors
+            return VStack(spacing: 0) {
+                if AudioTrackLabel.isShown(trackCount: engine.audioTracks.count) {
+                    HStack {
+                        Spacer()
+                        AudioTrackMenu(engine: engine, onInteraction: onTouch)
+                    }
+                }
                 HStack(spacing: 10) {
                     Text(ScrubTimeline.clock(shown - timeline.start))
                         .font(.footnote.monospacedDigit())
@@ -119,16 +86,48 @@
                             .frame(minWidth: 44, alignment: .leading)
                     }
                 }
+                transport
             }
         }
 
-        /// A row of selector buttons over the timeline: speed now; audio, subtitles and the rest go here later.
-        private var selectors: some View {
-            HStack(spacing: 8) {
-                SpeedMenu(engine: engine, onInteraction: onTouch)
-                Spacer()
+        /// Lock at the left; previous, play / pause and next in the middle (the same width on both sides, so play
+        /// stays centred when a track button is missing). Fits an iPhone SE's 304 pt: 3 × 44 + 56 and gaps.
+        private var transport: some View {
+            ZStack {
+                HStack {
+                    LockButton(isLocked: $isLocked, onInteraction: onTouch)
+                    Spacer()
+                }
+                HStack(spacing: 24) {
+                    trackButton("backward.end.fill", label: "Previous", isEnabled: engine.canPlayPrevious) {
+                        engine.playPrevious()
+                    }
+                    Button {
+                        engine.togglePlayPause()
+                    } label: {
+                        Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30))
+                            .frame(width: 56, height: Self.transportHeight)
+                    }
+                    .accessibilityLabel(engine.isPlaying ? "Pause" : "Play")
+                    trackButton("forward.end.fill", label: "Next", isEnabled: engine.canPlayNext) {
+                        engine.playNext()
+                    }
+                }
             }
-            .padding(.leading, 4)
+            .frame(height: Self.transportHeight)
+        }
+
+        /// A track button keeps its place (hidden, not removed) when there is no track to go to.
+        private func trackButton(
+            _ symbol: String, label: LocalizedStringKey, isEnabled: Bool, action: @escaping () -> Void
+        ) -> some View {
+            Button(action: action) {
+                Image(systemName: symbol).font(.title2).frame(width: 44, height: 44)
+            }
+            .opacity(isEnabled ? 1 : 0)
+            .disabled(!isEnabled)
+            .accessibilityHidden(!isEnabled)
+            .accessibilityLabel(label)
         }
     }
 

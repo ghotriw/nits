@@ -10,6 +10,9 @@
         @Environment(\.scenePhase) private var scenePhase
         @State private var visibility = ControlsVisibility()
         @State private var surfaceWidth: CGFloat = 0
+        @State private var isLocked = false
+        /// Made on appear, one for both layouts of the status row.
+        @State private var network: NetworkKindMonitor?
 
         public init(session: TouchPlayerSession) {
             self.session = session
@@ -47,23 +50,50 @@
                             ProgressView().progressViewStyle(.circular).tint(.white).scaleEffect(1.6)
                                 .allowsHitTesting(false)
                         }
-                        ControlBar(session: session, onTouch: { visibility.touch() })
-                            .opacity(isVisible ? 1 : 0)
-                            .allowsHitTesting(isVisible)
-                            .animation(.easeInOut(duration: 0.2), value: isVisible)
-                            .simultaneousGesture(TapGesture().onEnded { visibility.touch() })
-                            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in visibility.touch() })
-                        ActionButtonView(session: session, areControlsVisible: isVisible) { visibility.touch() }
+                        Group {
+                            if isLocked {
+                                // Locked: only the way out; the picture's gestures do nothing but show or hide it.
+                                VStack {
+                                    StatusRow(title: engine.mediaTitle, network: network).padding(.horizontal, 12)
+                                    Spacer()
+                                    HStack {
+                                        LockButton(isLocked: $isLocked) { visibility.touch() }
+                                        Spacer()
+                                    }
+                                    .frame(height: ControlBar.transportHeight)
+                                    .padding(.horizontal, 8)
+                                }
+                                .foregroundStyle(.white)
+                            } else {
+                                ControlBar(
+                                    session: session, network: network, isLocked: $isLocked,
+                                    onTouch: { visibility.touch() })
+                            }
+                        }
+                        .opacity(isVisible ? 1 : 0)
+                        .allowsHitTesting(isVisible)
+                        .animation(.easeInOut(duration: 0.2), value: isVisible)
+                        .simultaneousGesture(TapGesture().onEnded { visibility.touch() })
+                        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in visibility.touch() })
+                        ActionButtonView(session: session, areControlsVisible: isVisible, isLocked: isLocked) {
+                            visibility.touch()
+                        }
                     } else {
                         EmptyStateView(session: session).foregroundStyle(.white)
                     }
                 }
-                .statusBarHidden(hasMedia && !isVisible)
+                .statusBarHidden(hasMedia)
                 .persistentSystemOverlays(.hidden)
                 .preferredColorScheme(.dark)
             }
+            .onAppear { if network == nil { network = NetworkKindMonitor() } }
             .onChange(of: scenePhase) { _, phase in session.scenePhaseChanged(HostScenePhase(phase)) }
             .onChange(of: engine.isLoaded) { _, _ in visibility.touch() }
+            // Between two items `isLoaded` goes false but the media (`isLoading`) stays: the lock holds until it is closed.
+            .onChange(of: hasMedia) { _, hasMedia in
+                visibility.touch()
+                if !hasMedia { isLocked = false }
+            }
             .onChange(of: engine.isPlaying) { _, _ in visibility.touch() }
             .alert(
                 "Can't Play",
@@ -82,6 +112,7 @@
         /// Twice on the left third skips back, on the right third forward; the middle does nothing.
         private var doubleTap: some Gesture {
             SpatialTapGesture(count: 2).onEnded { value in
+                guard !isLocked else { return }
                 visibility.touch()
                 let width = surfaceWidth
                 if value.location.x < width / 3 {
@@ -95,6 +126,7 @@
         /// Spreading fingers fills the screen (the picture's edges cut), pinching in fits the picture inside it.
         private var pinch: some Gesture {
             MagnifyGesture().onEnded { value in
+                guard !isLocked else { return }
                 if value.magnification > 1 {
                     engine.setVideoScaling(.fill)
                 } else if value.magnification < 1 {

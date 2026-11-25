@@ -889,7 +889,7 @@ flowchart TD
   main thread; interruptions, a lost route, a change of output), `IdleTimerDisplaySleepAssertion`, `PlatformScreen`.
 - [x] **8.3. Engine for the platform:** the host's background and return (the VideoToolbox session and a failed display
   layer recovered), a byte budget for the frame queue and smaller read-ahead, re-anchoring after a change of output.
-- [x] **8.4. v1 player:** `PlayerScreen` (close and title; back 10 s, play / pause, forward 10 s; a scrub bar, remaining
+- [x] **8.4. v1 player:** `PlayerScreen` (a status row with the clock, network and battery, the title; close, fit / fill, repeat and speed on top; the audio menu when there are several tracks; a lock; previous / play / next; a scrub bar, remaining
   time or a LIVE badge; tap, double tap on the sides, pinch for fit / fill), files from Files and network addresses,
   always the `.system` render mode. Checked on an iPhone 14 Pro and an iPad mini 6.
 - [x] **8.4a. Host API on iOS:** `TouchPlayerSession` repeats `PlayerSession`'s API over the shared `PlayerSessionCore`:
