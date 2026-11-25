@@ -80,18 +80,17 @@ case "$MODE" in
             *id=*) SIM_ID="$(sed -E 's/.*id=([^,]+).*/\1/' <<<"$DESTINATION")" ;;
             *name=*)
                 SIM_NAME="$(sed -E 's/.*name=([^,]+).*/\1/' <<<"$DESTINATION")"
-                SIM_ID="$(xcrun simctl list devices available | awk -v name="$SIM_NAME" -F'[()]' \
-                    '{ n = $1; gsub(/^ +| +$/, "", n) } n == name { print $2; exit }')"
+                SIM_ID="$(xcrun simctl list devices available | grep -F "    $SIM_NAME (" | sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/p' | head -n 1 || true)"
                 [ -n "$SIM_ID" ] || { echo "Error: no available simulator named '$SIM_NAME'." >&2; exit 1; }
                 ;;
             "") ;;
             *) echo "Error: --destination for run needs id=… or name=…." >&2; exit 1 ;;
         esac
         if [ -z "$SIM_ID" ]; then
-            SIM_ID="$(xcrun simctl list devices booted | awk -F'[()]' '/iPhone/ {print $2; exit}')"
+            SIM_ID="$(xcrun simctl list devices booted | grep iPhone | sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/p' | head -n 1 || true)"
         fi
         if [ -z "$SIM_ID" ]; then
-            SIM_ID="$(xcrun simctl list devices available | awk -F'[()]' '/iPhone/ {print $2; exit}')"
+            SIM_ID="$(xcrun simctl list devices available | grep iPhone | sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/p' | head -n 1 || true)"
         fi
         [ -n "$SIM_ID" ] || { echo "Error: no iPhone simulator available." >&2; exit 1; }
 
@@ -150,7 +149,7 @@ case "$MODE" in
     test)
         if [ -z "$DESTINATION" ]; then
             # The first available iPhone simulator.
-            SIM_ID="$(xcrun simctl list devices available | awk -F'[()]' '/iPhone/ {print $2; exit}')"
+            SIM_ID="$(xcrun simctl list devices available | grep iPhone | sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/p' | head -n 1 || true)"
             [ -n "$SIM_ID" ] || { echo "Error: no iPhone simulator available." >&2; exit 1; }
             DESTINATION="platform=iOS Simulator,id=$SIM_ID"
         fi
