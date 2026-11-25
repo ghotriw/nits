@@ -173,7 +173,7 @@ struct LiveHistoryLadderTests {
         #expect(pictures >= 25 * (count - 1) - 2, "\(pictures) pictures, asked \(server.requests.map(\.path))")
 
         // The other rung, by hand, from the second segment: its picture is the smaller one (the start was the larger).
-        let small = try #require(demuxer.variants.min { ($0.height ?? 0) < ($1.height ?? 0) })
+        let small = try #require(demuxer.variants.min { $0.height < $1.height })
         demuxer.selectVariant(id: small.id)
         demuxer.seek(to: 1.0, exact: false)
         let landed = try #require(demuxer.nextVideoSample())

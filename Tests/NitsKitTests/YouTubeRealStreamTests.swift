@@ -48,6 +48,6 @@ struct YouTubeRealStreamTests {
         #expect(abs(landed - seekAt) < 12)
         #expect(media.audioFiles.isEmpty)
         #expect(demuxer.audioTracks.count >= 1, "The sound is in the manifest")
-        print("audio tracks: \(demuxer.audioTracks.map { "\($0.language ?? "?")" })")
+        print("audio tracks: \(demuxer.audioTracks.map { $0.language })")
     }
 }

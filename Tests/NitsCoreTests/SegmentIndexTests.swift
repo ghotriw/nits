@@ -490,9 +490,10 @@ extension SegmentIndexTests {
     @Test("Segments before the period (an offset past the index's start) are left out, one across its start begins it")
     func segmentsBeforeThePeriod() throws {
         let index = try #require(SegmentIndex.parse(Self.sidx([(10, 1000), (10, 1000), (10, 1000)]), at: 0))
+        let indexRange = try #require(ByteRange(offset: 0, length: 1))
         let location = DASHPresentation.IndexLocation(
             media: URL(string: "https://cdn.example/a.mp4")!, url: URL(string: "https://cdn.example/a.mp4")!,
-            range: try #require(ByteRange(offset: 0, length: 1)))
+            range: indexRange)
         let representation = DASHPresentation.Representation(
             id: "a", kind: .audio, bandwidth: 1, roleRank: 1, set: 0, presentationTimeOffset: 1.5, segments: [],
             index: location)
