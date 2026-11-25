@@ -52,6 +52,9 @@ package final class SegmentLoader: Sendable {
     static let retainLimit = 48 << 20
     private static let readSize = 64 << 10
 
+    /// When a request of the transport last got an answer (`HTTPSessionTransport.lastAnswered`).
+    var lastAnswered: ContinuousClock.Instant? { transport.lastAnswered }
+
     package init(transport: HTTPSessionTransport, allowsFiles: Bool = false, addresses: (any PlaylistSource)? = nil) {
         self.transport = transport
         self.allowsFiles = allowsFiles

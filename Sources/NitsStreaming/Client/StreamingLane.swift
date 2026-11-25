@@ -105,6 +105,19 @@ package final class StreamingLane: @unchecked Sendable {
     /// Segments that failed one after another before the lane gives the error up.
     static let maxSkippedSegments = 3
     private var skipped = 0
+    /// Failures of the network in a row (`recover`), for the wait before the next attempt, and when the first of them
+    /// came: the outage, as far as this lane knows it.
+    private var networkFailures = 0
+    private var networkOutageStart: ContinuousClock.Instant?
+    /// How long a lane waits out failures of the network before it takes them for its server's: as long as the engine
+    /// keeps the app awake in the background for a wait (`BackgroundOutputHold.limit`), past which nothing would read on
+    /// anyway. An outage seen by no other answer can be one server that stopped answering, with every request to it.
+    static let networkWaitLimit: Duration = .seconds(300)
+
+    private func resetNetworkFailures() {
+        networkFailures = 0
+        networkOutageStart = nil
+    }
 
     package init(
         kind: Kind, url: URL, timeline: StreamingTimeline, variables: [String: String], playlists: any PlaylistSource,
@@ -465,6 +478,7 @@ package final class StreamingLane: @unchecked Sendable {
         dropRun()
         isAbandoned = false
         skipped = 0
+        resetNetworkFailures()
         start = .containing(time)
         nextRunReason = .reposition
         resume = nil
@@ -532,6 +546,7 @@ package final class StreamingLane: @unchecked Sendable {
         dropRun()
         isAbandoned = false
         skipped = 0
+        resetNetworkFailures()
         start = .following(time)
         nextRunReason = .switch
         seekTarget = nil
@@ -546,6 +561,7 @@ package final class StreamingLane: @unchecked Sendable {
     func join(sequence: Int) {
         dropRun()
         skipped = 0
+        resetNetworkFailures()
         isAbandoned = false
         start = .sequence(sequence)
         nextRunReason = .switch
@@ -668,10 +684,13 @@ package final class StreamingLane: @unchecked Sendable {
                 switch nextRunStart() {
                 case .start(let entry):
                     do throws(SegmentReaderError) { try startRun(at: entry) } catch {
-                        seekTarget = nil
                         redo = nil
                         resume = entry
-                        if let stop = recover(from: error.code) { return stop }
+                        // Given up meanwhile (`abandonDownload`): no retry, no skip, as for a read below.
+                        if isAbandoned { return FFmpegErrorCode.exit }
+                        // A seek's target is kept for a segment asked again (its opening is still the seek's run, which
+                        // `segmentStarted` measures), dropped for one skipped.
+                        if let stop = recover(from: error.code, isSeekRun: true) { return stop }
                         continue
                     }
                     if isRejected {
@@ -705,6 +724,10 @@ package final class StreamingLane: @unchecked Sendable {
             if code >= 0 {
                 if place() {
                     skipped = 0
+                    if networkFailures > 0 {
+                        StreamingLog.info("HLS: the network is back after \(networkFailures) failed attempt(s)")
+                    }
+                    resetNetworkFailures()
                     logOpenedRun("firstPacket")
                     return 0
                 }
@@ -733,8 +756,44 @@ package final class StreamingLane: @unchecked Sendable {
     /// in time), as `hls.c` does with `seg_max_retry` 0 (a retry would hold the demuxer's lock, which a seek waits for,
     /// and repeat the packets a demux error came after); a lane whose segments fail `maxSkippedSegments` in a row gives
     /// the error up. Nil to go on reading; else what `fill` returns.
-    private func recover(from code: Int32) -> Int32? {
+    ///
+    /// A failure of the network (`FFmpegErrorCode.isNetworkFailure`: no answer came, so none of the segment's packets
+    /// was read) is no failure of the segment: it is asked for again after a wait, for as long as the network is away
+    /// (`waitForNetwork`), as ExoPlayer and hls.js retry a load rather than skip it. Skipping would put a hole in the
+    /// media for every few seconds of the outage, and a lane that ran out of skips (a rendition: its sound) would be
+    /// left out for good, though the network comes back.
+    ///
+    /// The same codes come from a server that stopped answering on a network that works (a timeout, a refused or reset
+    /// connection), which no wait mends. The network is taken for away only while no request of the input (any lane,
+    /// any rung: `SegmentLoader.lastAnswered`) has been answered since the first failure, and for `networkWaitLimit` at
+    /// most: past either, the failure is the segment's, skipped as any other. `isSeekRun`: the failure opened a seek's run, whose
+    /// target is kept for the segment asked again and dropped for one skipped.
+    private func recover(from code: Int32, isSeekRun: Bool = false) -> Int32? {
         if code == FFmpegErrorCode.exit { return code }
+        if FFmpegErrorCode.isNetworkFailure(code), let failed = resume {
+            let now = ContinuousClock.now
+            let outageStart = networkOutageStart ?? now
+            networkOutageStart = outageStart
+            let isAnswered = loader.lastAnswered.map { $0 > outageStart } ?? false
+            if !isAnswered, now - outageStart < Self.networkWaitLimit {
+                networkFailures += 1
+                let delay = Self.networkRetryDelay(after: networkFailures)
+                StreamingLog.warning(
+                    "HLS: segment \(failed.sequence) failed (\(code)), no network: asking again in \(delay)"
+                        + " (attempt \(networkFailures))")
+                if let stop = waitForNetwork(delay) { return stop }
+                return nil
+            }
+            StreamingLog.warning(
+                "HLS: segment \(failed.sequence) failed (\(code)) "
+                    + (isAnswered
+                        ? "while other requests are answered: its server's failure"
+                        : "for \(now - outageStart): taken for its server's failure"))
+            resetNetworkFailures()
+        }
+        if isSeekRun {
+            seekTarget = nil
+        }
         skipped += 1
         guard skipped < Self.maxSkippedSegments, let failed = resume else { return code }
         switch following(failed) {
@@ -749,6 +808,25 @@ package final class StreamingLane: @unchecked Sendable {
         case .stopped(let stop):
             return stop
         }
+    }
+
+    /// ExoPlayer's `DefaultLoadErrorHandlingPolicy`: a second more for each failure in a row, at most 5 s, the first at
+    /// once.
+    static func networkRetryDelay(after failures: Int) -> Duration {
+        .seconds(min(max(failures - 1, 0), 5))
+    }
+
+    /// Waits `delay` before the network's failure is asked again, giving way to an abort (a seek, a close) at once, as
+    /// the wait for a live playlist does (`waitForReload`). `AVERROR_EXIT` for an abort; nil to ask again.
+    private func waitForNetwork(_ delay: Duration) -> Int32? {
+        let due = ContinuousClock.now + delay
+        let wake = DispatchSemaphore(value: 0)
+        while ContinuousClock.now < due {
+            // A lane given up meanwhile (`abandonDownload`) asks for nothing more, as a read of it stops.
+            if shouldAbort() || isAbandoned { return FFmpegErrorCode.exit }
+            _ = wake.wait(timeout: .now() + .milliseconds(50))
+        }
+        return shouldAbort() || isAbandoned ? FFmpegErrorCode.exit : nil
     }
 
     /// Stops reading the lane: an optional rendition that failed, the stream plays without it.
@@ -1059,6 +1137,12 @@ package final class StreamingLane: @unchecked Sendable {
         } catch {
             lastLoad = .now
             if error == .load(.interrupted) { return FFmpegErrorCode.exit }
+            // The network away: no failure of the playlist's (as a segment's is none, `recover`). The next reload is
+            // due as any other, and a live stream goes on once the network is back instead of ending on its third.
+            if FFmpegErrorCode.isNetworkFailure(error.code) {
+                StreamingLog.warning("HLS: playlist reload failed (\(error.code)), no network: trying again")
+                return nil
+            }
             failedReloads += 1
             return failedReloads >= Self.maxFailedReloads ? error.code : nil
         }

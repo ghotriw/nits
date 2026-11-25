@@ -2,6 +2,7 @@ import CFFmpeg
 import CoreMedia
 import Foundation
 import Testing
+import os
 
 @testable import NitsCore
 @testable import NitsStreaming
@@ -77,6 +78,32 @@ struct HLSOverHTTPTests {
         let afterOpening = Array(server.requests.dropFirst(opened))
         #expect(Self.segments(of: 0, in: afterOpening).isEmpty, "\(afterOpening.map(\.path))")
         #expect(Set(Self.segments(of: 1, in: server.requests)) == ["v1_000.ts", "v1_001.ts", "v1_002.ts"])
+    }
+
+    @Test("A segment the network fails is asked for again until it comes, not skipped: every frame plays")
+    func waitsOutTheNetwork() throws {
+        guard let server = try Self.server() else { return }
+        defer { server.stop() }
+        // The network is away for the segment's first three requests, then back.
+        let failures = OSAllocatedUnfairLock(initialState: 0)
+        server.setBehavior(
+            .init(failure: .closeUnanswered),
+            forPaths: { path in
+                path == "v1_001.ts"
+                    && failures.withLock { count in
+                        count += 1
+                        return count <= 3
+                    }
+            })
+        let demuxer = try #require(MediaDemuxer(url: server.url("master.m3u8")))
+        demuxer.startReadAhead()
+
+        var pictures = 0
+        while demuxer.nextVideoSample() != nil { pictures += 1 }
+        #expect(pictures == 180)
+        while demuxer.nextAudioPacket() != nil {}
+        #expect(demuxer.isEOF)
+        #expect(server.requests.filter { $0.path == "v1_001.ts" }.count >= 4)
     }
 
     @Test("A segment cut short is asked for again from where it stopped, and every frame plays")

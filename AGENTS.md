@@ -93,7 +93,9 @@ ask while one is read wait for it (`DASHPlaylists.Store`, a `DispatchSemaphore` 
 opening's and the lanes' threads, which block on a playlist's load anyway. `YouTubeFormatSource.renewAddresses` (the
 addresses of a YouTube video's manifest) waits the same way on a request's thread: for a fresh signature to settle (the CDN refuses
 it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore` in steps of 50 ms giving way to `shouldAbort`, and for a renewal it reuses
-`YouTubeLiveSource.blocking` (yt-dlp, up to 90 s). Not a pattern for other code.
+`YouTubeLiveSource.blocking` (yt-dlp, up to 90 s). A lane waits out a failure of the network the same way before it asks for
+the segment again (`StreamingLane.waitForNetwork`, up to 5 s a wait, on the read's thread, giving way to `shouldAbort` and to the
+lane being given up). Not a pattern for other code.
 
 ## Layer boundaries
 
@@ -315,7 +317,10 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   `StreamingLane`, `StreamingInput`); FFmpeg only demuxes each segment (its HLS demuxer is not built, so nothing falls back on it).
   Timestamps that restart or jump at an `EXT-X-DISCONTINUITY` (ads, splices) are moved onto the playlist's timeline by
   the reader of each run of segments: the demuxer sees one timeline, so don't add offsets of your own in Nits for HLS.
-  A playlist served over HTTP(S) never reads a local file (`SegmentLoader.allowsFiles`). The client plays playlists,
+  A playlist served over HTTP(S) never reads a local file (`SegmentLoader.allowsFiles`). A failure of the network
+  (`FFmpegErrorCode.isNetworkFailure`, told by `HTTPSessionInput.failureCode`) is no failure of a segment or a
+  playlist: the lane asks the same again after a wait (`StreamingLane.recover`) while no request of the input is answered,
+  up to 5 minutes, instead of skipping or counting it. The client plays playlists,
   not their text: they come from a `PlaylistSource` (`HLSServedPlaylists` for HLS), the way another manifest (DASH)
   comes into it. A segment with `isGap` (`EXT-X-GAP`; a DASH period with no sound beside others that have some, which
   `DASHPresentation.merge` keeps in its place so the sound after it is) is never requested: `StreamingLane` steps over it as a

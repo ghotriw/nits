@@ -44,6 +44,8 @@ final class TestHTTPServer: Sendable {
         case dropMidwayOnce
         /// No response at all, until the server stops.
         case hang
+        /// The connection is closed as the request comes, with no response: to the client the network went away.
+        case closeUnanswered
     }
 
     struct Request: Sendable {
@@ -248,6 +250,9 @@ final class TestHTTPServer: Sendable {
             case .hang:
                 // Until the client or the server closes the connection.
                 while await receive(on: connection) != nil {}
+                return
+            case .closeUnanswered:
+                connection.cancel()
                 return
             case .status(let status):
                 guard await send(response(status: status, headers: ["Content-Length": "0"]), on: connection) else {

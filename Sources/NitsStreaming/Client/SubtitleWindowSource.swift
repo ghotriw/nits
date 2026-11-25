@@ -64,7 +64,8 @@ extension SubtitleWindowSource {
     /// own: its own transport (the requests are no sample for adaptive bitrate, and give way to `shouldAbort`; `isCancelled` ends the read), the
     /// playlist and the offsets the stream's pictures anchored. The run starts at the segment that holds the lower bound
     /// and stops at the first cue past the upper, and loads no segment that starts after it (a stretch without cues is not
-    /// read to its next cue). A segment that fails is skipped, as in playback (and counts as read). Each packet read is
+    /// read to its next cue). A segment that fails is skipped, as in playback (and counts as read), a failure of the
+    /// network asked again first, as there (`StreamingLane.recover`). Each packet read is
     /// handed to `packet` (timestamps in milliseconds, stream 0), which must not keep it.
     package func read(
         in range: ClosedRange<Double>, shouldAbort: @escaping @Sendable () -> Bool, isCancelled: () -> Bool,

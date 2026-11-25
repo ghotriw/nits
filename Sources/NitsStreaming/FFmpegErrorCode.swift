@@ -1,3 +1,5 @@
+import Foundation
+
 /// FFmpeg's error codes whose macros do not import into Swift.
 package enum FFmpegErrorCode {
     /// `AVERROR_EOF` (`-MKTAG('E', 'O', 'F', ' ')`).
@@ -10,6 +12,16 @@ package enum FFmpegErrorCode {
     package static let httpForbidden = tag(0xF8, "4", "0", "3")
     /// `AVERROR_HTTP_NOT_FOUND`: the server's 404.
     package static let httpNotFound = tag(0xF8, "4", "0", "4")
+
+    /// `AVERROR(ENETDOWN)`: the request found no way to the server (no connection, no route, its name not resolved), so
+    /// no answer came. Told apart from `-EIO` (a body cut short, an error of the segment's own) by the transport.
+    package static let networkDown: Int32 = -ENETDOWN
+
+    /// A request that failed for the network, not for what it asked: no answer within the timeout (`-ETIMEDOUT`) or no
+    /// way to the server (`networkDown`). Asking the same again later can succeed, which a 404 or a broken segment cannot.
+    package static func isNetworkFailure(_ code: Int32) -> Bool {
+        code == -ETIMEDOUT || code == networkDown
+    }
 
     /// `FFERRTAG(a, b, c, d)`: FFmpeg's `AVERROR_HTTP_*` and the like.
     package static func tag(_ a: UInt8, _ b: Character, _ c: Character, _ d: Character) -> Int32 {

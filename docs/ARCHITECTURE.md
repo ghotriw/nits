@@ -838,7 +838,8 @@ numbered segments of one URL (`…&sq=N`) the server keeps for days; so are thos
   `renewAddresses`). What a playlist lists of the day is the segments up to **the one before the head** (the newest the
   server reports, less one), so a segment the CDN reports and does not serve yet is never listed, and the lane's rule for
   a segment that fails (it is skipped at once, a hole in the time of that stream, the other going on, so picture and sound stay
-  together; `skipsASegmentThatFails`) is one for all the client's sources. The cost is a segment of delay at the edge. Its
+  together; `skipsASegmentThatFails`; a failure of the network is asked again instead, see "The client" in `docs/HLS.md`)
+  is one for all the client's sources. The cost is a segment of delay at the edge. Its
   rules:
   - the head is asked for by a reload (the lane reloads every target duration), no more often than `headPollInterval`, by
     the first lane that finds it due (a request without `sq`, whose answers all carry `X-Head-Seqnum` and

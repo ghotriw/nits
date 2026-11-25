@@ -21,6 +21,11 @@ import os
 /// redirected (FFmpeg resolves a playlist's URIs against where it was served from, which only its own inputs tell),
 /// and a byte range the server answers whole.
 package final class HTTPSessionTransport: Sendable {
+    /// When a request of this transport (every lane and rung of the input) last got an answer from its server, any
+    /// status: the network worked then. A lane that waits out the network's failures (`StreamingLane.recover`) takes an
+    /// answer since its first failure for a sign that its own server, not the network, fails, and skips the segment.
+    package var lastAnswered: ContinuousClock.Instant? { holder.lastAnswered.withLock { $0 } }
+
     package enum Opened {
         case input(HTTPSessionInput)
         /// FFmpeg's error for the request: the server's answer, or `AVERROR_EXIT` for an interrupted open.
@@ -588,6 +593,18 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
     /// Seconds before asking again for a body cut short, a retry each: FFmpeg's `reconnect` waits 0, 1, 2, … s.
     static let retryDelays = [0.0, 1, 2]
 
+    /// What a request that got no answer fails with: the network's failures (`FFmpegErrorCode.isNetworkFailure`), which
+    /// the lane asks again for, apart from any other (`-EIO`).
+    static func failureCode(of error: (any Error)?) -> Int32 {
+        switch (error as? URLError)?.code {
+        case .timedOut?: -ETIMEDOUT
+        case .notConnectedToInternet?, .networkConnectionLost?, .cannotFindHost?, .cannotConnectToHost?,
+            .dnsLookupFailed?, .dataNotAllowed?, .internationalRoamingOff?, .callIsActive?:
+            FFmpegErrorCode.networkDown
+        default: -EIO
+        }
+    }
+
     private let holder: HTTPSessionHolder
     private let request: URLRequest
     private let offset: Int64
@@ -941,6 +958,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
         _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
         completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
     ) {
+        holder.lastAnswered.withLock { $0 = .now }
         let isAllowed = state.withLockUnchecked { state -> Bool in
             guard dataTask === state.task, !state.isClosed else { return false }
             if case .open? = state.answer {
@@ -1055,9 +1073,7 @@ package final class HTTPSessionInput: NSObject, URLSessionDataDelegate, FFmpegIn
             state.isFinished = true
             // An error after the whole body came (the connection closed on the last byte) loses nothing.
             state.failed = state.failed || (error != nil && isCutShort)
-            if state.answer == nil {
-                state.answer = (error as? URLError)?.code == .timedOut ? .failed(-ETIMEDOUT) : .failed(-EIO)
-            }
+            if state.answer == nil { state.answer = .failed(Self.failureCode(of: error)) }
             if !state.isClosed { reportTransfer(in: &state) }
             return nil
         }
@@ -1176,6 +1192,8 @@ final class HTTPSessionHolder: Sendable {
     private let state: OSAllocatedUnfairLock<State>
     /// What the cookies of the answers go into, and the requests take theirs from.
     let cookieStorage: HTTPCookieStorage?
+    /// When a request of the transport last got an answer (`HTTPSessionTransport.lastAnswered`).
+    let lastAnswered = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
 
     /// Sessions of `configuration`, their delegates' calls on `queue`.
     package init(configuration: URLSessionConfiguration, queue: OperationQueue) {

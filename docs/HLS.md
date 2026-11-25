@@ -85,6 +85,23 @@ the engine's `LiveStream`) is in `docs/ARCHITECTURE.md`; the rules agents follow
   thread to apply under `lock` at its next read or seek, as FFmpeg reads the discard flags inside `av_read_frame`. An
   audio track switch seeks anyway; a subtitle rendition selected on a network source seeks to the current frame too,
   or FFmpeg would start it at the read position.
+- **A failure of the network is no failure of a segment.** A segment that fails is skipped at once, a hole in the time of
+  its stream (`StreamingLane.recover`, as `hls.c` with `seg_max_retry` 0), and a lane whose segments fail three times in a
+  row gives the error up: the picture's lane ends the input, a rendition's is left out (its sound gone for good). That is
+  right for a segment the server does not serve or that does not demux, and was wrong for the network going away: every
+  request of the outage failed, three skips took a few seconds, and the sound was dropped though the network came back
+  (seen on an iPhone, 2026-11-25: a home Wi-Fi without internet for a minute). The transport tells such failures apart
+  (`HTTPSessionInput.failureCode`: no answer within the timeout, `-ETIMEDOUT`; no connection, no route, a name not
+  resolved, a connection lost before the answer, `FFmpegErrorCode.networkDown`; `FFmpegErrorCode.isNetworkFailure`), and
+  the lane asks for the same segment again after a wait, ExoPlayer's `DefaultLoadErrorHandlingPolicy` (0, 1, 2, … s, at
+  most 5 s), for as long as the network is away; the wait gives way to a seek, a close or the lane given up at once, as
+  the wait for a live playlist does. The same codes come from a server that stopped answering on a network that works
+  (a timeout, a refused or reset connection), which no wait mends: the network counts as away only while no request of
+  the input (any lane, any rung: `HTTPSessionTransport.lastAnswered`) has been answered since the first failure, and for 5
+  minutes at most (`networkWaitLimit`, as long as the app is kept awake in the background); past either, the failure is
+  the segment's, skipped as before. A seek's target is kept for its first segment asked again. None of the segment's packets was read (no answer came), so nothing repeats. A body cut short after its
+  answer stays `-EIO` (the transport's own retries ask for the rest first). The engine meanwhile buffers, and on iOS
+  keeps the app awake in the background (see "Background playback" in `docs/ARCHITECTURE.md`).
 
 ## Timeline and discontinuities
 
@@ -167,7 +184,8 @@ stream's; see "Live streams" in `docs/ARCHITECTURE.md`. The playlist side is the
   `StreamingTimeline.edgeHoldBack`, which the window tells the engine as its `holdBack`, so "go live" and seeks keep it too); a
   rewind goes back to that join point; a lane read behind the window reloads before its next segment (`reloadIfStale`),
   so segments that expired meanwhile are skipped rather than failed; a playlist unchanged for 3.5 target durations
-  (ExoPlayer's coefficient) ends the lane with `-ETIMEDOUT`, and three failed reloads in a row stop it.
+  (ExoPlayer's coefficient) ends the lane with `-ETIMEDOUT`, and three failed reloads in a row stop it. A reload the
+  network failed is none of the three: the next is due as any other, so a live stream goes on once the network is back.
 - **The read at the edge waits.** The client's lane, at the edge of a playlist that lists no new segment, reloads it
   every target duration (half after a reload that changed nothing) inside `read`, holding `lock`; a seek would wait for
   it (for a stalled stream forever). `seek` of a live stream takes the lock as `lockIO(yielding: true)`, which asks the
@@ -378,6 +396,17 @@ here are summarised in "Measuring". Before reopening one, read why it was closed
   (`DASHPlaylists`: static and live MPDs, periods as discontinuities, a live history; done 2026-11-14, what it refuses is the
   opening's failure with its reason), extending the model where an MPD needs it (a signed segment address renewed, the live edge's delay, periods); FFmpeg's DASH demuxer
   and its patches gone (step 8, 2026-11-14); the target last, around both, with the model's names made neutral (done 2026-11-15).
+- **The network's failures are waited out, not skipped** (2026-11-25, after an iPhone in the background stopped on every
+  outage of its Wi-Fi). *Chosen:* the same segment asked again with ExoPlayer's backoff, with no limit of attempts: the
+  outage's length is what matters, and a request without a network fails at once, so a count would end within seconds;
+  the engine shows buffering meanwhile. The system does not tell an outage behind a router from a dead server (the path
+  stays satisfied, requests time out), so the input's own answers do: one since the first failure means the network
+  works, and the failing server's segment is skipped; with none, the wait ends after 5 minutes (a server that stopped
+  answering every request). hls.js retries a fragment 4 times on a timeout and 6 on an error (1–8 s) and then
+  stops with a fatal error; ExoPlayer retries the load and raises the error only once the player is starved past 3
+  failures. *Turned down:* retries in the demuxer's read-ahead (by then the lane had skipped segments and dropped a
+  rendition), and `waitsForConnectivity` on the session (no help for a request that times out on a connection that
+  went dead, and it would hide the outage from adaptive bitrate).
 - **Out of scope:** LL-HLS (parts, preload hints, blocking reloads), SAMPLE-AES / FairPlay, `I-FRAME-STREAM-INF` trick
   play, content steering, interstitials (the primary plays).
 
