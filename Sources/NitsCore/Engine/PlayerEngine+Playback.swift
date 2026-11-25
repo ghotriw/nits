@@ -102,6 +102,8 @@ extension PlayerEngine {
     public func hostDidEnterBackground() {
         guard !isHostInBackground else { return }
         isHostInBackground = true
+        // Buffering already: the wait goes on in the background, where the system would suspend the app.
+        updateBackgroundOutputHold()
         displayLink?.invalidate()
         displayLink = nil
         displayLinkScreen = nil
@@ -153,6 +155,7 @@ extension PlayerEngine {
     public func hostWillEnterForeground() {
         guard isHostInBackground else { return }
         isHostInBackground = false
+        updateBackgroundOutputHold()
         // The picture first: the demuxer queues video again (its cache is outdated until the seek below reads the input),
         // and the seek is a picture's.
         let wasAudioOnly = backgroundPlayback.isVideoDropped

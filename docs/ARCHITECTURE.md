@@ -713,6 +713,21 @@ click of that seek (the audio renderer is flushed, `AudioJoin.needsFlush`); a pi
 and the audio is the next step if the click is audible on a device. HLS segments carry video with the sound, so the
 network is not saved in the background (a separate audio rendition would).
 
+**Waiting for media keeps the app awake.** iOS suspends an app with background audio about 5 s after its sound stops
+(audiomxd lets its assertion go, runningboardd suspends the task), and buffering stops the sound: the synchronizer is held
+at rate 0. Suspended, the app can neither wait for the network nor read on once it is back, so every outage longer than
+the read-ahead stopped playback until the user opened the app (seen 2026-11-25 on an iPhone: a request "of 48 s" was the
+app asleep, and the read-ahead's error was logged on waking). While buffering holds the clock in the background
+(`isBuffering && isHostInBackground`), `BackgroundOutputHold` has the route keep its output running
+(`AudioOutputRoute.keepOutputRunning`), up to 5 minutes a wait, then lets it go. The iOS route plays silence on an
+`AVAudioEngine` of its own (`SilentOutput`), in the session it has made active only (an engine started on an inactive
+session would activate it behind the count of its holders): a deactivation or an interruption stops it, the next
+activation starts it again while it is still asked for, and it starts again after a change of output stopped it
+(`AVAudioEngineConfigurationChange`) or a start failed. The renderer, the clock and the synchronizer are not touched. This
+is VLC's behaviour (its audio unit renders silence on an underrun and is stopped only on a pause, so iOS sees the
+pause) and ExoPlayer's (its wake and Wi-Fi locks are held while buffering with the intent to play). Not covered: a seek in
+the background, which also holds the clock while it reads the network.
+
 ### Live streams
 
 An HLS playlist that slides (no `ENDLIST`, not `EVENT`: a YouTube live stream's DVR window of about 15 minutes) is a

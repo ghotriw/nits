@@ -279,7 +279,9 @@ it for its first seconds; up to 5 s, after a renewal too), a `DispatchSemaphore`
   audio alone and refuses the packet cache until a slow seek. A stopped video feeder alone would freeze `consumedSeconds`
   and starve the audio; and the state is that flag, never `videoStreamIndex`, which a variant switch rewrites. The engine
   decides how to play, seek, join the audio, feed and buffer by `hasPicture` (`media.hasVideo` and not dropped), never
-  by `media.hasVideo`; `media.hasVideo` is for the UI. Any start while in the background is audio only. Background:
+  by `media.hasVideo`; `media.hasVideo` is for the UI. Any start while in the background is audio only. Buffering there
+  keeps the route's output running (`BackgroundOutputHold`, `AudioOutputRoute.keepOutputRunning`: silence on iOS), as iOS
+  suspends an app ~5 s after its sound stops and a suspended app never reads on. Background:
   "Background playback" in `docs/ARCHITECTURE.md`.
 - **A read-ahead demuxer keeps the packets it handed out** (`DemuxerPacketBuffer`, `backBytes`) so a seek inside them
   needs no input (`seekWithinCache`, tried by `seek` first; the engine learns whether it served a seek from

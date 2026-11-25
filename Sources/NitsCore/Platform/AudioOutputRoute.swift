@@ -42,6 +42,24 @@ protocol AudioOutputRoute: AnyObject {
     func activate(_ completion: @escaping @MainActor () -> Void)
     func deactivate()
 
+    /// Keeps the output running while the engine holds the clock for media that has not come (buffering) and the
+    /// host is in the background. The engine decides when (`BackgroundOutputHold`); the route only does it.
+    ///
+    /// iOS suspends an app with background audio about 5 s after its sound stops, and the synchronizer held at rate 0
+    /// stops it: a suspended app can neither wait for the network nor read on once it is back, so playback would stand
+    /// until the user opened the app. The iOS route plays silence on an output of its own meanwhile, in the session
+    /// already active (as VLC's audio unit renders silence on an underrun instead of stopping); the renderer and the
+    /// clock are not touched. The route keeps what was asked until it is asked otherwise: the silence plays only while
+    /// its session is active (a deactivation or an interruption stops it, the next activation starts it again), and it
+    /// starts again by itself after a change of output stopped it or a start failed, so the engine's request stands.
+    /// Idempotent; platforms that do not suspend do nothing.
+    func keepOutputRunning(_ keep: Bool)
+
     /// Seconds from handing a sample to the current output until it is audible; `nil` when it cannot be queried.
     nonisolated static func currentOutputLatency() -> TimeInterval?
+}
+
+extension AudioOutputRoute {
+    /// Nothing to keep: the platform does not suspend an app whose sound stopped (macOS), or a test's route.
+    func keepOutputRunning(_ keep: Bool) {}
 }

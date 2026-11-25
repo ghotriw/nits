@@ -173,6 +173,7 @@
             }
             phase = failure == nil ? .active : .inactive
             activeEpoch = Self.epoch
+            if failure == nil { setSilenceSessionActive(true) }
             if failure != nil, releaseSession() { Self.sessionQueue.async { Self.deactivateSession() } }
             let ready = waiters
             waiters = []
@@ -184,6 +185,9 @@
         private func sessionWasTakenBySystem() {
             phase = .inactive
             generation += 1
+            // The system stopped every output of the session, the silent one too: it plays again only in a session this
+            // route activates again.
+            setSilenceSessionActive(false)
             // Gone for every route: the first of them to be told starts a new epoch, the others find it already changed.
             if holdsSession {
                 holdsSession = false
@@ -195,9 +199,32 @@
             for waiter in ready { waiter() }
         }
 
+        /// Plays silence while the engine waits for media in the background (see `AudioOutputRoute.keepOutputRunning`).
+        private let silence = SilentOutput(queue: AudioSessionOutputRoute.sessionQueue)
+        private var keepsOutputRunning = false
+
+        /// Silence on an output of its own, in the session this route has made active: the renderer stands with the
+        /// clock, and the system takes a running output for sound playing. What the engine asks is kept as wanted, and
+        /// the silence plays only while this route's session is active (never starting an engine that would activate the
+        /// session behind the count of its holders): a deactivation or an interruption stops it, and the next activation
+        /// starts it again if it is still wanted. All on `sessionQueue`, in the order of the session's own changes.
+        func keepOutputRunning(_ keep: Bool) {
+            guard keep != keepsOutputRunning else { return }
+            keepsOutputRunning = keep
+            let silence = silence
+            Self.sessionQueue.async { silence.setWanted(keep) }
+        }
+
+        private func setSilenceSessionActive(_ active: Bool) {
+            let silence = silence
+            Self.sessionQueue.async { silence.setSessionActive(active) }
+        }
+
         /// Hands the output back, telling the apps that were interrupted they may resume.
         func deactivate() {
             guard phase != .inactive else { return }
+            // Before the session goes: the silence stops with it and is still wanted for the next activation.
+            setSilenceSessionActive(false)
             phase = .inactive
             generation += 1
             // Whoever waited for the activation is not left waiting.
@@ -233,6 +260,104 @@
 
         nonisolated static func currentOutputLatency() -> TimeInterval? {
             AVAudioSession.sharedInstance().outputLatency
+        }
+    }
+
+    /// An audio engine whose only source renders zeros, running while it is wanted and the route's session is active.
+    /// Used only on `queue` (the route's `sessionQueue`), which is what makes it `Sendable`; starting blocks while the
+    /// system starts the IO, as `setActive` does.
+    ///
+    /// The engine stops by itself when the output changes (AirPods connected) or the media services reset
+    /// (`AVAudioEngineConfigurationChange`), and a start can fail: while still wanted, it is started again, after a
+    /// change at once, after a failure in `retryDelay`.
+    private final class SilentOutput: @unchecked Sendable {
+        static let retryDelay: DispatchTimeInterval = .seconds(1)
+
+        private let queue: DispatchQueue
+        private var engine: AVAudioEngine?
+        private var configurationObserver: (any NSObjectProtocol)?
+        private var isWanted = false
+        private var isSessionActive = false
+        private var isRetryScheduled = false
+
+        init(queue: DispatchQueue) {
+            self.queue = queue
+        }
+
+        func setWanted(_ wanted: Bool) {
+            isWanted = wanted
+            reconcile()
+        }
+
+        func setSessionActive(_ active: Bool) {
+            isSessionActive = active
+            reconcile()
+        }
+
+        private func reconcile() {
+            guard isWanted, isSessionActive else {
+                stop()
+                return
+            }
+            if let engine, engine.isRunning { return }
+            start()
+        }
+
+        private func start() {
+            let engine = self.engine ?? makeEngine()
+            guard let engine else { return }
+            self.engine = engine
+            do {
+                try engine.start()
+                AppLog.info(.audio, "Silent output started: the app stays awake while it waits for media")
+            } catch {
+                AppLog.error(.audio, "Could not start the silent output: \(error); trying again")
+                scheduleRetry()
+            }
+        }
+
+        private func makeEngine() -> AVAudioEngine? {
+            guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else { return nil }
+            let engine = AVAudioEngine()
+            let source = AVAudioSourceNode(format: format) { isSilence, _, _, buffers in
+                isSilence.pointee = true
+                for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                    if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+                }
+                return noErr
+            }
+            engine.attach(source)
+            engine.connect(source, to: engine.mainMixerNode, format: format)
+            // Posted on a thread of the system's: the start goes through the queue like every other change.
+            configurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.queue.async {
+                    AppLog.info(.audio, "Silent output stopped by a change of output; starting it again if wanted")
+                    self.reconcile()
+                }
+            }
+            return engine
+        }
+
+        private func scheduleRetry() {
+            guard !isRetryScheduled else { return }
+            isRetryScheduled = true
+            queue.asyncAfter(deadline: .now() + Self.retryDelay) { [weak self] in
+                guard let self else { return }
+                self.isRetryScheduled = false
+                self.reconcile()
+            }
+        }
+
+        private func stop() {
+            if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+            configurationObserver = nil
+            guard let engine else { return }
+            self.engine = nil
+            engine.stop()
+            AppLog.info(.audio, "Silent output stopped")
         }
     }
 #endif

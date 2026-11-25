@@ -419,6 +419,7 @@ public final class PlayerEngine: PlayerEngineProtocol {
             let buffering = isBuffering
             isBufferingForFeeder.withLock { $0 = buffering }
             if oldValue != isBuffering {
+                updateBackgroundOutputHold()
                 onBufferingChanged?(isBuffering)
             }
         }
@@ -595,6 +596,15 @@ public final class PlayerEngine: PlayerEngineProtocol {
     /// The picture dropped while the host is in the background and the audio plays on (`setPictureDropped`).
     @ObservationIgnored
     var backgroundPlayback = BackgroundPlayback()
+    /// Keeps the app awake while buffering in the background (`updateBackgroundOutputHold`).
+    @ObservationIgnored
+    let backgroundOutputHold = BackgroundOutputHold()
+
+    /// Buffering in the background keeps the output running, so that the system does not suspend an app that is only
+    /// waiting for media (`BackgroundOutputHold`). Called when buffering or the host's being in the background changes.
+    func updateBackgroundOutputHold() {
+        backgroundOutputHold.update(waiting: isBuffering && isHostInBackground, route: audioOutputRoute)
+    }
     /// Whether a picture is played now: the media has video and it is not dropped. Where the engine decides how to play,
     /// seek, join the audio or feed it uses this; `media.hasVideo` is what the media is, for the UI.
     var hasPicture: Bool { media.hasVideo && !backgroundPlayback.isVideoDropped }
