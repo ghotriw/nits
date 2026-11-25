@@ -137,7 +137,6 @@ package struct DASHManifest {
                     family.map(CodecFamily.isDolbyVision) == true
                     || (DASHElements.hdrTransfer(of: set) != nil)
                     || (DASHElements.hdrTransfer(of: representation) != nil)
-                let supplemental = value("scte214:supplementalCodecs").flatMap(CodecFamily.video)
                 let range = DASHElements.hdrTransfer(of: representation) ?? DASHElements.hdrTransfer(of: set)
                 // A WebM and an MP4 of one codec do not switch with each other (`DASHPlaylists.pictures`).
                 let isWebM = value("mimeType")?.lowercased().hasSuffix("/webm") == true
