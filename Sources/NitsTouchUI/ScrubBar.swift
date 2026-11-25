@@ -15,6 +15,8 @@
         @GestureState private var isFingerDown = false
 
         private static let barHeight: CGFloat = 4
+        /// The height of the timeline's touch area: the action button lifts clear of it.
+        static let height: CGFloat = 44
 
         var body: some View {
             GeometryReader { geometry in
@@ -58,7 +60,7 @@
                         }
                 )
             }
-            .frame(height: 44)
+            .frame(height: Self.height)
             .onChange(of: isFingerDown) { wasDown, isDown in
                 // The finger is up and a drag is still on: the system took the gesture, with no `onEnded`.
                 guard ScrubDragCancellation.isCancelled(wasDown: wasDown, isDown: isDown, dragFraction: dragFraction)

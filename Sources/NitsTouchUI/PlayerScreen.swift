@@ -122,7 +122,8 @@
                 let edge: Edge = placement == .bottom ? .bottom : .trailing
                 ZStack(alignment: placement == .bottom ? .bottom : .trailing) {
                     if isChaptersOpen {
-                        Color.black.opacity(0.35).contentShape(Rectangle())
+                        // Past the safe areas: the picture beside the notch is dimmed too, and a tap there closes the panel.
+                        Color.black.opacity(0.35).ignoresSafeArea().contentShape(Rectangle())
                             .onTapGesture { isChaptersOpen = false }
                             .transition(.opacity)
                         ChapterPanel(

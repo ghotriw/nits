@@ -106,8 +106,15 @@ case "$MODE" in
         # bootstatus -b boots it if it is not, and waits until it is ready.
         xcrun simctl bootstatus "$SIM_ID" -b >/dev/null
         # Its window only: the app runs on a booted simulator without it (and some Xcodes ship without Simulator.app).
-        open -a Simulator --args -CurrentDeviceUDID "$SIM_ID" 2>/dev/null \
-            || echo "==> Simulator.app not found: the simulator runs without its window."
+        # `--args` counts only when Simulator starts: a running one keeps its windows and shows the booted device itself.
+        if pgrep -x Simulator >/dev/null; then
+            open -a Simulator 2>/dev/null || true
+            SIM_LABEL="$(xcrun simctl list devices | grep -F "$SIM_ID" | sed -E 's/^ *(.*) \([0-9A-Fa-f-]{36}\).*/\1/' | head -n 1 || true)"
+            echo "==> Simulator is already running: look for the window of ${SIM_LABEL:-$SIM_ID}."
+        else
+            open -a Simulator --args -CurrentDeviceUDID "$SIM_ID" 2>/dev/null \
+                || echo "==> Simulator.app not found: the simulator runs without its window."
+        fi
         echo "==> Installing and launching $BUNDLE_ID (Ctrl-C quits the app)..."
         xcrun simctl install "$SIM_ID" "$APP"
         xcrun simctl launch --console-pty --terminate-running-process "$SIM_ID" "$BUNDLE_ID"

@@ -17,6 +17,16 @@
         /// The height of the lock / transport row: the locked screen keeps the lock where it was by using the same one.
         static let transportHeight: CGFloat = 52
 
+        /// The height of the row with the chapters and audio buttons.
+        static let selectorRowHeight: CGFloat = 44
+
+        /// Whether the row with the chapters and audio buttons shows: the bar's layout and whatever lifts clear of it use
+        /// this one rule.
+        static func hasSelectorRow(engine: PlayerEngine) -> Bool {
+            AudioTrackLabel.isShown(trackCount: engine.audioTracks.count)
+                || ChapterPanelLogic.isButtonShown(chapterCount: engine.media.chapters.count)
+        }
+
         private var engine: PlayerEngine { session.engine }
 
         var body: some View {
@@ -27,8 +37,17 @@
             }
             .padding(.horizontal, 8)
             .foregroundStyle(.white)
-            .background(alignment: .top) { scrim(.top) }
-            .background(alignment: .bottom) { scrim(.bottom) }
+            // One background that fills the screen past the safe areas, the scrims pinned to its edges: a scrim of its own
+            // frame sat at the safe area's edge and left a strip of bare picture beside the notch and the home indicator.
+            .background {
+                VStack(spacing: 0) {
+                    scrim(.top)
+                    Spacer(minLength: 0)
+                    scrim(.bottom)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
         }
 
         private func scrim(_ edge: VerticalEdge) -> some View {
@@ -36,9 +55,7 @@
                 colors: [.black.opacity(0.6), .clear], startPoint: edge == .top ? .top : .bottom,
                 endPoint: edge == .top ? .bottom : .top
             )
-            .frame(height: 160)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+            .frame(maxHeight: 160)
         }
 
         private var top: some View {
@@ -68,14 +85,13 @@
             let timeline = timeline
             let shown = dragFraction.map { timeline.time(at: $0) } ?? engine.currentTime
             return VStack(spacing: 0) {
-                if AudioTrackLabel.isShown(trackCount: engine.audioTracks.count)
-                    || ChapterPanelLogic.isButtonShown(chapterCount: engine.media.chapters.count)
-                {
+                if Self.hasSelectorRow(engine: engine) {
                     HStack {
                         Spacer()
                         ChaptersButton(engine: engine, isOpen: $isChaptersOpen, onInteraction: onTouch)
                         AudioTrackMenu(engine: engine, onInteraction: onTouch).equatable()
                     }
+                    .frame(height: Self.selectorRowHeight)
                 }
                 HStack(spacing: 10) {
                     Text(ScrubTimeline.clock(shown - timeline.start))

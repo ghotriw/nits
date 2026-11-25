@@ -19,10 +19,10 @@
         private var engine: PlayerEngine { session.engine }
         private var presenter: ActionButtonPresenter { session.actionButton }
 
-        /// Clear of the controls' bottom: the transport row, the timeline (44 pt), the audio row when it shows (44 pt) and a gap.
+        /// Clear of the controls' bottom: the transport row, the timeline, the chapters / audio row when it shows and a gap.
         private var controlsLift: CGFloat {
-            ControlBar.transportHeight + 44 + (AudioTrackLabel.isShown(trackCount: engine.audioTracks.count) ? 44 : 0)
-                + 8
+            ControlBar.transportHeight + ScrubBar.height
+                + (ControlBar.hasSelectorRow(engine: engine) ? ControlBar.selectorRowHeight : 0) + 8
         }
 
         var body: some View {
