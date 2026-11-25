@@ -54,7 +54,7 @@
                     ScalingButton(engine: engine, onInteraction: onTouch)
                     RepeatButton(engine: engine, onInteraction: onTouch)
                     Spacer()
-                    SpeedMenu(engine: engine, onInteraction: onTouch)
+                    SpeedMenu(engine: engine, onInteraction: onTouch).equatable()
                 }
             }
         }
@@ -74,7 +74,7 @@
                     HStack {
                         Spacer()
                         ChaptersButton(engine: engine, isOpen: $isChaptersOpen, onInteraction: onTouch)
-                        AudioTrackMenu(engine: engine, onInteraction: onTouch)
+                        AudioTrackMenu(engine: engine, onInteraction: onTouch).equatable()
                     }
                 }
                 HStack(spacing: 10) {

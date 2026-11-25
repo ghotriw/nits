@@ -3,10 +3,15 @@
     import SwiftUI
 
     /// The playback speed as a menu button: a gauge icon, with the speed beside it when it is not 1×, the choices in a checkmarked list.
-    struct SpeedMenu: View {
+    struct SpeedMenu: View, Equatable {
         let engine: PlayerEngine
         /// Told of a tap on the button and of a choice: a menu's touches do not reach the controls' own timer.
         var onInteraction: () -> Void = {}
+
+        /// Equal while it is the same engine: the screen re-evaluates its controls every quarter second and as the time moves, and a menu rebuilt
+        /// while it is open flickers. What the menu shows it observes itself, so a change still redraws it.
+        /// `onInteraction` is not compared: the screen always passes the same touch of its controls' visibility.
+        nonisolated static func == (lhs: SpeedMenu, rhs: SpeedMenu) -> Bool { lhs.engine === rhs.engine }
 
         static let rates: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
 

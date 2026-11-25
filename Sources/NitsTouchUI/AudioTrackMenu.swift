@@ -24,9 +24,14 @@
     }
 
     /// The audio tracks as a checkmarked menu; absent when there is nothing to choose.
-    struct AudioTrackMenu: View {
+    struct AudioTrackMenu: View, Equatable {
         let engine: PlayerEngine
         var onInteraction: () -> Void = {}
+
+        /// Equal while it is the same engine: the screen re-evaluates its controls every quarter second and as the time moves, and a menu rebuilt
+        /// while it is open flickers (what it shows it observes itself). `onInteraction` is not compared: the screen always
+        /// passes the same touch of its controls' visibility.
+        nonisolated static func == (lhs: AudioTrackMenu, rhs: AudioTrackMenu) -> Bool { lhs.engine === rhs.engine }
 
         private var selection: Binding<Int> {
             Binding(
