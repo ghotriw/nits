@@ -904,6 +904,8 @@ flowchart TD
 - [ ] **8.6. Track pickers, speed, settings, playlists** on iOS. With them the iOS UI state outgrows the screen's own
   `@State`: a `PlayerUIState` of `NitsTouchUI`'s (what `NitsUI`'s is to macOS) takes it, and `ActionButtonPresenter` moves
   there from `TouchPlayerSession`.
+  Done so far: the chapters panel (2026-11-25; `ChapterPanel`, a button beside the audio menu, a bottom sheet in portrait
+  and a panel at the right in landscape, its openness one `@State` of `PlayerScreen`); the playlist and settings are open.
 - [ ] **8.7. Background audio and Now Playing** (`MPNowPlayingInfoCenter`, remote commands) and **Picture in Picture**
   (`AVPictureInPictureController(contentSource:)` over the display layer). Now Playing is a `PlayerSessionSink` of
   `TouchPlayerSession`, as on macOS. The session's platform part grows to `NitsKit`'s size, so `NitsTouch` was split first into `NitsTouchKit` (the session) and

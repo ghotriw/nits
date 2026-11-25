@@ -16,10 +16,12 @@
             var hasError = false
             /// VoiceOver is running: its user would lose the buttons three seconds after the last touch.
             var isVoiceOverRunning = false
+            /// A panel (chapters) is open over the picture: it is read, so the controls stay with it.
+            var isPanelOpen = false
 
             /// The controls stay whatever the time.
             var holdsControls: Bool {
-                !isLoaded || !isPlaying || isScrubbing || isBuffering || hasError || isVoiceOverRunning
+                !isLoaded || !isPlaying || isScrubbing || isBuffering || hasError || isVoiceOverRunning || isPanelOpen
             }
         }
 

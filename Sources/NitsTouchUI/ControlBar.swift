@@ -9,6 +9,7 @@
         let session: TouchPlayerSession
         let network: NetworkKindMonitor?
         @Binding var isLocked: Bool
+        @Binding var isChaptersOpen: Bool
         /// The controls were used in a way their own gestures do not see (a menu): keeps them on screen.
         var onTouch: () -> Void = {}
         @State private var dragFraction: Double?
@@ -67,9 +68,12 @@
             let timeline = timeline
             let shown = dragFraction.map { timeline.time(at: $0) } ?? engine.currentTime
             return VStack(spacing: 0) {
-                if AudioTrackLabel.isShown(trackCount: engine.audioTracks.count) {
+                if AudioTrackLabel.isShown(trackCount: engine.audioTracks.count)
+                    || ChapterPanelLogic.isButtonShown(chapterCount: engine.media.chapters.count)
+                {
                     HStack {
                         Spacer()
+                        ChaptersButton(engine: engine, isOpen: $isChaptersOpen, onInteraction: onTouch)
                         AudioTrackMenu(engine: engine, onInteraction: onTouch)
                     }
                 }

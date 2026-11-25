@@ -20,6 +20,14 @@
             #expect(!visibility.isVisible(at: at(3.0), playing))
         }
 
+        @Test("An open panel holds them while the video plays")
+        func staysWhilePanelOpen() {
+            let visibility = ControlsVisibility(now: start)
+            var context = playing
+            context.isPanelOpen = true
+            #expect(visibility.isVisible(at: at(10), context))
+        }
+
         @Test("Paused, they stay however long")
         func staysWhilePaused() {
             let visibility = ControlsVisibility(now: start)

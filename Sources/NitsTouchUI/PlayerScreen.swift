@@ -11,6 +11,7 @@
         @State private var visibility = ControlsVisibility()
         @State private var surfaceWidth: CGFloat = 0
         @State private var isLocked = false
+        @State private var isChaptersOpen = false
         /// Made on appear, one for both layouts of the status row.
         @State private var network: NetworkKindMonitor?
 
@@ -26,7 +27,7 @@
             ControlsVisibility.Context(
                 isLoaded: engine.isLoaded, isPlaying: engine.isPlaying, isScrubbing: engine.isScrubbing,
                 isBuffering: engine.isBuffering || engine.isLoading, hasError: engine.loadError != nil,
-                isVoiceOverRunning: UIAccessibility.isVoiceOverRunning)
+                isVoiceOverRunning: UIAccessibility.isVoiceOverRunning, isPanelOpen: isChaptersOpen)
         }
 
         public var body: some View {
@@ -67,7 +68,7 @@
                             } else {
                                 ControlBar(
                                     session: session, network: network, isLocked: $isLocked,
-                                    onTouch: { visibility.touch() })
+                                    isChaptersOpen: $isChaptersOpen, onTouch: { visibility.touch() })
                             }
                         }
                         .opacity(isVisible ? 1 : 0)
@@ -78,6 +79,7 @@
                         ActionButtonView(session: session, areControlsVisible: isVisible, isLocked: isLocked) {
                             visibility.touch()
                         }
+                        chaptersOverlay
                     } else {
                         EmptyStateView(session: session).foregroundStyle(.white)
                     }
@@ -92,7 +94,15 @@
             // Between two items `isLoaded` goes false but the media (`isLoading`) stays: the lock holds until it is closed.
             .onChange(of: hasMedia) { _, hasMedia in
                 visibility.touch()
-                if !hasMedia { isLocked = false }
+                if !hasMedia {
+                    isLocked = false
+                    isChaptersOpen = false
+                }
+            }
+            // The list belongs to the media: another item (or none to choose from) closes it.
+            .onChange(of: engine.media.chapters) { _, _ in isChaptersOpen = false }
+            .onChange(of: isLocked) { _, isLocked in
+                if isLocked { isChaptersOpen = false }
             }
             .onChange(of: engine.isPlaying) { _, _ in visibility.touch() }
             .alert(
@@ -104,6 +114,54 @@
                 Text(engine.loadError ?? "")
             }
         }
+
+        /// The chapters over everything: a tap outside closes it; the bottom sheet is swiped down by its handle.
+        private var chaptersOverlay: some View {
+            GeometryReader { geometry in
+                let placement = ChapterPanelLogic.placement(for: geometry.size)
+                let edge: Edge = placement == .bottom ? .bottom : .trailing
+                ZStack(alignment: placement == .bottom ? .bottom : .trailing) {
+                    if isChaptersOpen {
+                        Color.black.opacity(0.35).contentShape(Rectangle())
+                            .onTapGesture { isChaptersOpen = false }
+                            .transition(.opacity)
+                        ChapterPanel(
+                            engine: engine, onInteraction: { visibility.touch() },
+                            topInset: placement == .bottom ? Self.handleHeight : 0
+                        )
+                        .frame(
+                            width: placement == .bottom ? nil : min(geometry.size.width * 0.4, 420),
+                            height: placement == .bottom ? geometry.size.height * 0.55 : nil
+                        )
+                        // A drag on the list scrolls it, so the sheet is swiped down by its handle alone.
+                        .overlay(alignment: .top) {
+                            if placement == .bottom {
+                                Capsule().fill(.white.opacity(0.4)).frame(width: 36, height: 5)
+                                    .frame(maxWidth: .infinity, minHeight: Self.handleHeight)
+                                    .contentShape(Rectangle())
+                                    .gesture(
+                                        DragGesture(minimumDistance: 10).onEnded { value in
+                                            if value.translation.height > 40 { isChaptersOpen = false }
+                                        }
+                                    )
+                            }
+                        }
+                        .padding(8)
+                        .transition(.move(edge: edge))
+                        // A modal panel for VoiceOver: what is under it is not reached, and the escape gesture closes it.
+                        .accessibilityAddTraits(.isModal)
+                        .accessibilityAction(.escape) { isChaptersOpen = false }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .animation(.easeInOut(duration: 0.25), value: isChaptersOpen)
+            // Closing it counts as a touch: the controls it held do not vanish with the panel.
+            .onChange(of: isChaptersOpen) { _, _ in visibility.touch() }
+        }
+
+        /// The sheet's handle: the strip the swipe starts on, above the list.
+        private static let handleHeight: CGFloat = 28
 
         private var singleTap: some Gesture {
             TapGesture().onEnded { visibility.toggle(context) }
